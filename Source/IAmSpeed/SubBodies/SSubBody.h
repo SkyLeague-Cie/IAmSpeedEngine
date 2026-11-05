@@ -18,6 +18,9 @@ class USphereSubBody;
 class USWheelSubBody;
 class UCylinderSubBody;
 namespace Speed { class IStaticCollisionWorld; }
+namespace Speed::NativeKinematics { class FBodyRead; class FBodyWrite; }
+namespace Speed::Netcode::Prediction {class FPrivateNativeOperation;class FPrivateReferenceOwnerBirth;}
+class USpeedBranchBoxSubBody;
 
 /**
  * USubBody : Base class for any physics sub-body (wheel, hitbox, sphere) and detection SubBodies
@@ -36,6 +39,40 @@ UCLASS()
 class IAMSPEED_API USSubBody : public UShapeComponent
 {
     GENERATED_UCLASS_BODY()
+private:
+    friend class Speed::NativeKinematics::FBodyRead;
+    friend class Speed::NativeKinematics::FBodyWrite;
+    friend class USWheelSubBody;
+    friend class USpeedBranchBoxSubBody;
+    class FLegacyBodyUpdateAccess;class FNativeBodyUpdateAccess;
+    friend class USolidSubBody;
+    friend class USpeedWheeledComponent;
+protected:
+    // Empty for legacy/custom dispatch; final private owners refuse unconditionally.
+    virtual void CheckOrdinaryBodyInitializationEntry() const {}
+private:
+    class FLegacyBirthInitializeAccess;class FNativeBirthInitializeAccess;class FReferenceBirthInitializeAccess;
+    template<class TAccess> void InitializeBirthBody(TAccess& Storage,ISpeedComponent* InParentComponent);
+    void InitializeNativeBase(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,ISpeedComponent* Parent);
+    void InitializeReferenceBase(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const Speed::Netcode::Prediction::FPrivateReferenceOwnerBirth& Proof,ISpeedComponent* Parent);
+    virtual void InitializeNative(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,ISpeedComponent* Parent);
+    virtual void InitializeReference(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const Speed::Netcode::Prediction::FPrivateReferenceOwnerBirth& Proof,ISpeedComponent* Parent);
+    virtual void AcceptNativeHit(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation);
+    virtual void ValidateNativeResetFrame(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation) const;
+    virtual void ResetNativeForFrame(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const float& Delta);
+    virtual void ResolveNativeCurrentHit(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const float& Delta,const float& SimTime);
+    template<class TAccess> void UpdateKinematicsFromOwnerBody(TAccess& Storage,const SKinematic& ParentKinematic);
+    void UpdateNativeBaseKinematicsFromOwner(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const SKinematic& ParentKinematic);
+    virtual void UpdateNativeKinematicsFromOwner(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const SKinematic& ParentKinematic);
+    // Custom storage adapters retain the old getter dispatch. Only the private
+    // final road bodies override this public-view selector with legacy backing.
+    virtual const Speed::FKinematicState& PublicKinematicView() const { return KinematicsStorage(); }
+    virtual const SHitResult& PublicCurrentHitView() const { return CurrentHitStorage(); }
+    virtual const SHitResult& PublicFutureHitView() const { return FutureHitStorage(); }
+    // Default/custom storage adapters retain their previous virtual backing.
+    // The final private bodies bind public writes to their actual facade.
+    virtual SHitResult& PublicCurrentHitMutableView() { return CurrentHitStorage(); }
+    virtual SHitResult& PublicFutureHitMutableView() { return FutureHitStorage(); }
 #if !UE_BUILD_SHIPPING
     friend struct Speed::FNativeBallMechanicalWitnessForTesting;
 #endif
@@ -48,25 +85,25 @@ public:
     virtual void AppendEpisodeStateForTesting(TArray<uint8>& Out) const
     {
         using B=Speed::FEpisodeStateBytesForTesting;
-        B::Add(Out,ParentComponent);
-        const FTransform RelativePose=GetRelativeTransform();B::Add(Out,RelativePose);
-        B::Add(Out,Kinematics);
-        B::Add(Out,SubBodyType);
-        B::Add(Out,CollisionChannel);
-        for(int32 Channel=0;Channel<int32(ECC_MAX);++Channel)B::Add(Out,ResponseParams.CollisionResponse.GetResponse(ECollisionChannel(Channel)));
-        B::Add(Out,FutureHit);
-        B::Add(Out,CurrentHit);
-        B::Add(Out,GroundHit);
-        B::Add(Out,BoxHit);
-        B::Add(Out,SphereHit);
-        B::Add(Out,WheelHit);
-        B::Array(Out,AlwaysIgnoredComponents);
-        B::Array(Out,IgnoredComponents);
-        B::Array(Out,IgnoredSubBodyTypes);
-        B::Array(Out,ExternalBoxSubBodies);
-        B::Array(Out,ExternalSphereSubBodies);
-        B::Array(Out,ExternalWheelSubBodies);
-        B::Array(Out,ExternalCylinderSubBodies);
+        B::Add(Out,ParentComponentBodyDomainStorage());
+        const FTransform RelativePose=PhysicalLocalPose();B::Add(Out,RelativePose);
+        B::Add(Out,KinematicsStorage());
+        B::Add(Out,SubBodyTypeBodyDomainStorage());
+        B::Add(Out,CollisionChannelBodyDomainStorage());
+        for(int32 Channel=0;Channel<int32(ECC_MAX);++Channel)B::Add(Out,ResponseParamsBodyDomainStorage().CollisionResponse.GetResponse(ECollisionChannel(Channel)));
+        B::Add(Out,FutureHitStorage());
+        B::Add(Out,CurrentHitStorage());
+        B::Add(Out,GroundHitStorage());
+        B::Add(Out,BoxHitStorage());
+        B::Add(Out,SphereHitStorage());
+        B::Add(Out,WheelHitStorage());
+        B::Array(Out,AlwaysIgnoredComponentsBodyDomainStorage());
+        B::Array(Out,IgnoredComponentsBodyDomainStorage());
+        B::Array(Out,IgnoredSubBodyTypesBodyDomainStorage());
+        B::Array(Out,ExternalBoxSubBodiesBodyDomainStorage());
+        B::Array(Out,ExternalSphereSubBodiesBodyDomainStorage());
+        B::Array(Out,ExternalWheelSubBodiesBodyDomainStorage());
+        B::Array(Out,ExternalCylinderSubBodiesBodyDomainStorage());
     }
 #endif
 
@@ -115,8 +152,8 @@ public:
 
     // --- Set/Get kinematics ---
 	virtual void UpdateKinematicsFromOwner(const SKinematic& ParentKinematic);
-    void SetKinematicState(const Speed::FKinematicState& State) { Kinematics = State; }
-    const Speed::FKinematicState& GetKinematicState() const { return Kinematics; }
+    void SetKinematicState(const Speed::FKinematicState& State) { KinematicsStorage() = State; }
+    const Speed::FKinematicState& GetKinematicState() const { return PublicKinematicView(); }
 
     // --- Sweep for remaining delta time; return true if a hit occurred ---
     virtual bool SweepTOI(const float& RemainingDelta, float& OutTOI);
@@ -132,27 +169,30 @@ public:
     virtual void ResolveCurrentHit(const float& delta, const float& SimTime);
 
     // --- Returns true if a valid hit exists ---
-    bool HasHit() const { return CurrentHit.bBlockingHit; }
-    bool WillHit() const { return FutureHit.bBlockingHit; }
-    float GetFutureTOI() const { return FutureHit.TOI; }
+    bool HasHit() const { return PublicCurrentHitView().bBlockingHit; }
+    bool WillHit() const { return PublicFutureHitView().bBlockingHit; }
+    float GetFutureTOI() const { return PublicFutureHitView().TOI; }
 
-	void SetHit(const SHitResult& Hit) { CurrentHit = Hit; }
-    const SHitResult& GetHit() const { return CurrentHit; }
-	const SHitResult& GetFutureHit() const { return FutureHit; }
-	void SetFutureHit(const SHitResult& Hit) { FutureHit = Hit; }
+	void SetHit(const SHitResult& Hit) { PublicCurrentHitMutableView() = Hit; }
+    const SHitResult& GetHit() const { return PublicCurrentHitView(); }
+	const SHitResult& GetFutureHit() const { return PublicFutureHitView(); }
+	void SetFutureHit(const SHitResult& Hit) { PublicFutureHitMutableView() = Hit; }
 
-	ESubBodyType GetSubBodyType() const { return SubBodyType; }
-    FVector GetCenterOfMassWS() const { return Kinematics.Location; }
+	ESubBodyType GetSubBodyType() const { return SubBodyTypeBodyDomainStorage(); }
+    FVector GetCenterOfMassWS() const { return KinematicsStorage().Location; }
 
-	ISpeedComponent* GetParentComponent() const { return ParentComponent; }
+	ISpeedComponent* GetParentComponent() const { return ParentComponentBodyDomainStorage(); }
+    // An identity value only, never mutable physics or lifetime authority.
+    // Private born graphs can copy their actual preacquired weak identity.
+    virtual TWeakObjectPtr<USSubBody> GetPhysicsWeakIdentity() const;
 
     // ====== REQUIRED PHYSICS SHAPE AND COLLISION PARAMS ======
     virtual FCollisionShape GetCollisionShape(float Inflation = 0.0f) const { return FCollisionShape::MakeSphere(10.f); }
-    ECollisionChannel GetCollisionChannel() const { return CollisionChannel; }
-    const FCollisionResponseParams& GetResponseParams() const { return ResponseParams; }
+    ECollisionChannel GetCollisionChannel() const { return CollisionChannelBodyDomainStorage(); }
+    const FCollisionResponseParams& GetResponseParams() const { return ResponseParamsBodyDomainStorage(); }
 
-	FVector GetLocalOffset() const { return GetRelativeLocation(); }
-	FQuat GetLocalRotation() const { return GetRelativeRotation().Quaternion(); }
+	FVector GetLocalOffset() const { return PhysicalLocalOffset(); }
+	FQuat GetLocalRotation() const { return PhysicalLocalRotation(); }
     static uint64 MakePairKey(const USSubBody* A, const UPrimitiveComponent* OtherComp);
     static int32 SubBodyPriority(USSubBody::ESubBodyType T);
     static USSubBody* PickResolver(USSubBody* A, USSubBody* B);
@@ -164,12 +204,60 @@ protected:
     const TArray<TWeakObjectPtr<UBoxSubBody>>& GetExternalBoxSubBodies() const;
     const TArray<TWeakObjectPtr<USphereSubBody>>& GetExternalSphereSubBodies() const;
     const TArray<TWeakObjectPtr<USWheelSubBody>>& GetExternalWheelSubBodies() const;
-    const TArray<TWeakObjectPtr<UCylinderSubBody>>& GetExternalCylinderSubBodies() const {return ExternalCylinderSubBodies;}
+    const TArray<TWeakObjectPtr<UCylinderSubBody>>& GetExternalCylinderSubBodies() const {return ExternalCylinderSubBodiesBodyDomainStorage();}
 protected:
 
+protected:
+    virtual FVector PhysicalLocalOffset() const {return GetRelativeLocation();}
+    virtual FQuat PhysicalLocalRotation() const {return GetRelativeRotation().Quaternion();}
+    // Keep the original Euler input to the exact native rotation cache. An
+    // isolated owner must not reread a mutable USceneComponent transform.
+    virtual FRotator PhysicalLocalEulerRotation() const {return GetRelativeRotation();}
+    virtual FTransform PhysicalLocalPose() const {return GetRelativeTransform();}
+    virtual void SetPhysicalLocalOffset(const FVector& V) {SetRelativeLocation(V);}
+    virtual void SetPhysicalLocalRotation(const FQuat& V) {SetRelativeRotation(V);}
+    virtual ISpeedComponent*& ParentComponentBodyDomainStorage() {return ParentComponent;}
+    virtual ISpeedComponent* const& ParentComponentBodyDomainStorage() const {return ParentComponent;}
+    virtual ESubBodyType& SubBodyTypeBodyDomainStorage() {return SubBodyType;}
+    virtual ESubBodyType const& SubBodyTypeBodyDomainStorage() const {return SubBodyType;}
+    virtual ECollisionChannel& CollisionChannelBodyDomainStorage() {return CollisionChannel;}
+    virtual ECollisionChannel const& CollisionChannelBodyDomainStorage() const {return CollisionChannel;}
+    virtual FCollisionResponseParams& ResponseParamsBodyDomainStorage() {return ResponseParams;}
+    virtual FCollisionResponseParams const& ResponseParamsBodyDomainStorage() const {return ResponseParams;}
+    virtual TArray<UPrimitiveComponent*>& AlwaysIgnoredComponentsBodyDomainStorage() {return AlwaysIgnoredComponents;}
+    virtual TArray<UPrimitiveComponent*> const& AlwaysIgnoredComponentsBodyDomainStorage() const {return AlwaysIgnoredComponents;}
+    virtual TArray<UPrimitiveComponent*>& IgnoredComponentsBodyDomainStorage() {return IgnoredComponents;}
+    virtual TArray<UPrimitiveComponent*> const& IgnoredComponentsBodyDomainStorage() const {return IgnoredComponents;}
+    virtual TArray<ESubBodyType>& IgnoredSubBodyTypesBodyDomainStorage() {return IgnoredSubBodyTypes;}
+    virtual TArray<ESubBodyType> const& IgnoredSubBodyTypesBodyDomainStorage() const {return IgnoredSubBodyTypes;}
+    virtual TArray<TWeakObjectPtr<UBoxSubBody>>& ExternalBoxSubBodiesBodyDomainStorage() {return ExternalBoxSubBodies;}
+    virtual TArray<TWeakObjectPtr<UBoxSubBody>> const& ExternalBoxSubBodiesBodyDomainStorage() const {return ExternalBoxSubBodies;}
+    virtual TArray<TWeakObjectPtr<USphereSubBody>>& ExternalSphereSubBodiesBodyDomainStorage() {return ExternalSphereSubBodies;}
+    virtual TArray<TWeakObjectPtr<USphereSubBody>> const& ExternalSphereSubBodiesBodyDomainStorage() const {return ExternalSphereSubBodies;}
+    virtual TArray<TWeakObjectPtr<USWheelSubBody>>& ExternalWheelSubBodiesBodyDomainStorage() {return ExternalWheelSubBodies;}
+    virtual TArray<TWeakObjectPtr<USWheelSubBody>> const& ExternalWheelSubBodiesBodyDomainStorage() const {return ExternalWheelSubBodies;}
+    virtual TArray<TWeakObjectPtr<UCylinderSubBody>>& ExternalCylinderSubBodiesBodyDomainStorage() {return ExternalCylinderSubBodies;}
+    virtual TArray<TWeakObjectPtr<UCylinderSubBody>> const& ExternalCylinderSubBodiesBodyDomainStorage() const {return ExternalCylinderSubBodies;}
 	ISpeedComponent* ParentComponent;
 
     // Kinematic state at start of frame or during substep
+    // Lifetime-invariant subtypes can route these value blocks to an owner.
+    // Default adapters retain exactly their legacy fields. No restore or
+    // geometry/configuration/lifetime completeness is granted by these hooks.
+    virtual Speed::FKinematicState& KinematicsStorage() {return Kinematics;}
+    virtual Speed::FKinematicState const& KinematicsStorage() const {return Kinematics;}
+    virtual SHitResult& FutureHitStorage() {return FutureHit;}
+    virtual SHitResult const& FutureHitStorage() const {return FutureHit;}
+    virtual SHitResult& CurrentHitStorage() {return CurrentHit;}
+    virtual SHitResult const& CurrentHitStorage() const {return CurrentHit;}
+    virtual SHitResult& GroundHitStorage() {return GroundHit;}
+    virtual SHitResult const& GroundHitStorage() const {return GroundHit;}
+    virtual SHitResult& BoxHitStorage() {return BoxHit;}
+    virtual SHitResult const& BoxHitStorage() const {return BoxHit;}
+    virtual SHitResult& SphereHitStorage() {return SphereHit;}
+    virtual SHitResult const& SphereHitStorage() const {return SphereHit;}
+    virtual SHitResult& WheelHitStorage() {return WheelHit;}
+    virtual SHitResult const& WheelHitStorage() const {return WheelHit;}
     Speed::FKinematicState Kinematics;
 
 	ESubBodyType SubBodyType = ESubBodyType::Unknown;

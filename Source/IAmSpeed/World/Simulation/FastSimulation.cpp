@@ -1,4 +1,6 @@
 #include "FastSimulation.h"
+#include "IAmSpeed/World/Simulation/RoadSettings/NativeRoadSettingsRead.h"
+#include "IAmSpeed/World/Simulation/NativeEpochDiagnostics.h"
 #include "SimulationSleepState.h"
 #include "SimulationActorDiagnostics.h"
 
@@ -79,7 +81,7 @@ void AFastSimulation::BeginRunMetrics()
 	RunStartIterationLimitCount = PerformanceIterationLimitCount;
 	RunStartTotalStepMilliseconds = PerformanceTotalStepMilliseconds;
 #if !UE_BUILD_SHIPPING
-	bMeasureWindows = CVarFastWindowTiming.GetValueOnAnyThread() != 0;
+	bMeasureWindows = Speed::RoadSettings::ReadOriginalOrLegacy<56>([](){ return CVarFastWindowTiming.GetValueOnAnyThread(); }) != 0;
 	bWindowTimingInvalid = false;
 	WindowMilliseconds.Reset();
 	if (bMeasureWindows) WindowMilliseconds.Reserve(65536);
@@ -131,7 +133,7 @@ ESimulationWorkerResult AFastSimulation::AdvanceSealedSimulation(
 	if (CanonicalNumFrame - RunStartFrame >= MaxFrameCount)
 	{
 		bFrameBudgetExceeded = true;
-		UE_LOG(LogTemp, Error,
+		SPEED_NATIVE_LOG(LogTemp, Error,
 			TEXT("FastSimulation exhausted its frame budget at canonical frame %llu without a terminal result."),
 			CanonicalNumFrame);
 		return ESimulationWorkerResult::Failed;
@@ -159,7 +161,7 @@ void AFastSimulation::ReportCompletedRun()
 #endif
 #if !UE_BUILD_SHIPPING
 	Speed::ActorDiagnostics::EndRun();
-	UE_LOG(LogTemp, Display, TEXT("[SimulationSleep] IntegrationSkips=%llu"),
+	SPEED_NATIVE_LOG(LogTemp, Display, TEXT("[SimulationSleep] IntegrationSkips=%llu"),
 		Speed::FSimulationSleepState::ThreadIntegrationSkips());
 #endif
 	const double WallSeconds = FPlatformTime::Seconds() - RunStartSeconds;
@@ -174,11 +176,11 @@ void AFastSimulation::ReportCompletedRun()
 	const uint64 IterationLimits = PerformanceIterationLimitCount - RunStartIterationLimitCount;
 	const double TotalStepMilliseconds = PerformanceTotalStepMilliseconds - RunStartTotalStepMilliseconds;
 	const float WarningFrameFraction = GetWarningFrameFraction();
-	UE_LOG(LogTemp, Display,
+	SPEED_NATIVE_LOG(LogTemp, Display,
 		TEXT("[FastSimulationRun] StartFrame=%llu EndFrame=%llu Frames=%llu WallSeconds=%.9f SimulatedSeconds=%.9f RealtimeMultiplier=%.3f"),
 		RunStartFrame, CanonicalNumFrame > 0 ? CanonicalNumFrame - 1u : 0u, SimulatedFrames,
 		WallSeconds, SimulatedSeconds, WallSeconds > 0.0 ? SimulatedSeconds / WallSeconds : 0.0);
-	UE_LOG(LogTemp, Display,
+	SPEED_NATIVE_LOG(LogTemp, Display,
 		TEXT("[FastSimulationPerformance] StartFrame=%llu EndFrame=%llu Frames=%llu WarningFrames=%llu IterationLimits=%llu AverageStepMs=%.9f MaximumStepMs=%.9f WarningFrameFraction=%.6f WarningThresholdMs=%.9f CoreAverageMs=%.9f SweepAverageMs=%.9f StaticAuthorityAverageMs=%.9f StaticAuthorityMaximumMs=%.9f ProjectionAverageMs=%.9f PostAverageMs=%.9f StaticQueries=%llu StaticQueriesAverage=%.6f StaticQueriesMaximum=%u ComponentSweepsAverage=%.6f IterationsAverage=%.6f IterationsMaximum=%d"),
 		RunStartFrame, CanonicalNumFrame > 0 ? CanonicalNumFrame - 1u : 0u,
 		MeasuredFrames, WarningFrames, IterationLimits,
@@ -230,7 +232,7 @@ void AFastSimulation::ReportWindowTimings() const
 		const double Milliseconds = WindowMilliseconds[Index];
 		if (Milliseconds > DeadlineMs) ++Misses;
 		const uint64 First = RunStartFrame + uint64(Index) * 30u;
-		UE_LOG(LogTemp, Display, TEXT("[FastSimulationWindow] FirstFrame=%llu LastFrame=%llu Frames=30 WallMs=%.9f"),
+		SPEED_NATIVE_LOG(LogTemp, Display, TEXT("[FastSimulationWindow] FirstFrame=%llu LastFrame=%llu Frames=30 WallMs=%.9f"),
 			First, First + 29u, Milliseconds);
 	}
 	TArray<double> Sorted = WindowMilliseconds;
@@ -239,7 +241,7 @@ void AFastSimulation::ReportWindowTimings() const
 	{
 		return Sorted.IsEmpty() ? 0.0 : Sorted[FMath::Clamp(FMath::CeilToInt(Fraction * Sorted.Num()) - 1, 0, Sorted.Num() - 1)];
 	};
-	UE_LOG(LogTemp, Display, TEXT("[FastSimulationWindowSummary] Valid=%d Windows=%d FramesPerWindow=30 TailFrames=%llu DeadlineMs=%.9f Misses=%llu P50Ms=%.9f P95Ms=%.9f P99Ms=%.9f MaxMs=%.9f Scope=ForwardCommittedFrames CPUCostMeasured=0 RollbackRestoreMeasured=0"),
+	SPEED_NATIVE_LOG(LogTemp, Display, TEXT("[FastSimulationWindowSummary] Valid=%d Windows=%d FramesPerWindow=30 TailFrames=%llu DeadlineMs=%.9f Misses=%llu P50Ms=%.9f P95Ms=%.9f P99Ms=%.9f MaxMs=%.9f Scope=ForwardCommittedFrames CPUCostMeasured=0 RollbackRestoreMeasured=0"),
 		bWindowTimingInvalid ? 0 : 1, Sorted.Num(), CanonicalNumFrame - WindowStartFrame, DeadlineMs, Misses,
 		Percentile(0.50), Percentile(0.95), Percentile(0.99), Sorted.IsEmpty() ? 0.0 : Sorted.Last());
 }

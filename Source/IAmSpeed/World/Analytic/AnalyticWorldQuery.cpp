@@ -1,4 +1,5 @@
 #include "AnalyticWorldQuery.h"
+#include "IAmSpeed/World/Simulation/NativeEpochDiagnostics.h"
 #include "TorusWorldQuery.h"
 #include "IAmSpeed/World/Collision/StaticQueryBatch.h"
 #include "JoinedPiecewiseProviderWave1075.h"
@@ -209,7 +210,7 @@ namespace
         Add(T.Work.Misses, S.Misses); Add(T.Work.Evictions, S.Evictions);
         Add(T.Work.Bypass, S.Bypass); Add(T.Work.RecomputedBitMismatches, S.RecomputedBitMismatches);
         if (T.Providers < 4096) return;
-        UE_LOG(LogTemp, Display, TEXT("[ExactCrossNormalProbe784] Providers=%llu Eligible=%llu Hits=%llu Misses=%llu Evictions=%llu Bypass=%llu RecomputedBitMismatches=%llu Overflow=%u Scope=ProviderLocalExactBits DiagnosticOnly=1 FullCoverage=UNKNOWN"),
+        SPEED_NATIVE_LOG(LogTemp, Display, TEXT("[ExactCrossNormalProbe784] Providers=%llu Eligible=%llu Hits=%llu Misses=%llu Evictions=%llu Bypass=%llu RecomputedBitMismatches=%llu Overflow=%u Scope=ProviderLocalExactBits DiagnosticOnly=1 FullCoverage=UNKNOWN"),
             T.Providers, T.Work.Eligible, T.Work.Hits, T.Work.Misses, T.Work.Evictions,
             T.Work.Bypass, T.Work.RecomputedBitMismatches, uint32(T.Overflow));
         T = FExactCrossProbeTotals784{};
@@ -309,7 +310,7 @@ namespace
 			Timing.CompactSeconds + Timing.TensorSeconds +
 			Timing.PiecewiseSeconds + Timing.TriangleSeconds +
 			Timing.ArbitrationSeconds;
-		UE_LOG(LogTemp, Display,
+		SPEED_NATIVE_LOG(LogTemp, Display,
 			TEXT("[AnalyticQueryPhaseTiming] Queries=%llu TotalUs=%.6f ")
 			TEXT("PlaneUs=%.6f CompactUs=%.6f TensorUs=%.6f ")
 			TEXT("PiecewiseUs=%.6f TriangleUs=%.6f ArbitrationUs=%.6f OtherUs=%.6f"),
@@ -325,7 +326,7 @@ namespace
 				ToAverageMicroseconds);
 		if (GAnalyticQueryDetailedTimingEnabled)
 		{
-			UE_LOG(LogTemp, Display,
+			SPEED_NATIVE_LOG(LogTemp, Display,
 				TEXT("[AnalyticQueryKernelTiming] Queries=%llu PlaneUs=%.6f TriangulationUs=%.6f ")
 				TEXT("CoplanarUnionUs=%.6f ExtrudedUs=%.6f PlaneCalls=%llu TriangulationCalls=%llu UnionCalls=%llu ExtrudedCalls=%llu"),
 				Timing.Queries, Timing.PlaneEvaluationSeconds * ToAverageMicroseconds,
@@ -333,7 +334,7 @@ namespace
 				Timing.CoplanarBoundarySeconds * ToAverageMicroseconds,
 				Timing.ExtrudedEvaluationSeconds * ToAverageMicroseconds,
 				Timing.PlaneCalls, Timing.TriangulationCalls, Timing.CoplanarBoundaryCalls, Timing.ExtrudedCalls);
-			UE_LOG(LogTemp, Display,
+			SPEED_NATIVE_LOG(LogTemp, Display,
 				TEXT("[AnalyticBoxSatWork] Queries=%llu Calls=%llu PotentialCrossProducts=%llu CrossProducts=%llu NormalizedCrossAxes=%llu VisitedAxes=%llu"),
 				Timing.Queries, Timing.BoxSatCalls, 9 * Timing.BoxSatCalls,
 				Timing.BoxSatCrossProducts, Timing.BoxSatNormalizedCrossAxes, Timing.BoxSatVisitedAxes);
@@ -401,7 +402,7 @@ FWorldQueryService::FWorldQueryService(const FAnalyticWorldData& InWorld,
 	PiecewiseProviderIndex = Speed::Collision::FOrderedBoundsIndex::Create(PiecewiseBounds);
 #if !UE_BUILD_SHIPPING
 	if (CVarIAmSpeedAnalyticWorldPhaseTiming.GetValueOnAnyThread() != 0)
-		UE_LOG(LogTemp, Display, TEXT("[AnalyticQueryStorage] PiecewiseProviders=%d ProviderIndexBytes=%llu"),
+		SPEED_NATIVE_LOG(LogTemp, Display, TEXT("[AnalyticQueryStorage] PiecewiseProviders=%d ProviderIndexBytes=%llu"),
 			PiecewiseBounds.Num(), uint64(PiecewiseProviderIndex->GetAllocatedSize()));
 #endif
 	TMap<uint64, FSourceAuthorityCoverage> CoverageBySource;
@@ -4070,7 +4071,7 @@ FWorldHit FWorldQueryService::SweepPiecewiseTensorBezier(
 		if (ElapsedMicroseconds >= 10.0)
 		{
 			++GAnalyticPiecewiseSlowQueryLogs;
-			UE_LOG(LogTemp, Display,
+			SPEED_NATIVE_LOG(LogTemp, Display,
 				TEXT("[AnalyticPiecewiseSlowQuery] Surface=%016llX Primitive=%016llX ")
 				TEXT("Shape=%u ElapsedUs=%.6f ProviderNodes=%llu ProviderCells=%llu ")
 				TEXT("ApproximationNodes=%llu ApproximationCells=%llu Start=%s End=%s"),
@@ -4301,7 +4302,7 @@ bool FWorldQueryService::TrySweepAuthority(
 		if (!bLoggedFirstCoverageMismatch)
 		{
 			bLoggedFirstCoverageMismatch = true;
-			UE_LOG(LogTemp, Display,
+			SPEED_NATIVE_LOG(LogTemp, Display,
 				TEXT("[AnalyticAuthorityCoverageMismatch] Shape=%u AuthorityHit=0 Start=%s End=%s HalfExtent=%s Radius=%.17g"),
 				static_cast<uint8>(Query.Shape),
 				*FVector(Query.Start).ToString(), *FVector(Query.End).ToString(),
@@ -4335,7 +4336,7 @@ bool FWorldQueryService::TrySweepAuthority(
 	if (!bCovered && !bLoggedFirstCoverageMismatch)
 	{
 		bLoggedFirstCoverageMismatch = true;
-		UE_LOG(LogTemp, Display,
+		SPEED_NATIVE_LOG(LogTemp, Display,
 			TEXT("[AnalyticAuthorityCoverageMismatch] Shape=Box Start=%s End=%s HalfExtent=%s AuthorityHit=%d AuthorityTime=%.17g AuthoritySource=%016llX AuthoritySurface=%016llX AuthorityPrimitive=%016llX ProviderHit=%d ProviderTime=%.17g ProviderSource=%016llX ProviderSurface=%016llX ProviderPrimitive=%016llX"),
 			*FVector(Query.Start).ToString(), *FVector(Query.End).ToString(),
 			*FVector(Query.HalfExtent).ToString(), AuthorityHit.bHit ? 1 : 0,
@@ -4364,7 +4365,7 @@ void FWorldQueryService::RecordCacheProfile(
 		CacheProfile.Evictions += bEvicted ? 1 : 0;
 	}
 	if (CacheProfile.Queries < 1000) return;
-	UE_LOG(LogTemp, Display,
+	SPEED_NATIVE_LOG(LogTemp, Display,
 		TEXT("[AnalyticQueryCacheProfile] Queries=%llu RayHits=%llu RayMisses=%llu ")
 		TEXT("SphereHits=%llu SphereMisses=%llu BoxHits=%llu BoxMisses=%llu ")
 		TEXT("Way0=%llu Way1=%llu Way2=%llu Way3=%llu Evictions=%llu"),

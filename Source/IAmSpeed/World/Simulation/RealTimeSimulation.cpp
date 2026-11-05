@@ -1,4 +1,6 @@
 #include "RealTimeSimulation.h"
+#include "IAmSpeed/World/Simulation/RoadSettings/NativeRoadSettingsRead.h"
+#include "IAmSpeed/World/Simulation/NativeEpochDiagnostics.h"
 
 #include "CanonicalFrameDriver.h"
 #include "CanonicalFrameContext.h"
@@ -198,7 +200,7 @@ ESimulationWorkerResult ARealTimeSimulation::DriveOwnedWorkerPulse(
 	if (Result == ESimulationWorkerResult::Advanced)
 	{
 		const double RecoveryWindowSeconds = FMath::Max(0.0,
-			static_cast<double>(CVarRealTimeRecoveryWindowMilliseconds.GetValueOnAnyThread()) /
+			static_cast<double>(Speed::RoadSettings::ReadOriginalOrLegacy<89>([](){ return CVarRealTimeRecoveryWindowMilliseconds.GetValueOnAnyThread(); })) /
 			1000.0);
 #if !UE_BUILD_SHIPPING
 		const FRealTimeFramePacer::FFrameStartSample Sample = FramePacer.BeginFrame(
@@ -214,7 +216,7 @@ ESimulationWorkerResult ARealTimeSimulation::DriveOwnedWorkerPulse(
             Outcome.HasPreviousStart = Sample.bHasPreviousStart;
             Outcome.RecoveryLimited = Sample.bRecoveryLimited;
             if (!SnapshotBuffer.CompleteCadenceTiming(CanonicalNumFrame - 1u, FrameStartSeconds, Outcome))
-                UE_LOG(SpeedPhysicsLog, Error, TEXT("[RealTimePublicationCadenceIncomplete] Frame=%llu"), CanonicalNumFrame - 1u);
+                SPEED_NATIVE_LOG(SpeedPhysicsLog, Error, TEXT("[RealTimePublicationCadenceIncomplete] Frame=%llu"), CanonicalNumFrame - 1u);
         }
 #else
 		FramePacer.BeginFrame(
@@ -236,7 +238,7 @@ void ARealTimeSimulation::WaitBetweenFrames(
 			static_cast<double>(RealDeltaTime);
 	}
 	const double PrecisionWindowSeconds = FMath::Max(0.0,
-		static_cast<double>(CVarRealTimePrecisionWindowMilliseconds.GetValueOnAnyThread()) /
+		static_cast<double>(Speed::RoadSettings::ReadOriginalOrLegacy<88>([](){ return CVarRealTimePrecisionWindowMilliseconds.GetValueOnAnyThread(); })) /
 		1000.0);
 	if (WaitContext.WaitUntil(DeadlineSeconds, PrecisionWindowSeconds) ==
 		ESimulationWaitResult::Interrupted)
@@ -250,23 +252,23 @@ void ARealTimeSimulation::AuditPhysicalFrameStart(
 	const FRealTimeFramePacer::FFrameStartSample& Sample)
 {
 	if (!Sample.bHasPreviousStart ||
-		CVarRealTimeCadenceWarnings.GetValueOnAnyThread() == 0)
+		Speed::RoadSettings::ReadOriginalOrLegacy<87>([](){ return CVarRealTimeCadenceWarnings.GetValueOnAnyThread(); }) == 0)
 	{
 		return;
 	}
 
 	const double ExpectedSeconds = Sample.TargetIntervalSeconds;
 	const double ToleranceSeconds = FMath::Max(0.0,
-		static_cast<double>(CVarRealTimeCadenceToleranceMilliseconds.GetValueOnAnyThread()) /
+		static_cast<double>(Speed::RoadSettings::ReadOriginalOrLegacy<85>([](){ return CVarRealTimeCadenceToleranceMilliseconds.GetValueOnAnyThread(); })) /
 		1000.0);
 	const double NowSeconds = FPlatformTime::Seconds();
 	const double CooldownSeconds = FMath::Max(0.0,
-		static_cast<double>(CVarRealTimeCadenceWarningCooldownSeconds.GetValueOnAnyThread()));
+		static_cast<double>(Speed::RoadSettings::ReadOriginalOrLegacy<86>([](){ return CVarRealTimeCadenceWarningCooldownSeconds.GetValueOnAnyThread(); })));
 	if (Sample.IntervalSeconds + ToleranceSeconds < ExpectedSeconds &&
 		NowSeconds - LastPhysicalFastWarningSeconds >= CooldownSeconds)
 	{
 		LastPhysicalFastWarningSeconds = NowSeconds;
-		UE_LOG(SpeedPhysicsLog, Warning,
+		SPEED_NATIVE_LOG(SpeedPhysicsLog, Warning,
 			TEXT("[RealTimeSimulationCadence] Physics Thread is too fast: Frame=%llu ActualStartIntervalMs=%.6f TargetStartIntervalMs=%.6f BaseStartIntervalMs=%.6f PhaseErrorMs=%.6f RecoveryDebtMs=%.6f"),
 			CanonicalNumFrame, Sample.IntervalSeconds * 1000.0,
 			ExpectedSeconds * 1000.0, static_cast<double>(RealDeltaTime) * 1000.0,
@@ -278,7 +280,7 @@ void ARealTimeSimulation::AuditPhysicalFrameStart(
 		NowSeconds - LastPhysicalSlowWarningSeconds >= CooldownSeconds)
 	{
 		LastPhysicalSlowWarningSeconds = NowSeconds;
-		UE_LOG(SpeedPhysicsLog, Warning,
+		SPEED_NATIVE_LOG(SpeedPhysicsLog, Warning,
 			TEXT("[RealTimeSimulationCadence] Physics Thread is too slow: Frame=%llu ActualStartIntervalMs=%.6f TargetStartIntervalMs=%.6f BaseStartIntervalMs=%.6f PhaseErrorMs=%.6f RecoveryDebtMs=%.6f"),
 			CanonicalNumFrame, Sample.IntervalSeconds * 1000.0,
 			ExpectedSeconds * 1000.0, static_cast<double>(RealDeltaTime) * 1000.0,
@@ -292,7 +294,7 @@ void ARealTimeSimulation::AuditPhysicalFrameStart(
 Speed::PublicationCadence::FTiming ARealTimeSimulation::GetCanonicalPublicationTiming(
     const FCanonicalFrameContext& Context) const
 {
-    if (!ActivePublicationTiming.Present || Context.bResimulationForTesting) return {};
+    if (!ActivePublicationTiming.Present || Context.IsResimulation()) return {};
     auto Timing = ActivePublicationTiming;
     Timing.Epoch = PacingEpoch.load(std::memory_order_relaxed);
     return Timing;
@@ -309,7 +311,7 @@ void ARealTimeSimulation::AuditPresentationFrameCadence(
         return;
     }
     const double ToleranceSeconds = FMath::Max(0.0,
-        static_cast<double>(CVarRealTimeCadenceToleranceMilliseconds.GetValueOnAnyThread()) / 1000.0);
+        static_cast<double>(Speed::RoadSettings::ReadOriginalOrLegacy<85>([](){ return CVarRealTimeCadenceToleranceMilliseconds.GetValueOnAnyThread(); })) / 1000.0);
     // Availability at this read, not the packet previously frozen by an actor latch.
     // The unchanged pacer supplies actual starts/deadlines; visibility has its own
     // monotone clock. GameDelta cannot define the interval between these reads.
@@ -318,7 +320,7 @@ void ARealTimeSimulation::AuditPresentationFrameCadence(
     // A missing receipt/clock/history is a diagnostic failure, never a green gap.
     if (!Result.HistoryComplete || Result.FrameAccountingMismatch)
     {
-        UE_LOG(SpeedPhysicsLog, Error,
+        SPEED_NATIVE_LOG(SpeedPhysicsLog, Error,
             TEXT("[RealTimePresentationCadence] Incomplete publication observation: Observer=%s HistoryComplete=%u FrameAccountingMismatch=%u Frame=%llu Serial=%llu"),
             *Observer.GetName(), uint32(Result.HistoryComplete), uint32(Result.FrameAccountingMismatch),
             uint64(Result.Latest.Frame), uint64(Result.Latest.Serial));
@@ -326,16 +328,16 @@ void ARealTimeSimulation::AuditPresentationFrameCadence(
     }
     const double NowSeconds = Observation.ObservationSeconds;
     if (NowSeconds < SuppressPresentationWarningsUntilSeconds ||
-        CVarRealTimeCadenceWarnings.GetValueOnGameThread() == 0) return;
+        Speed::RoadSettings::ReadOriginalOrLegacy<87>([](){ return CVarRealTimeCadenceWarnings.GetValueOnGameThread(); }) == 0) return;
     const double CooldownSeconds = FMath::Max(0.0,
-        static_cast<double>(CVarRealTimeCadenceWarningCooldownSeconds.GetValueOnGameThread()));
+        static_cast<double>(Speed::RoadSettings::ReadOriginalOrLegacy<86>([](){ return CVarRealTimeCadenceWarningCooldownSeconds.GetValueOnGameThread(); })));
     if (Result.Rebased) return;
     const auto& Early = Result.FirstEarlyStart;
     const auto& Late = Result.FirstLateStart;
     if (Result.EarlyStart && NowSeconds - LastPresentationFastWarningSeconds >= CooldownSeconds)
     {
         LastPresentationFastWarningSeconds = NowSeconds;
-        UE_LOG(SpeedPhysicsLog, Warning,
+        SPEED_NATIVE_LOG(SpeedPhysicsLog, Warning,
             TEXT("[RealTimePresentationCadence] Physics Thread is too fast: Observer=%s Frame=%llu ActualStartIntervalMs=%.6f TargetStartIntervalMs=%.6f Publications=%llu ObservationIntervalMs=%.6f"),
             *Observer.GetName(), uint64(Early.Frame), Early.Start.ActualIntervalSeconds * 1000.0,
             Early.Start.TargetIntervalSeconds * 1000.0, uint64(Result.Publications),
@@ -344,7 +346,7 @@ void ARealTimeSimulation::AuditPresentationFrameCadence(
     if (Result.LateStart && NowSeconds - LastPresentationSlowWarningSeconds >= CooldownSeconds)
     {
         LastPresentationSlowWarningSeconds = NowSeconds;
-        UE_LOG(SpeedPhysicsLog, Warning,
+        SPEED_NATIVE_LOG(SpeedPhysicsLog, Warning,
             TEXT("[RealTimePresentationCadence] Physics Thread is too slow: Observer=%s Frame=%llu ActualStartIntervalMs=%.6f TargetStartIntervalMs=%.6f Publications=%llu ObservationIntervalMs=%.6f"),
             *Observer.GetName(), uint64(Late.Frame), Late.Start.ActualIntervalSeconds * 1000.0,
             Late.Start.TargetIntervalSeconds * 1000.0, uint64(Result.Publications),

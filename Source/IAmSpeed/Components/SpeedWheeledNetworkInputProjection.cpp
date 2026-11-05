@@ -12,7 +12,7 @@ bool USpeedWheeledComponent::PrepareWheeledNetworkInput(uint64 Frame) const
 	if (Frame >= MAX_uint32) return false;
 	if (PreparedWheeledNetworkInput && PreparedWheeledNetworkInput->LocalFrame == Frame + 1) return true;
 	auto Result = std::make_shared<FCompletedWheeledInput>();
-	Result->Requested = WheeledPhysicalInput;
+	Result->Requested = WheeledPhysicalInputStorage();
 	Result->LocalFrame = uint32(Frame + 1); Result->SinceCanMove = SinceCanMoveFrame;
 	const FActionValues* Values = nullptr;
 	std::shared_ptr<const FLegacyWheeledOwner::FSnapshot> Remote;

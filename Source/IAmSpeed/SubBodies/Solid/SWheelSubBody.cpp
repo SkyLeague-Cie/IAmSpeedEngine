@@ -1,7 +1,15 @@
+#include "SWheelSubBody.h"
+#include "IAmSpeed/Netcode/client-prediction/PrivateNativeStorageMap.h"
+#include "IAmSpeed/Netcode/client-prediction/PrivateRoadNativeObjects.h"
+#include "IAmSpeed/World/Simulation/Internal/SolidPropertiesAccess.h"
+#include "IAmSpeed/World/Simulation/Internal/SolidMassAccess.h"
+#include "IAmSpeed/World/Simulation/Internal/BodyKinematicRead.h"
+#include "IAmSpeed/World/Simulation/Internal/ComponentKinematicRead.h"
+#include "IAmSpeed/World/Simulation/RoadSettings/NativeRoadSettingsRead.h"
+#include "IAmSpeed/World/Simulation/NativeEpochDiagnostics.h"
 // Fill out your copyright notice in the Description page of Project Settings.
 
 
-#include "SWheelSubBody.h"
 #include "Engine/World.h"
 #include "IAmSpeed/World/Analytic/AnalyticWorldQuery.h"
 #include "CylinderSubBody.h"
@@ -202,7 +210,7 @@ namespace
         FSuspensionForceDebugData* DebugData = nullptr)
     {
         const bool bClampNegativeDisplacement = bConfiguredClampNegativeDisplacement ||
-            CVarSkyLeagueSuspensionClampNegativeDisplacement.GetValueOnAnyThread() != 0;
+            Speed::RoadSettings::ReadOriginalOrLegacy<156>([](){ return CVarSkyLeagueSuspensionClampNegativeDisplacement.GetValueOnAnyThread(); }) != 0;
         const float ForceLastDisplacement = bClampNegativeDisplacement
             ? FMath::Max(0.0f, LastDisplacement)
             : LastDisplacement;
@@ -219,48 +227,48 @@ namespace
         const float DampingScale = bPreRestCompression
             ? (ConfiguredPreRestCompressionDampingScale >= 0.0f
                 ? ConfiguredPreRestCompressionDampingScale
-                : CVarSkyLeagueSuspensionPreRestCompressionDampingScale.GetValueOnAnyThread())
+                : Speed::RoadSettings::ReadOriginalOrLegacy<167>([](){ return CVarSkyLeagueSuspensionPreRestCompressionDampingScale.GetValueOnAnyThread(); }))
             : (bCompression
-                ? CVarSkyLeagueSuspensionCompressionDampingScale.GetValueOnAnyThread()
-                : CVarSkyLeagueSuspensionReboundDampingScale.GetValueOnAnyThread());
+                ? Speed::RoadSettings::ReadOriginalOrLegacy<158>([](){ return CVarSkyLeagueSuspensionCompressionDampingScale.GetValueOnAnyThread(); })
+                : Speed::RoadSettings::ReadOriginalOrLegacy<168>([](){ return CVarSkyLeagueSuspensionReboundDampingScale.GetValueOnAnyThread(); }));
         const float Damping = (bCompression
             ? Suspension.Setup().CompressionDamping
             : Suspension.Setup().ReboundDamping) * FMath::Max(0.0f, DampingScale);
-        const bool bApplyRestingForce = CVarSkyLeagueSuspensionRestingForceRequiresCompression.GetValueOnAnyThread() == 0 ||
+        const bool bApplyRestingForce = Speed::RoadSettings::ReadOriginalOrLegacy<169>([](){ return CVarSkyLeagueSuspensionRestingForceRequiresCompression.GetValueOnAnyThread(); }) == 0 ||
             ForceCurrentDisplacement > 0.0f;
         const double RestingForce = bApplyRestingForce
             ? static_cast<double>(Suspension.Setup().RestingForce) *
 				static_cast<double>(FMath::Max(0.0f,
-					CVarSkyLeagueSuspensionRestingForceScale.GetValueOnAnyThread()))
+					Speed::RoadSettings::ReadOriginalOrLegacy<170>([](){ return CVarSkyLeagueSuspensionRestingForceScale.GetValueOnAnyThread(); })))
             : 0.0;
         const double StiffnessReferenceDisplacement = static_cast<double>(
 			ConfiguredStiffnessReferenceDisplacement +
-			CVarSkyLeagueSuspensionStiffnessReferenceDisplacement.GetValueOnAnyThread());
+			Speed::RoadSettings::ReadOriginalOrLegacy<176>([](){ return CVarSkyLeagueSuspensionStiffnessReferenceDisplacement.GetValueOnAnyThread(); }));
         const double StiffnessForce =
 			(static_cast<double>(ForceCurrentDisplacement) - StiffnessReferenceDisplacement) *
 			static_cast<double>(Suspension.Setup().SpringRate) *
 			static_cast<double>(FMath::Max(0.0f, ConfiguredStiffnessScale)) *
 			static_cast<double>(FMath::Max(0.0f,
-				CVarSkyLeagueSuspensionStiffnessScale.GetValueOnAnyThread()));
+				Speed::RoadSettings::ReadOriginalOrLegacy<177>([](){ return CVarSkyLeagueSuspensionStiffnessScale.GetValueOnAnyThread(); })));
         const double EffectiveDamping = static_cast<double>(Damping) +
 			(bCompression
 				? static_cast<double>(FMath::Abs(WheelRelativeVelocity)) *
 					static_cast<double>(FMath::Max(0.0f,
-						CVarSkyLeagueSuspensionCompressionQuadraticDamping.GetValueOnAnyThread()))
+						Speed::RoadSettings::ReadOriginalOrLegacy<159>([](){ return CVarSkyLeagueSuspensionCompressionQuadraticDamping.GetValueOnAnyThread(); })))
 				: 0.0);
         const double DampingForce = WheelRelativeVelocity * EffectiveDamping;
         float Force = static_cast<float>(RestingForce + StiffnessForce - DampingForce);
 		const float BumpStopStart = FMath::Max(0.0f,
-			CVarSkyLeagueSuspensionBumpStopStartCompression.GetValueOnAnyThread());
+			Speed::RoadSettings::ReadOriginalOrLegacy<154>([](){ return CVarSkyLeagueSuspensionBumpStopStartCompression.GetValueOnAnyThread(); }));
 		const float BumpStopCompression = FMath::Max(
 			0.0f, ForceCurrentDisplacement - BumpStopStart);
 		if (!bDisableBumpStopForce)
 		{
 			Force += FMath::Square(BumpStopCompression) * FMath::Max(
-				0.0f, CVarSkyLeagueSuspensionBumpStopRate.GetValueOnAnyThread());
+				0.0f, Speed::RoadSettings::ReadOriginalOrLegacy<153>([](){ return CVarSkyLeagueSuspensionBumpStopRate.GetValueOnAnyThread(); }));
 		}
         const float UnclampedForce = Force;
-        if (bForcePositive || CVarSkyLeagueSuspensionClampPositiveForce.GetValueOnAnyThread() != 0)
+        if (bForcePositive || Speed::RoadSettings::ReadOriginalOrLegacy<157>([](){ return CVarSkyLeagueSuspensionClampPositiveForce.GetValueOnAnyThread(); }) != 0)
         {
             Force = FMath::Max(Force, 0.0f);
         }
@@ -296,64 +304,192 @@ namespace
 USWheelSubBody::USWheelSubBody(const FObjectInitializer& ObjectInitializer):
 	Super(ObjectInitializer)
 {
-	SubBodyType = ESubBodyType::Wheel;
-    IgnoredSubBodyTypes.AddUnique(ESubBodyType::Wheel);
-	bApplyRestForce = false; // wheel apply suspension force directly, so we do not want rest force to interfere with it
-    SetMass(WheelMass);
+	SubBodyTypeBodyDomainStorage() = ESubBodyType::Wheel;
+    IgnoredSubBodyTypesBodyDomainStorage().AddUnique(ESubBodyType::Wheel);
+	bApplyRestForceSolidStorage() = false; // wheel apply suspension force directly, so we do not want rest force to interfere with it
+    Speed::NativeKinematics::FSolidMassAccess::Write(*this,WheelMassWheelDomainStorage());
 }
 
-void USWheelSubBody::Initialize(ISpeedComponent* InParentComponent)
+class USWheelSubBody::FLegacyBirthInitializeAccess
 {
-	Super::Initialize(InParentComponent);
+    USWheelSubBody& Owner;
+public:
+    explicit FLegacyBirthInitializeAccess(USWheelSubBody& Value):Owner(Value){}
+    virtual void CheckCallbackBoundary() const {}
+    void Base(ISpeedComponent* Parent) const {Owner.USphereSubBody::Initialize(Parent);}
+    decltype(auto) Parent() const {return Owner.ParentComponentBodyDomainStorage();}
+    WheelSubBodyConfig Configuration() const {return Owner.WheelComponentWheelDomainStorage()->GetWheelSubBodyConfig(Owner);}
+    void Index(int Value) const {Speed::NativeKinematics::FSolidPropertiesAccess::SetIdx(Owner,Value);}
+    void Radius(float Value) const {Owner.SetRadius(Value);}
+    void Mass(float Value) const {Speed::NativeKinematics::FSolidMassAccess::Write(Owner,Value);}
+    decltype(auto) InverseLocal() const {return Owner.InvInertiaLocalSolidStorage();}
+    FMatrix InitialInverse() const {return Owner.InitInvInertiaTensor();}
+    decltype(auto) WheelComponent() const {return Owner.WheelComponentWheelDomainStorage();}
+    decltype(auto) ChaosWheel() const {return Owner.ChaosWheelWheelDomainStorage();}
+    decltype(auto) Wheel() const {return Owner.PWheelWheelDomainStorage();}
+    decltype(auto) Suspension() const {return Owner.PSuspensionWheelDomainStorage();}
+    decltype(auto) WheelMass() const {return Owner.WheelMassWheelDomainStorage();}
+};
+class USWheelSubBody::FNativeBirthInitializeAccess final
+{
+    USWheelSubBody& Owner;const Speed::Netcode::Prediction::FPrivateNativeOperation& Op;
+    decltype(auto) Values() const {return Speed::Netcode::Prediction::FPrivateNativeStorageAccess::Part<Speed::Netcode::Prediction::FPrivateRoadWheelDomain>(Op,&Owner);}
+public:
+    void CheckCallbackBoundary() const {}
+    FNativeBirthInitializeAccess(USWheelSubBody& Value,const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation):Owner(Value),Op(Operation)
+    {Speed::Netcode::Prediction::FPrivateNativeStorageAccess::RequireBirth(Op);(void)Values();}
+    void Base(ISpeedComponent* Parent) const {Owner.InitializeNativeSphere(Op,Parent);}
+    decltype(auto) Parent() const {return (Speed::Netcode::Prediction::FPrivateNativeStorageAccess::Part<Speed::Netcode::Prediction::FPrivateRoadSubBodyValues>(Op,&Owner).ParentComponent);}
+    WheelSubBodyConfig Configuration() const {return Speed::NativeKinematics::FComponentRead::BirthWheelConfiguration(Op,*Values().WheelComponent,Owner);}
+    void Index(int Value) const {Speed::NativeKinematics::FSolidPropertiesAccess::SetIdx(Op,Owner,Value);}
+    void Radius(float Value) const {Speed::Netcode::Prediction::FPrivateNativeStorageAccess::Part<Speed::Netcode::Prediction::FPrivateRoadSphereDomain>(Op,&Owner).Radius=Value;}
+    void Mass(float Value) const {Speed::NativeKinematics::FSolidMassAccess::Write(Op,Owner,Value);}
+    decltype(auto) InverseLocal() const {return (Speed::Netcode::Prediction::FPrivateNativeStorageAccess::Part<Speed::Netcode::Prediction::FPrivateRoadSolidValues>(Op,&Owner).InvInertiaLocal);}
+    FMatrix InitialInverse() const {return Speed::NativeKinematics::FBodyRead::InitialInverseTensor(Op,&Owner);}
+    decltype(auto) WheelComponent() const {return (Values().WheelComponent);}
+    decltype(auto) ChaosWheel() const {return (Values().ChaosWheel);}
+    decltype(auto) Wheel() const {return (Values().PWheel);}
+    decltype(auto) Suspension() const {return (Values().PSuspension);}
+    decltype(auto) WheelMass() const {return (Values().WheelMass);}
+};
+
+class USWheelSubBody::FReferenceBirthInitializeAccess final : public FLegacyBirthInitializeAccess
+{
+    USWheelSubBody& Owner;
+    const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation;
+    const Speed::Netcode::Prediction::FPrivateReferenceOwnerBirth& Proof;
+    ISpeedComponent* const RequestedParent;
+public:
+    FReferenceBirthInitializeAccess(USWheelSubBody& Value,const Speed::Netcode::Prediction::FPrivateNativeOperation& Op,
+        const Speed::Netcode::Prediction::FPrivateReferenceOwnerBirth& ActualProof,ISpeedComponent* Parent)
+      :FLegacyBirthInitializeAccess(Value),Owner(Value),Operation(Op),Proof(ActualProof),RequestedParent(Parent)
+    {CheckCallbackBoundary();}
+    FReferenceBirthInitializeAccess(const FReferenceBirthInitializeAccess&)=delete;
+    FReferenceBirthInitializeAccess& operator=(const FReferenceBirthInitializeAccess&)=delete;
+    void CheckCallbackBoundary() const override
+    {Proof.RequireInitializerBody(Operation,Owner,RequestedParent);}
+    void Base(ISpeedComponent* Parent) const
+    {CheckCallbackBoundary();Owner.InitializeReferenceSphere(Operation,Proof,Parent);CheckCallbackBoundary();}
+};
+
+template<class TAccess>
+void USWheelSubBody::InitializeBirthBody(TAccess& Storage,ISpeedComponent* InParentComponent)
+{
+    Storage.CheckCallbackBoundary();
+	Storage.Base(InParentComponent);
+	Storage.CheckCallbackBoundary();
 	if (InParentComponent)
 	{
-		ParentComponent = InParentComponent;
-		WheelComponent = static_cast<ISpeedWheeledComponent*>(InParentComponent);
+		Storage.Parent() = InParentComponent;
+		Storage.CheckCallbackBoundary();
+		Storage.WheelComponent() = static_cast<ISpeedWheeledComponent*>(InParentComponent);
+		Storage.CheckCallbackBoundary();
 
-		if (WheelComponent)
+		if (Storage.WheelComponent())
 		{
-			WheelSubBodyConfig Config = WheelComponent->GetWheelSubBodyConfig(*this);
+			WheelSubBodyConfig Config = Storage.Configuration();
+			Storage.CheckCallbackBoundary();
             if (Config.bValid)
             {
-                SetIdx(Config.WheelIndex);
-                ChaosWheel = Config.ChaosWheel;
-                PWheel = Config.PWheel;
-                PSuspension = Config.PSuspension;
+                Storage.Index(Config.WheelIndex);
+                Storage.CheckCallbackBoundary();
+                Storage.ChaosWheel() = Config.ChaosWheel;
+                Storage.CheckCallbackBoundary();
+                Storage.Wheel() = Config.PWheel;
+                Storage.CheckCallbackBoundary();
+                Storage.Suspension() = Config.PSuspension;
+                Storage.CheckCallbackBoundary();
                 // keep consistency with radius and mass
-                SetRadius(PWheel->GetEffectiveRadius());
-                PWheel->SetMassPerWheel(WheelMass);
-                SetMass(WheelMass);
-                InvInertiaLocal = InitInvInertiaTensor();
+                Storage.Radius(Storage.Wheel()->GetEffectiveRadius());
+                Storage.CheckCallbackBoundary();
+                Storage.Wheel()->SetMassPerWheel(Storage.WheelMass());
+                Storage.CheckCallbackBoundary();
+                Storage.Mass(Storage.WheelMass());
+                Storage.CheckCallbackBoundary();
+                const FMatrix InitialInverse = Storage.InitialInverse();
+                Storage.CheckCallbackBoundary();
+                Storage.InverseLocal() = InitialInverse;
+                Storage.CheckCallbackBoundary();
             }
 		}
 	}
 }
 
+void USWheelSubBody::Initialize(ISpeedComponent* InParentComponent)
+{CheckOrdinaryBodyInitializationEntry();FLegacyBirthInitializeAccess Storage(*this);InitializeBirthBody(Storage,InParentComponent);}
+void USWheelSubBody::InitializeNativeWheel(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,ISpeedComponent* Parent)
+{FNativeBirthInitializeAccess Storage(*this,Operation);InitializeBirthBody(Storage,Parent);}
+void USWheelSubBody::InitializeReferenceWheel(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,
+    const Speed::Netcode::Prediction::FPrivateReferenceOwnerBirth& Proof,ISpeedComponent* Parent)
+{FReferenceBirthInitializeAccess Storage(*this,Operation,Proof,Parent);InitializeBirthBody(Storage,Parent);}
+
+
 
 void USWheelSubBody::ResetForFrame(const float& Delta)
 {
     // CurrentHit = SHitResult(); // do not reset current hit, because netcode needs it to know if wheel is transitionning on wall/ground
-    FutureHit = SHitResult();
+    FutureHitStorage() = SHitResult();
     ResetIgnoredComponents();
-    bWasOnGroundPrevFrame = IsOnGround();
-    bCountedGroundFrame = false;
+    bWasOnGroundPrevFrameRuntimeStorage() = IsOnGround();
+    bCountedGroundFrameRuntimeStorage() = false;
+}
+
+class USWheelSubBody::FLegacyWheelUpdateAccess final
+{
+    friend class USWheelSubBody;USWheelSubBody& Owner;
+    explicit FLegacyWheelUpdateAccess(USWheelSubBody& Value):Owner(Value){}
+    FLegacyWheelUpdateAccess(const FLegacyWheelUpdateAccess&)=delete;
+    FLegacyWheelUpdateAccess& operator=(const FLegacyWheelUpdateAccess&)=delete;
+    FLegacyWheelUpdateAccess(FLegacyWheelUpdateAccess&&)=delete;
+    FLegacyWheelUpdateAccess& operator=(FLegacyWheelUpdateAccess&&)=delete;
+public:
+    void Base(const SKinematic& Parent) const {Owner.USphereSubBody::UpdateKinematicsFromOwner(Parent);}
+    float SpringDisplacement() const {return Owner.SpringDisplacement();}
+    SKinematic& Body() const {return Owner.KinematicsStorage();}
+};
+class USWheelSubBody::FNativeWheelUpdateAccess final
+{
+    friend class USWheelSubBody;USWheelSubBody& Owner;
+    const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation;
+    explicit FNativeWheelUpdateAccess(USWheelSubBody& Value,const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation):Owner(Value),Operation(Operation){(void)Body();(void)Suspension();}
+    FNativeWheelUpdateAccess(const FNativeWheelUpdateAccess&)=delete;
+    FNativeWheelUpdateAccess& operator=(const FNativeWheelUpdateAccess&)=delete;
+    FNativeWheelUpdateAccess(FNativeWheelUpdateAccess&&)=delete;
+    FNativeWheelUpdateAccess& operator=(FNativeWheelUpdateAccess&&)=delete;
+    Chaos::FSimpleSuspensionSim* Suspension() const {return Speed::Netcode::Prediction::FPrivateNativeStorageAccess::Part<const Speed::Netcode::Prediction::FPrivateRoadWheelDomain>(Operation,&Owner).PSuspension;}
+public:
+    void Base(const SKinematic& Parent) const {Owner.UpdateNativeBaseKinematicsFromOwner(Operation,Parent);}
+    float SpringDisplacement() const {return Suspension()?Suspension()->GetLastDisplacement():0.0f;}
+    SKinematic& Body() const {return Speed::Netcode::Prediction::FPrivateNativeStorageAccess::Part<Speed::Netcode::Prediction::FPrivateRoadSubBodyValues>(Operation,&Owner).Kinematics;}
+};
+template<class TAccess>
+void USWheelSubBody::UpdateWheelKinematicsFromOwnerBody(TAccess& Storage,const SKinematic& ParentKinematic)
+{
+    Storage.Base(ParentKinematic);
+
+    const FVector SuspensionOffset = ParentKinematic.Rotation.RotateVector(
+        Storage.SpringDisplacement() * FVector::UpVector);
+    Storage.Body().Location += SuspensionOffset;
+    Storage.Body().Velocity = ParentKinematic.Velocity + FVector::CrossProduct(
+        ParentKinematic.AngularVelocity,
+        Storage.Body().Location - ParentKinematic.Location);
 }
 
 void USWheelSubBody::UpdateKinematicsFromOwner(const SKinematic& ParentKinematic)
 {
-    Super::UpdateKinematicsFromOwner(ParentKinematic);
-
-    const FVector SuspensionOffset = ParentKinematic.Rotation.RotateVector(
-        SpringDisplacement() * FVector::UpVector);
-    Kinematics.Location += SuspensionOffset;
-    Kinematics.Velocity = ParentKinematic.Velocity + FVector::CrossProduct(
-        ParentKinematic.AngularVelocity,
-        Kinematics.Location - ParentKinematic.Location);
+    FLegacyWheelUpdateAccess Storage(*this);
+    UpdateWheelKinematicsFromOwnerBody(Storage,ParentKinematic);
 }
+void USWheelSubBody::UpdateNativeWheelKinematicsFromOwner(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const SKinematic& ParentKinematic)
+{
+    FNativeWheelUpdateAccess Storage(*this,Operation);
+    UpdateWheelKinematicsFromOwnerBody(Storage,ParentKinematic);
+}
+
 
 SSphere USWheelSubBody::MakeSphere() const
 {
-    const SKinematic& KS = GetKinematicState();
+    const SKinematic& KS = Speed::NativeKinematics::FBodyRead::Body(*this);
     return SSphere(
         KS.Location,
         Radius() + CollisionMargin(),
@@ -363,7 +499,7 @@ SSphere USWheelSubBody::MakeSphere() const
 
 FCollisionShape USWheelSubBody::GetCollisionShape(const float Inflation) const
 {
-    if (!bUseEffectiveSuspensionSweepRadius)
+    if (!bUseEffectiveSuspensionSweepRadiusWheelDomainStorage())
     {
         return Super::GetCollisionShape(Inflation);
     }
@@ -371,28 +507,59 @@ FCollisionShape USWheelSubBody::GetCollisionShape(const float Inflation) const
         FMath::Max(KINDA_SMALL_NUMBER, Radius() + CollisionMargin() + Inflation));
 }
 
-void USWheelSubBody::AcceptHit()
+class USWheelSubBody::FLegacyWheelHitAccess final
+{
+    USWheelSubBody& Owner;
+public:
+    explicit FLegacyWheelHitAccess(USWheelSubBody& Value):Owner(Value){}
+    decltype(auto) CurrentHit() const {return Owner.CurrentHitStorage();}
+    decltype(auto) FutureHit() const {return Owner.FutureHitStorage();}
+    decltype(auto) IgnoredComponents() const {return Owner.IgnoredComponentsBodyDomainStorage();}
+};
+class USWheelSubBody::FNativeWheelHitAccess final
+{
+    USWheelSubBody& Owner;
+    const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation;
+    decltype(auto) Values() const {return Speed::Netcode::Prediction::FPrivateNativeStorageAccess::Part<Speed::Netcode::Prediction::FPrivateRoadSubBodyValues>(Operation,&Owner);}
+public:
+    FNativeWheelHitAccess(USWheelSubBody& Value,const Speed::Netcode::Prediction::FPrivateNativeOperation& Op):Owner(Value),Operation(Op)
+    {Speed::Netcode::Prediction::FPrivateNativeStorageAccess::RequireStep(Operation);(void)Values();}
+    decltype(auto) CurrentHit() const {return (Values().CurrentHit);}
+    decltype(auto) FutureHit() const {return (Values().FutureHit);}
+    decltype(auto) IgnoredComponents() const {return (Values().IgnoredComponents);}
+};
+template<class TAccess>
+void USWheelSubBody::AcceptWheelHitBody(TAccess& Storage)
 {
     // Do nothing; we keep CurrentHit as is (suspension handles it)
     // CurrentHit = FutureHit;
     // Ignore this component for the rest of the frame
-    if (CurrentHit.Component.IsValid())
-        IgnoredComponents.AddUnique(CurrentHit.Component.Get());
-    else if (FutureHit.Component.IsValid())
+    if (Storage.CurrentHit().Component.IsValid())
+        Storage.IgnoredComponents().AddUnique(Storage.CurrentHit().Component.Get());
+    else if (Storage.FutureHit().Component.IsValid())
         // for safety, ignore FutureHit component too
-        IgnoredComponents.AddUnique(FutureHit.Component.Get());
+        Storage.IgnoredComponents().AddUnique(Storage.FutureHit().Component.Get());
+}
+
+void USWheelSubBody::AcceptHit()
+{
+    FLegacyWheelHitAccess Storage(*this);AcceptWheelHitBody(Storage);
+}
+void USWheelSubBody::AcceptNativeWheelHit(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation)
+{
+    FNativeWheelHitAccess Storage(*this,Operation);AcceptWheelHitBody(Storage);
 }
 
 SKinematic USWheelSubBody::GetKinematicsFromOwner(const unsigned int& NumFrame) const
 {
     SKinematic WheelKinematics;
-    if (!ParentComponent)
+    if (!ParentComponentBodyDomainStorage())
         return WheelKinematics;
-    SKinematic CarKinematics = ParentComponent->GetOriginKinematicStateForFrame(NumFrame);
+    SKinematic CarKinematics = Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).OriginForFrame(NumFrame);
     FTransform ChassisTM(CarKinematics.Rotation, CarKinematics.Location);
     auto WheelPos = WorldPosFromCarTransform(ChassisTM);
-    auto WheelVel = ParentComponent->GetPhysVelocityAtPoint(WheelPos);
-    auto WheelAcc = ParentComponent->GetPhysAccelerationAtPoint(WheelPos);
+    auto WheelVel = Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).VelocityAtPoint(WheelPos);
+    auto WheelAcc = Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).AccelerationAtPoint(WheelPos);
 
     WheelKinematics.Location = WheelPos;
     WheelKinematics.Velocity = WheelVel;
@@ -420,25 +587,25 @@ bool USWheelSubBody::SweepTOI(const float& RemainingDelta, float& OutTOI)
 
 void USWheelSubBody::SweepSuspension(const float& delta)
 {
-    bool bHitSphere = SweepSuspensionOnSpheres(CurrentHit, delta);
+    bool bHitSphere = SweepSuspensionOnSpheres(CurrentHitStorage(), delta);
     if (bHitSphere)
     {
         return;
     }
-    bool bHitBox = SweepSuspensionOnBoxes(CurrentHit, delta);
+    bool bHitBox = SweepSuspensionOnBoxes(CurrentHitStorage(), delta);
     if (bHitBox)
     {
         return;
     }
 
-    if(SweepSuspensionOnCylinders(CurrentHit,delta))return;
-    bool bHitGround = SweepSuspensionOnGround(CurrentHit, delta);
+    if(SweepSuspensionOnCylinders(CurrentHitStorage(),delta))return;
+    bool bHitGround = SweepSuspensionOnGround(CurrentHitStorage(), delta);
     if (!bHitGround)
     {
         SetOnGround(false);
-        if (WheelComponent)
+        if (WheelComponentWheelDomainStorage())
         {
-            WheelComponent->NotifyWheelOnGroundStateChanged();
+            WheelComponentWheelDomainStorage()->NotifyWheelOnGroundStateChanged();
         }
     }
 }
@@ -448,7 +615,7 @@ bool USWheelSubBody::SweepSuspensionAlongNormal(
 {
     UWorld* World = GetWorld();
     const FVector SweepNormal = Normal.GetSafeNormal();
-    if (!World || !ParentComponent || SweepNormal.IsNearlyZero() || SearchDistance <= 0.0f)
+    if (!World || !ParentComponentBodyDomainStorage() || SweepNormal.IsNearlyZero() || SearchDistance <= 0.0f)
     {
         return false;
     }
@@ -470,20 +637,20 @@ bool USWheelSubBody::SweepSuspensionAlongNormal(
 	const bool bUsedAnalyticAuthority =
 		Speed::Analytic::FStaticWorldQueryAudit::TryCompactAuthoritySingle(
 		World,
-		Start, End, Kinematics.Rotation, GetCollisionShape(),
+		Start, End, KinematicsStorage().Rotation, GetCollisionShape(),
 		static_cast<uint8>(GetCollisionChannel()), GetResponseParams(), UnrealHit, bHit,
 		&AnalyticHit);
 	if (bUsedAnalyticAuthority && !bHit && IsOnGround())
 	{
-		const SHitResult& PreviousHit = GetHit();
+		const SHitResult& PreviousHit = Speed::NativeKinematics::FBodyRead::CurrentHit(*this);
 		const FVector PreviousNormal = PreviousHit.ImpactNormal.GetSafeNormal();
 		const float InwardSpeed = FVector::DotProduct(
-			ParentComponent->GetPhysCOMVelocity(), PreviousNormal);
+			Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).COMVelocity(), PreviousNormal);
 		if (!PreviousNormal.IsNearlyZero() && InwardSpeed < 0.0f &&
 			PreviousHit.SourceId != 0)
 		{
 			Speed::Analytic::FStaticWorldQueryAudit::TryCompactAuthoritySingle(
-				World, Start, End, Kinematics.Rotation, GetCollisionShape(),
+				World, Start, End, KinematicsStorage().Rotation, GetCollisionShape(),
 				static_cast<uint8>(GetCollisionChannel()), GetResponseParams(),
 				UnrealHit, bHit, &AnalyticHit, PreviousHit.SourceId, 0, 0,
 				PreviousNormal, 0.9f, true);
@@ -493,13 +660,13 @@ bool USWheelSubBody::SweepSuspensionAlongNormal(
 	{
 		Speed::Analytic::FStaticWorldQueryAudit::RecordLegacySweep();
 		bHit = World->SweepSingleByChannel(UnrealHit, Start, End,
-			Kinematics.Rotation, GetCollisionChannel(), GetCollisionShape(),
+			KinematicsStorage().Rotation, GetCollisionChannel(), GetCollisionShape(),
 			Params, GetResponseParams());
 	}
 	Speed::Analytic::FStaticWorldQueryAudit::RecordSingle(
 		Speed::Analytic::EStaticQuerySite::WheelEstablishedSupportProbe,
 		Start, End,
-		Kinematics.Rotation, GetCollisionShape(),
+		KinematicsStorage().Rotation, GetCollisionShape(),
 		static_cast<uint8>(GetCollisionChannel()), GetResponseParams(), bHit, UnrealHit);
 	if (!bHit)
 	{
@@ -508,7 +675,7 @@ bool USWheelSubBody::SweepSuspensionAlongNormal(
 
 	OutHit = bUsedAnalyticAuthority
 		? SHitResult::FromAnalyticHit(
-			AnalyticHit, Delta, UnrealHit.Component.Get())
+			AnalyticHit, Delta, UnrealHit.Component)
 		: SHitResult::FromUnrealHit(UnrealHit, Delta);
     OutHit.ImpactNormal = Speed::QuantizeUnitNormal(OutHit.ImpactNormal);
     return true;
@@ -518,7 +685,7 @@ void USWheelSubBody::GetSuspensionSweepSegment(
     const float Delta, FVector& OutStart, FVector& OutEnd) const
 {
     const FTransform ChassisTM(
-        ParentComponent->GetPhysRotation(), ParentComponent->GetPhysLocation());
+        Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).Rotation(), Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).Location());
     const FVector CarUp = ChassisTM.GetUnitAxis(EAxis::Z);
     const FVector WorldRest = ChassisTM.TransformPosition(GetLocalOffset());
     OutStart = WorldRest + SuspensionMaxRaise() * CarUp;
@@ -530,7 +697,7 @@ void USWheelSubBody::GetSuspensionSweepSegment(
 bool USWheelSubBody::TryCaptureGroundQuery1075(
     float Delta, Speed::Analytic::FAnalyticPrefetchQuery1075& Out) const
 {
-    if (!IsGroundQueryCaptureCertified1075() || !GetWorld() || !ParentComponent || !PSuspension)
+    if (!IsGroundQueryCaptureCertified1075() || !GetWorld() || !ParentComponentBodyDomainStorage() || !PSuspensionWheelDomainStorage())
         return false;
     FVector Start=FVector::ZeroVector, End=FVector::ZeroVector;
     GetSuspensionSweepSegment(Delta, Start, End);
@@ -539,7 +706,7 @@ bool USWheelSubBody::TryCaptureGroundQuery1075(
     FMemory::Memcpy(&Out.Consumer.DeltaBits, &Delta, sizeof(Delta));
     Out.MaximumSearchTime=1.0;
     Out.Query=Speed::Analytic::FStaticWorldQueryAudit::MakeStrictSingleQuery1075(
-        Start, End, Kinematics.Rotation, GetCollisionShape(),
+        Start, End, KinematicsStorage().Rotation, GetCollisionShape(),
         static_cast<uint8>(GetCollisionChannel()), GetResponseParams());
     return true;
 }
@@ -548,7 +715,7 @@ bool USWheelSubBody::ProbeSuspensionOnGround(
     SHitResult& OutHit, const float Delta) const
 {
     UWorld* World = GetWorld();
-    if (!World || !ParentComponent)
+    if (!World || !ParentComponentBodyDomainStorage())
     {
         return false;
     }
@@ -572,20 +739,20 @@ bool USWheelSubBody::ProbeSuspensionOnGround(
 	const bool bUsedAnalyticAuthority =
 		Speed::Analytic::FStaticWorldQueryAudit::TryCompactAuthoritySingle(
 		World,
-		Start, End, Kinematics.Rotation, GetCollisionShape(),
+		Start, End, KinematicsStorage().Rotation, GetCollisionShape(),
 		static_cast<uint8>(GetCollisionChannel()), GetResponseParams(), UnrealHit, bHit,
 		&AnalyticHit);
 	if (bUsedAnalyticAuthority && !bHit && IsOnGround())
 	{
-		const SHitResult& PreviousHit = GetHit();
+		const SHitResult& PreviousHit = Speed::NativeKinematics::FBodyRead::CurrentHit(*this);
 		const FVector PreviousNormal = PreviousHit.ImpactNormal.GetSafeNormal();
 		const float InwardSpeed = FVector::DotProduct(
-			ParentComponent->GetPhysCOMVelocity(), PreviousNormal);
+			Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).COMVelocity(), PreviousNormal);
 		if (!PreviousNormal.IsNearlyZero() && InwardSpeed < 0.0f &&
 			PreviousHit.SourceId != 0)
 		{
 			Speed::Analytic::FStaticWorldQueryAudit::TryCompactAuthoritySingle(
-				World, Start, End, Kinematics.Rotation, GetCollisionShape(),
+				World, Start, End, KinematicsStorage().Rotation, GetCollisionShape(),
 				static_cast<uint8>(GetCollisionChannel()), GetResponseParams(),
 				UnrealHit, bHit, &AnalyticHit, PreviousHit.SourceId, 0, 0,
 				PreviousNormal, 0.9f, true);
@@ -595,21 +762,21 @@ bool USWheelSubBody::ProbeSuspensionOnGround(
 	{
 		Speed::Analytic::FStaticWorldQueryAudit::RecordLegacySweep();
 		bHit = World->SweepSingleByChannel(UnrealHit, Start, End,
-			Kinematics.Rotation, GetCollisionChannel(), GetCollisionShape(),
+			KinematicsStorage().Rotation, GetCollisionChannel(), GetCollisionShape(),
 			Params, GetResponseParams());
 	}
 	Speed::Analytic::FStaticWorldQueryAudit::RecordSingle(
 		Speed::Analytic::EStaticQuerySite::WheelSuspensionProbe,
-		Start, End, Kinematics.Rotation, GetCollisionShape(),
+		Start, End, KinematicsStorage().Rotation, GetCollisionShape(),
 		static_cast<uint8>(GetCollisionChannel()), GetResponseParams(), bHit, UnrealHit);
 	if (!bHit)
     {
-		if (bUsedAnalyticAuthority && CVarSkyLeagueSuspensionForceDebug.GetValueOnAnyThread() != 0)
+		if (bUsedAnalyticAuthority && Speed::RoadSettings::ReadOriginalOrLegacy<161>([](){ return CVarSkyLeagueSuspensionForceDebug.GetValueOnAnyThread(); }) != 0)
 		{
-			UE_LOG(WheelSubBodyLog, Warning,
+			SPEED_NATIVE_LOG(WheelSubBodyLog, Warning,
 				TEXT("[SuspensionAnalyticMiss] Frame=%d Wheel=%d Start=%s End=%s Hit=%d Time=%.9g Source=%016llX Surface=%016llX Feature=%016llX Primitive=%016llX Group=%016llX Point=%s Normal=%s ErrorCm=%.3f"),
-				ParentComponent ? ParentComponent->NumFrame() : -1,
-				Idx(), *Start.ToString(), *End.ToString(),
+				ParentComponentBodyDomainStorage() ? ParentComponentBodyDomainStorage()->NumFrame() : -1,
+				Speed::NativeKinematics::FSolidPropertiesAccess::Idx(*this), *Start.ToString(), *End.ToString(),
 				AnalyticHit.bHit ? 1 : 0, AnalyticHit.Time,
 				AnalyticHit.SourceId, AnalyticHit.SurfaceId,
 				AnalyticHit.FeatureId, AnalyticHit.PrimitiveId,
@@ -622,7 +789,7 @@ bool USWheelSubBody::ProbeSuspensionOnGround(
 
 	OutHit = bUsedAnalyticAuthority
 		? SHitResult::FromAnalyticHit(
-			AnalyticHit, Delta, UnrealHit.Component.Get())
+			AnalyticHit, Delta, UnrealHit.Component)
 		: SHitResult::FromUnrealHit(UnrealHit, Delta);
     OutHit.ImpactNormal = Speed::QuantizeUnitNormal(OutHit.ImpactNormal);
     return true;
@@ -631,19 +798,19 @@ bool USWheelSubBody::ProbeSuspensionOnGround(
 bool USWheelSubBody::SweepSuspensionOnGround(SHitResult& OutHit, const float& delta)
 {
     UWorld* World = GetWorld();
-    if (!World || !ParentComponent) return false;
+    if (!World || !ParentComponentBodyDomainStorage()) return false;
 
     FVector CurrentPos = WorldPos();
     const bool bWasOnGround = IsOnGround();
 
-    FTransform ChassisTM(ParentComponent->GetPhysRotation(), ParentComponent->GetPhysLocation());
+    FTransform ChassisTM(Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).Rotation(), Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).Location());
     FVector WorldRestingPos = ChassisTM.TransformPosition(GetLocalOffset());
     FVector CarUpVector = ChassisTM.GetUnitAxis(EAxis::Z);
     FVector Start = FVector::ZeroVector;
     FVector End = FVector::ZeroVector;
     GetSuspensionSweepSegment(delta, Start, End);
     float NewSpringDisplacement = PredictNextDisplacement(delta); // if wheel will be in air next frame
-    SHitResult OldCurrentHit = CurrentHit;
+    SHitResult OldCurrentHit = CurrentHitStorage();
     // auto Sphere = SSphere(WorldPos(), Radius(), FVector::ZeroVector, FVector::ZeroVector);
     // Sphere.DrawDebug(GetWorld());
 
@@ -661,7 +828,7 @@ bool USWheelSubBody::SweepSuspensionOnGround(SHitResult& OutHit, const float& de
         // detect wheel is transitionning from ground to wall or wall to ground
         if (!NewNormal.Equals(OldNormal))
         {
-            ParentComponent->RcvImpactOnSubBody(*this, OutHit.ImpactPoint);
+            ParentComponentBodyDomainStorage()->RcvImpactOnSubBody(*this, OutHit.ImpactPoint);
             // UE_LOG(WheelSubBodyLog, Warning, TEXT("[CCDWheel(%d)] [%s] NumFrame=%d, Wheel transitioned between ground/wall contact"),
             //	Idx(), *ParentComponent->GetRole(), ParentComponent->NumFrame());
         }
@@ -669,12 +836,12 @@ bool USWheelSubBody::SweepSuspensionOnGround(SHitResult& OutHit, const float& de
     else
     {
 #if !(UE_BUILD_SHIPPING)
-        if (CVarSkyLeagueSuspensionForceDebug.GetValueOnAnyThread() != 0)
+        if (Speed::RoadSettings::ReadOriginalOrLegacy<161>([](){ return CVarSkyLeagueSuspensionForceDebug.GetValueOnAnyThread(); }) != 0)
         {
-            UE_LOG(WheelSubBodyLog, Log,
+            SPEED_NATIVE_LOG(WheelSubBodyLog, Log,
                 TEXT("[SuspensionSweep] Frame=%d Wheel=%d Result=Miss WasGrounded=%d Start=%s End=%s CurrentPos=%s Rest=%s CarUp=%s SpringDisp=%.3f NewDisp=%.3f MaxRaise=%.3f MaxDrop=%.3f Radius=%.3f PrevHitN=%s PrevHitLoc=%s Vel=%s"),
-                ParentComponent->NumFrame(),
-                Idx(),
+                ParentComponentBodyDomainStorage()->NumFrame(),
+                Speed::NativeKinematics::FSolidPropertiesAccess::Idx(*this),
                 bWasOnGround ? 1 : 0,
                 *Start.ToString(),
                 *End.ToString(),
@@ -688,14 +855,14 @@ bool USWheelSubBody::SweepSuspensionOnGround(SHitResult& OutHit, const float& de
                 Radius(),
                 *OldCurrentHit.ImpactNormal.ToString(),
                 *OldCurrentHit.Location.ToString(),
-                *ParentComponent->GetPhysCOMVelocity().ToString());
+                *Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).COMVelocity().ToString());
         }
 #endif
         SetOnGround(false);
     }
-    if (WheelComponent)
+    if (WheelComponentWheelDomainStorage())
     {
-        WheelComponent->NotifyWheelOnGroundStateChanged();
+        WheelComponentWheelDomainStorage()->NotifyWheelOnGroundStateChanged();
     }
     return ret;
 }
@@ -705,7 +872,7 @@ bool USWheelSubBody::SweepSuspensionOnSpheres(SHitResult& OutHit,  const float& 
     // --------------------------------------------------
     // Build suspension sweep segment
     // --------------------------------------------------
-    FTransform ChassisTM(ParentComponent->GetPhysRotation(), ParentComponent->GetPhysLocation());
+    FTransform ChassisTM(Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).Rotation(), Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).Location());
     const FVector CarUp = ChassisTM.GetUnitAxis(EAxis::Z);
 
     const FVector WorldRest = ChassisTM.TransformPosition(GetLocalOffset());
@@ -731,7 +898,7 @@ bool USWheelSubBody::SweepSuspensionOnSpheres(SHitResult& OutHit,  const float& 
 
     SHitResult BestHit;
     TWeakObjectPtr<USphereSubBody> BestSphere = nullptr;
-    const TArray<TWeakObjectPtr<USphereSubBody>>& OtherSpheres = ExternalSphereSubBodies;
+    const TArray<TWeakObjectPtr<USphereSubBody>>& OtherSpheres = ExternalSphereSubBodiesBodyDomainStorage();
 
     for (auto& OtherSphere : OtherSpheres)
     {
@@ -739,7 +906,7 @@ bool USWheelSubBody::SweepSuspensionOnSpheres(SHitResult& OutHit,  const float& 
         if (OtherSphere->GetOwner() == GetOwner()) continue;
 
         // Ignore already-hit Spheres this frame
-        if (IgnoredComponents.Contains(OtherSphere.Get()))
+        if (IgnoredComponentsBodyDomainStorage().Contains(OtherSphere.Get()))
             continue;
 
         SSphere OSphere = OtherSphere->MakeSphere();
@@ -763,16 +930,24 @@ bool USWheelSubBody::SweepSuspensionOnSpheres(SHitResult& OutHit,  const float& 
     OutHit = BestHit;
     // Geometric intersections do not carry the selected support component.
     // UpdateSuspension needs it to clamp attraction on non-static supports.
-    OutHit.Component = BestSphere.Get();
-    OutHit.SubBody = BestSphere.Get();
-    OutHit.FrameTag = ParentComponent->NumFrame();
+    if(BestSphere.IsValid())
+    {
+        OutHit.Component = BestSphere;
+        OutHit.SubBody = BestSphere;
+    }
+    else
+    {
+        OutHit.Component.Reset();
+        OutHit.SubBody.Reset();
+    }
+    OutHit.FrameTag = ParentComponentBodyDomainStorage()->NumFrame();
     OutHit.ImpactNormal = Speed::QuantizeUnitNormal(OutHit.ImpactNormal);
     OutHit.Location = OutHit.ImpactPoint + Radius() * OutHit.ImpactNormal;
 
     SetOnGround(true);
-    if (WheelComponent)
+    if (WheelComponentWheelDomainStorage())
     {
-        WheelComponent->NotifyWheelOnGroundStateChanged();
+        WheelComponentWheelDomainStorage()->NotifyWheelOnGroundStateChanged();
     }
     // ParentComponent->SetHadImpactThisFrame(true);
 
@@ -784,7 +959,7 @@ bool USWheelSubBody::SweepSuspensionOnBoxes(SHitResult& OutHit, const float& del
     // --------------------------------------------------
     // Build suspension sweep segment
     // --------------------------------------------------
-    FTransform ChassisTM(ParentComponent->GetPhysRotation(), ParentComponent->GetPhysLocation());
+    FTransform ChassisTM(Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).Rotation(), Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).Location());
     const FVector CarUp = ChassisTM.GetUnitAxis(EAxis::Z);
 
     const FVector WorldRest = ChassisTM.TransformPosition(GetLocalOffset());
@@ -810,14 +985,14 @@ bool USWheelSubBody::SweepSuspensionOnBoxes(SHitResult& OutHit, const float& del
 
     SHitResult BestHit;
     TWeakObjectPtr<UBoxSubBody> BestBox = nullptr;
-	const TArray<TWeakObjectPtr<UBoxSubBody>>& OtherBoxes = ExternalBoxSubBodies;
+	const TArray<TWeakObjectPtr<UBoxSubBody>>& OtherBoxes = ExternalBoxSubBodiesBodyDomainStorage();
 
     for (auto& OtherBox : OtherBoxes)
     {
         if (!OtherBox.IsValid()) continue;
         if (OtherBox->GetOwner() == GetOwner()) continue;
         // Ignore already-hit Boxes this frame
-        if (IgnoredComponents.Contains(OtherBox.Get()))
+        if (IgnoredComponentsBodyDomainStorage().Contains(OtherBox.Get()))
             continue;
 
         SSBox OBox = OtherBox->MakeBox();
@@ -840,16 +1015,24 @@ bool USWheelSubBody::SweepSuspensionOnBoxes(SHitResult& OutHit, const float& del
 
     OutHit = BestHit;
     // Preserve the selected support for suspension and contact classification.
-    OutHit.Component = BestBox.Get();
-    OutHit.SubBody = BestBox.Get();
-    OutHit.FrameTag = ParentComponent->NumFrame();
+    if(BestBox.IsValid())
+    {
+        OutHit.Component = BestBox;
+        OutHit.SubBody = BestBox;
+    }
+    else
+    {
+        OutHit.Component.Reset();
+        OutHit.SubBody.Reset();
+    }
+    OutHit.FrameTag = ParentComponentBodyDomainStorage()->NumFrame();
     OutHit.ImpactNormal = Speed::QuantizeUnitNormal(OutHit.ImpactNormal);
     OutHit.Location = OutHit.ImpactPoint + Radius() * OutHit.ImpactNormal;
 
     SetOnGround(true);
-    if (WheelComponent)
+    if (WheelComponentWheelDomainStorage())
     {
-        WheelComponent->NotifyWheelOnGroundStateChanged();
+        WheelComponentWheelDomainStorage()->NotifyWheelOnGroundStateChanged();
     }
     // ParentComponent->SetHadImpactThisFrame(true);
 
@@ -861,9 +1044,9 @@ void USWheelSubBody::UpdateSuspension(const float& delta)
     if (delta <= KINDA_SMALL_NUMBER)
         return;
 
-    bCrossedIntoCompressionThisFrame = false;
+    bCrossedIntoCompressionThisFrameRuntimeStorage() = false;
 
-    FTransform ChassisTM(ParentComponent->GetPhysRotation(), ParentComponent->GetPhysLocation());
+    FTransform ChassisTM(Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).Rotation(), Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).Location());
     const FVector Up = ChassisTM.GetUnitAxis(EAxis::Z);
     // update steering angle
     UpdateSteerAngle(delta);
@@ -872,55 +1055,55 @@ void USWheelSubBody::UpdateSuspension(const float& delta)
     {
         // compute world anchor pos
         FVector SuspensionAnchorWorldPos = ChassisTM.TransformPosition(GetLocalOffset() +
-            PSuspension->Setup().MaxLength * FVector::UpVector);
+            PSuspensionWheelDomainStorage()->Setup().MaxLength * FVector::UpVector);
         const FVector SuspensionAxis = Up; // Car Up Vector
-        const float ProjectedCompression = FVector::DotProduct(SuspensionAnchorWorldPos - CurrentHit.Location, SuspensionAxis);
+        const float ProjectedCompression = FVector::DotProduct(SuspensionAnchorWorldPos - CurrentHitStorage().Location, SuspensionAxis);
 
         // update suspension state
         const float LastDisplacement = QuantizeSuspensionDisplacement(SpringDisplacement());
         float NewDesiredLength = ProjectedCompression + Radius();
-        SetQuantizedSuspensionLength(*PSuspension, NewDesiredLength, Radius());
+        SetQuantizedSuspensionLength(*PSuspensionWheelDomainStorage(), NewDesiredLength, Radius());
         const float SuspensionDelta = QuantizeSuspensionDelta(delta);
-        PSuspension->Simulate(SuspensionDelta);
+        PSuspensionWheelDomainStorage()->Simulate(SuspensionDelta);
         const float CurrentDisplacement = QuantizeSuspensionDisplacement(SpringDisplacement());
-        bCrossedIntoCompressionThisFrame = LastDisplacement < 0.0f &&
+        bCrossedIntoCompressionThisFrameRuntimeStorage() = LastDisplacement < 0.0f &&
             CurrentDisplacement >= 0.0f;
         FSuspensionForceDebugData ForceDebugData;
-		FVector RelativePointVelocity=ParentComponent->GetPhysVelocityAtPoint(CurrentHit.ImpactPoint);
+		FVector RelativePointVelocity=Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).VelocityAtPoint(CurrentHitStorage().ImpactPoint);
         FVector SurfaceVelocity;
-        if(TryGetPrescribedSupportVelocity(CurrentHit.ImpactPoint,SurfaceVelocity))RelativePointVelocity-=SurfaceVelocity;
-        const float ProjectedVelocity = RelativePointVelocity.Dot(CurrentHit.ImpactNormal);
-        SuspensionForce = ComputeQuantizedSuspensionForce(*PSuspension, LastDisplacement,
+        if(TryGetPrescribedSupportVelocity(CurrentHitStorage().ImpactPoint,SurfaceVelocity))RelativePointVelocity-=SurfaceVelocity;
+        const float ProjectedVelocity = RelativePointVelocity.Dot(CurrentHitStorage().ImpactNormal);
+        SuspensionForceRuntimeStorage() = ComputeQuantizedSuspensionForce(*PSuspensionWheelDomainStorage(), LastDisplacement,
             CurrentDisplacement, ProjectedVelocity, ClampsSuspensionForceToPositive(),
-            bUseIncreasingDisplacementAsCompression,
-            SuspensionStiffnessForceScale,
-            SuspensionStiffnessReferenceDisplacement,
-            SuspensionPreRestCompressionDampingScale,
-            bClampNegativeSuspensionDisplacement,
-            bDisableSuspensionBumpStopForce,
+            bUseIncreasingDisplacementAsCompressionWheelDomainStorage(),
+            SuspensionStiffnessForceScaleWheelDomainStorage(),
+            SuspensionStiffnessReferenceDisplacementWheelDomainStorage(),
+            SuspensionPreRestCompressionDampingScaleWheelDomainStorage(),
+            bClampNegativeSuspensionDisplacementWheelDomainStorage(),
+            bDisableSuspensionBumpStopForceWheelDomainStorage(),
             &ForceDebugData);
 		float SuspensionForceOverride = 0.0f;
-		if (WheelComponent && WheelComponent->TryComputeWheelSuspensionForceOverride(
+		if (WheelComponentWheelDomainStorage() && WheelComponentWheelDomainStorage()->TryComputeWheelSuspensionForceOverride(
 			*this, LastDisplacement, CurrentDisplacement, ProjectedVelocity,
 			SuspensionForceOverride))
 		{
-			SuspensionForce = QuantizeSuspensionForce(SuspensionForceOverride);
+			SuspensionForceRuntimeStorage() = QuantizeSuspensionForce(SuspensionForceOverride);
 		}
-        PSuspension->SetLastDisplacement(CurrentDisplacement);
+        PSuspensionWheelDomainStorage()->SetLastDisplacement(CurrentDisplacement);
 
-		const float Dot = FVector::DotProduct(CurrentHit.ImpactNormal, FVector::UpVector);
+		const float Dot = FVector::DotProduct(CurrentHitStorage().ImpactNormal, FVector::UpVector);
 		// Keep full support through both gutters. Only fade at the final ceiling
 		// approach so gravity can release the car without letting the chassis
 		// bottom out throughout the upper transition.
 		const float CeilingFadeStart = FMath::Clamp(
-			CVarSkyLeagueSuspensionCeilingFadeStartNormalZ.GetValueOnAnyThread(),
+			Speed::RoadSettings::ReadOriginalOrLegacy<155>([](){ return CVarSkyLeagueSuspensionCeilingFadeStartNormalZ.GetValueOnAnyThread(); }),
 			-0.999f, 0.0f);
 		const float CeilingFadeAlpha = FMath::GetMappedRangeValueClamped(
 			FVector2D(-1.0f, CeilingFadeStart), FVector2D(0.0f, 1.0f), Dot);
 		const float SuspensionScale = FMath::SmoothStep(0.0f, 1.0f, CeilingFadeAlpha);
 
         // apply suspension scale
-        SuspensionForce *= SuspensionScale;
+        SuspensionForceRuntimeStorage() *= SuspensionScale;
         const float SuspensionMaxValue = MaxSuspensionForce;
         /*if (FMath::Abs(SuspensionForce) > SuspensionMaxValue)
         {
@@ -930,46 +1113,46 @@ void USWheelSubBody::UpdateSuspension(const float& delta)
         // A jumping wheel may keep a sweep hit while its suspension extends,
         // but it must no longer pull the chassis back toward that support.
         const bool bClampJumpForce =
-            CVarSkyLeagueSuspensionJumpStateClampsNegativeForce.GetValueOnAnyThread() != 0 &&
+            Speed::RoadSettings::ReadOriginalOrLegacy<163>([](){ return CVarSkyLeagueSuspensionJumpStateClampsNegativeForce.GetValueOnAnyThread(); }) != 0 &&
             HasJumpUnilateralSupport();
         const bool bClampPositive = bClampJumpForce || ClampsSuspensionForceToPositive() ||
-            CVarSkyLeagueSuspensionClampPositiveForce.GetValueOnAnyThread() != 0;
+            Speed::RoadSettings::ReadOriginalOrLegacy<157>([](){ return CVarSkyLeagueSuspensionClampPositiveForce.GetValueOnAnyThread(); }) != 0;
         const float MaxAttractiveForce = FMath::Max(
-            0.0f, CVarSkyLeagueSuspensionMaxAttractiveForce.GetValueOnAnyThread());
+            0.0f, Speed::RoadSettings::ReadOriginalOrLegacy<164>([](){ return CVarSkyLeagueSuspensionMaxAttractiveForce.GetValueOnAnyThread(); }));
         const float MaxAttractionMinNormalZ = FMath::Clamp(
-            CVarSkyLeagueSuspensionMaxAttractiveForceMinNormalZ.GetValueOnAnyThread(),
+            Speed::RoadSettings::ReadOriginalOrLegacy<165>([](){ return CVarSkyLeagueSuspensionMaxAttractiveForceMinNormalZ.GetValueOnAnyThread(); }),
             -1.0f, 1.0f);
         const bool bCappedAttractionSupport = FVector::DotProduct(
-            CurrentHit.ImpactNormal.GetSafeNormal(), FVector::UpVector)
+            CurrentHitStorage().ImpactNormal.GetSafeNormal(), FVector::UpVector)
             >= MaxAttractionMinNormalZ;
         const float MinSuspensionForce = bClampPositive
             ? 0.0f
             : (bCappedAttractionSupport && MaxAttractiveForce > 0.0f
                 ? -FMath::Min(MaxAttractiveForce, SuspensionMaxValue)
                 : -SuspensionMaxValue);
-        SuspensionForce = FMath::Clamp(
-            SuspensionForce, MinSuspensionForce, SuspensionMaxValue);
+        SuspensionForceRuntimeStorage() = FMath::Clamp(
+            SuspensionForceRuntimeStorage(), MinSuspensionForce, SuspensionMaxValue);
 		// Special Actor case: if we do not hit the ground but an other actor, we keep suspension force only for positive values
         // to avoid wheel to stick to it too much and create unrealistic behavior.
-        if (CurrentHit.Component.IsValid() &&
-            CurrentHit.Component->Mobility !=
+        if (CurrentHitStorage().Component.IsValid() &&
+            CurrentHitStorage().Component->Mobility !=
             EComponentMobility::Static)
         {
-            SuspensionForce = FMath::Max(0.0f, SuspensionForce);
+            SuspensionForceRuntimeStorage() = FMath::Max(0.0f, SuspensionForceRuntimeStorage());
         }
-        SuspensionForce = QuantizeSuspensionForce(SuspensionForce);
+        SuspensionForceRuntimeStorage() = QuantizeSuspensionForce(SuspensionForceRuntimeStorage());
 #if !(UE_BUILD_SHIPPING)
-        if (CVarSkyLeagueSuspensionForceDebug.GetValueOnAnyThread() != 0)
+        if (Speed::RoadSettings::ReadOriginalOrLegacy<161>([](){ return CVarSkyLeagueSuspensionForceDebug.GetValueOnAnyThread(); }) != 0)
         {
-            const FVector ParentVelocity = ParentComponent ? ParentComponent->GetPhysCOMVelocity() : FVector::ZeroVector;
-            UE_LOG(WheelSubBodyLog, Log,
+            const FVector ParentVelocity = ParentComponentBodyDomainStorage() ? Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).COMVelocity() : FVector::ZeroVector;
+            SPEED_NATIVE_LOG(WheelSubBodyLog, Log,
                 TEXT("[SuspensionForce] Frame=%d Wheel=%d Dt=%.5f SuspDt=%.5f HitTOI=%.5f PenDepth=%.3f LastDisp=%.3f CurDisp=%.3f ForceLastDisp=%.3f ForceCurDisp=%.3f SpringLen=%.3f NewDesiredLen=%.3f ProjectedCompression=%.3f Rest=%.1f Stiff=%.1f Damp=%.1f WheelRelativeVelocity=%.3f Damping=%.1f Compress=%d PreRestCompress=%d Raw=%.1f Quant=%.1f Scale=%.3f Final=%.1f VelZ=%.3f HitN=%s HitLoc=%s"),
-                ParentComponent ? ParentComponent->NumFrame() : INDEX_NONE,
-                Idx(),
+                ParentComponentBodyDomainStorage() ? ParentComponentBodyDomainStorage()->NumFrame() : INDEX_NONE,
+                Speed::NativeKinematics::FSolidPropertiesAccess::Idx(*this),
                 delta,
                 SuspensionDelta,
-                CurrentHit.TOI,
-                CurrentHit.PenetrationDepth,
+                CurrentHitStorage().TOI,
+                CurrentHitStorage().PenetrationDepth,
                 LastDisplacement,
                 CurrentDisplacement,
                 ForceDebugData.ForceLastDisplacement,
@@ -987,33 +1170,33 @@ void USWheelSubBody::UpdateSuspension(const float& delta)
                 ForceDebugData.UnclampedForce,
                 ForceDebugData.QuantizedForce,
                 SuspensionScale,
-                SuspensionForce,
+                SuspensionForceRuntimeStorage(),
                 ParentVelocity.Z,
-                *CurrentHit.ImpactNormal.ToString(),
-                *CurrentHit.Location.ToString());
+                *CurrentHitStorage().ImpactNormal.ToString(),
+                *CurrentHitStorage().Location.ToString());
         }
 #endif
     }
     else
     {
-        SuspensionForce = 0.0;
+        SuspensionForceRuntimeStorage() = 0.0;
 
         const float LastDisplacement = QuantizeSuspensionDisplacement(SpringDisplacement());
         const float NextAirLength = ComputeNextAirLength(delta);
-        SetQuantizedSuspensionLength(*PSuspension, NextAirLength, Radius());
-        PWheel->SetWheelLoadForce(0.f);
-        PSuspension->Simulate(QuantizeSuspensionDelta(delta));
-        PSuspension->SetLastDisplacement(QuantizeSuspensionDisplacement(SpringDisplacement()));
+        SetQuantizedSuspensionLength(*PSuspensionWheelDomainStorage(), NextAirLength, Radius());
+        PWheelWheelDomainStorage()->SetWheelLoadForce(0.f);
+        PSuspensionWheelDomainStorage()->Simulate(QuantizeSuspensionDelta(delta));
+        PSuspensionWheelDomainStorage()->SetLastDisplacement(QuantizeSuspensionDisplacement(SpringDisplacement()));
 #if !(UE_BUILD_SHIPPING)
-        if (CVarSkyLeagueSuspensionForceDebug.GetValueOnAnyThread() != 0)
+        if (Speed::RoadSettings::ReadOriginalOrLegacy<161>([](){ return CVarSkyLeagueSuspensionForceDebug.GetValueOnAnyThread(); }) != 0)
         {
             const float CurrentDisplacement = QuantizeSuspensionDisplacement(SpringDisplacement());
-            const FVector ParentVelocity = ParentComponent ? ParentComponent->GetPhysCOMVelocity() : FVector::ZeroVector;
-            const FVector ParentUp = ParentComponent ? ParentComponent->GetPhysUpVector().GetSafeNormal() : FVector::UpVector;
-            UE_LOG(WheelSubBodyLog, Log,
+            const FVector ParentVelocity = ParentComponentBodyDomainStorage() ? Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).COMVelocity() : FVector::ZeroVector;
+            const FVector ParentUp = ParentComponentBodyDomainStorage() ? Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).Up().GetSafeNormal() : FVector::UpVector;
+            SPEED_NATIVE_LOG(WheelSubBodyLog, Log,
                 TEXT("[SuspensionAir] Frame=%d Wheel=%d Dt=%.5f LastDisp=%.3f CurDisp=%.3f NextAirLength=%.3f SpringLen=%.3f WorldPos=%s CarUp=%s Vel=%s PrevHitN=%s PrevHitLoc=%s"),
-                ParentComponent ? ParentComponent->NumFrame() : INDEX_NONE,
-                Idx(),
+                ParentComponentBodyDomainStorage() ? ParentComponentBodyDomainStorage()->NumFrame() : INDEX_NONE,
+                Speed::NativeKinematics::FSolidPropertiesAccess::Idx(*this),
                 delta,
                 LastDisplacement,
                 CurrentDisplacement,
@@ -1022,8 +1205,8 @@ void USWheelSubBody::UpdateSuspension(const float& delta)
                 *WorldPos().ToString(),
                 *ParentUp.ToString(),
                 *ParentVelocity.ToString(),
-                *CurrentHit.ImpactNormal.ToString(),
-                *CurrentHit.Location.ToString());
+                *CurrentHitStorage().ImpactNormal.ToString(),
+                *CurrentHitStorage().Location.ToString());
         }
 #endif
     }
@@ -1034,7 +1217,7 @@ void USWheelSubBody::UpdateSuspension(const float& delta)
 /*SSphere USWheelSubBody::MakeSphere(const unsigned int& NumFrame, const float& RemainingDelta, const float& TimePassed) const
 {
     // --- 1) Car kinematics ---
-    SKinematic CarKS0 = ParentComponent->GetKinematicStateForFrame(NumFrame);
+    SKinematic CarKS0 = Speed::NativeKinematics::FComponentRead::ForFrame(*ParentComponent, NumFrame);
     SKinematic CarKS1 = CarKS0.Integrate(TimePassed);
     SKinematic CarKS2 = CarKS1.Integrate(RemainingDelta);
 
@@ -1080,38 +1263,38 @@ void USWheelSubBody::UpdateSuspension(const float& delta)
 
 void USWheelSubBody::ApplyImpulse(const FVector& LinearImpulse, const FVector& WorldPoint)
 {
-    if (WheelComponent)
+    if (WheelComponentWheelDomainStorage())
     {
-        const FVector ContactNormal = CurrentHit.ImpactNormal.GetSafeNormal();
+        const FVector ContactNormal = CurrentHitStorage().ImpactNormal.GetSafeNormal();
         const float ContactGroundDot = FVector::DotProduct(ContactNormal, FVector::UpVector);
-        const float CarUpGroundDot = FVector::DotProduct(WheelComponent->GetPhysUpVector().GetSafeNormal(), FVector::UpVector);
-        FVector VelAtPoint = WheelComponent->GetPhysVelocityAtPoint(WorldPoint);
-        FVector BodyVelocity=WheelComponent->GetPhysCOMVelocity(),SurfaceVelocity;
+        const float CarUpGroundDot = FVector::DotProduct(Speed::NativeKinematics::FComponentRead::Of(*WheelComponentWheelDomainStorage()).Up().GetSafeNormal(), FVector::UpVector);
+        FVector VelAtPoint = Speed::NativeKinematics::FComponentRead::Of(*WheelComponentWheelDomainStorage()).VelocityAtPoint(WorldPoint);
+        FVector BodyVelocity=Speed::NativeKinematics::FComponentRead::Of(*WheelComponentWheelDomainStorage()).COMVelocity(),SurfaceVelocity;
         if(TryGetPrescribedSupportVelocity(WorldPoint,SurfaceVelocity)){VelAtPoint-=SurfaceVelocity;BodyVelocity-=SurfaceVelocity;}
         const float vN = FVector::DotProduct(VelAtPoint, ContactNormal);
         const float BodyVN = FVector::DotProduct(BodyVelocity, ContactNormal);
-        const float SkipMaxInwardNormalVelocity = FMath::Max(0.0f, CVarSkyLeagueSuspensionSkipOverextendedWheelContactMaxInwardNormalVelocity.GetValueOnAnyThread());
-        const float SkipMaxInwardBodyNormalVelocity = FMath::Max(0.0f, CVarSkyLeagueSuspensionSkipOverextendedWheelContactMaxInwardBodyNormalVelocity.GetValueOnAnyThread());
-        if (CVarSkyLeagueSuspensionSkipOverextendedWheelContact.GetValueOnAnyThread() != 0 &&
+        const float SkipMaxInwardNormalVelocity = FMath::Max(0.0f, Speed::RoadSettings::ReadOriginalOrLegacy<173>([](){ return CVarSkyLeagueSuspensionSkipOverextendedWheelContactMaxInwardNormalVelocity.GetValueOnAnyThread(); }));
+        const float SkipMaxInwardBodyNormalVelocity = FMath::Max(0.0f, Speed::RoadSettings::ReadOriginalOrLegacy<172>([](){ return CVarSkyLeagueSuspensionSkipOverextendedWheelContactMaxInwardBodyNormalVelocity.GetValueOnAnyThread(); }));
+        if (Speed::RoadSettings::ReadOriginalOrLegacy<171>([](){ return CVarSkyLeagueSuspensionSkipOverextendedWheelContact.GetValueOnAnyThread(); }) != 0 &&
             QuantizeSuspensionDisplacement(SpringDisplacement()) < 0.0f &&
-            ContactGroundDot >= CVarSkyLeagueSuspensionSkipOverextendedWheelContactMinGroundDot.GetValueOnAnyThread() &&
-            CarUpGroundDot >= CVarSkyLeagueSuspensionSkipOverextendedWheelContactMinCarUpDot.GetValueOnAnyThread() &&
+            ContactGroundDot >= Speed::RoadSettings::ReadOriginalOrLegacy<175>([](){ return CVarSkyLeagueSuspensionSkipOverextendedWheelContactMinGroundDot.GetValueOnAnyThread(); }) &&
+            CarUpGroundDot >= Speed::RoadSettings::ReadOriginalOrLegacy<174>([](){ return CVarSkyLeagueSuspensionSkipOverextendedWheelContactMinCarUpDot.GetValueOnAnyThread(); }) &&
             vN >= -SkipMaxInwardNormalVelocity &&
             BodyVN >= -SkipMaxInwardBodyNormalVelocity)
         {
 #if !(UE_BUILD_SHIPPING)
-            if (CVarSkyLeagueSuspensionForceDebug.GetValueOnAnyThread() != 0)
+            if (Speed::RoadSettings::ReadOriginalOrLegacy<161>([](){ return CVarSkyLeagueSuspensionForceDebug.GetValueOnAnyThread(); }) != 0)
             {
-                UE_LOG(WheelSubBodyLog, Log,
+                SPEED_NATIVE_LOG(WheelSubBodyLog, Log,
                     TEXT("[SuspensionForce] Frame=%d Wheel=%d SkipOverextendedWheelContact Disp=%.3f ContactGroundDot=%.3f CarUpGroundDot=%.3f vN=%.3f BodyVN=%.3f VelZ=%.3f"),
-                    WheelComponent->NumFrame(),
-                    Idx(),
+                    WheelComponentWheelDomainStorage()->NumFrame(),
+                    Speed::NativeKinematics::FSolidPropertiesAccess::Idx(*this),
                     QuantizeSuspensionDisplacement(SpringDisplacement()),
                     ContactGroundDot,
                     CarUpGroundDot,
                     vN,
                     BodyVN,
-                    WheelComponent->GetPhysCOMVelocity().Z);
+                    Speed::NativeKinematics::FComponentRead::Of(*WheelComponentWheelDomainStorage()).COMVelocity().Z);
             }
 #endif
             return;
@@ -1121,25 +1304,25 @@ void USWheelSubBody::ApplyImpulse(const FVector& LinearImpulse, const FVector& W
         UpdateContactVelocityLock();
 
         const FVector ContactPoint = GetContactImpulseApplicationPoint();
-        const FVector r = ContactPoint - WheelComponent->GetPhysCOM();
-        const FMatrix InvI = WheelComponent->ComputeWorldInvInertiaTensor();
+        const FVector r = ContactPoint - Speed::NativeKinematics::FComponentRead::Of(*WheelComponentWheelDomainStorage()).COM();
+        const FMatrix InvI = WheelComponentWheelDomainStorage()->ComputeWorldInvInertiaTensor();
         const FVector rxn = FVector::CrossProduct(r, N);
         const FVector term = FVector::CrossProduct(
             InvI.TransformVector(rxn), r);
 
         const float invMassEff =
-            (1.f / WheelComponent->GetPhysMass()) + FVector::DotProduct(N, term);
+            (1.f / WheelComponentWheelDomainStorage()->GetPhysMass()) + FVector::DotProduct(N, term);
 
         // UE_LOG(WheelSubBodyLog, Log, TEXT("[CCDWheel(%d)] RegisterWheelGroundContact at NumFrame=%d"),
         //    Idx(), WheelComponent->NumFrame());
-        WheelComponent->RegisterWheelGroundContact({
+        WheelComponentWheelDomainStorage()->RegisterWheelGroundContact({
             this,
-            CurrentHit.Component,
-            CurrentHit.ImpactPoint,
-            CurrentHit.FaceIndex,
-			CurrentHit.SourceId,
-			CurrentHit.SurfaceId,
-			CurrentHit.FeatureId,
+            CurrentHitStorage().Component,
+            CurrentHitStorage().ImpactPoint,
+            CurrentHitStorage().FaceIndex,
+			CurrentHitStorage().SourceId,
+			CurrentHitStorage().SurfaceId,
+			CurrentHitStorage().FeatureId,
             ContactPoint,
             N,
             r,
@@ -1147,7 +1330,7 @@ void USWheelSubBody::ApplyImpulse(const FVector& LinearImpulse, const FVector& W
             invMassEff,
             QuantizeSuspensionDisplacement(SpringDisplacement()),
             IsContactVelocityLocked(),
-            !bUseCompressionCrossingContactImpulse && !WasOnGroundPreviousFrame(),
+            !bUseCompressionCrossingContactImpulseWheelDomainStorage() && !WasOnGroundPreviousFrame(),
             IsAtSuspensionBumpStop()
             });
 	}
@@ -1155,7 +1338,7 @@ void USWheelSubBody::ApplyImpulse(const FVector& LinearImpulse, const FVector& W
 
 float USWheelSubBody::PredictNextDisplacement(const float& delta) const
 {
-    float DisplacementInput = ComputeNextAirLength(delta) - PSuspension->Setup().RaycastSafetyMargin - Radius();
+    float DisplacementInput = ComputeNextAirLength(delta) - PSuspensionWheelDomainStorage()->Setup().RaycastSafetyMargin - Radius();
     DisplacementInput = FMath::Max(0.f, DisplacementInput);
     return MaxLength() - DisplacementInput;
 }
@@ -1168,67 +1351,67 @@ float USWheelSubBody::ComputeNextAirLength(const float& DeltaTime) const
 
 void USWheelSubBody::HandleTimers()
 {
-    if (bIsJumping > 0)
+    if (bIsJumpingRuntimeStorage() > 0)
     {
-        bIsJumping--;
+        bIsJumpingRuntimeStorage()--;
     }
 }
 
 void USWheelSubBody::UpdatePhysicsState(const float& delta)
 {
     // --- 1. Base axes from chassis ---
-    const FVector CarUp = ParentComponent->GetPhysUpVector();
-    const FVector CarFwd = ParentComponent->GetPhysForwardVector();
-    const FVector CarRight = ParentComponent->GetPhysRightVector();
+    const FVector CarUp = Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).Up();
+    const FVector CarFwd = Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).Forward();
+    const FVector CarRight = Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).Right();
 
-    UpAxis = CarUp; // stays constant
+    UpAxisRuntimeStorage() = CarUp; // stays constant
 
     // --- 2. Compute steering rotation around UpAxis ---
     // SteeringAngle in radians
-    FQuat SteerQuat(UpAxis, SteeringAngle);
+    FQuat SteerQuat(UpAxisRuntimeStorage(), SteeringAngleRuntimeStorage());
 
     // --- 3. Apply steering to forward axis ---
-    ForwardAxis = SteerQuat.RotateVector(CarFwd).GetSafeNormal();
+    ForwardAxisRuntimeStorage() = SteerQuat.RotateVector(CarFwd).GetSafeNormal();
 
     // --- 4. Right axis = orthogonal ---
-    RightAxis = FVector::CrossProduct(UpAxis, ForwardAxis).GetSafeNormal();
+    RightAxisRuntimeStorage() = FVector::CrossProduct(UpAxisRuntimeStorage(), ForwardAxisRuntimeStorage()).GetSafeNormal();
 
     // --- 5. Update rolling angle (rotation around RightAxis) ---
     // update omega
-    Omega = ParentComponent->GetPhysForwardSpeed() / FMath::Max(Radius(), KINDA_SMALL_NUMBER);
+    OmegaRuntimeStorage() = Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).ForwardSpeed() / FMath::Max(Radius(), KINDA_SMALL_NUMBER);
     float angVel = AngularVelocity(); // rad/s
-    RollAngle += angVel * delta;
-    RollAngle = FMath::Fmod(RollAngle, 2.f * PI);
+    RollAngleRuntimeStorage() += angVel * delta;
+    RollAngleRuntimeStorage() = FMath::Fmod(RollAngleRuntimeStorage(), 2.f * PI);
 
     // --- 6. World position from suspension ---
     FVector pos = WorldPos();
 
     // --- 7. Fill render data struct for the visual thread ---
-    RenderData.WorldPosition = pos;
-    RenderData.UpAxis = UpAxis;
-    RenderData.ForwardAxis = ForwardAxis;
-    RenderData.RightAxis = RightAxis;
+    RenderDataRuntimeStorage().WorldPosition = pos;
+    RenderDataRuntimeStorage().UpAxis = UpAxisRuntimeStorage();
+    RenderDataRuntimeStorage().ForwardAxis = ForwardAxisRuntimeStorage();
+    RenderDataRuntimeStorage().RightAxis = RightAxisRuntimeStorage();
 
-    RenderData.SpringOffset = SuspensionRestLength() - SpringLength();
+    RenderDataRuntimeStorage().SpringOffset = SuspensionRestLength() - SpringLength();
 
-    RenderData.SteerRotation = FQuat(UpAxis, SteeringAngle);
-    RenderData.RollRotation = FQuat(RightAxis, RollAngle);
+    RenderDataRuntimeStorage().SteerRotation = FQuat(UpAxisRuntimeStorage(), SteeringAngleRuntimeStorage());
+    RenderDataRuntimeStorage().RollRotation = FQuat(RightAxisRuntimeStorage(), RollAngleRuntimeStorage());
 }
 
 void USWheelSubBody::UpdateSteerAngle(const float& delta)
 {
     float steerInput = 0.0;
-    if (WheelComponent)
+    if (WheelComponentWheelDomainStorage())
     {
-		steerInput = WheelComponent->GetPhysSteeringInput(); // expected to be in range [-1, 1]
+		steerInput = WheelComponentWheelDomainStorage()->GetPhysSteeringInput(); // expected to be in range [-1, 1]
     }
 
     if (IsSteeringEnabled())
     {
-        float speed = ParentComponent->GetPhysCOMVelocity().Size();
+        float speed = Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).COMVelocity().Size();
 
         // saturation max speed
-        float normSpeed = FMath::Clamp(speed / ParentComponent->GetPhysMaxSpeed(), 0.f, 1.f);
+        float normSpeed = FMath::Clamp(speed / ParentComponentBodyDomainStorage()->GetPhysMaxSpeed(), 0.f, 1.f);
 
         // steering reduction curve
         float steerFactor =
@@ -1239,29 +1422,29 @@ void USWheelSubBody::UpdateSteerAngle(const float& delta)
             steerFactor *= 1.2f; // +20%
 
         // final angle
-        SteeringAngle = FMath::DegreesToRadians(MaxSteeringAngle() * steerInput * steerFactor);
+        SteeringAngleRuntimeStorage() = FMath::DegreesToRadians(MaxSteeringAngle() * steerInput * steerFactor);
     }
     else
     {
-        SteeringAngle = 0.0f;
+        SteeringAngleRuntimeStorage() = 0.0f;
     }
 }
 
 FVector USWheelSubBody::WorldPos() const
 {
-    FTransform ChassisTM(ParentComponent->GetPhysRotation(), ParentComponent->GetPhysLocation());
+    FTransform ChassisTM(Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).Rotation(), Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).Location());
     return WorldPosFromCarTransform(ChassisTM);
 }
 
 FVector USWheelSubBody::SteeringPos() const
 {
-    const FVector ChassisUp = ParentComponent->GetPhysUpVector();
+    const FVector ChassisUp = Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).Up();
 
     // Compute world position of the wheel
     const FVector WheelPosWS = WorldPos();
 
     // Get the world center of mass of the vehicle
-    const FVector CoMWorld = ParentComponent->GetPhysCOM();
+    const FVector CoMWorld = Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).COM();
 
     // Compute the vertical distance between the wheel and the center of mass
     const float VerticalDist = FVector::DotProduct((WheelPosWS - CoMWorld), ChassisUp);
@@ -1280,7 +1463,7 @@ FVector USWheelSubBody::WorldPosFromCarTransform(const FTransform& CarTransform)
 
 FVector USWheelSubBody::GetSuspensionDirectionWS() const
 {
-    return -ParentComponent->GetPhysUpVector();
+    return -Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).Up();
 }
 
 float USWheelSubBody::Radius() const
@@ -1293,222 +1476,224 @@ float USWheelSubBody::Radius() const
 
 float USWheelSubBody::ChaosEffectiveRadius() const
 {
-    return PWheel ? PWheel->GetEffectiveRadius() : 0.0f;
+    return PWheelWheelDomainStorage() ? PWheelWheelDomainStorage()->GetEffectiveRadius() : 0.0f;
 }
 
 float USWheelSubBody::AngularVelocity() const
 {
-    return Omega;
+    return OmegaRuntimeStorage();
 }
 
 void USWheelSubBody::SetAngularVelocity(const float& InOmega)
 {
-    Omega = InOmega;
+    OmegaRuntimeStorage() = InOmega;
 }
 
 float USWheelSubBody::SpringDisplacement() const
 {
-    return PSuspension ? PSuspension->GetLastDisplacement() : 0.0f;
+    return PSuspensionWheelDomainStorage() ? PSuspensionWheelDomainStorage()->GetLastDisplacement() : 0.0f;
 }
 
 float USWheelSubBody::ContactSpringDisplacement() const
 {
-    if (!PSuspension || !ParentComponent || !IsOnGround())
+    if (!PSuspensionWheelDomainStorage() || !ParentComponentBodyDomainStorage() || !IsOnGround())
     {
         return SpringDisplacement();
     }
 
-    return ContactSpringDisplacement(CurrentHit);
+    return ContactSpringDisplacement(CurrentHitStorage());
 }
 
 float USWheelSubBody::ContactSpringDisplacement(const SHitResult& ContactHit) const
 {
-    if (!PSuspension || !ParentComponent)
+    if (!PSuspensionWheelDomainStorage() || !ParentComponentBodyDomainStorage())
     {
         return SpringDisplacement();
     }
     const FTransform ChassisTM(
-        ParentComponent->GetPhysRotation(), ParentComponent->GetPhysLocation());
+        Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).Rotation(), Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).Location());
     const FVector Up = ChassisTM.GetUnitAxis(EAxis::Z);
     const FVector SuspensionAnchor = ChassisTM.TransformPosition(
-        GetLocalOffset() + PSuspension->Setup().MaxLength * FVector::UpVector);
+        GetLocalOffset() + PSuspensionWheelDomainStorage()->Setup().MaxLength * FVector::UpVector);
     const float ProjectedCompression = FVector::DotProduct(
         SuspensionAnchor - ContactHit.Location, Up);
     const float DisplacementInput = FMath::Max(
-        0.0f, ProjectedCompression - PSuspension->Setup().RaycastSafetyMargin);
+        0.0f, ProjectedCompression - PSuspensionWheelDomainStorage()->Setup().RaycastSafetyMargin);
     return QuantizeSuspensionDisplacement(
-        PSuspension->Setup().MaxLength - DisplacementInput);
+        PSuspensionWheelDomainStorage()->Setup().MaxLength - DisplacementInput);
 }
 float USWheelSubBody::SpringLength() const
 {
-    return PSuspension->GetSpringLength();
+    return PSuspensionWheelDomainStorage()->GetSpringLength();
 }
 
 float USWheelSubBody::GetLastDisplacement() const
 {
-    return PSuspension->GetLastDisplacement();
+    return PSuspensionWheelDomainStorage()->GetLastDisplacement();
 }
 
 void USWheelSubBody::SetLastDisplacement(const float& displacement)
 {
-    PSuspension->SetLastDisplacement(displacement);
+    PSuspensionWheelDomainStorage()->SetLastDisplacement(displacement);
 }
 
 float USWheelSubBody::MaxLength() const
 {
-    return PSuspension->Setup().MaxLength;
+    return PSuspensionWheelDomainStorage()->Setup().MaxLength;
 }
 
 float USWheelSubBody::SuspensionRestLength() const
 {
-	return ChaosWheel->SuspensionMaxRaise;
+	return PhysicalSuspensionRestLength();
 }
+
+float USWheelSubBody::PhysicalSuspensionRestLength() const {return ChaosWheelWheelDomainStorage()->SuspensionMaxRaise;}
 
 float USWheelSubBody::SuspensionMaxRaise() const
 {
-    return SuspensionMaxRaiseOverride >= 0.0f
-        ? SuspensionMaxRaiseOverride
-        : ChaosWheel->SuspensionMaxRaise;
+    return SuspensionMaxRaiseOverrideWheelDomainStorage() >= 0.0f
+        ? SuspensionMaxRaiseOverrideWheelDomainStorage()
+        : ChaosWheelWheelDomainStorage()->SuspensionMaxRaise;
 }
 
 float USWheelSubBody::SuspensionMaxDrop() const
 {
-    return SuspensionMaxDropOverride >= 0.0f
-        ? SuspensionMaxDropOverride
-        : ChaosWheel->SuspensionMaxDrop;
+    return SuspensionMaxDropOverrideWheelDomainStorage() >= 0.0f
+        ? SuspensionMaxDropOverrideWheelDomainStorage()
+        : ChaosWheelWheelDomainStorage()->SuspensionMaxDrop;
 }
 
 void USWheelSubBody::ConfigureSuspensionTravel(const float MaxRaise, const float MaxDrop)
 {
-    SuspensionMaxRaiseOverride = FMath::Max(0.0f, MaxRaise);
-    SuspensionMaxDropOverride = FMath::Max(0.0f, MaxDrop);
-    if (ChaosWheel)
+    SuspensionMaxRaiseOverrideWheelDomainStorage() = FMath::Max(0.0f, MaxRaise);
+    SuspensionMaxDropOverrideWheelDomainStorage() = FMath::Max(0.0f, MaxDrop);
+    if (ChaosWheelWheelDomainStorage())
     {
-        ChaosWheel->SuspensionMaxRaise = SuspensionMaxRaiseOverride;
-        ChaosWheel->SuspensionMaxDrop = SuspensionMaxDropOverride;
+        ChaosWheelWheelDomainStorage()->SuspensionMaxRaise = SuspensionMaxRaiseOverrideWheelDomainStorage();
+        ChaosWheelWheelDomainStorage()->SuspensionMaxDrop = SuspensionMaxDropOverrideWheelDomainStorage();
     }
 }
 
 bool USWheelSubBody::HasConfiguredSuspensionTravel() const
 {
-    return SuspensionMaxRaiseOverride >= 0.0f && SuspensionMaxDropOverride >= 0.0f;
+    return SuspensionMaxRaiseOverrideWheelDomainStorage() >= 0.0f && SuspensionMaxDropOverrideWheelDomainStorage() >= 0.0f;
 }
 
 float USWheelSubBody::SuspensionSpringRateCm() const
 {
-    return bUseSuspensionForceModelOverride
-        ? SuspensionSpringRateCmOverride
-        : SuspensionSpringRate * 100.0f;
+    return bUseSuspensionForceModelOverrideWheelDomainStorage()
+        ? SuspensionSpringRateCmOverrideWheelDomainStorage()
+        : SuspensionSpringRateWheelDomainStorage() * 100.0f;
 }
 
 bool USWheelSubBody::IsAtSuspensionBumpStop() const
 {
-    if (bUseCompressionCrossingContactImpulse)
+    if (bUseCompressionCrossingContactImpulseWheelDomainStorage())
     {
-        return bCrossedIntoCompressionThisFrame;
+        return bCrossedIntoCompressionThisFrameRuntimeStorage();
     }
     return ContactSpringDisplacement() >= FMath::Max(
-        0.0f, CVarSkyLeagueSuspensionBumpStopStartCompression.GetValueOnAnyThread());
+        0.0f, Speed::RoadSettings::ReadOriginalOrLegacy<154>([](){ return CVarSkyLeagueSuspensionBumpStopStartCompression.GetValueOnAnyThread(); }));
 }
 
 float USWheelSubBody::StaticSpringCompression() const
 {
-    return ConfiguredStaticSpringCompression;
+    return ConfiguredStaticSpringCompressionWheelDomainStorage();
 }
 
 void USWheelSubBody::ConfigureStaticSpringCompression(const float RestingForce)
 {
     const float SpringRate = SuspensionSpringRateCm();
-    ConfiguredStaticSpringCompression = SpringRate > SMALL_NUMBER
+    ConfiguredStaticSpringCompressionWheelDomainStorage() = SpringRate > SMALL_NUMBER
         ? QuantizeSuspensionDisplacement(RestingForce / SpringRate)
         : 0.0f;
 }
 
 float USWheelSubBody::SuspensionCompressionDamping() const
 {
-    return SuspensionCompressionDampingOverride;
+    return SuspensionCompressionDampingOverrideWheelDomainStorage();
 }
 
 float USWheelSubBody::SuspensionReboundDamping() const
 {
-    return SuspensionReboundDampingOverride;
+    return SuspensionReboundDampingOverrideWheelDomainStorage();
 }
 
 bool USWheelSubBody::UsesDirectSuspensionDamping() const
 {
-    return bUseSuspensionForceModelOverride;
+    return bUseSuspensionForceModelOverrideWheelDomainStorage();
 }
 
 bool USWheelSubBody::ClampsSuspensionForceToPositive() const
 {
-    return bUseSuspensionForceModelOverride &&
-		(bClampSuspensionForceToPositive ||
-			(bClampPositiveUntilFirstCompression && !bContactVelocityLocked));
+    return bUseSuspensionForceModelOverrideWheelDomainStorage() &&
+		(bClampSuspensionForceToPositiveWheelDomainStorage() ||
+			(bClampPositiveUntilFirstCompressionWheelDomainStorage() && !bContactVelocityLockedRuntimeStorage()));
 }
 
 void USWheelSubBody::ConfigureSuspensionForceModel(const float SpringRateCm,
     const float CompressionDamping, const float ReboundDamping,
 	const bool bClampForceToPositive)
 {
-    bUseSuspensionForceModelOverride = true;
-    bClampSuspensionForceToPositive = bClampForceToPositive;
-    SuspensionSpringRateCmOverride = FMath::Max(0.0f, SpringRateCm);
-    SuspensionCompressionDampingOverride = FMath::Max(0.0f, CompressionDamping);
-    SuspensionReboundDampingOverride = FMath::Max(0.0f, ReboundDamping);
+    bUseSuspensionForceModelOverrideWheelDomainStorage() = true;
+    bClampSuspensionForceToPositiveWheelDomainStorage() = bClampForceToPositive;
+    SuspensionSpringRateCmOverrideWheelDomainStorage() = FMath::Max(0.0f, SpringRateCm);
+    SuspensionCompressionDampingOverrideWheelDomainStorage() = FMath::Max(0.0f, CompressionDamping);
+    SuspensionReboundDampingOverrideWheelDomainStorage() = FMath::Max(0.0f, ReboundDamping);
 }
 
 void USWheelSubBody::SetUseEffectiveSuspensionSweepRadius(const bool bEnabled)
 {
-    bUseEffectiveSuspensionSweepRadius = bEnabled;
+    bUseEffectiveSuspensionSweepRadiusWheelDomainStorage() = bEnabled;
 }
 
 void USWheelSubBody::SetUseIncreasingDisplacementAsCompression(const bool bEnabled)
 {
-    bUseIncreasingDisplacementAsCompression = bEnabled;
+    bUseIncreasingDisplacementAsCompressionWheelDomainStorage() = bEnabled;
 }
 
 void USWheelSubBody::SetClampPositiveUntilFirstCompression(const bool bEnabled)
 {
-    bClampPositiveUntilFirstCompression = bEnabled;
+    bClampPositiveUntilFirstCompressionWheelDomainStorage() = bEnabled;
 }
 
 void USWheelSubBody::SetUseCompressionCrossingContactImpulse(const bool bEnabled)
 {
-	bUseCompressionCrossingContactImpulse = bEnabled;
+	bUseCompressionCrossingContactImpulseWheelDomainStorage() = bEnabled;
 }
 
 void USWheelSubBody::SetGroundForceApplicationMode(const uint8 Mode)
 {
-	GroundForceApplicationMode = FMath::Min<uint8>(Mode, 3);
-	ContactImpulseApplicationMode = GroundForceApplicationMode;
+	GroundForceApplicationModeWheelDomainStorage() = FMath::Min<uint8>(Mode, 3);
+	ContactImpulseApplicationModeWheelDomainStorage() = GroundForceApplicationModeWheelDomainStorage();
 }
 
 void USWheelSubBody::SetContactImpulseApplicationMode(const uint8 Mode)
 {
-	ContactImpulseApplicationMode = FMath::Min<uint8>(Mode, 3);
+	ContactImpulseApplicationModeWheelDomainStorage() = FMath::Min<uint8>(Mode, 3);
 }
 
 FVector USWheelSubBody::GetSuspensionForceApplicationPoint() const
 {
-	switch (GroundForceApplicationMode)
+	switch (GroundForceApplicationModeWheelDomainStorage())
 	{
 	case 2:
 		return WorldPos();
 	case 3:
-		return WorldPos() - SpringDisplacement() * ParentComponent->GetPhysUpVector();
+		return WorldPos() - SpringDisplacement() * Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).Up();
 	default:
-		return CurrentHit.ImpactPoint;
+		return CurrentHitStorage().ImpactPoint;
 	}
 }
 
 FVector USWheelSubBody::GetContactImpulseApplicationPoint() const
 {
-	switch (ContactImpulseApplicationMode)
+	switch (ContactImpulseApplicationModeWheelDomainStorage())
 	{
 	case 1:
-		return CurrentHit.ImpactPoint;
+		return CurrentHitStorage().ImpactPoint;
 	case 3:
-		return WorldPos() - SpringDisplacement() * ParentComponent->GetPhysUpVector();
+		return WorldPos() - SpringDisplacement() * Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).Up();
 	default:
 		return WorldPos();
 	}
@@ -1520,59 +1705,59 @@ void USWheelSubBody::ConfigureSuspensionForceBehavior(const float StiffnessScale
     const bool bClampNegativeDisplacement,
     const bool bDisableBumpStopForce)
 {
-    SuspensionStiffnessForceScale = FMath::Max(0.0f, StiffnessScale);
-    SuspensionStiffnessReferenceDisplacement = StiffnessReferenceDisplacement;
-    SuspensionPreRestCompressionDampingScale = FMath::Max(
+    SuspensionStiffnessForceScaleWheelDomainStorage() = FMath::Max(0.0f, StiffnessScale);
+    SuspensionStiffnessReferenceDisplacementWheelDomainStorage() = StiffnessReferenceDisplacement;
+    SuspensionPreRestCompressionDampingScaleWheelDomainStorage() = FMath::Max(
         0.0f, PreRestCompressionDampingScale);
-    bClampNegativeSuspensionDisplacement = bClampNegativeDisplacement;
-    bDisableSuspensionBumpStopForce = bDisableBumpStopForce;
+    bClampNegativeSuspensionDisplacementWheelDomainStorage() = bClampNegativeDisplacement;
+    bDisableSuspensionBumpStopForceWheelDomainStorage() = bDisableBumpStopForce;
 }
 
 float USWheelSubBody::GetSuspensionDampingReboundRatio() const
 {
-    return SuspensionDampingReboundRatio;
+    return SuspensionDampingReboundRatioWheelDomainStorage();
 }
 
 float USWheelSubBody::GetSuspensionDampingCompressionRatio() const
 {
-    return SuspensionDampingCompressionRatio;
+    return SuspensionDampingCompressionRatioWheelDomainStorage();
 }
 
 float USWheelSubBody::GetSuspensionForce() const
 {
-    return SuspensionForce;
+    return SuspensionForceRuntimeStorage();
 }
 
 bool USWheelSubBody::IsContactVelocityLocked() const
 {
-    return bContactVelocityLocked;
+    return bContactVelocityLockedRuntimeStorage();
 }
 
 bool USWheelSubBody::WasOnGroundPreviousFrame() const
 {
-    return bWasOnGroundPrevFrame;
+    return bWasOnGroundPrevFrameRuntimeStorage();
 }
 
 bool USWheelSubBody::IsOnGround() const
 {
-	if(PWheel == nullptr)
+	if(PWheelWheelDomainStorage() == nullptr)
 	{
 		return false;
 	}
-    return PWheel->InContact();
+    return PWheelWheelDomainStorage()->InContact();
 }
 
 bool USWheelSubBody::IsOnStaticObject() const
 {
-    const UPrimitiveComponent* Support = CurrentHit.Component.Get();
-    return IsOnGround() && CurrentHit.bHit && IsValid(Support)
+    const UPrimitiveComponent* Support = CurrentHitStorage().Component.Get();
+    return IsOnGround() && CurrentHitStorage().bHit && IsValid(Support)
         && Support->GetMobility() == EComponentMobility::Static;
 }
 
 bool USWheelSubBody::IsOnDynamicObject() const
 {
-    const UPrimitiveComponent* Support = CurrentHit.Component.Get();
-    return IsOnGround() && CurrentHit.bHit && IsValid(Support)
+    const UPrimitiveComponent* Support = CurrentHitStorage().Component.Get();
+    return IsOnGround() && CurrentHitStorage().bHit && IsValid(Support)
         && Support->GetMobility() == EComponentMobility::Movable;
 }
 
@@ -1582,90 +1767,90 @@ void USWheelSubBody::SetOnGround(const bool& on_ground)
 
     if (!bWasOnGround && on_ground)
     {
-        const float NormalSpeed = FVector::DotProduct(ParentComponent->GetPhysVelocityAtPoint(WorldPos()), CurrentHit.ImpactNormal);
+        const float NormalSpeed = FVector::DotProduct(Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).VelocityAtPoint(WorldPos()), CurrentHitStorage().ImpactNormal);
 
         // Real impact
         if (NormalSpeed < -5.0f) // cm/s, to tune
         {
-			ParentComponent->RcvImpactOnSubBody(*this, CurrentHit.ImpactPoint);
+			ParentComponentBodyDomainStorage()->RcvImpactOnSubBody(*this, CurrentHitStorage().ImpactPoint);
         }
     }
 
     // RegisterWheelContact
     if (on_ground)
     {
-        if (!bCountedGroundFrame)
+        if (!bCountedGroundFrameRuntimeStorage())
         {
-            ConsecutiveGroundFrames = FMath::Min<uint8>(ConsecutiveGroundFrames + 1, 31);
-            bCountedGroundFrame = true;
+            ConsecutiveGroundFramesRuntimeStorage() = FMath::Min<uint8>(ConsecutiveGroundFramesRuntimeStorage() + 1, 31);
+            bCountedGroundFrameRuntimeStorage() = true;
         }
-        ApplyImpulse(FVector::UpVector, CurrentHit.ImpactPoint);
+        ApplyImpulse(FVector::UpVector, CurrentHitStorage().ImpactPoint);
     }
     else
     {
-        ConsecutiveGroundFrames = 0;
+        ConsecutiveGroundFramesRuntimeStorage() = 0;
         ResetContactVelocityLock();
     }
 
-    PWheel->SetOnGround(on_ground);
+    PWheelWheelDomainStorage()->SetOnGround(on_ground);
 }
 
 void USWheelSubBody::SetIsJumping(const uint8 NbFrames)
 {
-    bIsJumping = NbFrames;
+    bIsJumpingRuntimeStorage() = NbFrames;
     if (NbFrames > 0)
     {
-        ConsecutiveGroundFrames = 0;
+        ConsecutiveGroundFramesRuntimeStorage() = 0;
         ResetContactVelocityLock();
     }
 }
 
 uint8 USWheelSubBody::IsJumping() const
 {
-    return bIsJumping;
+    return bIsJumpingRuntimeStorage();
 }
 
 void USWheelSubBody::SetJumpUnilateralSupport(const bool bEnabled)
 {
-    bJumpUnilateralSupport = bEnabled;
+    bJumpUnilateralSupportRuntimeStorage() = bEnabled;
 }
 
 bool USWheelSubBody::HasJumpUnilateralSupport() const
 {
-    return bJumpUnilateralSupport;
+    return bJumpUnilateralSupportRuntimeStorage();
 }
 
 uint8 USWheelSubBody::GetConsecutiveGroundFrames() const
 {
-    return ConsecutiveGroundFrames;
+    return ConsecutiveGroundFramesRuntimeStorage();
 }
 
 void USWheelSubBody::SetConsecutiveGroundFrames(const uint8 Frames)
 {
-    ConsecutiveGroundFrames = FMath::Min<uint8>(Frames, 31);
+    ConsecutiveGroundFramesRuntimeStorage() = FMath::Min<uint8>(Frames, 31);
 }
 
 void USWheelSubBody::UpdateContactVelocityLock()
 {
     if (QuantizeSuspensionDisplacement(SpringDisplacement()) >= 0.0f)
     {
-        bContactVelocityLocked = true;
+        bContactVelocityLockedRuntimeStorage() = true;
     }
 }
 
 void USWheelSubBody::ResetContactVelocityLock()
 {
-    bContactVelocityLocked = false;
+    bContactVelocityLockedRuntimeStorage() = false;
 }
 
 bool USWheelSubBody::IsSteeringEnabled() const
 {
-    return PWheel->SteeringEnabled;
+    return PWheelWheelDomainStorage()->SteeringEnabled;
 }
 
 float USWheelSubBody::MaxSteeringAngle() const
 {
-    return PWheel->MaxSteeringAngle;
+    return PWheelWheelDomainStorage()->MaxSteeringAngle;
 }
 
 float USWheelSubBody::GetSuspensionOffset() const
@@ -1677,7 +1862,7 @@ FVector USWheelSubBody::GetHitContactNormal() const
 {
     if (IsOnGround())
     {
-        return CurrentHit.ImpactNormal;
+        return CurrentHitStorage().ImpactNormal;
     }
     else
     {
@@ -1689,7 +1874,7 @@ FVector USWheelSubBody::GetHitContactPoint() const
 {
     if (IsOnGround())
     {
-        return CurrentHit.ImpactPoint;
+        return CurrentHitStorage().ImpactPoint;
     }
 
     return WorldPos();
@@ -1697,58 +1882,134 @@ FVector USWheelSubBody::GetHitContactPoint() const
 
 void USWheelSubBody::SetHitContactNormal(const FVector& ImpactNormal)
 {
-    CurrentHit.ImpactNormal = ImpactNormal;
+    CurrentHitStorage().ImpactNormal = ImpactNormal;
 }
 
 const SWheelRenderData& USWheelSubBody::GetRenderData() const
 {
-    return RenderData;
+    return RenderDataRuntimeStorage();
 }
 
 void USWheelSubBody::SetRollAngle(const float& angle)
 {
-    FRotator RollRot(RenderData.RollRotation);
+    FRotator RollRot(RenderDataRuntimeStorage().RollRotation);
     RollRot.Roll = FMath::RadiansToDegrees(angle);
-    RenderData.RollRotation = FQuat(RollRot);
+    RenderDataRuntimeStorage().RollRotation = FQuat(RollRot);
 }
 
 float USWheelSubBody::GetRollAngle() const
 {
-    FRotator RollRot(RenderData.RollRotation);
+    FRotator RollRot(RenderDataRuntimeStorage().RollRotation);
     return FMath::DegreesToRadians(RollRot.Roll);
 }
 
-void USWheelSubBody::SetChaosWheel(UChaosVehicleWheel* InChaosWheel)
+void USWheelSubBody::SetChaosWheelForPhysics(UChaosVehicleWheel* InChaosWheel)
 {
-    ChaosWheel = InChaosWheel;
-    if (ChaosWheel && SuspensionMaxRaiseOverride >= 0.0f
-        && SuspensionMaxDropOverride >= 0.0f)
+    CheckOrdinaryWheelBindingEntry();
+    ChaosWheelWheelDomainStorage() = InChaosWheel;
+    if (ChaosWheelWheelDomainStorage() && SuspensionMaxRaiseOverrideWheelDomainStorage() >= 0.0f
+        && SuspensionMaxDropOverrideWheelDomainStorage() >= 0.0f)
     {
-        ChaosWheel->SuspensionMaxRaise = SuspensionMaxRaiseOverride;
-        ChaosWheel->SuspensionMaxDrop = SuspensionMaxDropOverride;
+        ChaosWheelWheelDomainStorage()->SuspensionMaxRaise = SuspensionMaxRaiseOverrideWheelDomainStorage();
+        ChaosWheelWheelDomainStorage()->SuspensionMaxDrop = SuspensionMaxDropOverrideWheelDomainStorage();
     }
 }
-
-void USWheelSubBody::SetWheelSim(Chaos::FSimpleWheelSim* InPWheel)
+void USWheelSubBody::SetChaosWheel(UChaosVehicleWheel* InChaosWheel)
 {
-	PWheel = InPWheel;
-	if (!PWheel)
+    ApplyPublicChaosWheel(InChaosWheel);
+}
+
+void USWheelSubBody::SetWheelSimForPhysics(Chaos::FSimpleWheelSim* InPWheel)
+{
+    CheckOrdinaryWheelBindingEntry();
+	PWheelWheelDomainStorage() = InPWheel;
+	if (!PWheelWheelDomainStorage())
 	{
 		return;
 	}
-	PWheel->SetMassPerWheel(WheelMass);
-    SetMass(WheelMass);
+	PWheelWheelDomainStorage()->SetMassPerWheel(WheelMassWheelDomainStorage());
+    Speed::NativeKinematics::FSolidMassAccess::Write(*this,WheelMassWheelDomainStorage());
+}
+void USWheelSubBody::SetWheelSim(Chaos::FSimpleWheelSim* InPWheel)
+{
+    ApplyPublicWheelSim(InPWheel);
 }
 
-void USWheelSubBody::SetSuspensionSim(Chaos::FSimpleSuspensionSim* InPSuspension)
+void USWheelSubBody::SetSuspensionSimForPhysics(Chaos::FSimpleSuspensionSim* InPSuspension)
 {
-    PSuspension = InPSuspension;
+    CheckOrdinaryWheelBindingEntry();
+    PSuspensionWheelDomainStorage() = InPSuspension;
 	// Print parameters for debug
 	// UE_LOG(WheelSubBodyLog, Warning, TEXT("WheelSubBody %d Suspension parameters: MaxLength= %.2f, SpringRate= %.2f, CompressionDamping= %.2f, ReboundDamping= %.2f"),
     //    Idx(), PSuspension->Setup().MaxLength, PSuspension->Setup().SpringRate, PSuspension->Setup().CompressionDamping, PSuspension->Setup().ReboundDamping);
 }
+void USWheelSubBody::SetSuspensionSim(Chaos::FSimpleSuspensionSim* InPSuspension)
+{
+    ApplyPublicSuspensionSim(InPSuspension);
+}
 
 void USWheelSubBody::SetLocalOffset(const FVector& InLocalOffset)
 {
-    SetRelativeLocation(InLocalOffset);
+    SetPhysicalLocalOffset(InLocalOffset);
 }
+
+
+// Same ordered diagnostic fields shared by ordinary and canonical paths.
+#if !UE_BUILD_SHIPPING
+void USWheelSubBody::AppendWheelEpisodeTailForTesting(TArray<uint8>& Out) const
+{
+        using B=Speed::FEpisodeStateBytesForTesting;
+        B::Add(Out,WheelComponentWheelDomainStorage());
+        B::Add(Out,ChaosWheelWheelDomainStorage());
+        B::Add(Out,PWheelWheelDomainStorage());
+        B::Add(Out,PSuspensionWheelDomainStorage());
+        B::Add(Out,WheelMassWheelDomainStorage());
+        B::Add(Out,SuspensionSpringRateWheelDomainStorage());
+        B::Add(Out,SuspensionDampingCompressionRatioWheelDomainStorage());
+        B::Add(Out,SuspensionDampingReboundRatioWheelDomainStorage());
+        B::Add(Out,bUseSuspensionForceModelOverrideWheelDomainStorage());
+        B::Add(Out,bClampSuspensionForceToPositiveWheelDomainStorage());
+        B::Add(Out,bClampPositiveUntilFirstCompressionWheelDomainStorage());
+        B::Add(Out,bUseEffectiveSuspensionSweepRadiusWheelDomainStorage());
+        B::Add(Out,bUseIncreasingDisplacementAsCompressionWheelDomainStorage());
+        B::Add(Out,bUseCompressionCrossingContactImpulseWheelDomainStorage());
+        B::Add(Out,GroundForceApplicationModeWheelDomainStorage());
+        B::Add(Out,ContactImpulseApplicationModeWheelDomainStorage());
+        B::Add(Out,SuspensionStiffnessForceScaleWheelDomainStorage());
+        B::Add(Out,SuspensionStiffnessReferenceDisplacementWheelDomainStorage());
+        B::Add(Out,SuspensionPreRestCompressionDampingScaleWheelDomainStorage());
+        B::Add(Out,bClampNegativeSuspensionDisplacementWheelDomainStorage());
+        B::Add(Out,bDisableSuspensionBumpStopForceWheelDomainStorage());
+        B::Add(Out,SuspensionSpringRateCmOverrideWheelDomainStorage());
+        B::Add(Out,SuspensionCompressionDampingOverrideWheelDomainStorage());
+        B::Add(Out,SuspensionReboundDampingOverrideWheelDomainStorage());
+        B::Add(Out,SuspensionMaxRaiseOverrideWheelDomainStorage());
+        B::Add(Out,SuspensionMaxDropOverrideWheelDomainStorage());
+        B::Add(Out,ConfiguredStaticSpringCompressionWheelDomainStorage());
+        B::Add(Out,SuspensionForceRuntimeStorage());
+        B::Add(Out,bIsJumpingRuntimeStorage());
+        B::Add(Out,bJumpUnilateralSupportRuntimeStorage());
+        B::Add(Out,ConsecutiveGroundFramesRuntimeStorage());
+        B::Add(Out,SteeringAngleRuntimeStorage());
+        B::Add(Out,OmegaRuntimeStorage());
+        B::Add(Out,RollAngleRuntimeStorage());
+        B::Add(Out,bWasOnGroundPrevFrameRuntimeStorage());
+        B::Add(Out,bCountedGroundFrameRuntimeStorage());
+        B::Add(Out,bContactVelocityLockedRuntimeStorage());
+        B::Add(Out,bCrossedIntoCompressionThisFrameRuntimeStorage());
+        B::Add(Out,ForwardAxisRuntimeStorage());
+        B::Add(Out,RightAxisRuntimeStorage());
+        B::Add(Out,UpAxisRuntimeStorage());
+        B::Add(Out,RenderDataRuntimeStorage().RollRotation);B::Add(Out,RenderDataRuntimeStorage().SteerRotation);B::Add(Out,RenderDataRuntimeStorage().WorldPosition);B::Add(Out,RenderDataRuntimeStorage().RightAxis);B::Add(Out,RenderDataRuntimeStorage().UpAxis);B::Add(Out,RenderDataRuntimeStorage().ForwardAxis);B::Add(Out,RenderDataRuntimeStorage().SpringOffset);
+    }
+#endif
+
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+void USWheelSubBody::AppendCanonicalEpisodeStateForTesting(
+    const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,TArray<uint8>& Out,
+    Speed::NativeKinematics::FCanonicalMassAppendDiagnostics& Diagnostics) const
+{
+    USphereSubBody::AppendCanonicalEpisodeStateForTesting(Operation,Out,Diagnostics);
+    AppendWheelEpisodeTailForTesting(Out);
+}
+#endif

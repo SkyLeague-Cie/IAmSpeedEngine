@@ -1,4 +1,8 @@
 #include "SimulationWorld.h"
+#include "SpeedPhysicsSimulation.h"
+#include "CanonicalFrameContext.h"
+#include "IAmSpeed/Netcode/client-prediction/PrivateNativeStorageMap.h"
+#include "IAmSpeed/World/Simulation/Internal/ComponentKinematicRead.h"
 #if !UE_BUILD_SHIPPING
 #include "FrameAppliedCommandWitness.h"
 #endif
@@ -169,7 +173,7 @@ namespace Speed
 		Adapters.Add(&Adapter);
 		StableIds.Add(&Adapter, StableId);
 		AdaptersByStableId.Add(StableId, &Adapter);
-		Adapter.PublishedSimulationStableId.Store(StableId);
+		Adapter.PublishedSimulationStableIdStorage().Store(StableId);
 		bOrderDirty = true;
 		return true;
 	}
@@ -181,7 +185,7 @@ namespace Speed
 		const int32 Removed = Adapters.Remove(&Adapter);
 		StableIds.Remove(&Adapter);
 		AdaptersByStableId.Remove(StableId);
-		Adapter.PublishedSimulationStableId.Store(0);
+		Adapter.PublishedSimulationStableIdStorage().Store(0);
 		bOrderDirty |= Removed > 0;
 		return Removed > 0;
 	}
@@ -281,8 +285,9 @@ namespace Speed
 			if (Body.Adapter) Body.Adapter->AbortCanonicalFrame(Frame, Reason);
 	}
 
-	ECanonicalPublicationResult FSimulationWorld::PublishCanonicalFrame(uint64 Frame, TFunctionRef<bool()> Publish)
-	{
+	template<class TPublish>
+    ECanonicalPublicationResult FSimulationWorld::PublishCanonicalFrameBody(uint64 Frame,TPublish& Publish)
+    {
 		if (IsRestoreBoundaryReserved()) return ECanonicalPublicationResult::ValidationFailed;
 		// Bodies is stable for the enclosing canonical frame. No registry lock is
 		// held across validation/publication; no GT registration enters this frame.
@@ -316,6 +321,28 @@ namespace Speed
 		return bAllCommitted ? ECanonicalPublicationResult::Completed : ECanonicalPublicationResult::CommitInvariantFailed;
 	}
 
+    ECanonicalPublicationResult FSimulationWorld::PublishCanonicalFrame(uint64 Frame,TFunctionRef<bool()> Publish)
+    {
+        return PublishCanonicalFrameBody(Frame,Publish);
+    }
+
+    ECanonicalPublicationResult FSimulationWorld::PublishNativeCanonicalFrame(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,
+        ASpeedPhysicsSimulation& Driver,const FCanonicalFrameContext& Context,const FSimulationSnapshot& Snapshot)
+    {
+        // Check the actual owner operation and retained inline world part
+        // BEFORE registry/participant reads. A missing part stays unavailable.
+        Netcode::Prediction::FPrivateNativeStorageAccess::RequireStep(Operation);
+        auto& Actual=Netcode::Prediction::FPrivateNativeStorageAccess::Part<FSimulationWorld>(Operation,this);
+        if(&Actual!=this)throw Netcode::Prediction::FPrivateNativeStorageUnavailable{};
+        Driver.ValidateNativePublicationOwner(Operation); // before participant validation or publication
+        // This fixed, local publisher is passed ONLY by reference to the
+        // private body above. No public callback/context receives this closure,
+        // its Operation, driver, or a pointer to retained native storage.
+        auto Publish=[&Operation,&Driver,&Context,&Snapshot]()
+        {return Driver.PublishNativeSnapshot(Operation,Context,Snapshot);};
+        return PublishCanonicalFrameBody(Context.NumFrame,Publish);
+    }
+
 	FSimulationSnapshot FSimulationWorld::CaptureSnapshot(
 		const uint64 NumFrame, const uint64 InputJournalHash, const bool bIncludePresentation) const
 	{
@@ -332,13 +359,13 @@ namespace Speed
 		for (const FSimulationBodyRecord& Body : Bodies)
 		{
 			if (!Body.Adapter) continue;
-			const SKinematic& State = Body.Adapter->GetKinematicState();
+			const SKinematic& State = Speed::NativeKinematics::FComponentRead::Current(*Body.Adapter);
 			if (bIncludePresentation)
 			{
 				FSimulationPresentationBody& Pose = Snapshot.PresentationBodies.AddDefaulted_GetRef();
 				Pose.StableId = Body.StableId;
 				Pose.COMState = State;
-				Pose.CenterOfMassLocal = Body.Adapter->GetPhysCenterOfMassLocal();
+				Pose.CenterOfMassLocal = Speed::NativeKinematics::FComponentRead::Of(*Body.Adapter).LocalCOM();
 				Body.Adapter->AppendPresentationSnapshot(Pose.Extension);
                 Body.Adapter->AppendWheelPresentationSnapshot(Pose.WheelVisuals);
                 if(Pose.WheelVisuals.Num())Pose.WheelVisualsVersion=1;

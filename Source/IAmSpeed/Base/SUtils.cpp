@@ -1,4 +1,5 @@
 #include "SUtils.h"
+#include "IAmSpeed/World/Simulation/RoadSettings/NativeRoadSettingsRead.h"
 #include "DrawDebugHelpers.h"
 #include "IAmSpeed/World/Collision/LinearContactWindow.h"
 #include "IAmSpeed/World/Collision/ContactTimeBracket.h"
@@ -23,9 +24,9 @@ static TAutoConsoleVariable<int32> CVarIAmSpeedSphereBoxNonpenetratingV2ForTesti
 
 static bool UseSphereBoxNonpenetratingV2(const bool bProductionPair)
 {
-	return (bProductionPair && CVarIAmSpeedSphereBoxNonpenetratingV2.GetValueOnAnyThread() == 1)
+	return (bProductionPair && Speed::RoadSettings::ReadOriginalOrLegacy<26>([](){ return CVarIAmSpeedSphereBoxNonpenetratingV2.GetValueOnAnyThread(); }) == 1)
 #if !UE_BUILD_SHIPPING
-		|| CVarIAmSpeedSphereBoxNonpenetratingV2ForTesting.GetValueOnAnyThread() == 1
+		|| Speed::RoadSettings::ReadOriginalOrLegacy<27>([](){ return CVarIAmSpeedSphereBoxNonpenetratingV2ForTesting.GetValueOnAnyThread(); }) == 1
 #endif
 		;
 }
@@ -1851,7 +1852,7 @@ bool SImpulseSolver::ComputeCollisionImpulse(
 		return false;
 
 	const bool bForceCoupledContactImpulse =
-		CVarIAmSpeedCoupledContactImpulse.GetValueOnAnyThread() != 0;
+		Speed::RoadSettings::ReadOriginalOrLegacy<7>([](){ return CVarIAmSpeedCoupledContactImpulse.GetValueOnAnyThread(); }) != 0;
 	if (bUsePostNormalFrictionImpulse)
 	{
 		const auto ApplyContactEffectiveMass = [
@@ -1912,7 +1913,7 @@ bool SImpulseSolver::ComputeCollisionImpulse(
 
 	const float CoupledMinNormalSpeed = FMath::Max(
 		0.0f,
-		CVarIAmSpeedCoupledContactImpulseMinNormalSpeed.GetValueOnAnyThread());
+		Speed::RoadSettings::ReadOriginalOrLegacy<9>([](){ return CVarIAmSpeedCoupledContactImpulseMinNormalSpeed.GetValueOnAnyThread(); }));
 	if (bForceCoupledContactImpulse ||
 		(bUseCoupledContactImpulse && FMath::Abs(vRelN) >= CoupledMinNormalSpeed))
 	{
@@ -1945,7 +1946,7 @@ bool SImpulseSolver::ComputeCollisionImpulse(
 		FVector AccumulatedImpulse = FVector::ZeroVector;
 		float AccumulatedNormalImpulse = 0.f;
 		const int32 Iterations = FMath::Clamp(
-			CVarIAmSpeedCoupledContactImpulseIterations.GetValueOnAnyThread(),
+			Speed::RoadSettings::ReadOriginalOrLegacy<8>([](){ return CVarIAmSpeedCoupledContactImpulseIterations.GetValueOnAnyThread(); }),
 			1, 32);
 
 		for (int32 Iteration = 0; Iteration < Iterations; ++Iteration)

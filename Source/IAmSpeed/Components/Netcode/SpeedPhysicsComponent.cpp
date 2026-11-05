@@ -1,7 +1,8 @@
+#include "SpeedPhysicsComponent.h"
+#include "IAmSpeed/World/Simulation/NativeEpochDiagnostics.h"
 // Fill out your copyright notice in the Description page of Project Settings.
 
 
-#include "SpeedPhysicsComponent.h"
 #include "SpeedMovementComponent.h"
 #include "SpeedWheeledComponent.h"
 
@@ -12,7 +13,7 @@ void FNetworkBaseSpeedState::ApplyData(UActorComponent* NetworkComponent) const
 	if (USpeedMovementComponent* Mover = Cast<USpeedMovementComponent>(NetworkComponent))
 	{
 	#if !(UE_BUILD_SHIPPING)
-		UE_LOG(SpeedNetcodeLog, Warning, TEXT("[BaseSpeed] ApplyData (RESIMULATION?) Triggered for frame = %d"), Mover->NumFrame());
+		SPEED_NATIVE_LOG(SpeedNetcodeLog, Warning, TEXT("[BaseSpeed] ApplyData (RESIMULATION?) Triggered for frame = %d"), Mover->NumFrame());
 	#endif
 		Mover->BasePhysicsState = BaseState;
 		if (SourceFramesSinceCanMove != INDEX_NONE)
@@ -24,7 +25,7 @@ void FNetworkBaseSpeedState::ApplyData(UActorComponent* NetworkComponent) const
 	{
 		if (!WheeledMover->AllowsExternalNetworkStateRestore()) return;
 #if !(UE_BUILD_SHIPPING)
-		UE_LOG(WheelNetcodeLog, Warning, TEXT("[BaseSpeed] ApplyData (RESIMULATION?) Triggered for frame = %d"), WheeledMover->NumFrame());
+		SPEED_NATIVE_LOG(WheelNetcodeLog, Warning, TEXT("[BaseSpeed] ApplyData (RESIMULATION?) Triggered for frame = %d"), WheeledMover->NumFrame());
 #endif
 		WheeledMover->BasePhysicsState = BaseState;
 		if (SourceFramesSinceCanMove != INDEX_NONE)
@@ -196,28 +197,28 @@ bool FNetworkBaseSpeedState::CompareData(const FNetworkPhysicsData& PredictedDat
 	const float MaxDeltaPosAir = ClientNetSettings.PositionResimulationThreshold;
 	if (ClientNetSettings.bEnablePositionResimulation && DeltaPos.Size() > MaxDeltaPosAir)
 	{
-		UE_LOG(SpeedNetcodeLog, Warning, TEXT("[CLIENT][MAX DELTA POS AIR] Frame=%d DeltaP=%fcm"), S.LocalFrame, DeltaPos.Size());
+		SPEED_NATIVE_LOG(SpeedNetcodeLog, Warning, TEXT("[CLIENT][MAX DELTA POS AIR] Frame=%d DeltaP=%fcm"), S.LocalFrame, DeltaPos.Size());
 		return false;
 	}
 
 	const float MaxDeltaRotAir = ClientNetSettings.RotationResimulationThreshold;
 	if (ClientNetSettings.bEnableRotationResimulation && DeltaAngleDeg > MaxDeltaRotAir)
 	{
-		UE_LOG(SpeedNetcodeLog, Warning, TEXT("[CLIENT][MAX DELTA ROT AIR] Frame=%d DeltaRot=%fdeg"), S.LocalFrame, DeltaAngleDeg);
+		SPEED_NATIVE_LOG(SpeedNetcodeLog, Warning, TEXT("[CLIENT][MAX DELTA ROT AIR] Frame=%d DeltaRot=%fdeg"), S.LocalFrame, DeltaAngleDeg);
 		return false;
 	}
 
 	const float MaxDeltaVelAir = ClientNetSettings.VelocityResimulationThreshold;
 	if (ClientNetSettings.bEnableVelocityResimulation && DeltaVel.Size() > MaxDeltaVelAir)
 	{
-		UE_LOG(SpeedNetcodeLog, Warning, TEXT("[CLIENT][MAX DELTA VEL AIR] Frame=%d DeltaV=%fcm/s"), S.LocalFrame, DeltaVel.Size());
+		SPEED_NATIVE_LOG(SpeedNetcodeLog, Warning, TEXT("[CLIENT][MAX DELTA VEL AIR] Frame=%d DeltaV=%fcm/s"), S.LocalFrame, DeltaVel.Size());
 		return false;
 	}
 
 	const float MaxDeltaAngVelAir = ClientNetSettings.AngularVelocityResimulationThreshold;
 	if (ClientNetSettings.bEnableAngularVelocityResimulation && DeltaAngVel.Size() > MaxDeltaAngVelAir)
 	{
-		UE_LOG(SpeedNetcodeLog, Warning, TEXT("[CLIENT][MAX DELTA ANG VEL AIR] Frame=%d DeltaAng=%frad/s"), S.LocalFrame, DeltaAngVel.Size());
+		SPEED_NATIVE_LOG(SpeedNetcodeLog, Warning, TEXT("[CLIENT][MAX DELTA ANG VEL AIR] Frame=%d DeltaAng=%frad/s"), S.LocalFrame, DeltaAngVel.Size());
 		return false;
 	}
 
@@ -247,28 +248,28 @@ bool FNetworkBaseSpeedState::CompareDataSimProxy(const FNetworkBaseSpeedState& C
 	const float MaxDeltaPosAir = SimProxyNetSettings.PositionResimulationThreshold;
 	if (SimProxyNetSettings.bEnablePositionResimulation && DeltaPos.Size() > MaxDeltaPosAir)
 	{
-		UE_LOG(SpeedNetcodeLog, Warning, TEXT("[SIM PROXY][MAX DELTA POS] Frame=%d DeltaP=%fcm"), S.LocalFrame, DeltaPos.Size());
+		SPEED_NATIVE_LOG(SpeedNetcodeLog, Warning, TEXT("[SIM PROXY][MAX DELTA POS] Frame=%d DeltaP=%fcm"), S.LocalFrame, DeltaPos.Size());
 		return false;
 	}
 
 	const float MaxDeltaRotAir = SimProxyNetSettings.RotationResimulationThreshold;
 	if (SimProxyNetSettings.bEnableRotationResimulation && DeltaRot.Size() > MaxDeltaRotAir)
 	{
-		UE_LOG(SpeedNetcodeLog, Warning, TEXT("[SIM PROXY][MAX DELTA ROT] Frame=%d DeltaRot=%fdeg"), S.LocalFrame, DeltaRot.Size());
+		SPEED_NATIVE_LOG(SpeedNetcodeLog, Warning, TEXT("[SIM PROXY][MAX DELTA ROT] Frame=%d DeltaRot=%fdeg"), S.LocalFrame, DeltaRot.Size());
 		return false;
 	}
 
 	const float MaxDeltaVelAir = SimProxyNetSettings.VelocityResimulationThreshold;
 	if (SimProxyNetSettings.bEnableVelocityResimulation && DeltaVel.Size() > MaxDeltaVelAir)
 	{
-		UE_LOG(SpeedNetcodeLog, Warning, TEXT("[SIM PROXY][MAX DELTA VEL] Frame=%d DeltaV=%fcm/s"), S.LocalFrame, DeltaVel.Size());
+		SPEED_NATIVE_LOG(SpeedNetcodeLog, Warning, TEXT("[SIM PROXY][MAX DELTA VEL] Frame=%d DeltaV=%fcm/s"), S.LocalFrame, DeltaVel.Size());
 		return false;
 	}
 
 	const float MaxDeltaAngVelAir = SimProxyNetSettings.AngularVelocityResimulationThreshold;
 	if (SimProxyNetSettings.bEnableAngularVelocityResimulation && DeltaAngVel.Size() > MaxDeltaAngVelAir)
 	{
-		UE_LOG(SpeedNetcodeLog, Warning, TEXT("[SIM PROXY][MAX DELTA ANG VEL] Frame=%d DeltaAng=%frad/s"), S.LocalFrame, DeltaAngVel.Size());
+		SPEED_NATIVE_LOG(SpeedNetcodeLog, Warning, TEXT("[SIM PROXY][MAX DELTA ANG VEL] Frame=%d DeltaAng=%frad/s"), S.LocalFrame, DeltaAngVel.Size());
 		return false;
 	}
 	return true;

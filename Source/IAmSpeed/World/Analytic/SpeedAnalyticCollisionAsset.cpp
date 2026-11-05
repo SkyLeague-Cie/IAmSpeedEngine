@@ -1,4 +1,5 @@
 #include "SpeedAnalyticCollisionAsset.h"
+#include "IAmSpeed/World/Simulation/NativeEpochDiagnostics.h"
 
 #include "AnalyticWorldData.h"
 #include "Engine/EngineTypes.h"
@@ -643,7 +644,7 @@ USpeedAnalyticCollisionAsset::BuildRuntimeData(
 	{
 		Runtime->BuildRecognitionDiagnostics();
 	}
-	UE_LOG(LogTemp, Display,
+	SPEED_NATIVE_LOG(LogTemp, Display,
 		TEXT("[AnalyticRuntimeBuildTiming] AuthorityOnly=%d Seconds=%.6f Planes=%d Quintics=%d Tensors=%d Piecewise=%d Triangles=%d"),
 		bAuthorityProvidersOnly ? 1 : 0,
 		FPlatformTime::Seconds() - BuildStartSeconds,
@@ -665,7 +666,7 @@ void USpeedAnalyticCollisionAsset::PreSave(FObjectPreSaveContext SaveContext)
 	FString Reason;
 	if (!ValidateGeneratedData(&Reason))
 	{
-		UE_LOG(
+		SPEED_NATIVE_LOG(
 			LogSpeedAnalyticCollisionAsset,
 			Error,
 			TEXT("Analytical collision asset %s is invalid for cook: %s"),

@@ -36,6 +36,22 @@ UCLASS(ClassGroup = "Collision", editinlinenew, hidecategories = (Object, LOD, L
 class IAMSPEED_API USphereSubBody : public USolidSubBody, public ISphereSweeper, public ISolidSweeper
 {
     GENERATED_UCLASS_BODY()
+private:
+    class FLegacyResponseMassAccess;class FNativeResponseMassAccess;
+    template<class TAccess> void ResolveCurrentHitPrvMassResponseBody(TAccess& Storage,const float& delta, const float& SimTime);
+    template<class TAccess> void ResolveHitVsGroundMassResponseBody(TAccess& Storage,const float& delta, const float& SimTime);
+    template<class TAccess> void ResolveHitVsBoxMassResponseBody(TAccess& Storage,UBoxSubBody& OtherBox, const float& delta, const float& SimTime);
+    template<class TAccess> void ResolveHitVsSphereMassResponseBody(TAccess& Storage,USphereSubBody& OtherSphere, const float& delta, const float& SimTime);
+    void ResolveNativeSphereCurrentHit(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const float& Delta,const float& SimTime);
+    friend class USWheelSubBody;friend class USpeedBranchWheelSubBody;
+    class FLegacyBirthInitializeAccess;class FNativeBirthInitializeAccess;class FReferenceBirthInitializeAccess;
+    class FLegacyInitialInertiaAccess;class FNativeInitialInertiaAccess;
+    template<class TAccess> void InitializeBirthBody(TAccess& Storage,ISpeedComponent* InParentComponent);
+    template<class TAccess> FMatrix InitialInverseTensorBody(TAccess& Storage) const;
+    void InitializeNativeSphere(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,ISpeedComponent* Parent);
+    void InitializeReferenceSphere(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const Speed::Netcode::Prediction::FPrivateReferenceOwnerBirth& Proof,ISpeedComponent* Parent);
+    FMatrix InitialNativeInverseTensor(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation) const;
+
 	
 public:
     const USolidSubBody* GetSolidSweepBody() const override { return this; }
@@ -44,19 +60,7 @@ public:
     void AppendEpisodeStateForTesting(TArray<uint8>& Out) const override
     {
         USolidSubBody::AppendEpisodeStateForTesting(Out);
-        using B=Speed::FEpisodeStateBytesForTesting;
-        B::Add(Out,bProductionNonpenetratingBoxContacts);
-        B::Add(Out,Radius);
-        B::Add(Out,MinSlopCm);
-        B::Add(Out,SphereBoxTangentialContactArmScale);
-        B::Add(Out,SphereBoxTangentialContactArmStartSpeed);
-        B::Add(Out,SphereBoxTangentialContactArmFullSpeed);
-        B::Add(Out,SphereBoxTangentialArmMinSphereSpeed);
-        B::Add(Out,SphereBoxTangentialArmMaxSphereSpeed);
-        B::Add(Out,SphereBoxTangentialArmMinSphereAngularSpeed);
-        B::Add(Out,SphereBoxTangentialArmMaxSphereAngularSpeed);
-        B::Add(Out,SphereBoxTangentialArmMinBoxSpeed);
-        B::Add(Out,WorldStaticPenetrationDiagnostics.bEnabled);B::Add(Out,WorldStaticPenetrationDiagnostics.StartFrame);B::Add(Out,WorldStaticPenetrationDiagnostics.SweepInitialOverlapSamples);B::Add(Out,WorldStaticPenetrationDiagnostics.ProjectionInputSamples);B::Add(Out,WorldStaticPenetrationDiagnostics.ProjectionResidualSamples);B::Add(Out,WorldStaticPenetrationDiagnostics.MaximumSweepInitialOverlapCm);B::Add(Out,WorldStaticPenetrationDiagnostics.MaximumProjectionInputDepthCm);B::Add(Out,WorldStaticPenetrationDiagnostics.MaximumProjectionResidualDepthCm);B::Add(Out,WorldStaticPenetrationDiagnostics.MaximumSweepInitialOverlapFrame);B::Add(Out,WorldStaticPenetrationDiagnostics.MaximumProjectionInputFrame);B::Add(Out,WorldStaticPenetrationDiagnostics.MaximumProjectionResidualFrame);
+        AppendSphereEpisodeTailForTesting(Out);
     }
 #endif
 	virtual void Initialize(ISpeedComponent* InParentComponent) override;
@@ -88,11 +92,11 @@ public:
 	}
 	static bool IsSphereBoxProjectionEnabled();
 	static bool IsWorldStaticProjectionEnabled();
-    float GetRadius() const { return Radius; }
+    float GetRadius() const { return RadiusSphereDomainStorage(); }
 	void SetRadiusForConfiguration(float NewRadius)
 	{
 		SetRadius(NewRadius);
-		InvInertiaLocal = InitInvInertiaTensor();
+		InvInertiaLocalSolidStorage() = InitInvInertiaTensor();
 	}
 	void SetSphereBoxTangentialContactArmScale(float InScale)
 	{
@@ -173,6 +177,8 @@ protected:
 protected:
     FMatrix InitInvInertiaTensor() const override;
 
+    virtual float& RadiusSphereDomainStorage() {return Radius;}
+    virtual float const& RadiusSphereDomainStorage() const {return Radius;}
     UPROPERTY(EditAnywhere, BlueprintReadOnly, export, Category = Shape)
     float Radius = 0.f; // Real radius of the sphere
 	float MinSlopCm = 0.05f; // Minimum allowed penetration depth in cm, used as slop in the solver to prevent jittering when resolving penetrations
@@ -187,4 +193,14 @@ protected:
 	float SphereBoxTangentialArmMaxSphereAngularSpeed = -1.0f;
 	float SphereBoxTangentialArmMinBoxSpeed = -1.0f;
 	FSphereWorldStaticPenetrationDiagnostics WorldStaticPenetrationDiagnostics;
+
+protected:
+#if !UE_BUILD_SHIPPING
+    void AppendSphereEpisodeTailForTesting(TArray<uint8>& Out) const;
+#endif
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+    void AppendCanonicalEpisodeStateForTesting(
+        const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,TArray<uint8>& Out,
+        Speed::NativeKinematics::FCanonicalMassAppendDiagnostics& Diagnostics) const override;
+#endif
 };

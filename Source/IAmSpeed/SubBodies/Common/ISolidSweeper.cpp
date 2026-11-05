@@ -1,4 +1,7 @@
 #include "ISolidSweeper.h"
+#include "IAmSpeed/World/Simulation/Internal/BodyKinematicRead.h"
+#include "IAmSpeed/World/Simulation/Internal/ComponentKinematicRead.h"
+#include "IAmSpeed/World/Simulation/NativeEpochDiagnostics.h"
 #include "IAmSpeed/SubBodies/Solid/SolidSubBody.h"
 #include "IAmSpeed/Components/ISpeedComponent.h"
 #include "IAmSpeed/IAmSpeed.h"
@@ -9,14 +12,14 @@ bool ISolidSweeper::InternalSweep(UWorld* World, const FVector& Start, const FVe
 {
     if (!World) return false;
 
-    const Speed::FKinematicState& KS = GetKinematicState();
+    const Speed::FKinematicState& KS = Speed::NativeKinematics::FBodyRead::Sweeper(*this);
     const USolidSubBody* Solid=GetSolidSweepBody();
     const ISpeedComponent* Owner=Solid ? Solid->GetParentComponent() : nullptr;
     Speed::Analytic::FTorusSweepTrajectory Trajectory;
     const bool bTorusTrajectory=Owner && Owner->GetStaticCollisionWorldForFrame();
     if (bTorusTrajectory)
     {
-        Trajectory.Owner=Owner->GetKinematicState();Trajectory.DeltaSeconds=delta;
+        Trajectory.Owner=Speed::NativeKinematics::FComponentRead::Current(*Owner);Trajectory.DeltaSeconds=delta;
         // Current physical offset includes centre of mass and wheel suspension.
         Trajectory.LocalOffset=Trajectory.Owner.Rotation.UnrotateVector(KS.Location-Trajectory.Owner.Location);
         Trajectory.LocalRotation=Trajectory.Owner.Rotation.Inverse()*KS.Rotation;
@@ -55,7 +58,7 @@ bool ISolidSweeper::InternalSweep(UWorld* World, const FVector& Start, const FVe
 			const bool bChaosShadowHit = World->SweepSingleByChannel(
 				ChaosShadowHit, Start, End, KS.Rotation, GetCollisionChannel(),
 				GetCollisionShape(), Params, GetResponseParams());
-			UE_LOG(SpeedPhysicsLog, Display,
+			SPEED_NATIVE_LOG(SpeedPhysicsLog, Display,
 				TEXT("[AnalyticAuthorityChaosBoxShadow] Start=%s End=%s Rotation=%s HalfExtent=%s AnalyticTime=%.17g AnalyticPoint=%s AnalyticNormal=%s AnalyticStartPenetrating=%d AnalyticPenetrationDepth=%.17g AnalyticSurface=%016llX AnalyticFeature=%016llX AnalyticPrimitive=%016llX ChaosHit=%d ChaosTime=%.9g ChaosPoint=%s ChaosNormal=%s ChaosStartPenetrating=%d ChaosPenetrationDepth=%.9g"),
 				*Start.ToString(), *End.ToString(), *KS.Rotation.ToString(),
 				*GetCollisionShape().GetBox().ToString(),
@@ -78,7 +81,7 @@ bool ISolidSweeper::InternalSweep(UWorld* World, const FVector& Start, const FVe
     if (bHit)
     {
 		OutHit = bUsedAnalyticAuthority
-			? SHitResult::FromAnalyticHit(AnalyticHit, delta, Hit.Component.Get())
+			? SHitResult::FromAnalyticHit(AnalyticHit, delta, Hit.Component)
 			: SHitResult::FromUnrealHit(Hit, delta);
     }
     return bHit;

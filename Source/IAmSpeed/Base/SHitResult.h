@@ -53,6 +53,14 @@ namespace Speed
 			UPrimitiveComponent* InComponent = nullptr,
 			uint32 InFrameTag = 0);
 
+		// Reuse an already acquired weak identity. Invalid/stale inputs become
+		// null, matching the raw overload called with ExistingComponent.Get().
+		// This value conversion does not mint a weak identity or grant lifetime.
+		static SHitResult FromAnalyticHit(
+			const Analytic::FWorldHit& AnalyticHit, float Delta,
+			const TWeakObjectPtr<UPrimitiveComponent>& ExistingComponent,
+			uint32 InFrameTag = 0);
+
 		static SHitResult FromUnrealHit(const FHitResult& UnrealHit, const float& Delta, const uint32& InFrameTag = 0)
 		{
 			SHitResult ret = SHitResult(UnrealHit.bBlockingHit, UnrealHit.ImpactPoint, UnrealHit.ImpactNormal, UnrealHit.Time * Delta, UnrealHit.Component.Get());

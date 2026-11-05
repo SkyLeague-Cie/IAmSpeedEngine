@@ -1,4 +1,6 @@
 #include "FrameSolveWitness.h"
+#include "IAmSpeed/World/Simulation/Internal/BodyKinematicRead.h"
+#include "IAmSpeed/World/Simulation/Internal/ComponentKinematicRead.h"
 #if !UE_BUILD_SHIPPING
 #include "IAmSpeed/Base/EpisodeShapeFieldsForTesting.h"
 #include "SimulationWorld.h"
@@ -155,15 +157,24 @@ void AddDynamicPair(TArray<uint8>& B,const ::FDynamicContactPair& P)
  W::Add(B,P.MinimumSeparation);W::Add(B,P.MaximumSeparation);
  W::Add(B,P.bRollingManifoldReady);W::Add(B,P.bActiveContactLastSolve);
 }
-void AddDynamicBody(TArray<uint8>& B,const USSubBody* Body)
+} // anonymous helpers
+namespace NativeKinematics
+{
+struct FDynamicBodyWitness
+{
+    static void Add(TArray<uint8>& B,const USSubBody* Body)
 {
  using W=FEpisodeStateBytesForTesting;
  W::Add(B,Body);W::Add(B,Body!=nullptr);if(!Body)return;
- W::Add(B,Body->GetKinematicState());
+ W::Add(B,Speed::NativeKinematics::FBodyRead::Body(*Body));
  const ISpeedComponent* Parent=Body->GetParentComponent();
  W::Add(B,Parent!=nullptr);if(!Parent)return;
- W::Add(B,Parent->GetPublishedSimulationStableId());W::Add(B,Parent->GetKinematicState());
+ W::Add(B,Parent->GetPublishedSimulationStableId());W::Add(B,Speed::NativeKinematics::FComponentRead::Current(*Parent));
 }
+};
+}
+namespace
+{
 void AddDynamicContext(TArray<uint8>& B,const ::FFakePhysicsImpactContext& C)
 {
  using W=FEpisodeStateBytesForTesting;
@@ -238,7 +249,7 @@ void FFrameSolveWitnessScope::RecordDynamicEvent(uint64 Pass,EFrameDynamicContac
   if(Pair->BodyA.IsStale(true,true) || Pair->BodyB.IsStale(true,true))S->bOverflow=true;
   AddDynamicPair(B,*Pair);
  }
- AddDynamicBody(B,BodyA);AddDynamicBody(B,BodyB);
+ NativeKinematics::FDynamicBodyWitness::Add(B,BodyA);NativeKinematics::FDynamicBodyWitness::Add(B,BodyB);
  W::Add(B,Vector);W::Add(B,Point);W::Add(B,Scalar1);W::Add(B,Scalar2);
  W::Add(B,Hit!=nullptr);if(Hit)W::Add(B,*Hit);
  W::Add(B,Context!=nullptr);if(Context)AddDynamicContext(B,*Context);

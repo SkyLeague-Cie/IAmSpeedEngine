@@ -1,0 +1,5575 @@
+#include "PrivateRoadPhysicsWorld.h"
+#include <bit>
+#include "IAmSpeed/World/Simulation/Internal/BodyContactWrite.h"
+#include "IAmSpeed/World/Simulation/Internal/SolidMassAccess.h"
+#include "IAmSpeed/World/Simulation/Internal/ComponentContactWrite.h"
+#include "Math/QuatRotationTranslationMatrix.h"
+#include "PrivateNativeOperation.h"
+#include "IAmSpeed/World/Simulation/Internal/SolidPropertiesAccess.h"
+#include "IAmSpeed/World/Simulation/Internal/WheelBindingAccess.h"
+#include "IAmSpeed/World/Simulation/Internal/ComponentKinematicRead.h"
+#include "IAmSpeed/World/Simulation/Internal/BodyKinematicRead.h"
+#include "IAmSpeed/Base/SpeedConstant.h"
+#include "PrivateRoadNativeObjects.h"
+#include "PrivateRoadPartialStateObservation.h"
+#include "OriginalRoadBodyValueCapture.h"
+#include "OriginalRoadComponentValueCapture.h"
+#include "IAmSpeed/Driving/StockRoadCar.h"
+#include "IAmSpeed/Netcode/presentation-client/PresentationClientWorld.h"
+#include "IAmSpeed/World/Subsystem/SpeedWorldSubsystem.h"
+#include "IAmSpeed/World/Simulation/CanonicalFrameContext.h"
+#include "IAmSpeed/SubBodies/Solid/SWheelSubBody.h"
+#include "IAmSpeed/SubBodies/Configs/SubBodyConfig.h"
+#include "Engine/World.h"
+#include "Engine/Level.h"
+#include "UObject/UnrealType.h"
+#include "GameFramework/HUD.h"
+#include "GameFramework/GameModeBase.h"
+#include "Components/BoxComponent.h"
+#include "Physics/NetworkPhysicsComponent.h"
+#include "Chaos/Framework/PhysicsSolverBase.h"
+#include "ChaosVehicleWheel.h"
+#include "PhysicsEngine/PhysicsSettings.h"
+#include "SimpleVehicle.h"
+#include "SuspensionSystem.h"
+#include "WheelSystem.h"
+#include "UObject/StrongObjectPtr.h"
+#include "UObject/UObjectHash.h"
+#include "UObject/UObjectIterator.h"
+#include "Misc/ScopeExit.h"
+#include "Misc/ScopeLock.h"
+#include "UObject/GarbageCollection.h"
+#include "IAmSpeed/World/Simulation/NativeEpochDiagnostics.h"
+#include "NativeRetirementStorage.h"
+#include "IAmSpeed/World/Simulation/RoadSettings/NativeRoadSettingsRead.h"
+#include <algorithm>
+#include <mutex>
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+#include "IAmSpeed/Base/EpisodeStateBytesForTesting.h"
+#endif
+
+namespace Speed::Netcode::Prediction
+{
+// No public handle exposes this staging area. It exists only during one GT
+// call and cannot be used to install a Device producer, authority receipt or
+// legacy snapshot. Native lifetime/restore certification remains separate.
+struct FPrivateRoadAccess : Speed::NativeEpoch::IOriginalStorageRoute
+{
+    bool Retired=false;
+    bool SelectsOriginalStorage() const noexcept override;
+    struct FSlot {std::shared_ptr<const FBranchProcessedInput> Input;bool Consumed=false;U64 Actor=0,Incarnation=0;};
+    UWorld* World=nullptr;
+    TWeakObjectPtr<UWorld> OriginalWorldBirth;
+    TWeakObjectPtr<ULevel> OriginalLevelBirth;
+    TWeakObjectPtr<ASpeedBranchSimulation> OriginalDriverBirth;
+    bool OriginalActorWorldStillMatches(const AActor* Actor) const;
+    TWeakObjectPtr<USpeedWorldSubsystem> OriginalBridgeBirth;
+    TWeakObjectPtr<UBoxComponent> OriginalFloorBirth;
+    U64 OriginalStaticSourceId=0;
+    TSharedPtr<const Speed::Analytic::FAnalyticWorldData> OriginalSourceGeometry;
+    Speed::FImmutableStaticQueryIdentity1075 OriginalQueryIdentity; // actual backend observation, NOT lifetime authority
+    using FSourceBindingsRead=bool(*)(const USpeedWorldSubsystem&,const Speed::Analytic::FAnalyticWorldData*,U64,const TWeakObjectPtr<UBoxComponent>&);
+    FSourceBindingsRead MatchesOriginalSourceBindings=nullptr; // fixed native owner thunk, no captured view/delegate
+
+    const TObjectPtr<AGameModeBase>* OriginalGameModeCell=nullptr;
+    TWeakObjectPtr<UClass> OriginalWorldClassBirth;
+    bool OriginalWorldHasNoGameMode() const;
+    struct FActualCarAlias
+    {
+        TWeakObjectPtr<ASpeedBranchCar> Actor;
+        TWeakObjectPtr<USpeedBranchWheeledComponent> Component;
+        TWeakObjectPtr<UClass> ActorClass,MovementOwnerClass;
+        const TObjectPtr<UChaosVehicleMovementComponent>* MovementCell=nullptr;
+    };
+    TMap<const USpeedBranchWheeledComponent*,FActualCarAlias> ActualCarAliases;
+    USpeedBranchWheeledComponent* FindOriginalComponentAlias(const ISpeedComponent* Parent,const AActor* Owner) const;
+    const USpeedWorldSubsystem* OriginalBridgeForFrame(UWorld* World,const Speed::IStaticCollisionWorld* StaticWorld) const;
+    bool Active=false,RequiresInitialPublication=true,InitialPublicationReleased=false;
+    U64 Frame=0;
+    TMap<const USpeedBranchWheeledComponent*,FSlot> Slots;
+    std::vector<FPrivateRoadContactDispatchPair> ContactDispatches;
+    bool ContactDispatchOverflow=false;
+};
+namespace
+{
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+// Copy raw Euler scalars only: diagnostic bytes have no composite fallback.
+// A getter temporary binds once for this call; no borrow crosses a callback.
+void AppendInitializerEulerScalars(TArray<uint8>& Bytes,const FRotator& Euler)
+{
+    using B=Speed::FEpisodeStateBytesForTesting;
+    B::Add(Bytes,Euler.Pitch);B::Add(Bytes,Euler.Yaw);B::Add(Bytes,Euler.Roll);
+}
+#endif
+// This routing scope can only be installed by this translation unit, under
+// the original factory/step/startup gate. It is NOT a complete boundary lease:
+// caches, subbodies, configurations and callback/lifetime closure remain work.
+thread_local const FPrivateRoadAccess* OriginalComponentStorageOwner=nullptr;
+struct FOriginalComponentStorageScope
+{
+    explicit FOriginalComponentStorageScope(const FPrivateRoadAccess& Owner)
+        {OriginalComponentStorageOwner=&Owner;}
+    ~FOriginalComponentStorageScope(){OriginalComponentStorageOwner=nullptr;}
+    FOriginalComponentStorageScope(const FOriginalComponentStorageScope&)=delete;
+    FOriginalComponentStorageScope& operator=(const FOriginalComponentStorageScope&)=delete;
+};
+bool Refuse(FString& Why,const TCHAR* Message) {Why=Message;return false;}
+// This fixed native subtype consumes exactly the stock road semantic slots.
+// Generic contract validity alone permits other physical destinations and wider
+// extension axes. Refuse those recipes before allocating any native graph.
+bool PrivateRoadSupportedContract(const BranchV2::FInputActionContract& Contract)
+{
+    const auto& D=Contract.GetDescription();
+    if(D.Actions.size()!=7||D.Physical.size()!=3)return false;
+    const char* Names[]={"Throttle","Brake","Steering","Pause","ResetWorld","CameraYaw","CameraPitch"};
+    for(size_t I=0;I<7;++I)
+    {
+        const auto* A=Contract.Find(Speed::Input::FActionId(I));
+        const bool Axis=I<3||I>=5,Signed=I==2||I>=5;
+        const int16 Quantization=I<2?255:(I==2||I>=5?127:1);
+        if(!A||A->Owner!="IAmSpeed"||A->Name!=Names[I]||A->Version!=1
+            ||A->Wiring!=BranchV2::EActionWiring::Wired
+            ||A->Type!=(Axis?BranchV2::EActionType::Axis1D:BranchV2::EActionType::Bool)
+            ||A->Signed!=Signed||A->Quantization!=Quantization)return false;
+    }
+    for(const auto& B:D.Physical)
+        if(B.Action!=static_cast<Speed::Input::FActionId>(B.Destination))return false;
+    // Raw controls, mapping revision and scalar transforms may legitimately
+    // differ between clients. They do not change these consumed semantics.
+    return true;
+}
+bool Finite(const SKinematic& K)
+{
+    return !K.Location.ContainsNaN()&&!K.Velocity.ContainsNaN()&&!K.Acceleration.ContainsNaN()
+        &&!K.AngularVelocity.ContainsNaN()&&!K.AngularAcceleration.ContainsNaN()
+        &&K.Rotation.IsNormalized();
+}
+uint32 NativeNetworkComponentCount(UWorld* World)
+{
+    uint32 Count=0;
+    for(TObjectIterator<UNetworkPhysicsComponent> It;It;++It)
+        if(!It->IsTemplate()&&It->GetWorld()==World)++Count;
+    return Count;
+}
+bool NoNetworkOwner(UWorld* World)
+{return World&&!World->Scene&&!World->GetPhysicsScene()&&!World->bShouldSimulatePhysics
+    &&Speed::NativeObjectRead::IsResolvedNull(World->NetDriver)&&NativeNetworkComponentCount(World)==0;}
+}
+bool IsPrivateRoadOriginalStorageRouteForDiagnostics() noexcept
+{
+    return IsInGameThread()&&OriginalComponentStorageOwner!=nullptr;
+}
+bool FPrivateRoadAccess::OriginalActorWorldStillMatches(const AActor* Actor) const
+{
+    const auto* W=OriginalWorldBirth.Get();const auto* L=OriginalLevelBirth.Get();
+    return Actor&&W&&W==World&&L&&!W->bIsTearingDown
+        &&!W->HasAnyFlags(RF_BeginDestroyed|RF_FinishDestroyed)
+        &&!Actor->HasAnyFlags(RF_ClassDefaultObject|RF_BeginDestroyed|RF_FinishDestroyed)
+        &&!L->HasAnyFlags(RF_BeginDestroyed|RF_FinishDestroyed)
+        &&Actor->GetOuter()==L&&L->GetOuter()==W
+        &&Speed::NativeObjectRead::MatchesOriginalBirth(W->PersistentLevel,OriginalLevelBirth)
+        &&Speed::NativeObjectRead::MatchesOriginalBirth(L->OwningWorld,OriginalWorldBirth);
+}
+bool FPrivateRoadAccess::OriginalWorldHasNoGameMode() const
+{
+    const auto* W=OriginalWorldBirth.Get();const auto* C=OriginalWorldClassBirth.Get();
+    return W&&W==World&&C&&W->GetClass()==C&&!C->HasAnyClassFlags(CLASS_NewerVersionExists)
+        &&OriginalGameModeCell&&Speed::NativeObjectRead::IsResolvedNull(*OriginalGameModeCell);
+}
+USpeedBranchWheeledComponent* FPrivateRoadAccess::FindOriginalComponentAlias(const ISpeedComponent* Parent,const AActor* Owner) const
+{
+    if(!IsInGameThread()||!SelectsOriginalStorage()||!Parent||!Owner)return nullptr;
+    for(const auto& Item:ActualCarAliases)
+    {
+        const auto& R=Item.Value;auto* A=R.Actor.Get();auto* C=R.Component.Get();
+        const auto* AC=R.ActorClass.Get();const auto* OC=R.MovementOwnerClass.Get();
+        if(!A||A!=Owner||!C||C!=Item.Key||!AC||!OC||!R.MovementCell)continue;
+        if(A->GetClass()!=AC||AC->HasAnyClassFlags(CLASS_NewerVersionExists)||OC->HasAnyClassFlags(CLASS_NewerVersionExists)
+            ||C->GetOwner()!=A||!OriginalActorWorldStillMatches(A)
+            ||!Speed::NativeObjectRead::MatchesOriginalBirth(*R.MovementCell,TWeakObjectPtr<UChaosVehicleMovementComponent>(R.Component)))continue;
+        // Real multiple-inheritance adjustment from a verified actual native
+        // component. ISpeedComponent is not a UObject or a guessed raw offset.
+        if(static_cast<const ISpeedComponent*>(C)==Parent)return C;
+    }
+    return nullptr;
+}
+const USpeedWorldSubsystem* FPrivateRoadAccess::OriginalBridgeForFrame(UWorld* W,const Speed::IStaticCollisionWorld* StaticWorld) const
+{
+    if(!IsInGameThread()||!SelectsOriginalStorage()||!Active||!W||W!=OriginalWorldBirth.Get()||!StaticWorld)
+        throw Speed::NativeObjectRead::FUnresolvedOriginal();
+    const auto* B=OriginalBridgeBirth.Get();const auto* F=OriginalFloorBirth.Get();
+    if(!B||B->GetOuter()!=W||!F||!OriginalStaticSourceId||B->GetStaticCollisionWorld()!=StaticWorld
+        ||!OriginalSourceGeometry.IsValid()||!OriginalQueryIdentity.IsValid()
+        ||OriginalQueryIdentity.Data!=OriginalSourceGeometry.Get()
+        ||!(StaticWorld->GetImmutableQueryIdentity1075()==OriginalQueryIdentity)
+        ||!MatchesOriginalSourceBindings
+        ||!MatchesOriginalSourceBindings(*B,OriginalSourceGeometry.Get(),OriginalStaticSourceId,OriginalFloorBirth))
+        throw Speed::NativeObjectRead::FUnresolvedOriginal();
+    // This is the actual IAS epoch/source participant that installed the
+    // parent's frame StaticWorld, NOT a claim about an unchanged UE collection.
+    return B;
+}
+bool FPrivateRoadAccess::SelectsOriginalStorage() const noexcept
+{
+    // Foreign threads return BEFORE reading GT-only epoch fields. The weak
+    // route binding also prevents raw-address reuse after actual retirement.
+    if(OriginalComponentStorageOwner!=this||!IsInGameThread())return false;
+    return !Retired;
+}
+struct FPrivateRoadPhysicsWorld::FImpl
+{
+    struct FCar
+    {
+        FPrivateRoadCarSeed Seed;
+        std::shared_ptr<RetirementDraft::FVehicleConfiguration> NativeConfiguration=std::make_shared<RetirementDraft::FVehicleConfiguration>();
+        std::shared_ptr<RetirementDraft::FVehicleConfiguration> ReferenceConfiguration=std::make_shared<RetirementDraft::FVehicleConfiguration>();
+TWeakObjectPtr<USpeedBranchWheeledComponent> ComponentWeak;
+TWeakObjectPtr<ASpeedBranchCar> ActorWeak;
+using FVehicleRoot=RetirementDraft::TVehicleRoot<USpeedWheeledComponent::FOriginalWheeledDomain>;
+using FWheelRoot=RetirementDraft::TBodyRoot<FVehicleRoot,
+    FPrivateRoadSubBodyValues,FPrivateRoadSolidValues,FPrivateRoadWheelRuntimeValues,
+    FPrivateRoadWheelDomain,FPrivateRoadSphereDomain>;
+using FBoxRoot=RetirementDraft::TBodyRoot<FVehicleRoot,
+    FPrivateRoadSubBodyValues,FPrivateRoadSolidValues,FPrivateRoadBoxDomain>;
+std::shared_ptr<FVehicleRoot> NativeVehicleRoot;
+std::vector<std::shared_ptr<FWheelRoot>> NativeWheelRoots;
+std::shared_ptr<FBoxRoot> NativeBoxRoot;
+std::shared_ptr<USpeedBranchWheeledComponent::FOwnedComponentValues> NativeCommonValues;
+using FReferenceSimulation=std::remove_reference_t<decltype(
+    std::declval<USpeedBranchWheeledComponent&>().VehicleSimulationPTWheeledDomainStorage())>;
+FReferenceSimulation RetiringReferenceSimulation;
+// The aliasing root wiring is a prerequisite, not a public Root/binder accessor.
+
+        ASpeedBranchCar* Actor=nullptr;
+        USpeedBranchWheeledComponent* Component=nullptr;
+        // Address of the actual native TObjectPtr field, obtained once through
+        // genuine reflected metadata outside all original recipe/math scopes.
+        // Never a replacement field, guessed offset, setter or lifetime lease.
+        const TObjectPtr<UChaosVehicleMovementComponent>* OriginalMovementCell=nullptr;
+        TWeakObjectPtr<UClass> OriginalActorClassBirth,OriginalMovementOwnerClassBirth;
+        U64 StableId=0;
+        bool SolidInitializationWitness=false;
+        TArray<TWeakObjectPtr<UChaosVehicleWheel>> OriginalWheelObjects;
+        TWeakObjectPtr<UClass> OriginalWheelClassBirth;
+        TWeakObjectPtr<UBoxSubBody> OriginalHitboxBirth;
+        TArray<TWeakObjectPtr<USWheelSubBody>> OriginalWheelBodyBirth;
+        USpeedSimulation* OriginalNativeSimulation=nullptr;
+        Chaos::FSimpleWheeledVehicle* OriginalNativeVehicle=nullptr;
+        Chaos::FSimpleWheelSim* OriginalNativeWheelAllocation=nullptr;
+        Chaos::FSimpleSuspensionSim* OriginalNativeSuspensionAllocation=nullptr;
+        std::unique_ptr<FBranchInputFilter> Filter;
+    };
+    TStrongObjectPtr<UWorld> World;
+    struct FOriginalPin
+    {
+        TStrongObjectPtr<UObject> Retained;
+        TWeakObjectPtr<UObject> Identity;
+        explicit FOriginalPin(UObject* Object):Retained(Object),Identity(Object){}
+        FOriginalPin(FOriginalPin&&)=default;
+        FOriginalPin& operator=(FOriginalPin&&)=default;
+        FOriginalPin(const FOriginalPin&)=delete;
+        FOriginalPin& operator=(const FOriginalPin&)=delete;
+        UObject* Get() const {return Identity.Get();} // original serial, never a weak minted after callback
+    };
+    TArray<FOriginalPin> Pins;
+    USpeedWorldSubsystem* Bridge=nullptr;
+    ASpeedBranchSimulation* Driver=nullptr;
+    std::vector<std::unique_ptr<FCar>> Cars;
+    std::shared_ptr<FPrivateRoadAccess> Access=std::make_shared<FPrivateRoadAccess>();
+    std::unique_ptr<Speed::NativeEpoch::FDiagnosticOutbox> Diagnostics;
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+    std::shared_ptr<FPrivateRoadRetirementBindingTrace> RetirementBindingTrace=std::make_shared<FPrivateRoadRetirementBindingTrace>();
+#endif
+    mutable std::mutex Gate;
+    std::shared_ptr<const FPrivateNativeGraphIdentity> NativeOperationIdentity;
+    std::shared_ptr<FPrivateNativeStorageMap> NativeStorage;
+    std::shared_ptr<ASpeedPhysicsSimulation::FOriginalDriverStorage> NativeDriverStorage;
+    std::shared_ptr<USpeedWorldSubsystem::FEpochBridgeStorage> NativeBridgeStorage;
+    // Count of actually retained private stack call objects, not permission,
+    // a lifecycle/source exclusion proof, or a fabricated reader census.
+    std::atomic<uint64> RetainedNativeCalls{0};
+    std::atomic<bool> RetirementRequested{false};
+    std::atomic<std::shared_ptr<const FPrivateRoadPublication>> Published;
+    std::shared_ptr<const Speed::RoadSettings::FDeclaredRecipe> DeclaredSettings;
+    U64 Lifetime=0,VehicleContactFrameCount=0;
+RetirementDraft::EPhase RetirementPhase=RetirementDraft::EPhase::Open;
+TWeakObjectPtr<UWorld> OriginalWorldWeak;
+TWeakObjectPtr<ULevel> OriginalLevelWeak;
+TWeakObjectPtr<USpeedWorldSubsystem> OriginalBridgeWeak;
+TWeakObjectPtr<ASpeedBranchSimulation> OriginalDriverWeak;
+TWeakObjectPtr<AActor> OriginalFloorActorWeak;
+TWeakObjectPtr<UBoxComponent> OriginalFloorWeak;
+TSharedPtr<const Speed::Analytic::FAnalyticWorldData> OriginalFlatGeometry;
+TArray<TWeakObjectPtr<USpeedBranchWheeledComponent>> OriginalComponentsWeak;
+TArray<TWeakObjectPtr<USpeedBranchBoxSubBody>> OriginalBoxesWeak;
+TArray<TWeakObjectPtr<USpeedBranchWheelSubBody>> OriginalWheelsWeak;
+// Copies of actual original shared control blocks/aliasing ROOTS, never a new
+// owning shared_ptr(rawUObjectOrNativePointer). No authority follows from these.
+std::vector<std::shared_ptr<void>> NativeCppKeepAlive;
+
+    std::vector<std::shared_ptr<FNativeConfigurationLifetimeTrace>> NativeConfigurationLifetime;
+    bool Closed=false,Failed=false;
+    void Pin(UObject* Object)
+    {
+        if(!Object)return;
+        // This factory already owns the actual strong root and its weak birth
+        // identity. Reusing that live original root does not mint a new weak
+        // identity or register another strong reference during late PinTree.
+        // Weak Get checks the captured original serial; a stale/reused raw
+        // address alone cannot make an old root count as the current object.
+        for(const auto& Existing:Pins)if(Existing.Get()==Object)return;
+        Pins.Emplace(Object); // genuine first acquisition; remains callback-capable
+    }
+    // Original role identities are captured from the real default graph before
+    // SetOwner/Initialize callbacks. This is a pre-math equality check, not a
+    // replacement for GC exclusion or a complete restoration lease.
+    bool OriginalObjectHandlesStillMatch() const
+    {
+        for(const auto& N:Cars)
+        {
+            if(!N->NativeVehicleRoot||!N->NativeVehicleRoot->Domain)return false;
+            const auto& D=*N->NativeVehicleRoot->Domain;
+            if(N->OriginalWheelBodyBirth.Num()!=4||N->OriginalWheelObjects.Num()!=4
+                ||D.WheelSubBodies.Num()!=4||D.Wheels.Num()!=4||D.WheelSetups.Num()!=4
+                ||!Speed::NativeObjectRead::MatchesOriginalBirth(D.HitboxSubBody,N->OriginalHitboxBirth))return false;
+            for(int32 Index=0;Index<4;++Index)
+                if(!Speed::NativeObjectRead::MatchesOriginalBirth(D.WheelSubBodies[Index],N->OriginalWheelBodyBirth[Index])
+                    ||!Speed::NativeObjectRead::MatchesOriginalBirth(D.Wheels[Index],N->OriginalWheelObjects[Index])
+                    ||!Speed::NativeObjectRead::MatchesOriginalClassBirth(D.WheelSetups[Index].WheelClass,N->OriginalWheelClassBirth)
+                    ||N->OriginalWheelObjects[Index].Get()->GetClass()!=N->OriginalWheelClassBirth.Get())return false;
+        }
+        return true;
+    }
+    bool CaptureOriginalGameModeAbsence()
+    {
+        if(OriginalComponentStorageOwner||Speed::RoadSettings::SelectedOriginalRoadSettings())return false;
+        auto* W=OriginalWorldWeak.Get();if(!W||W!=World.Get())return false;
+        Access->OriginalWorldClassBirth=W->GetClass();
+        const TWeakObjectPtr<UClass> ValueClassBirth=AGameModeBase::StaticClass();
+        Pin(Access->OriginalWorldClassBirth.Get());Pin(ValueClassBirth.Get());
+        auto* WC=Access->OriginalWorldClassBirth.Get();
+        if(!WC||OriginalWorldWeak.Get()!=W||W->GetClass()!=WC||WC!=UWorld::StaticClass()
+            ||!WC->HasAnyClassFlags(CLASS_Native)||WC->HasAnyClassFlags(CLASS_CompiledFromBlueprint|CLASS_NewerVersionExists))return false;
+        const auto* P=FindFProperty<FObjectProperty>(WC,TEXT("AuthorityGameMode"));
+        if(!P||P->GetOwnerClass()!=WC||P->ArrayDim!=1||!P->HasAllPropertyFlags(CPF_TObjectPtr)
+            ||P->GetElementSize()!=sizeof(TObjectPtr<AGameModeBase>)||!P->IsInContainer(WC)
+            ||!Speed::NativeObjectRead::MatchesOriginalBirth(P->PropertyClass,ValueClassBirth))return false;
+        const auto* Cell=P->ContainerPtrToValuePtr<TObjectPtr<AGameModeBase>>(static_cast<const UObject*>(W));
+        if(!Cell||reinterpret_cast<UPTRINT>(Cell)%alignof(TObjectPtr<AGameModeBase>))return false;
+        const auto* ActualMode=W->GetAuthGameMode(); // actual ordinary positive read, outside GG/recipe/route
+        FGCScopeGuard FinalModeReadBack;
+        if(OriginalWorldWeak.Get()!=W||Access->OriginalWorldClassBirth.Get()!=WC||!ValueClassBirth.IsValid()
+            ||W->GetClass()!=WC||WC->HasAnyClassFlags(CLASS_NewerVersionExists)||ActualMode
+            ||!Speed::NativeObjectRead::IsResolvedNull(*Cell))return false;
+        Access->OriginalGameModeCell=Cell;
+        return Access->OriginalWorldHasNoGameMode();
+    }
+    bool OriginalMovementStillMatches(const FCar& N) const
+    {
+        auto* A=N.ActorWeak.Get();auto* C=N.ComponentWeak.Get();
+        auto* AC=N.OriginalActorClassBirth.Get();auto* OC=N.OriginalMovementOwnerClassBirth.Get();
+        return A&&A==N.Actor&&C&&C==N.Component&&AC&&OC&&N.OriginalMovementCell
+            &&A->GetClass()==AC&&!AC->HasAnyClassFlags(CLASS_NewerVersionExists)
+            &&!OC->HasAnyClassFlags(CLASS_NewerVersionExists)
+            &&Speed::NativeObjectRead::MatchesOriginalBirth(*N.OriginalMovementCell,
+                TWeakObjectPtr<UChaosVehicleMovementComponent>(N.ComponentWeak));
+    }
+    bool CaptureOriginalMovementCell(FCar& N)
+    {
+        if(OriginalComponentStorageOwner||Speed::RoadSettings::SelectedOriginalRoadSettings())return false;
+        auto* A=N.ActorWeak.Get();auto* C=N.ComponentWeak.Get();if(!A||!C)return false;
+        N.OriginalActorClassBirth=A->GetClass();
+        N.OriginalMovementOwnerClassBirth=AWheeledVehiclePawn::StaticClass();
+        Pin(N.OriginalActorClassBirth.Get());Pin(N.OriginalMovementOwnerClassBirth.Get());
+        const TWeakObjectPtr<UClass> MovementValueClassBirth=UChaosVehicleMovementComponent::StaticClass();
+        Pin(MovementValueClassBirth.Get());
+        auto* AC=N.OriginalActorClassBirth.Get();auto* OC=N.OriginalMovementOwnerClassBirth.Get();
+        if(!AC||!OC||N.ActorWeak.Get()!=A||N.ComponentWeak.Get()!=C||A->GetClass()!=AC
+            ||!AC->HasAnyClassFlags(CLASS_Native)||AC->HasAnyClassFlags(CLASS_CompiledFromBlueprint|CLASS_NewerVersionExists)
+            ||!OC->HasAnyClassFlags(CLASS_Native)||OC->HasAnyClassFlags(CLASS_NewerVersionExists))return false;
+        const auto* Property=FindFProperty<FObjectProperty>(OC,TEXT("VehicleMovementComponent"));
+        if(!Property||Property->GetOwnerClass()!=OC||Property->ArrayDim!=1
+            ||!Property->HasAllPropertyFlags(CPF_TObjectPtr)
+            ||Property->GetElementSize()!=sizeof(TObjectPtr<UChaosVehicleMovementComponent>)
+            ||!Property->IsInContainer(AC)
+            ||!Speed::NativeObjectRead::MatchesOriginalBirth(Property->PropertyClass,MovementValueClassBirth))return false;
+        const auto* Cell=Property->ContainerPtrToValuePtr<TObjectPtr<UChaosVehicleMovementComponent>>(static_cast<const UObject*>(A));
+        if(!Cell||reinterpret_cast<UPTRINT>(Cell)%alignof(TObjectPtr<UChaosVehicleMovementComponent>))return false;
+        const auto* ActualGetter=A->GetVehicleMovement(); // real ordinary read, BEFORE the recipe/route
+        // All actual tracked reads, pins and reflected metadata operations
+        // above execute OUTSIDE GC exclusion. A foreign OnRead callback may
+        // collect/replace/retire objects. Only their ORIGINAL weak identities
+        // and classes may admit the subsequent readonly native field access.
+        FGCScopeGuard FinalActualFieldReadBack;
+        if(N.ActorWeak.Get()!=A||N.ComponentWeak.Get()!=C||N.OriginalActorClassBirth.Get()!=AC
+            ||N.OriginalMovementOwnerClassBirth.Get()!=OC||!MovementValueClassBirth.IsValid()||A->GetClass()!=AC
+            ||AC->HasAnyClassFlags(CLASS_NewerVersionExists)||OC->HasAnyClassFlags(CLASS_NewerVersionExists)||ActualGetter!=C
+            ||!Speed::NativeObjectRead::MatchesOriginalBirth(*Cell,TWeakObjectPtr<UChaosVehicleMovementComponent>(N.ComponentWeak)))return false;
+        N.OriginalMovementCell=Cell;
+        return OriginalMovementStillMatches(N);
+    }
+    bool OriginalActorWorldStillMatches(const AActor* A,const UWorld* W) const
+    {
+        // Same genuine private runtime topology predicate, also used by the
+        // native driver's inherited GetWorld calls while the route is active.
+        return W==OriginalWorldWeak.Get()&&Access->OriginalActorWorldStillMatches(A);
+    }
+    bool AcquiredGraphStillLive() const
+    {
+        auto* W=OriginalWorldWeak.Get();auto* B=OriginalBridgeWeak.Get();auto* D=OriginalDriverWeak.Get();
+        if(!W||W!=World.Get()||W->bIsTearingDown||W->HasAnyFlags(RF_BeginDestroyed|RF_FinishDestroyed)
+            ||!B||B!=Bridge||B->HasAnyFlags(RF_BeginDestroyed|RF_FinishDestroyed)
+            ||!D||D!=Driver||D->IsActorBeingDestroyed()||D->HasAnyFlags(RF_BeginDestroyed|RF_FinishDestroyed))return false;
+        if(!Access->OriginalWorldHasNoGameMode())return false;
+        for(const auto& P:Pins)if(!P.Get())return false;
+        if(!OriginalFloorActorWeak.IsExplicitlyNull()||!OriginalFloorWeak.IsExplicitlyNull())
+        {
+            auto* A=OriginalFloorActorWeak.Get();auto* F=OriginalFloorWeak.Get();
+            if(!A||!F||A->IsActorBeingDestroyed()||!OriginalActorWorldStillMatches(A,W)||F->GetOwner()!=A
+                ||A->HasAnyFlags(RF_BeginDestroyed|RF_FinishDestroyed)
+                ||F->HasAnyFlags(RF_BeginDestroyed|RF_FinishDestroyed))return false;
+        }
+        for(const auto& Weak:OriginalComponentsWeak)if(!Weak.IsValid())return false;
+        for(const auto& Weak:OriginalBoxesWeak)if(!Weak.IsValid())return false;
+        for(const auto& Weak:OriginalWheelsWeak)if(!Weak.IsValid())return false;
+        for(const auto& N:Cars)
+        {
+            if(!N->Actor&&!N->Component)
+            {if(!N->ActorWeak.IsExplicitlyNull()||!N->ComponentWeak.IsExplicitlyNull())return false;continue;}
+            auto* A=N->ActorWeak.Get();auto* C=N->ComponentWeak.Get();
+            if(!A||A!=N->Actor||!C||C!=N->Component||A->IsActorBeingDestroyed()
+                ||A->HasAnyFlags(RF_BeginDestroyed|RF_FinishDestroyed)||C->HasAnyFlags(RF_BeginDestroyed|RF_FinishDestroyed)
+                ||!OriginalActorWorldStillMatches(A,W)||C->GetOwner()!=A||!OriginalMovementStillMatches(*N))return false;
+        }
+        return true;
+    }
+    void PinTree(UObject* Object)
+    {
+        Pin(Object);ForEachObjectWithOuter(Object,[this](UObject* Child){Pin(Child);},EGetObjectsFlags::IncludeNestedObjects);
+    }
+};
+// This object is private to the wrapper entry implementations. It retains
+// the actual FImpl/root/config control blocks for their complete native call.
+// It grants NO restoration, mutable-view, source or lifecycle exclusion lease.
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+struct FPrivateRoadPhysicsWorld::FBirthInitializationDiagnosticContext final
+{
+    std::shared_ptr<FImpl> ForeignRoot;
+    EPrivateRoadBirthProbeMode Mode;
+    FPrivateRoadBirthInitializationProbe& Result;
+    bool GuardProbeReturned=false; // actual diagnostic call return, never permission
+};
+struct FPrivateRoadPhysicsWorld::FHitAcceptanceDiagnosticContext final
+{
+    std::shared_ptr<FImpl> ForeignRoot;
+    FPrivateRoadHitAcceptanceProbe& Result;
+};
+#endif
+struct FPrivateRoadPhysicsWorld::FRetainedNativeCall final
+{
+    const std::shared_ptr<FImpl> Root;
+    explicit FRetainedNativeCall(std::shared_ptr<FImpl> Value):Root(std::move(Value))
+    {
+        if(!Root||!IsInGameThread())std::terminate();
+        Root->RetainedNativeCalls.fetch_add(1);
+    }
+    FRetainedNativeCall(const FRetainedNativeCall&)=delete;
+    FRetainedNativeCall& operator=(const FRetainedNativeCall&)=delete;
+    ~FRetainedNativeCall()
+    {
+        const auto Before=Root->RetainedNativeCalls.fetch_sub(1);
+        if(!Before)std::terminate();
+        if(Before==1&&Root->RetirementRequested.load())
+        {
+            // The retained static native operation has really returned or
+            // unwound. Its gate/outbox/GC/storage scopes are no longer active.
+            // Preserve Close's phase protocol, and NEVER replay Interrupted.
+            const bool Retired=FPrivateRoadPhysicsWorld::CloseRetained(Root);
+            checkf(Retired,TEXT("Deferred private road retirement must actually complete"));
+            if(!Retired)std::terminate();
+        }
+    }
+};
+FPrivateRoadPhysicsWorld::FPrivateRoadPhysicsWorld():Impl(std::make_shared<FImpl>())
+{
+    // Actual single root allocation and its actual mutex, before native birth.
+    // Identity keeps only a weak root; no new cycle or public issuer is created.
+    Impl->NativeOperationIdentity=std::shared_ptr<const FPrivateNativeGraphIdentity>(
+        new FPrivateNativeGraphIdentity(Impl,Impl->Gate));
+    Impl->NativeStorage=std::shared_ptr<FPrivateNativeStorageMap>(new FPrivateNativeStorageMap(Impl->NativeOperationIdentity));
+}
+FPrivateRoadPhysicsWorld::~FPrivateRoadPhysicsWorld()
+{
+    checkf(IsInGameThread(),TEXT("Private road world must retire on the game thread"));
+    if(!IsInGameThread())std::terminate(); // preserve the real Shipping fail-safe before deferral
+    auto Root=std::move(Impl);
+    if(!Root)std::terminate();
+    if(Root->RetainedNativeCalls.load()!=0)
+    {
+        // A real private call object owns this exact control block. Its last
+        // destructor runs only after the retained native call has returned or
+        // unwound; no wrapper/member is reused after a callback can delete it.
+        Root->RetirementRequested.store(true);
+        return;
+    }
+    const bool Retired=CloseRetained(Root);
+    checkf(Retired,TEXT("Private road world retirement must actually complete"));
+    if(!Retired)std::terminate(); // no silent release or retry after interruption
+}
+std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::Create(std::vector<FPrivateRoadCarSeed> Seeds,FString& Why)
+{
+    return CreateCore(std::move(Seeds),Why);
+}
+std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::CreateCore(std::vector<FPrivateRoadCarSeed> Seeds,FString& Why
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+    ,FBirthInitializationDiagnosticContext* BirthContext
+#endif
+    )
+{
+    Why.Empty();
+    if(OriginalComponentStorageOwner||!IsInGameThread()||Speed::Input::FPresentationInputScope::IsActive()
+        ||Speed::Netcode::PresentationClient::IsSelected()||Seeds.empty()||Seeds.size()>16
+        ||Chaos::FPhysicsSolverBase::IsNetworkPhysicsPredictionEnabled())
+    {Refuse(Why,TEXT("private native world requires GT, IAS-only physical profile, disabled Chaos prediction and finite roster"));return {};}
+    std::sort(Seeds.begin(),Seeds.end(),[](const auto& A,const auto& B){return A.Actor<B.Actor;});
+    for(const auto& Seed:Seeds)if(!Seed.Contract||!PrivateRoadSupportedContract(*Seed.Contract))
+    {Refuse(Why,TEXT("unsupported private road action contract"));return {};}
+    if(Speed::RoadSettings::SelectedOriginalRoadSettings())
+    {Refuse(Why,TEXT("nested private birth inside original native settings math"));return {};}
+    const auto SuppliedSettings=Seeds.front().DeclaredSettings;
+    for(const auto& S:Seeds)
+        if(bool(S.DeclaredSettings)!=bool(SuppliedSettings)||(SuppliedSettings
+            &&S.DeclaredSettings->CanonicalIdentity()!=SuppliedSettings->CanonicalIdentity()))
+        {Refuse(Why,TEXT("mixed explicit original native settings recipes"));return {};}
+    // This original profile executes only on the GT. Do not silently let a
+    // caller select parallel physical readers outside its immutable scope.
+    if(SuppliedSettings&&SuppliedSettings->Read<int32>(Speed::RoadSettings::Catalog[72])!=1)
+    {Refuse(Why,TEXT("original road settings require the actual serial native lane"));return {};}
+    const auto StartPolicy=Seeds.front().StartPolicy;
+    if(StartPolicy>EPrivateRoadStartPolicy::ExplicitUnitRecipe)return {};
+    for(const auto& S:Seeds)if(S.StartPolicy!=StartPolicy
+        ||(StartPolicy==EPrivateRoadStartPolicy::AwaitInitialPublication&&S.CountdownFrames))
+    {Refuse(Why,TEXT("mixed startup policy or countdown substituted for initial publication"));return {};}
+    auto Owner=std::unique_ptr<FPrivateRoadPhysicsWorld>(new FPrivateRoadPhysicsWorld);
+    auto& I=*Owner->Impl;
+    const auto Root=Owner->Impl;
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+    if(BirthContext)BirthContext->Result.RetirementObserver=I.RetirementBindingTrace;
+#endif
+    std::unique_lock BirthLock(I.Gate,std::try_to_lock);
+    if(!BirthLock.owns_lock()){Refuse(Why,TEXT("native birth owner gate unavailable"));return {};}
+    FPrivateNativeOperation Operation(Root,I.NativeOperationIdentity,I.NativeStorage,FPrivateNativeOperation::EKind::Birth,std::move(BirthLock));
+    // Each real backing allocation is registered immediately after its actual
+    // root/alias wiring, BEFORE its first operation-bearing native consumer.
+    const auto Bind=[&]<class T>(const void* Subject,const std::shared_ptr<T>& Part)
+    {return I.NativeStorage->BindAtBirth(Operation,Subject,Part);};
+    I.DeclaredSettings=SuppliedSettings;
+    I.Diagnostics.reset(new Speed::NativeEpoch::FDiagnosticOutbox);
+    I.Access->RequiresInitialPublication=StartPolicy==EPrivateRoadStartPolicy::AwaitInitialPublication;
+    U64 Last=0;
+    for(auto& Seed:Seeds)
+    {
+        if(!Seed.Actor||!Seed.Incarnation||Seed.Actor==Last||!Finite(Seed.Initial))
+        {Refuse(Why,TEXT("invalid native initial roster/kinematics"));return {};}
+        Last=Seed.Actor;
+        auto Node=std::make_unique<FImpl::FCar>();Node->Seed=std::move(Seed);
+        const auto& S=Node->Seed;
+        Node->Filter=FBranchInputFilter::Create(S.Role,S.Contract,S.Processing,S.Local,S.LocalEpoch,S.Remote,S.PredictionHorizon,{});
+        if(!Node->Filter){Refuse(Why,TEXT("private input filter configuration refused"));return {};}
+        I.NativeConfigurationLifetime.push_back(Node->NativeConfiguration->Lifetime);
+        I.NativeConfigurationLifetime.push_back(Node->ReferenceConfiguration->Lifetime);
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+        if(BirthContext&&(BirthContext->Mode==EPrivateRoadBirthProbeMode::ProbeFirstOwnerAndAbort
+            ||BirthContext->Mode==EPrivateRoadBirthProbeMode::AbortAfterEarlyReferenceOwner))
+        {
+            // Actual newly allocated independent counters, retained immediately.
+            // Preserve partial/early refusal observations too, never a fake zero.
+            BirthContext->Result.LifetimeObservers.push_back(Node->NativeConfiguration->Lifetime);
+            BirthContext->Result.LifetimeObservers.push_back(Node->ReferenceConfiguration->Lifetime);
+        }
+#endif
+        I.Cars.push_back(std::move(Node));
+    }
+    I.Access->ContactDispatches.reserve(I.Cars.size()*(I.Cars.size()-1)/2);
+    const auto Options=UWorld::InitializationValues().InitializeScenes(false).CreateFXSystem(false).AllowAudioPlayback(false).CreatePhysicsScene(false)
+        .RequiresHitProxies(false).CreateNavigation(false).CreateAISystem(false).ShouldSimulatePhysics(false).SetTransactional(false);
+    I.World.Reset(UWorld::CreateWorld(EWorldType::Game,false,NAME_None,nullptr,true,ERHIFeatureLevel::Num,&Options));
+    if(!I.World.IsValid()){Refuse(Why,TEXT("private world creation failed"));return {};}
+    I.OriginalWorldWeak=I.World.Get();
+    I.OriginalLevelWeak=I.World->PersistentLevel.Get();I.Pin(I.OriginalLevelWeak.Get());
+    I.Access->OriginalWorldBirth=I.OriginalWorldWeak;I.Access->OriginalLevelBirth=I.OriginalLevelWeak;
+    if(!I.OriginalLevelWeak.IsValid()||!Speed::NativeObjectRead::MatchesOriginalBirth(
+        I.OriginalLevelWeak.Get()->OwningWorld,I.OriginalWorldWeak))return {};
+    // InitWorld assigns this tick flag only inside its scene-initialization
+    // branch. Set it explicitly for the deliberately scene-less private world.
+    I.World->bShouldSimulatePhysics=false;
+    if(I.World->Scene||I.World->GetPhysicsScene())
+    {Refuse(Why,TEXT("renderer or physics scene escaped private construction policy"));return {};}
+    // Deliberately no Engine world context, BeginPlay, normal tick or scene.
+    I.Access->World=I.World.Get();
+    if(!I.CaptureOriginalGameModeAbsence()){Refuse(Why,TEXT("original native World GameMode absence binding refused"));return {};}
+    I.Bridge=I.World->GetSubsystem<USpeedWorldSubsystem>();
+    if(!I.Bridge){Refuse(Why,TEXT("private native bridge missing"));return {};}
+    I.OriginalBridgeWeak=I.Bridge;I.Pin(I.Bridge);I.Access->OriginalBridgeBirth=I.OriginalBridgeWeak;
+    I.Bridge->BindOriginalEpochStorage(I.Access);
+    I.NativeBridgeStorage=I.Bridge->OriginalEpochBridgeStorage;
+    I.NativeCppKeepAlive.push_back(I.NativeBridgeStorage);
+    if(!Bind(I.Bridge,I.NativeBridgeStorage)
+        ||!Bind(&I.NativeBridgeStorage->SimulationWorld,
+            std::shared_ptr<Speed::FSimulationWorld>(I.NativeBridgeStorage,&I.NativeBridgeStorage->SimulationWorld)))return {};
+    auto Data=MakeShared<Speed::Analytic::FAnalyticWorldData>();
+    auto& P=Data->Planes.AddDefaulted_GetRef();P.SourceId=1;P.SurfaceId=2;P.FeatureId=3;P.PrimitiveId=4;
+    I.Access->OriginalStaticSourceId=P.SourceId;
+    P.ObjectType=uint32(ECC_WorldStatic);P.BlockingChannels=MAX_uint64;
+    P.Normal=FVector3d::UpVector;P.AxisU=FVector3d::ForwardVector;P.AxisV=FVector3d::RightVector;
+    P.HalfExtents=FVector2d(100000,100000);
+    if(!Data->FinalizeAndValidate(&Why))return {};
+    // Exact authored plane, not an imported asset authority certificate.
+    Data->Planes[0].bAuthorityEligible=true;
+    I.OriginalFlatGeometry=Data;
+    I.Access->OriginalSourceGeometry=I.OriginalFlatGeometry; // same genuine shared control block, not shared_ptr(raw)
+    I.Access->MatchesOriginalSourceBindings=+[](const USpeedWorldSubsystem& B,const Speed::Analytic::FAnalyticWorldData* Original,U64 SourceId,const TWeakObjectPtr<UBoxComponent>& FloorBirth)
+    {
+        // Lexical owner friend context reads the ACTUAL selected epoch map.
+        // This private fixed thunk returns only a predicate; no reference,
+        // lambda capture, original native view or new authority escapes.
+        if(!B.UsesOriginalEpochStorage())return false;
+        const auto& Geometry=B.AnalyticWorldDataEpochStorage();
+        const auto& Sources=B.AnalyticSourceComponentsEpochStorage();
+        const auto* Floor=FloorBirth.Get();const auto* Source=Sources.Find(SourceId);
+        return Floor&&Original&&Geometry.IsValid()&&Geometry.Get()==Original&&Geometry->Planes.Num()==1
+            &&Geometry->Planes[0].SourceId==SourceId&&Sources.Num()==1&&Source&&Source->Get()==Floor;
+    };
+    auto* FloorActor=I.World->SpawnActor<AActor>();
+    if(!FloorActor){Refuse(Why,TEXT("private floor actor missing"));return {};}
+    auto* Floor=NewObject<UBoxComponent>(FloorActor);FloorActor->AddInstanceComponent(Floor);
+    Floor->SetMobility(EComponentMobility::Static);Floor->SetCollisionObjectType(ECC_WorldStatic);
+    Floor->SetCollisionResponseToAllChannels(ECR_Block);I.PinTree(FloorActor);
+    I.OriginalFloorActorWeak=FloorActor;I.OriginalFloorWeak=Floor;I.Access->OriginalFloorBirth=I.OriginalFloorWeak;
+    {
+        FOriginalComponentStorageScope OriginalWorldAdmission(*I.Access);
+        I.Bridge->AnalyticSourceComponentsEpochStorage().Add(1,I.OriginalFloorWeak); // genuine existing birth weak, no raw reconstruction
+        I.Bridge->AnalyticWorldDataEpochStorage()=Data;
+        auto OriginalCollision=MakeUnique<Speed::FAnalyticStaticCollisionWorld>(*Data);
+        I.Access->OriginalQueryIdentity=OriginalCollision->GetImmutableQueryIdentity1075();
+        if(!I.Access->OriginalQueryIdentity.IsValid()||I.Access->OriginalQueryIdentity.Data!=&Data.Get())return {};
+        I.Bridge->SimulationWorldEpochStorage().SetStaticCollisionWorld(MoveTemp(OriginalCollision));
+    }
+    I.Driver=I.World->SpawnActor<ASpeedBranchSimulation>();
+    if(!I.Driver||ASpeedPhysicsSimulation::GetEngineFPS()!=300)
+    {Refuse(Why,TEXT("private driver missing or canonical physical rate differs"));return {};}
+    I.OriginalDriverWeak=I.Driver;I.Access->OriginalDriverBirth=I.OriginalDriverWeak;
+    I.Driver->Access=I.Access;if(!I.Driver->BindOriginalDriverStorage(I.Access)){Refuse(Why,TEXT("original native driver birth storage refused"));return {};}
+    I.NativeDriverStorage=I.Driver->OriginalDriverStorage;
+    I.NativeCppKeepAlive.push_back(I.NativeDriverStorage);
+    if(!Bind(static_cast<ASpeedPhysicsSimulation*>(I.Driver),I.NativeDriverStorage)
+        ||!Bind(I.Driver,I.NativeDriverStorage))return {};
+    {FOriginalComponentStorageScope OriginalDriver(*I.Access);
+        I.Driver->bPublishPresentationDriverStorage()=true;I.Driver->bPublishCompletedWorldInputDriverStorage()=false;}
+    I.PinTree(I.Driver);
+    struct FActualVehicleAllocationBirth
+    {
+        Chaos::FSimpleWheeledVehicle* Vehicle;
+        USpeedSimulation* Simulation;
+        const Chaos::FSimpleWheelSim* Wheels;
+        const Chaos::FSimpleSuspensionSim* Suspension;
+        int32 NumWheels,NumSuspension;
+    };
+    // Shared constructor program. The existing reference and original storage
+    // scopes still choose their actual owned backend at their separate callers.
+    const auto BuildVehicleStorage=[&](USpeedBranchWheeledComponent& C,std::shared_ptr<RetirementDraft::FVehicleConfiguration> Configuration,const TArray<UChaosVehicleWheel*>& PreparedWheels)
+    {
+        auto& WheelConfig=Configuration->Wheel;auto& SuspensionConfig=Configuration->Suspension;
+        auto Vehicle=MakeUnique<Chaos::FSimpleWheeledVehicle>();
+        for(int32 W=0;W<4;++W)
+        {
+            auto& Wheel=Vehicle->Wheels.Emplace_GetRef(&WheelConfig);
+            Wheel.MaxOmega=10000;Wheel.AppliedLinearDriveForce=0;Wheel.AppliedLinearBrakeForce=0;
+            Wheel.LongitudinalAdhesiveLimit=0;Wheel.LateralAdhesiveLimit=0;Wheel.SideSlipModifier=WheelConfig.SideSlipModifier;
+            Vehicle->Suspension.Emplace_GetRef(&SuspensionConfig).SetLocalRestingPosition(FVector(W<2?70:-70,W%2?45:-45,-15));
+            C.WheelsWheeledDomainStorage().Add(PreparedWheels[W]);
+        }
+        C.VehicleSimulationPTWheeledDomainStorage()=MakeUnique<RetirementDraft::TSimulationWithConfiguration<USpeedSimulation,RetirementDraft::FVehicleConfiguration>>(Configuration);
+        C.SkySimulationWheeledDomainStorage()=static_cast<USpeedSimulation*>(C.VehicleSimulationPTWheeledDomainStorage().Get());
+        // Capture the actual new allocation before ownership transfer. This is
+        // an allocation identity, not a caller-granted permission or lease.
+        const FActualVehicleAllocationBirth ActualBirth{Vehicle.Get(),C.SkySimulationWheeledDomainStorage(),
+            Vehicle->Wheels.GetData(),Vehicle->Suspension.GetData(),Vehicle->Wheels.Num(),Vehicle->Suspension.Num()};
+        C.SkySimulationWheeledDomainStorage()->Init(Vehicle);
+        return ActualBirth; // identities observed BEFORE actual ownership transfer
+    };
+    const auto BuildReferenceVehicle=[&](USpeedBranchWheeledComponent& C,
+        const std::shared_ptr<RetirementDraft::FVehicleConfiguration>& Configuration,
+        const TArray<UChaosVehicleWheel*>& PreparedWheels,const FImpl::FCar& ActualCar,
+        const TArray<TWeakObjectPtr<UChaosVehicleWheel>>& ActualConfigurationBirths)
+    {
+        const auto Birth=BuildVehicleStorage(C,Configuration,PreparedWheels);
+        auto Proof=std::unique_ptr<FPrivateReferenceWheelBindingBirth>(new FPrivateReferenceWheelBindingBirth(
+            Root,ActualCar.ActorWeak,ActualCar.ComponentWeak,Birth.Vehicle,Birth.Simulation,
+            Birth.Wheels,Birth.NumWheels,Birth.Suspension,Birth.NumSuspension,
+            Configuration,ActualCar.OriginalWheelBodyBirth,ActualConfigurationBirths));
+        C.BindReferenceWheelSimulationPointersBirth(Operation,*Proof,Birth.Vehicle,
+            ActualCar.OriginalWheelBodyBirth,ActualConfigurationBirths);
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+        if(BirthContext)++BirthContext->Result.ReferenceBindingFactoryReturns;
+#endif
+        return Proof; // private actual Birth-call lifetime, never published/retained after Birth
+    };
+    const auto BuildOriginalVehicle=[&](USpeedBranchWheeledComponent& C,std::shared_ptr<RetirementDraft::FVehicleConfiguration> Configuration,const TArray<UChaosVehicleWheel*>& PreparedWheels,
+        TConstArrayView<TWeakObjectPtr<USWheelSubBody>> ActualBodyBirths,
+        TConstArrayView<TWeakObjectPtr<UChaosVehicleWheel>> ActualConfigurationBirths) -> bool
+    {
+        const auto ActualOriginalBirth=BuildVehicleStorage(C,std::move(Configuration),PreparedWheels);
+        auto* const OriginalAllocationBeforeInit=ActualOriginalBirth.Vehicle;
+        C.BindNativeWheelSimulationPointersBirth(Operation,OriginalAllocationBeforeInit,
+            ActualBodyBirths,ActualConfigurationBirths);
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+        if(BirthContext)
+        {
+            ++BirthContext->Result.WheelBindingFactoryReturns; // after actual factory entry returned
+            if(!BirthContext->Result.WheelBindingProbeReturned)
+            {
+                auto& Foreign=*BirthContext->ForeignRoot;
+                if(Foreign.Closed||Foreign.Failed||Foreign.RetirementRequested.load()
+                    ||Foreign.NativeOperationIdentity->ActiveGTActualOperation||!Foreign.AcquiredGraphStillLive()
+                    ||Foreign.Cars.empty())return false;
+                const auto& FN=*Foreign.Cars.front();
+                if(!FN.Component||FN.OriginalWheelBodyBirth.Num()!=4||FN.OriginalWheelObjects.Num()!=4
+                    ||!FN.OriginalWheelBodyBirth[0].IsValid()||!FN.OriginalWheelObjects[0].IsValid()
+                    ||!FN.OriginalNativeVehicle||!FN.OriginalNativeWheelAllocation||!FN.OriginalNativeSuspensionAllocation)return false;
+                // Actual retained foreign birth identities only; no foreign gate
+                // held across this callback-capable own Birth or owner unwind.
+                USpeedWheeledComponent::FNativeWheelBindingDiagnostics Probe;
+                if(!C.ProbeNativeWheelBindingsBirthForDiagnostics(Operation,OriginalAllocationBeforeInit,
+                    ActualBodyBirths,ActualConfigurationBirths,FN.OriginalWheelBodyBirth[0].Get(),
+                    static_cast<ISpeedComponent*>(FN.Component),FN.OriginalNativeVehicle,FN.OriginalNativeWheelAllocation,
+                    FN.OriginalNativeSuspensionAllocation,FN.OriginalWheelObjects[0].Get(),Probe))return false;
+                auto& Result=BirthContext->Result;
+                Result.WheelBindingGuardRefusals=Probe.Refusals;Result.WheelBindingPositiveEntryReturns=Probe.PositiveEntryReturns;
+                Result.WheelBindingAllRefusalsBeforeWrite=Probe.AllRefusalsBeforeWrite;
+                Result.WheelBindingPositiveValuesMatch=Probe.PositiveValuesMatch;Result.WheelBindingOverridePredicatesMatch=Probe.OverridePredicatesMatch;
+                Result.WheelBindingProbeReturned=true; // observed diagnostic return only, never a permission
+            }
+        }
+#endif
+        return true;
+    };
+    for(auto& Node:I.Cars)
+    {
+        auto& N=*Node;N.Actor=I.World->SpawnActor<ASpeedBranchCar>();
+        N.Component=N.Actor?Cast<USpeedBranchWheeledComponent>(N.Actor->GetVehicleMovement()):nullptr;
+        auto* C=N.Component;
+        if(!C||C->GetClass()!=USpeedBranchWheeledComponent::StaticClass()||!C->HasIsolatedNativeConstruction())
+        {Refuse(Why,TEXT("private native component subtype missing"));return {};}
+        C->Access=I.Access;
+        if(!C->BindOriginalWheeledDomain(I.Access)){Refuse(Why,TEXT("original native component domain birth refused"));return {};}
+        N.ActorWeak=N.Actor;N.ComponentWeak=C;I.OriginalComponentsWeak.Add(C);
+        I.PinTree(N.Actor);I.PinTree(C);
+        if(!I.CaptureOriginalMovementCell(N))return {};
+        I.Access->ActualCarAliases.Add(C,FPrivateRoadAccess::FActualCarAlias{
+            N.ActorWeak,N.ComponentWeak,N.OriginalActorClassBirth,N.OriginalMovementOwnerClassBirth,N.OriginalMovementCell});
+        {
+            FGCScopeGuard CaptureOriginalBirthPins;
+            auto* Box=Cast<UBoxSubBody>(C->GetDefaultSubobjectByName(USpeedWheeledComponent::HitboxName));
+            if(!IsValid(Box))return {};
+            N.OriginalHitboxBirth=Box;
+            for(int32 Index=0;Index<4;++Index)
+            {
+                auto* Wheel=Cast<USWheelSubBody>(C->GetDefaultSubobjectByName(USpeedWheeledComponent::WheelNames[Index]));
+                if(!IsValid(Wheel))return {};
+                N.OriginalWheelBodyBirth.Add(Wheel);
+            }
+        }
+        if(!I.AcquiredGraphStillLive())return {};
+        {
+            FGCScopeGuard BindActualBodyIdentities;
+            auto* Box=Cast<USpeedBranchBoxSubBody>(N.OriginalHitboxBirth.Get());
+            if(!Box||N.OriginalWheelBodyBirth.Num()!=4)return {};
+            Box->OriginalBodyIdentity=N.OriginalHitboxBirth; // actual weak copy, no raw reconstruction
+            for(int32 Index=0;Index<4;++Index)
+            {
+                auto* Wheel=Cast<USpeedBranchWheelSubBody>(N.OriginalWheelBodyBirth[Index].Get());
+                if(!Wheel)return {};
+                // Never overwrite a prior birth, including an expired weak serial.
+                if(!Wheel->OriginalBodyIdentity.IsExplicitlyNull()||!Wheel->OriginalOwnerRoot.expired())return {};
+                FPrivateNativeStorageAccess::RequireBirthRoot(Operation,Root);
+                Wheel->OriginalBodyIdentity=N.OriginalWheelBodyBirth[Index];
+                Wheel->OriginalOwnerRoot=Root; // true FImpl, BEFORE later FWheelRoot local shadows Root
+            }
+        }
+        N.NativeVehicleRoot=std::make_shared<FImpl::FCar::FVehicleRoot>(N.NativeConfiguration,C->OriginalWheeledDomain);
+        C->OriginalWheeledDomain=RetirementDraft::AliasExistingPart(N.NativeVehicleRoot,N.NativeVehicleRoot->Domain);
+        I.NativeCppKeepAlive.push_back(N.NativeVehicleRoot);
+        const auto BindComponentPart=[&]<class T>(const std::shared_ptr<T>& Part)
+        {
+            return Bind(C,Part)&&Bind(static_cast<USpeedWheeledComponent*>(C),Part)
+                &&Bind(static_cast<ISpeedWheeledComponent*>(C),Part)&&Bind(static_cast<ISpeedComponent*>(C),Part);
+        };
+        if(!BindComponentPart(N.NativeVehicleRoot->Domain)||!BindComponentPart(N.NativeConfiguration))return {};
+        C->SetAsyncPhysicsTickEnabled(false);
+        // Retain the actual base-wheel class before any prepared-wheel birth
+        // callback. The original profile authors exactly this class; changed,
+        // stale or unresolved setup handles later refuse admission.
+        N.OriginalWheelClassBirth=UChaosVehicleWheel::StaticClass();
+        I.Pin(N.OriginalWheelClassBirth.Get());
+        // Both weak assignment and Pin can dispatch actual read callbacks.
+        // Revalidate before constructing any child in the acquired component.
+        if(!N.OriginalWheelClassBirth.IsValid()||!I.AcquiredGraphStillLive()||!N.OriginalWheelClassBirth.IsValid())
+        {Refuse(Why,TEXT("original graph/class invalidated before prepared wheel creation"));return {};}
+        const auto PrepareWheelObjects=[&](TArray<TWeakObjectPtr<UChaosVehicleWheel>>& ActualBirths)
+        {
+            TArray<UChaosVehicleWheel*> Result;
+            for(int32 W=0;W<4;++W)
+            {
+                auto* Wheel=NewObject<UChaosVehicleWheel>(C);
+                if(!Wheel||!I.AcquiredGraphStillLive())return TArray<UChaosVehicleWheel*>{};
+                I.Pin(Wheel); // BEFORE the next genuine NewObject callback can collect this wheel
+                ActualBirths.Add(Wheel); // capture actual fresh birth once, before the next allocation
+                Wheel->WheelRadius=30;Wheel->SuspensionMaxRaise=10;Wheel->SuspensionMaxDrop=25;Result.Add(Wheel);
+            }
+            return Result;
+        };
+        TArray<TWeakObjectPtr<UChaosVehicleWheel>> ReferenceWheelBirths;
+        const auto ReferenceWheels=PrepareWheelObjects(ReferenceWheelBirths),OriginalWheels=PrepareWheelObjects(N.OriginalWheelObjects);
+        if(ReferenceWheels.Num()!=4||OriginalWheels.Num()!=4||ReferenceWheelBirths.Num()!=4||N.OriginalWheelObjects.Num()!=4)return {};
+        N.NativeVehicleRoot->BirthIdentities=std::shared_ptr<FPrivateRoadBirthIdentities>(
+            new FPrivateRoadBirthIdentities(N.ActorWeak,N.ComponentWeak,N.OriginalHitboxBirth,
+                N.OriginalWheelBodyBirth,N.OriginalWheelObjects,N.OriginalWheelClassBirth));
+        if(!BindComponentPart(RetirementDraft::AliasExistingPart(N.NativeVehicleRoot,N.NativeVehicleRoot->BirthIdentities)))return {};
+        if(!I.Diagnostics->Begin()){Refuse(Why,TEXT("native birth diagnostics unavailable"));return {};}
+        bool BirthOutboxActive=true;ON_SCOPE_EXIT{if(BirthOutboxActive)I.Diagnostics->End();};
+        const bool BirthConfigured=[&]() -> bool
+        {
+        try {
+        // Ordinary reference/facade lifecycle is callback-capable. No GC,
+        // original recipe or original storage scope is held here. The same
+        // owned diagnostic outbox remains active until after native birth.
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+        if(BirthContext&&BirthContext->Mode==EPrivateRoadBirthProbeMode::ProbeFirstOwnerAndAbort)
+        {
+            // Actual actor authoring/capture, outside original math/GC scopes.
+            auto& Attempt=BirthContext->Result;Attempt.FirstOwnerLastStage=TEXT("actor-pose-api-entered");
+            Attempt.FirstOwnerActorLocationSet=N.Actor->SetActorLocation(FVector(123,-47,89));
+            Attempt.FirstOwnerActorRotationSet=N.Actor->SetActorRotation(FRotator(-29,43,11));
+            Attempt.FirstOwnerActorLocationReadback=N.Actor->GetActorLocation();
+            Attempt.FirstOwnerActorRotationReadback=N.Actor->GetActorRotation();
+            Attempt.FirstOwnerLastStage=TEXT("actor-pose-readback-returned");
+            if(!I.AcquiredGraphStillLive())return Refuse(Why,TEXT("first owner fixture graph unavailable after actor pose API"));
+            if(Attempt.FirstOwnerActorLocationReadback!=FVector(123,-47,89))
+                return Refuse(Why,TEXT("first owner fixture actual actor location differs from authored pose"));
+            if(Attempt.FirstOwnerActorRotationReadback.IsNearlyZero())
+                return Refuse(Why,TEXT("first owner fixture actual actor rotation remained zero"));
+        }
+#endif
+        const FPrivateReferenceOwnerBirth EarlyReferenceProof(Root,I.OriginalWorldWeak,I.OriginalBridgeWeak,N.ActorWeak,N.ComponentWeak,
+            N.OriginalHitboxBirth,N.OriginalWheelBodyBirth);
+        USpeedWheeledComponent::FReferenceOwnerBirthObservation EarlyObservation;
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+        if(BirthContext)
+        {
+            auto& F=*BirthContext->ForeignRoot;
+            if(!F.AcquiredGraphStillLive()||F.Closed||F.Failed||F.Cars.empty()
+                ||F.NativeOperationIdentity->ActiveGTActualOperation)return false;
+            auto* ForeignComponent=F.Cars.front()->Component;
+            auto* ForeignActor=F.Cars.front()->Actor;
+            if(!ForeignComponent||!ForeignActor)return false;
+            const auto CaptureNamedOwnerTargets=[&]() {
+                TArray<uint8> Bytes;using B=Speed::FEpisodeStateBytesForTesting;
+                for(const auto* Target:{static_cast<USpeedWheeledComponent*>(C),static_cast<USpeedWheeledComponent*>(ForeignComponent)})
+                {
+                    B::Add(Bytes,Target->SpeedCarOwner);B::Add(Bytes,Target->CenterOfMass);
+                    B::Add(Bytes,Target->CenterOfMassOverride);B::Add(Bytes,Target->bEnableCenterOfMassOverride);
+                    const auto& K=Target->BasePhysicsState.Kinematic;
+                    B::Add(Bytes,K.Location);B::Add(Bytes,K.Rotation);B::Add(Bytes,K.Velocity);
+                    B::Add(Bytes,K.AngularVelocity);B::Add(Bytes,K.Acceleration);B::Add(Bytes,K.AngularAcceleration);
+                    B::Add(Bytes,Target->CarLocalInvI);
+                    B::Add(Bytes,Target->HitboxSubBody);B::Array(Bytes,Target->WheelSubBodies);
+                    B::Array(Bytes,Target->SubBodies);
+                    for(const auto* Body:Target->SubBodies)if(const auto* Wheel=Cast<USWheelSubBody>(Body))
+                    {B::Add(Bytes,Wheel->GetWheelSim());B::Add(Bytes,Wheel->GetSuspensionSim());B::Add(Bytes,Wheel->GetChaosWheelConfiguration());}
+                    const auto& Original=*Target->OriginalWheeledDomain;
+                    B::Add(Bytes,Original.SpeedCarOwner);B::Add(Bytes,Original.CenterOfMass);
+                    B::Add(Bytes,Original.CenterOfMassOverride);B::Add(Bytes,Original.bEnableCenterOfMassOverride);
+                    B::Add(Bytes,Original.CarLocalInvI);B::Add(Bytes,Original.HitboxSubBody);
+                    B::Array(Bytes,Original.WheelSubBodies);B::Array(Bytes,Original.SubBodies);
+                }
+                return Bytes;
+            };
+            for(int32 Case=0;Case<3;++Case)
+            {
+                const auto Before=CaptureNamedOwnerTargets();bool Refused=false;
+                try {
+                    if(Case==0)C->InitializeReferenceOwnerBirth(Operation,EarlyReferenceProof,nullptr);
+                    if(Case==1)C->InitializeReferenceOwnerBirth(Operation,EarlyReferenceProof,ForeignActor);
+                    if(Case==2)ForeignComponent->InitializeReferenceOwnerBirth(Operation,EarlyReferenceProof,N.Actor);
+                } catch(const FPrivateNativeStorageUnavailable&){Refused=true;}
+                if(Refused)++BirthContext->Result.EarlyReferenceGuardRefusals;
+                BirthContext->Result.EarlyReferenceRefusalsBeforeWrite=BirthContext->Result.EarlyReferenceRefusalsBeforeWrite
+                    &&Refused&&Before==CaptureNamedOwnerTargets();
+                if(!BirthContext->Result.EarlyReferenceRefusalsBeforeWrite)return false;
+            }
+        }
+#endif
+        C->InitializeReferenceOwnerBirth(Operation,EarlyReferenceProof,N.Actor,&EarlyObservation);
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+        if(BirthContext)
+        {
+            // Genuine early witness and Birth operation are still on their
+            // actual factory stack, AFTER all five reference initializers and
+            // BEFORE any vehicle construction/early-abort return.
+            auto& Out=BirthContext->Result;
+            // Export actual completed work BEFORE any diagnostic can fail.
+            ++Out.EarlyReferenceOwnerReturns;
+            Out.EarlyReferenceTwoNullReturns+=EarlyObservation.TwoNullEntriesReturned;
+            Out.EarlyReferenceInitializers+=EarlyObservation.InitializersReturned;
+            Out.EarlyReferenceBoundaryChecks+=EarlyObservation.BoundaryChecksReturned;
+            const uint32 ChecksBeforeControls=EarlyReferenceProof.DiagnosticInitializerSubjectChecks;
+            Out.ReferenceInitializerSubjectChecks+=ChecksBeforeControls;
+            auto& F=*BirthContext->ForeignRoot;
+            if(!F.AcquiredGraphStillLive()||F.Closed||F.Failed||F.Cars.empty()
+                ||F.NativeOperationIdentity->ActiveGTActualOperation)return {};
+            auto& FN=*F.Cars.front();
+            if(N.OriginalWheelBodyBirth.Num()!=4||FN.OriginalWheelBodyBirth.Num()!=4)return {};
+            auto* OwnBox=Cast<USpeedBranchBoxSubBody>(N.OriginalHitboxBirth.Get());
+            auto* OwnWheel=Cast<USpeedBranchWheelSubBody>(N.OriginalWheelBodyBirth[0].Get());
+            auto* ForeignBox=Cast<USpeedBranchBoxSubBody>(FN.OriginalHitboxBirth.Get());
+            auto* ForeignWheel=Cast<USpeedBranchWheelSubBody>(FN.OriginalWheelBodyBirth[0].Get());
+            auto* ForeignComponent=FN.ComponentWeak.Get();
+            if(!OwnBox||!OwnWheel||!ForeignBox||!ForeignWheel||!ForeignComponent)return {};
+            struct FNamedInitializerFootprint
+            {
+                TArray<uint8> OwnOriginal,OwnReference,ForeignOriginal,ForeignReference;
+                uint32 OwnBodies=0,ForeignBodies=0;
+            };
+            const auto Positive=[&]()
+            {
+                // Validator only: never rerun Initialize for a positive control.
+                EarlyReferenceProof.RequireInitializerBody(Operation,*OwnBox,C);++Out.ReferenceInitializerPositiveChecks;
+                EarlyReferenceProof.RequireInitializerBody(Operation,*OwnWheel,C);++Out.ReferenceInitializerPositiveChecks;
+            };
+            const auto Capture=[&](FNamedInitializerFootprint& Values) -> bool
+            {
+                if(OriginalComponentStorageOwner||!I.AcquiredGraphStillLive()||!F.AcquiredGraphStillLive()
+                    ||F.Closed||F.Failed||F.NativeOperationIdentity->ActiveGTActualOperation)return false;
+                FGCScopeGuard ReadNamedBirths; // copied reads only; ends before each typed attempt
+                using B=Speed::FEpisodeStateBytesForTesting;
+                const auto BodyValues=[&](TArray<uint8>& Bytes,const FPrivateRoadSubBodyValues& Body)
+                {
+                    B::Add(Bytes,Body.ParentComponent);B::Add(Bytes,Body.LocalPose);AppendInitializerEulerScalars(Bytes,Body.LocalEulerRotation);
+                    B::Add(Bytes,Body.CollisionChannel);B::Add(Bytes,Body.AlwaysIgnoredComponents.GetData());
+                    B::Array(Bytes,Body.AlwaysIgnoredComponents);
+                };
+                const auto Read=[&](const auto& Node,TArray<uint8>& Original,TArray<uint8>& Reference,uint32& Count)
+                {
+                    auto* ActualActor=Node.ActorWeak.Get();auto* ActualComponent=Node.ComponentWeak.Get();
+                    if(!ActualActor||!ActualComponent||ActualActor->HasAnyFlags(RF_BeginDestroyed|RF_FinishDestroyed)
+                        ||ActualActor->IsActorBeingDestroyed()||ActualComponent->HasAnyFlags(RF_BeginDestroyed|RF_FinishDestroyed)
+                        ||ActualComponent->GetOwner()!=ActualActor||ActualComponent->UsesOriginalWheeledDomain()
+                        ||Node.OriginalWheelBodyBirth.Num()!=4)return false;
+                    auto* Box=Cast<USpeedBranchBoxSubBody>(Node.OriginalHitboxBirth.Get());
+                    if(!Box||Box->HasAnyFlags(RF_BeginDestroyed|RF_FinishDestroyed)||Box->GetOwner()!=ActualActor
+                        ||Box->GetClass()!=USpeedBranchBoxSubBody::StaticClass()||Box->OriginalBodyIdentity.Get()!=Box
+                        ||Box->UsesOriginalBodyStorage()||!Box->OwnedBodyValues||!Box->OwnedSolidValues||!Box->OwnedBoxDomain)return false;
+                    B::Add(Original,Box);BodyValues(Original,*Box->OwnedBodyValues);
+                    if(!PartialObservation::AppendSolidValues(Original,*Box->OwnedSolidValues))return false;
+                    B::Add(Original,Box->OwnedBoxDomain->BoxExtent);
+                    B::Add(Reference,Box);Box->AppendEpisodeStateForTesting(Reference);
+                    AppendInitializerEulerScalars(Reference,Box->PhysicalLocalEulerRotation());B::Add(Reference,Box->AlwaysIgnoredComponentsBodyDomainStorage().GetData());++Count;
+                    for(const auto& Born:Node.OriginalWheelBodyBirth)
+                    {
+                        auto* Wheel=Cast<USpeedBranchWheelSubBody>(Born.Get());
+                        if(!Wheel||Wheel->HasAnyFlags(RF_BeginDestroyed|RF_FinishDestroyed)||Wheel->GetOwner()!=ActualActor
+                            ||Wheel->GetClass()!=USpeedBranchWheelSubBody::StaticClass()||Wheel->OriginalBodyIdentity.Get()!=Wheel
+                            ||Wheel->UsesOriginalBodyStorage()||!Wheel->OwnedBodyValues||!Wheel->OwnedSolidValues
+                            ||!Wheel->OwnedSphereDomain||!Wheel->OwnedWheelDomain)return false;
+                        B::Add(Original,Wheel);BodyValues(Original,*Wheel->OwnedBodyValues);
+                        if(!PartialObservation::AppendSolidValues(Original,*Wheel->OwnedSolidValues))return false;
+                        B::Add(Original,Wheel->OwnedSphereDomain->Radius);
+                        const auto& D=*Wheel->OwnedWheelDomain;
+                        B::Add(Original,D.WheelComponent);B::Add(Original,D.ChaosWheel);B::Add(Original,D.PWheel);B::Add(Original,D.PSuspension);B::Add(Original,D.WheelMass);
+                        B::Add(Reference,Wheel);Wheel->AppendEpisodeStateForTesting(Reference);
+                        AppendInitializerEulerScalars(Reference,Wheel->PhysicalLocalEulerRotation());B::Add(Reference,Wheel->AlwaysIgnoredComponentsBodyDomainStorage().GetData());++Count;
+                    }
+                    return Count==5;
+                };
+                return Read(N,Values.OwnOriginal,Values.OwnReference,Values.OwnBodies)
+                    &&Read(FN,Values.ForeignOriginal,Values.ForeignReference,Values.ForeignBodies);
+            };
+            const auto Attempt=[&](const TCHAR* Entry,const TCHAR* Subject,const TCHAR* Parent,auto&& Call)
+            {
+                // Logical identity is validated in the retained seed before these Birth calls.
+                // The physical registry StableId is legitimately assigned only later.
+                FPrivateRoadReferenceInitializerBirthCase Row;Row.Actor=N.Seed.Actor;
+                Row.Entry=Entry;Row.Subject=Subject;Row.Parent=Parent;
+                FNamedInitializerFootprint Before,After;
+                try{Positive();Row.PositiveBefore=true;}
+                catch(const FPrivateNativeStorageUnavailable&){Out.ReferenceInitializerCases.push_back(std::move(Row));return false;}
+                if(!Capture(Before)){Out.ReferenceInitializerCases.push_back(std::move(Row));return false;}
+                Row.Attempted=true;try{Call();}catch(const FPrivateNativeStorageUnavailable&){Row.Refused=true;}
+                if(!Capture(After)){Out.ReferenceInitializerCases.push_back(std::move(Row));return false;}
+                Row.OwnBodies=Before.OwnBodies;Row.ForeignBodies=Before.ForeignBodies;
+                Row.OwnOriginal=Before.OwnOriginal==After.OwnOriginal;Row.OwnReference=Before.OwnReference==After.OwnReference;
+                Row.ForeignOriginal=Before.ForeignOriginal==After.ForeignOriginal;Row.ForeignReference=Before.ForeignReference==After.ForeignReference;
+                try{Positive();Row.PositiveAfter=true;}
+                catch(const FPrivateNativeStorageUnavailable&){Out.ReferenceInitializerCases.push_back(std::move(Row));return false;}
+                const bool Good=Row.PositiveBefore&&Row.Attempted&&Row.Refused&&Row.PositiveAfter
+                    &&Row.OwnOriginal&&Row.OwnReference&&Row.ForeignOriginal&&Row.ForeignReference
+                    &&Before.OwnBodies==5&&Before.ForeignBodies==5&&After.OwnBodies==5&&After.ForeignBodies==5;
+                Out.ReferenceInitializerCases.push_back(std::move(Row));return Good;
+            };
+            // Six true typed entry calls, not just six direct validator tests.
+            const bool InitializerControls=
+                Attempt(TEXT("box"),TEXT("own"),TEXT("null"),[&](){OwnBox->InitializeReference(Operation,EarlyReferenceProof,nullptr);})
+                &&Attempt(TEXT("wheel"),TEXT("own"),TEXT("null"),[&](){OwnWheel->InitializeReference(Operation,EarlyReferenceProof,nullptr);})
+                &&Attempt(TEXT("box"),TEXT("own"),TEXT("foreign"),[&](){OwnBox->InitializeReference(Operation,EarlyReferenceProof,ForeignComponent);})
+                &&Attempt(TEXT("wheel"),TEXT("own"),TEXT("foreign"),[&](){OwnWheel->InitializeReference(Operation,EarlyReferenceProof,ForeignComponent);})
+                &&Attempt(TEXT("box"),TEXT("foreign"),TEXT("own"),[&](){ForeignBox->InitializeReference(Operation,EarlyReferenceProof,C);})
+                &&Attempt(TEXT("wheel"),TEXT("foreign"),TEXT("own"),[&](){ForeignWheel->InitializeReference(Operation,EarlyReferenceProof,C);});
+            Out.ReferenceInitializerSubjectChecks+=EarlyReferenceProof.DiagnosticInitializerSubjectChecks-ChecksBeforeControls;
+            if(!InitializerControls)return {};
+            if(BirthContext->Mode==EPrivateRoadBirthProbeMode::AbortAfterEarlyReferenceOwner)
+            {Out.EarlyReferenceAbortReached=true;return Refuse(Why,TEXT("diagnostic abort after actual early reference owner return before vehicle construction"));}
+        }
+#endif
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+        if(BirthContext&&BirthContext->Mode==EPrivateRoadBirthProbeMode::ProbeFirstOwnerAndAbort)
+            BirthContext->Result.FirstOwnerLastStage=TEXT("reference-owner-call-returned");
+#endif
+        if(!I.AcquiredGraphStillLive())return false;
+        const TArray<USSubBody*> FacadeTopology=C->GetSubBodies(); // owned identity list, never a physical-state import
+        const auto FacadeTopologyStillMatches=[&]() -> bool
+        {
+            if(!I.AcquiredGraphStillLive()||FacadeTopology.Num()!=5||N.OriginalWheelBodyBirth.Num()!=4)return false;
+            const auto& Current=C->SubBodiesWheeledDomainStorage();
+            const auto& Wheels=C->WheelSubBodiesWheeledDomainStorage();
+            if(Current.Num()!=5||Wheels.Num()!=4
+                ||FacadeTopology[0]!=N.OriginalHitboxBirth.Get()||Current[0]!=FacadeTopology[0]
+                ||!Speed::NativeObjectRead::MatchesOriginalBirth(C->HitboxSubBodyWheeledDomainStorage(),N.OriginalHitboxBirth))return false;
+            for(int32 Index=0;Index<4;++Index)
+                if(FacadeTopology[Index+1]!=N.OriginalWheelBodyBirth[Index].Get()||Current[Index+1]!=FacadeTopology[Index+1]
+                    ||!Speed::NativeObjectRead::MatchesOriginalBirth(Wheels[Index],N.OriginalWheelBodyBirth[Index]))return false;
+            return true;
+        };
+        if(!FacadeTopologyStillMatches())return false;
+        for(auto* Body:FacadeTopology)
+        {
+            if(auto* Box=Cast<USpeedBranchBoxSubBody>(Body))
+            {
+                Box->StorageAccess=I.Access;I.OriginalBoxesWeak.Add(Box);
+                if(!FacadeTopologyStillMatches()||!Box->OwnedBodyValues||!Box->OwnedSolidValues||!Box->OwnedBoxDomain)return false;
+                N.NativeBoxRoot=std::make_shared<FImpl::FCar::FBoxRoot>(N.NativeVehicleRoot,std::move(Box->OwnedBodyValues),std::move(Box->OwnedSolidValues),std::move(Box->OwnedBoxDomain));
+                Box->OwnedBodyValues=RetirementDraft::AliasBodyPart<0>(N.NativeBoxRoot);
+                Box->OwnedSolidValues=RetirementDraft::AliasBodyPart<1>(N.NativeBoxRoot);
+                Box->OwnedBoxDomain=RetirementDraft::AliasBodyPart<2>(N.NativeBoxRoot);
+                I.NativeCppKeepAlive.push_back(N.NativeBoxRoot);
+                const auto BindBox=[&](const void* Subject)
+                {
+                    return Bind(Subject,RetirementDraft::AliasBodyPart<0>(N.NativeBoxRoot))
+                        &&Bind(Subject,RetirementDraft::AliasBodyPart<1>(N.NativeBoxRoot))
+                        &&Bind(Subject,RetirementDraft::AliasBodyPart<2>(N.NativeBoxRoot));
+                };
+                if(!BindBox(Box)||!BindBox(static_cast<UBoxSubBody*>(Box))
+                    ||!BindBox(static_cast<USolidSubBody*>(Box))||!BindBox(static_cast<USSubBody*>(Box))
+                    ||!BindBox(static_cast<ISweeper*>(static_cast<IBoxSweeper*>(Box)))
+                    ||!BindBox(static_cast<ISweeper*>(static_cast<ISolidSweeper*>(Box))))return false;
+            }
+            else if(auto* Wheel=Cast<USpeedBranchWheelSubBody>(Body))
+            {
+                Wheel->StorageAccess=I.Access;I.OriginalWheelsWeak.Add(Wheel);
+                if(!FacadeTopologyStillMatches()||!Wheel->OwnedBodyValues||!Wheel->OwnedSolidValues||!Wheel->OwnedWheelRuntime||!Wheel->OwnedWheelDomain||!Wheel->OwnedSphereDomain)return false;
+                auto WheelAllocationRoot=std::make_shared<FImpl::FCar::FWheelRoot>(N.NativeVehicleRoot,std::move(Wheel->OwnedBodyValues),std::move(Wheel->OwnedSolidValues),std::move(Wheel->OwnedWheelRuntime),std::move(Wheel->OwnedWheelDomain),std::move(Wheel->OwnedSphereDomain));
+                Wheel->OwnedBodyValues=RetirementDraft::AliasBodyPart<0>(WheelAllocationRoot);
+                Wheel->OwnedSolidValues=RetirementDraft::AliasBodyPart<1>(WheelAllocationRoot);
+                Wheel->OwnedWheelRuntime=RetirementDraft::AliasBodyPart<2>(WheelAllocationRoot);
+                Wheel->OwnedWheelDomain=RetirementDraft::AliasBodyPart<3>(WheelAllocationRoot);
+                Wheel->OwnedSphereDomain=RetirementDraft::AliasBodyPart<4>(WheelAllocationRoot);
+                N.NativeWheelRoots.push_back(WheelAllocationRoot);I.NativeCppKeepAlive.push_back(WheelAllocationRoot);
+                const auto BindWheel=[&](const void* Subject)
+                {
+                    return Bind(Subject,RetirementDraft::AliasBodyPart<0>(WheelAllocationRoot))
+                        &&Bind(Subject,RetirementDraft::AliasBodyPart<1>(WheelAllocationRoot))
+                        &&Bind(Subject,RetirementDraft::AliasBodyPart<2>(WheelAllocationRoot))
+                        &&Bind(Subject,RetirementDraft::AliasBodyPart<3>(WheelAllocationRoot))
+                        &&Bind(Subject,RetirementDraft::AliasBodyPart<4>(WheelAllocationRoot));
+                };
+                if(!BindWheel(Wheel)||!BindWheel(static_cast<USWheelSubBody*>(Wheel))
+                    ||!BindWheel(static_cast<USphereSubBody*>(Wheel))
+                    ||!BindWheel(static_cast<USolidSubBody*>(Wheel))||!BindWheel(static_cast<USSubBody*>(Wheel))
+                    ||!BindWheel(static_cast<ISweeper*>(static_cast<ISphereSweeper*>(Wheel)))
+                    ||!BindWheel(static_cast<ISweeper*>(static_cast<ISolidSweeper*>(Wheel))))return false;
+            }
+            else {Refuse(Why,TEXT("private subbody storage subtype missing"));return {};}
+        }
+        auto* const FacadeHitbox=C->GetHitboxSubBodyForConfiguration();
+        if(!FacadeTopologyStillMatches()||!FacadeHitbox||FacadeHitbox!=N.OriginalHitboxBirth.Get()
+            ||FacadeHitbox->GetClass()!=USpeedBranchBoxSubBody::StaticClass())
+        {Refuse(Why,TEXT("private native contact dispatch subtype missing"));return {};}
+        N.ReferenceConfiguration->Suspension.SetSuspensionMaxRaise(10);N.ReferenceConfiguration->Suspension.SetSuspensionMaxDrop(25);
+        N.ReferenceConfiguration->Suspension.SpringRate=5000;N.ReferenceConfiguration->Suspension.RestingForce=250000;
+        N.ReferenceConfiguration->Suspension.CompressionDamping=1000;N.ReferenceConfiguration->Suspension.ReboundDamping=1000;
+        N.NativeConfiguration->Suspension.SetSuspensionMaxRaise(10);N.NativeConfiguration->Suspension.SetSuspensionMaxDrop(25);
+        N.NativeConfiguration->Suspension.SpringRate=5000;N.NativeConfiguration->Suspension.RestingForce=250000;
+        N.NativeConfiguration->Suspension.CompressionDamping=1000;N.NativeConfiguration->Suspension.ReboundDamping=1000;
+        auto ReferenceBirthProof=BuildReferenceVehicle(*C,N.ReferenceConfiguration,ReferenceWheels,N,ReferenceWheelBirths);
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+        if(BirthContext&&BirthContext->Mode==EPrivateRoadBirthProbeMode::ProbeFirstOwnerAndAbort)
+            BirthContext->Result.FirstOwnerLastStage=TEXT("reference-vehicle-call-returned");
+#endif
+        if(!FacadeTopologyStillMatches()){Refuse(Why,TEXT("private facade wheel topology changed"));return false;}
+        for(int32 W=0;W<4;++W)
+        {
+            auto* const Wheel=N.OriginalWheelBodyBirth[W].Get();if(!Wheel)return false;
+            Wheel->SetLocalOffset(FVector(W<2?70:-70,W%2?45:-45,-15));
+            if(!FacadeTopologyStillMatches())return false;
+            Wheel->SetRadiusForConfiguration(30);
+            if(!FacadeTopologyStillMatches())return false;
+        }
+        if(!C->ValidateSimulationBindings(Why)||!FacadeTopologyStillMatches())return false;
+        if(C->ThrottleAccelWheeledDomainStorage()!=750||C->BrakeAccelWheeledDomainStorage()!=1100||C->PhysDampingWheeledDomainStorage()!=0||C->AirForwardThrottleWheeledDomainStorage()!=0||C->AirBackwardThrottleWheeledDomainStorage()!=0)
+        {Refuse(Why,TEXT("stock native driving profile differs"));return {};}
+        C->EstablishOriginalComponentStorage();
+        N.NativeCommonValues=C->OwnedComponentValues;
+        I.NativeCppKeepAlive.push_back(N.NativeCommonValues);
+        if(!BindComponentPart(N.NativeCommonValues))return false;
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+        if(BirthContext&&BirthContext->Mode==EPrivateRoadBirthProbeMode::ProbeFirstOwnerAndAbort)
+            BirthContext->Result.FirstOwnerLastStage=TEXT("original-common-domain-bound");
+        // Witness only: actual legacy values from the original setup. These
+        // are NEVER imported into physical storage or a restore certificate.
+        TArray<uint8> OriginalSolidRecipe;
+        for(auto* Body:FacadeTopology)
+        {
+            if(const auto* Box=Cast<USpeedBranchBoxSubBody>(Body))
+            {if(!PartialObservation::AppendSolidValues(OriginalSolidRecipe,Box->ReadLegacySolidDiagnosticValues()))return {};}
+            else if(const auto* Wheel=Cast<USpeedBranchWheelSubBody>(Body))
+            {if(!PartialObservation::AppendSolidValues(OriginalSolidRecipe,Wheel->ReadLegacySolidDiagnosticValues()))return {};}
+            else return {};
+        }
+#endif
+        if(!FacadeTopologyStillMatches())return false;
+        // Real actor-facing queries and tick lifecycle stay outside the
+        // original physical storage route. These are actual native actor
+        // values, not a caller pose, copied facade physical state or permission.
+        if(Speed::Netcode::PresentationClient::SuppressesLocalPhysics(C->GetWorld()))
+            return Refuse(Why,TEXT("private owner facade admission changed"));
+        const FQuat OriginalOwnerRotation=N.Actor->GetActorRotation().Quaternion();
+        const FVector OriginalOwnerLocation=N.Actor->GetActorLocation();
+        C->SetAsyncPhysicsTickEnabled(false);
+        if(!FacadeTopologyStillMatches()||OriginalOwnerRotation.ContainsNaN()
+            ||!OriginalOwnerRotation.IsNormalized()||OriginalOwnerLocation.ContainsNaN())
+            return Refuse(Why,TEXT("original private actor pose/binding unavailable"));
+        FGCScopeGuard BirthMathOnly;
+        if(!I.AcquiredGraphStillLive())return false; // actual original readback after the last callback
+        Speed::RoadSettings::FOriginalRoadSettingsScope SettingsBirthMath(I.DeclaredSettings);
+        FOriginalComponentStorageScope OriginalStorage(*I.Access);
+        // The actual private domain is initialized through native operations
+        // from its explicit constructor/profile program. No facade values,
+        // container headers, vehicle state or mutable config views are copied.
+        C->InitChaosVehicle();
+        Speed::Driving::ApplyStockRoadCar(*C->OriginalWheeledDomain);
+        C->GravityZWheeledDomainStorage()=GetDefault<UPhysicsSettings>()->DefaultGravityZ;
+        C->SetEngineFPS(300);
+        TArray<USSubBody*> OriginalTopology;
+        auto* OriginalBox=Cast<USpeedBranchBoxSubBody>(C->GetDefaultSubobjectByName(USpeedWheeledComponent::HitboxName));
+        if(!OriginalBox||OriginalBox->GetClass()!=USpeedBranchBoxSubBody::StaticClass())return {};
+        OriginalTopology.Add(OriginalBox);
+        for(int32 W=0;W<4;++W)
+        {
+            auto* Body=Cast<USpeedBranchWheelSubBody>(C->GetDefaultSubobjectByName(USpeedWheeledComponent::WheelNames[W]));
+            if(!Body||Body->GetClass()!=USpeedBranchWheelSubBody::StaticClass()||Body->GetOwner()!=N.Actor)return {};
+            OriginalTopology.Add(Body);
+        }
+        C->SetSubBodies(OriginalTopology);
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+        USpeedWheeledComponent::FNativeOwnerBirthObservation FirstOwnerObservation;
+        if(BirthContext&&BirthContext->Mode==EPrivateRoadBirthProbeMode::ProbeFirstOwnerAndAbort)
+        {
+            BirthContext->Result.FirstOwnerLastStage=TEXT("foreign-admission-entered");
+            auto& Foreign=*BirthContext->ForeignRoot;
+            if(Foreign.Closed||Foreign.Failed||Foreign.RetirementRequested.load()
+                ||Foreign.NativeOperationIdentity->ActiveGTActualOperation||!Foreign.AcquiredGraphStillLive()||Foreign.Cars.empty())
+                return Refuse(Why,TEXT("first owner fixture foreign graph admission refused"));
+            const auto& FN=*Foreign.Cars.front();
+            if(!FN.Component||!FN.NativeVehicleRoot||!FN.NativeVehicleRoot->Domain||!FN.NativeCommonValues
+                ||!FN.Component->OriginalWheeledDomain||FN.Component->OriginalWheeledDomain.get()!=FN.NativeVehicleRoot->Domain.get()
+                ||FN.Component->OriginalWheeledDomain.owner_before(FN.NativeVehicleRoot)||FN.NativeVehicleRoot.owner_before(FN.Component->OriginalWheeledDomain)
+                ||FN.Component->OwnedComponentValues!=FN.NativeCommonValues
+                ||FN.Component->OwnedComponentValues.owner_before(FN.NativeCommonValues)||FN.NativeCommonValues.owner_before(FN.Component->OwnedComponentValues))
+                return Refuse(Why,TEXT("first owner fixture foreign typed-root aliases refused"));
+            // The already retained ForeignCall.Root owns this actual typed
+            // node and both original aliases for the WHOLE closed diagnostic
+            // call. This const six-field borrow never escapes or grants an Op,
+            // mutable view, source exclusion, snapshot or lifetime lease.
+            auto& Result=BirthContext->Result;
+            Result.FirstOwnerLastStage=TEXT("closed-first-owner-probe-entered");Result.FirstOwnerProbeCallEntered=true;
+            const bool ProbeSucceeded=C->ProbeNativeFirstOwnerBirthForDiagnostics(Operation,N.Actor,OriginalOwnerRotation,OriginalOwnerLocation,
+                N.OriginalHitboxBirth,N.OriginalWheelBodyBirth,N.OriginalWheelObjects,ReferenceWheelBirths,
+                FN.Component,FN.Actor,FN.OriginalHitboxBirth,FN.OriginalWheelBodyBirth,FN.OriginalWheelObjects,
+                FN.OriginalNativeSimulation,FN.NativeCommonValues->BasePhysicsState.Kinematic,FirstOwnerObservation);
+            Result.FirstOwnerProbeCallReturned=true;Result.FirstOwnerProbeSucceeded=ProbeSucceeded;
+            Result.FirstOwnerLastStage=TEXT("closed-first-owner-probe-returned");
+            // Copy actual partial observations on BOTH true and false returns.
+            // A false result remains a failure and grants no positive coverage.
+            Result.FirstOwnerInitializersReturned=FirstOwnerObservation.InitializersReturned;
+            Result.FirstOwnerInitialNullParents=FirstOwnerObservation.InitialNullParents;Result.FirstOwnerGuardRefusals=FirstOwnerObservation.Refusals;
+            Result.FirstOwnerAllRefusalsBeforeWrite=FirstOwnerObservation.AllRefusalsBeforeWrite;Result.FirstOwnerPoseAndCOMMatch=FirstOwnerObservation.PoseAndCOMMatch;
+            Result.FirstOwnerClearKeepsConfigurations=FirstOwnerObservation.ClearKeepsCanonicalConfigurations;
+            Result.FirstOwnerStoredChassisTensorMatch=FirstOwnerObservation.StoredChassisTensorMatch;
+            Result.FirstOwnerStoredTensorDistinguished=FirstOwnerObservation.StoredTensorDistinguished;Result.FirstOwnerChildrenMatch=FirstOwnerObservation.ChildrenMatch;
+            Result.FirstOwnerWheelVelocityOrderDistinguished=FirstOwnerObservation.WheelVelocityOrderDistinguished;
+            if(!ProbeSucceeded)return Refuse(Why,TEXT("actual first owner Birth controls refused after closed probe returned"));
+            Result.FirstOwnerProbeReturned=true;
+            Result.FirstOwnerAbortReached=true; // genuine first pass returned, before original vehicle/SECOND pass
+            return Refuse(Why,TEXT("explicit first owner constructor fixture abort before original vehicle construction"));
+        }
+        C->InitializeOriginalOwnerFromCapturedPose(Operation,N.Actor,OriginalOwnerRotation,OriginalOwnerLocation,
+            N.OriginalHitboxBirth,N.OriginalWheelBodyBirth,N.OriginalWheelObjects,BirthContext?&FirstOwnerObservation:nullptr);
+        if(BirthContext)BirthContext->Result.FirstOwnerInitializersReturned+=FirstOwnerObservation.InitializersReturned;
+#else
+        C->InitializeOriginalOwnerFromCapturedPose(Operation,N.Actor,OriginalOwnerRotation,OriginalOwnerLocation,
+            N.OriginalHitboxBirth,N.OriginalWheelBodyBirth,N.OriginalWheelObjects);
+#endif
+        I.Bridge->RegisterOriginalComponentForPrivateOwner(C);
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+        const auto CaptureActualReferenceAroundOriginalBinding=[&]()
+        {
+            if(!ReferenceBirthProof||!ReferenceBirthProof->Vehicle||ReferenceBirthProof->Bodies.Num()!=4
+                ||ReferenceBirthProof->Configurations.Num()!=4)throw FPrivateNativeStorageUnavailable{};
+            TArray<uint8> Bytes;using B=Speed::FEpisodeStateBytesForTesting;
+            B::Add(Bytes,ReferenceBirthProof->Vehicle);B::Add(Bytes,ReferenceBirthProof->Simulation);
+            B::Add(Bytes,ReferenceBirthProof->Vehicle->Wheels.GetData());B::Add(Bytes,ReferenceBirthProof->Vehicle->Wheels.Num());
+            B::Add(Bytes,ReferenceBirthProof->Vehicle->Suspension.GetData());B::Add(Bytes,ReferenceBirthProof->Vehicle->Suspension.Num());
+            for(int32 Index=0;Index<4;++Index)
+            {
+                auto* Body=ReferenceBirthProof->Bodies[Index].Get();auto* Configuration=ReferenceBirthProof->Configurations[Index].Get();
+                if(!Body||!Configuration)throw FPrivateNativeStorageUnavailable{};
+                B::Add(Bytes,Body->Idx());B::Add(Bytes,Body->GetMass());B::Add(Bytes,Body->GetWheelSim());
+                B::Add(Bytes,Body->GetSuspensionSim());B::Add(Bytes,Body->GetChaosWheelConfiguration());
+                B::Add(Bytes,ReferenceBirthProof->Vehicle->Wheels[Index].MassPerWheel);
+                B::Add(Bytes,Configuration->SuspensionMaxRaise);B::Add(Bytes,Configuration->SuspensionMaxDrop);
+            }
+            return Bytes; // named reference binding values only, no complete-state claim
+        };
+        const auto ReferenceBeforeOriginalBinding=BirthContext?CaptureActualReferenceAroundOriginalBinding():TArray<uint8>{};
+#endif
+        if(!BuildOriginalVehicle(*C,N.NativeConfiguration,OriginalWheels,N.OriginalWheelBodyBirth,N.OriginalWheelObjects))return {};
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+        if(BirthContext)
+        {
+            const bool Same=ReferenceBeforeOriginalBinding==CaptureActualReferenceAroundOriginalBinding();
+            auto& Result=BirthContext->Result;
+            Result.OriginalBindingKeepsReference=(!Result.OriginalBindingReferenceComparisons||Result.OriginalBindingKeepsReference)&&Same;
+            ++Result.OriginalBindingReferenceComparisons;
+            if(!Same)return Refuse(Why,TEXT("actual original Birth binding changed reference backend"));
+        }
+#endif
+        N.OriginalNativeSimulation=C->SkySimulationWheeledDomainStorage();
+        N.OriginalNativeVehicle=N.OriginalNativeSimulation?N.OriginalNativeSimulation->PVehicle.Get():nullptr;
+        if(!N.OriginalNativeVehicle||N.OriginalNativeVehicle->Wheels.Num()!=4||N.OriginalNativeVehicle->Suspension.Num()!=4)return {};
+        N.OriginalNativeWheelAllocation=N.OriginalNativeVehicle->Wheels.GetData();
+        N.OriginalNativeSuspensionAllocation=N.OriginalNativeVehicle->Suspension.GetData();
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+        if(BirthContext&&!BirthContext->Result.ReferenceBindingProbeReturned)
+        {
+            auto& Foreign=*BirthContext->ForeignRoot;
+            if(Foreign.Closed||Foreign.Failed||Foreign.NativeOperationIdentity->ActiveGTActualOperation
+                ||!Foreign.AcquiredGraphStillLive()||Foreign.Cars.empty())return false;
+            const auto& FN=*Foreign.Cars.front();
+            if(!ReferenceBirthProof||!FN.ComponentWeak.IsValid()||FN.OriginalWheelBodyBirth.Num()!=4
+                ||FN.OriginalWheelObjects.Num()!=4||!FN.OriginalWheelBodyBirth[0].IsValid()
+                ||!FN.OriginalWheelObjects[0].IsValid()||!FN.OriginalNativeVehicle
+                ||!FN.OriginalNativeWheelAllocation||!FN.OriginalNativeSuspensionAllocation)return false;
+            USpeedWheeledComponent::FNativeWheelBindingDiagnostics Probe;
+            if(!C->ProbeReferenceWheelBindingsBirthForDiagnostics(Operation,*ReferenceBirthProof,*FN.ComponentWeak.Get(),
+                FN.OriginalWheelBodyBirth[0].Get(),FN.OriginalNativeVehicle,FN.OriginalNativeWheelAllocation,
+                FN.OriginalNativeSuspensionAllocation,FN.OriginalWheelObjects[0].Get(),Probe))return false;
+            auto& Result=BirthContext->Result;
+            Result.ReferenceBindingGuardRefusals=Probe.Refusals;Result.ReferenceBindingPositiveReturns=Probe.PositiveEntryReturns;
+            Result.ReferenceBindingBeforeWrite=Probe.AllRefusalsBeforeWrite;Result.ReferenceBindingValuesMatch=Probe.PositiveValuesMatch;
+            Result.ReferenceBindingOverridePredicatesMatch=Probe.OverridePredicatesMatch;
+            Result.ReferenceBindingProbeReturned=true; // real diagnostic returned, not a permission
+        }
+#endif
+        for(int32 W=0;W<4;++W)
+        {
+            auto* Body=C->ReadWheelSubBodiesForPhysics()[W].Get();
+            Body->SetLocalOffset(FVector(W<2?70:-70,W%2?45:-45,-15));
+            Body->SetRadiusForConfiguration(30);
+            // Same original authored host travel, stored as original native
+            // config instead of rereading the mutable UChaosWheel facade.
+            Body->ConfigureSuspensionTravel(10,25);
+        }
+        if(!C->ValidateSimulationBindings(Why))return {};
+
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+        const auto CaptureOutsideSolidValues=[&](TArray<uint8>& Bytes)
+        {
+            for(const auto* Body:C->GetSubBodies())
+            {
+                // Explicit BASE witness excludes the newly initialized solid
+                // fields. It retains original parent/type/transform/channel,
+                // core hits and ordered ignored/external lists field by field.
+                Body->USSubBody::AppendEpisodeStateForTesting(Bytes);
+                if(const auto* Box=Cast<USpeedBranchBoxSubBody>(Body))
+                    Speed::FEpisodeStateBytesForTesting::Add(Bytes,Box->GetBoxExtent());
+                else if(const auto* Wheel=Cast<USpeedBranchWheelSubBody>(Body))
+                {
+                    Speed::FEpisodeStateBytesForTesting::Add(Bytes,Wheel->GetRadiusWithMargin());
+                    Speed::FEpisodeStateBytesForTesting::Add(Bytes,Speed::NativeKinematics::FWheelBindingAccess::Configuration(Operation,*Wheel));
+                    Speed::FEpisodeStateBytesForTesting::Add(Bytes,Speed::NativeKinematics::FWheelBindingAccess::Wheel(Operation,*Wheel));
+                    Speed::FEpisodeStateBytesForTesting::Add(Bytes,Speed::NativeKinematics::FWheelBindingAccess::Suspension(Operation,*Wheel));
+                    if(!Speed::NativeKinematics::FWheelBindingAccess::Wheel(Operation,*Wheel)||!Speed::NativeKinematics::FWheelBindingAccess::Suspension(Operation,*Wheel))return false;
+                    PartialObservation::AppendCheckedWheel(Bytes,*Speed::NativeKinematics::FWheelBindingAccess::Wheel(Operation,*Wheel));
+                    const PartialObservation::FCheckedSuspensionCopy Suspension(*Speed::NativeKinematics::FWheelBindingAccess::Suspension(Operation,*Wheel));Suspension.Append(Bytes);
+                }
+                else return false;
+            }
+            return true;
+        };
+        TArray<uint8> BeforeOther,AfterOther,ActualSolidRecipe;
+        if(!CaptureOutsideSolidValues(BeforeOther))return {};
+#endif
+        for(auto* Body:Speed::NativeKinematics::FComponentRead::SubBodies(Operation,*C))
+        {
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+            if(BirthContext&&!BirthContext->GuardProbeReturned)
+            {
+                if(!ProbeBirthInitializationGuards(I,Operation,*BirthContext,Body,C))
+                    return Refuse(Why,TEXT("actual birth initialization guards refused"));
+                BirthContext->GuardProbeReturned=true;
+            }
+#endif
+            Speed::NativeKinematics::FBodyWrite::Initialize(Operation,Body,C);
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+            if(BirthContext)
+            {
+                ++BirthContext->Result.InitializersReturned; // only after actual return
+                if(BirthContext->Mode==EPrivateRoadBirthProbeMode::FailAfterFirstInitializer
+                    &&BirthContext->Result.InitializersReturned==1)
+                {
+                    // Fully allocated/bound first car, one of its five repeated
+                    // initializers returned. This does not cover early allocation
+                    // failures. Retain COUNTERS only before genuine owner unwind.
+                    for(const auto& Trace:I.NativeConfigurationLifetime)
+                        BirthContext->Result.LifetimeObservers.push_back(Trace);
+                    BirthContext->Result.FaultAfterFirstInitializerReached=true;
+                    return Refuse(Why,TEXT("explicit late birth diagnostic abort after first initializer"));
+                }
+            }
+#endif
+        }
+        for(int32 W=0;W<C->ReadWheelSubBodiesForPhysics().Num();++W)Speed::NativeKinematics::FSolidPropertiesAccess::SetIdx(Operation,*C->ReadWheelSubBodiesForPhysics()[W],W);
+        // Real validation AFTER every new initializer, under the same scope.
+        if(!C->ValidateSimulationBindings(Why))return {};
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+        if(!CaptureOutsideSolidValues(AfterOther)||BeforeOther!=AfterOther)
+        {Refuse(Why,TEXT("solid initialization changed non-solid native parent/shape/binding/list/storage witness"));return {};}
+        for(const auto* Body:C->GetSubBodies())
+        {
+            if(const auto* Box=Cast<USpeedBranchBoxSubBody>(Body))
+            {if(!Box->OwnedSolidValues||!PartialObservation::AppendSolidValues(ActualSolidRecipe,*Box->OwnedSolidValues))return {};}
+            else if(const auto* Wheel=Cast<USpeedBranchWheelSubBody>(Body))
+            {if(!Wheel->OwnedSolidValues||!PartialObservation::AppendSolidValues(ActualSolidRecipe,*Wheel->OwnedSolidValues))return {};}
+            else return {};
+        }
+        if(OriginalSolidRecipe.IsEmpty()||OriginalSolidRecipe!=ActualSolidRecipe)
+        {Refuse(Why,TEXT("new private solid values differ from actual original native setup recipe witness"));return {};}
+        N.SolidInitializationWitness=true;
+#endif
+        C->SetEngineFPS(300);C->SetKinematicState(N.Seed.Initial);
+        // Declared fresh-world initial countdown, never a historical restore.
+        if(I.Access->RequiresInitialPublication)
+        {
+            // Closed state, not a timer: no expiry or decrement can release it.
+            C->SetCannotMoveLocal();
+        }
+        else
+        {
+            C->WheeledPhysicsStateStorage().nbFramesbeforeCanMove=N.Seed.CountdownFrames;
+            C->WheeledPhysicsStateStorage().bStartCountdown=N.Seed.CountdownFrames>0;
+            C->SinceCanMoveFrameWheeledDomainStorage()=N.Seed.CountdownFrames?INDEX_NONE:0;
+            if(N.Seed.CountdownFrames)C->FreezeMovement();else C->UnFreezeMovement();
+        }
+        C->bPublishWheelPresentationWheeledDomainStorage()=true;I.PinTree(N.Actor);I.PinTree(C);
+        return true;
+        } catch(const Speed::NativeObjectRead::FUnresolvedOriginal&)
+        {return Refuse(Why,TEXT("unresolved original handle during native birth"));}
+        }(); // native route/settings/GC scopes have all ended
+        I.Diagnostics->End();BirthOutboxActive=false;
+        if(!I.Diagnostics->Flush()||!BirthConfigured)return {};
+        if(!I.AcquiredGraphStillLive())
+        {Refuse(Why,TEXT("original acquired native graph invalidated by birth diagnostic callback"));return {};}
+    }
+    if(!I.Diagnostics->Begin())return {};
+    bool InitializationOutboxActive=true;ON_SCOPE_EXIT{if(InitializationOutboxActive)I.Diagnostics->End();};
+    const bool Initialized=[&]() -> bool
+    {
+    FGCScopeGuard InitializationMathOnly;
+    if(!I.AcquiredGraphStillLive())return Refuse(Why,TEXT("acquired graph unavailable before original initialization"));
+    FOriginalComponentStorageScope OriginalInitialization(*I.Access);
+    Speed::RoadSettings::FOriginalRoadSettingsScope SettingsInitialization(I.DeclaredSettings);
+    I.Bridge->ApplyPendingOps();
+    for(auto& N:I.Cars)
+    {
+        N->StableId=I.Bridge->GetSimulationStableId(*N->Component);
+        if(!N->StableId){Refuse(Why,TEXT("private native registration identity missing"));return {};}
+    }
+    if(!NoNetworkOwner(I.World.Get())||!I.Driver->InitializePrivate(Operation,*I.Bridge))
+    {Refuse(Why,TEXT("private native lifecycle/driver admission failed"));return {};}
+    static U64 NextLifetime=1; // GT-only mint at actual successful birth.
+    if(NextLifetime==MAX_uint64){Refuse(Why,TEXT("private native lifetime exhausted"));return {};}
+    if(!HasExactRegisteredRosterRetained(Root,Operation,Why))return {};
+    I.Lifetime=NextLifetime++;
+    return true;
+    }();
+    I.Diagnostics->End();InitializationOutboxActive=false;
+    if(!I.Diagnostics->Flush()||!Initialized||!I.AcquiredGraphStillLive())return {};
+    {
+        FGCScopeGuard FinalBirthReadOnly;
+        FOriginalComponentStorageScope OriginalFinalBirth(*I.Access);
+        if(!HasExactRegisteredRosterRetained(Root,Operation,Why)||I.Driver->NextPrivate(Operation)!=0)return {};
+    }
+    if(!I.NativeStorage->CloseBirthRegistration(Operation))return {};
+    return Owner;
+}
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+bool FPrivateRoadPhysicsWorld::ProbeBirthInitializationGuards(FImpl& I,const FPrivateNativeOperation& Operation,
+    FBirthInitializationDiagnosticContext& Context,USSubBody* Body,ISpeedComponent* Parent)
+{
+    FPrivateNativeStorageAccess::RequireBirth(Operation);
+    if(!I.AcquiredGraphStillLive())return false;
+    auto& Out=Context.Result;const auto& Foreign=*Context.ForeignRoot;
+    if(!IsInGameThread()||Foreign.Closed||Foreign.Failed||Foreign.RetirementRequested.load()
+        ||Foreign.NativeOperationIdentity->ActiveGTActualOperation||!Foreign.AcquiredGraphStillLive()
+        ||Foreign.OriginalBoxesWeak.IsEmpty()||Foreign.Cars.empty())return false;
+    auto* ForeignBox=Foreign.OriginalBoxesWeak[0].Get();auto* ForeignParent=Foreign.Cars[0]->Component;
+    if(!ForeignBox||!ForeignParent)return false;
+    auto& Values=FPrivateNativeStorageAccess::Part<FPrivateRoadSubBodyValues>(Operation,Body);
+    const auto SavedCurrent=Values.CurrentHit,SavedFuture=Values.FutureHit;
+    ON_SCOPE_EXIT{Values.CurrentHit=SavedCurrent;Values.FutureHit=SavedFuture;};
+    // Named cache sentinels make an accidentally accepted Step-only hit route
+    // observable. This is fixture cleanup, not full-state restoration.
+    Values.CurrentHit.FrameTag=17;Values.FutureHit.FrameTag=29;Values.FutureHit.bBlockingHit=true;
+    const auto Capture=[&](){TArray<uint8> Bytes;Body->AppendEpisodeStateForTesting(Bytes);return Bytes;};
+    Out.OwnBodyUnchangedAfterRefusals=true;
+    for(int32 Case=0;Case<6;++Case)
+    {
+        const auto Before=Capture();bool Refused=false;
+        try
+        {
+            if(Case==0)Speed::NativeKinematics::FBodyWrite::Initialize(Operation,ForeignBox,Parent);
+            if(Case==1)Speed::NativeKinematics::FBodyWrite::Initialize(Operation,Body,ForeignParent);
+            if(Case==2)(void)Speed::NativeKinematics::FBodyRead::InitialInverseTensor(Operation,ForeignBox);
+            if(Case==3)Speed::NativeKinematics::FBodyWrite::AcceptHit(Operation,Body);
+            if(Case==4)Speed::NativeKinematics::FBodyWrite::ResetFrame(Operation,Body,1.f/300.f);
+            if(Case==5)Speed::NativeKinematics::FBodyWrite::ResolveCurrentHit(Operation,Body,1.f/300.f,0.f);
+        }
+        catch(const FPrivateNativeStorageUnavailable&){Refused=true;}
+        Out.OwnBodyUnchangedAfterRefusals=Out.OwnBodyUnchangedAfterRefusals&&Before==Capture();
+        if(Case==0)Out.ForeignBodyRefused=Refused;
+        if(Case==1)Out.ForeignParentRefused=Refused;
+        if(Case==2)Out.ForeignInverseRefused=Refused;
+        if(Case==3)Out.StepHitRefusedInBirth=Refused;
+        if(Case==4)Out.StepResetRefusedInBirth=Refused;
+        if(Case==5)Out.StepResolveRefusedInBirth=Refused;
+    }
+    if(I.OriginalWheelsWeak.IsEmpty())return false;
+    auto* RetireWheel=I.OriginalWheelsWeak[0].Get();if(!RetireWheel)return false;
+    const auto CaptureRetirementNamed=[&]() {
+        TArray<uint8> Bytes;using B=Speed::FEpisodeStateBytesForTesting;
+        const auto& V=FPrivateNativeStorageAccess::Part<const FPrivateRoadWheelDomain>(Operation,RetireWheel);
+        B::Add(Bytes,V.PWheel);B::Add(Bytes,V.PSuspension);B::Add(Bytes,V.ChaosWheel);
+        B::Add(Bytes,RetireWheel->GetWheelSim());B::Add(Bytes,RetireWheel->GetSuspensionSim());B::Add(Bytes,RetireWheel->GetChaosWheelConfiguration());
+        return Bytes;
+    };
+    const auto BeforeRetirementRefusal=CaptureRetirementNamed();
+    const auto ActualBirthRoot=RetireWheel->OriginalOwnerRoot.lock();
+    Out.RetirementBirthOtherPredicatesPositive=Operation.Kind==FPrivateNativeOperation::EKind::Birth
+        &&Operation.HasExactRootAndGate(Operation.Identity)&&ActualBirthRoot
+        &&Operation.Root.get()==ActualBirthRoot.get()&&!Operation.Root.owner_before(ActualBirthRoot)
+        &&!ActualBirthRoot.owner_before(Operation.Root);
+    if(!Out.RetirementBirthOtherPredicatesPositive)return false;
+    try{FPrivateNativeStorageAccess::RequireRetirementRoot(Operation,ActualBirthRoot);}
+    catch(const FPrivateNativeStorageUnavailable&){Out.RetirementKindRefusedInBirth=true;}
+    if(!Out.RetirementKindRefusedInBirth||BeforeRetirementRefusal!=CaptureRetirementNamed())return false;
+    try{RetireWheel->ClearReferenceWheelBindingsAtRetirement(Operation);}
+    catch(const FPrivateNativeStorageUnavailable&){Out.RetirementClearRefusedInBirth=true;}
+    Out.RetirementBirthFootprintUnchanged=BeforeRetirementRefusal==CaptureRetirementNamed();
+    if(!Out.RetirementClearRefusedInBirth||!Out.RetirementBirthFootprintUnchanged)return false;
+    auto* ActualSolid=Cast<USolidSubBody>(Body);
+    Out.CanonicalMassAppendBirthSubjectSolid=ActualSolid!=nullptr;
+    if(!ActualSolid)return false;
+    TArray<uint8> RejectedBytes;RejectedBytes.Add(0xB1);RejectedBytes.Add(0x4D);
+    const auto RejectedBefore=RejectedBytes;
+    try{(void)Speed::NativeKinematics::FSolidMassAccess::AppendCanonicalEpisodeForTesting(Operation,*ActualSolid,RejectedBytes);}
+    catch(const FPrivateNativeStorageUnavailable&){Out.CanonicalMassAppendBirthRefused=true;}
+    Out.CanonicalMassAppendBirthOutUnchanged=RejectedBytes==RejectedBefore;
+    if(!Out.CanonicalMassAppendBirthRefused||!Out.CanonicalMassAppendBirthOutUnchanged)return false;
+    Out.ActualBirthOperation=true;
+    return Out.ForeignBodyRefused&&Out.ForeignParentRefused&&Out.ForeignInverseRefused
+        &&Out.StepHitRefusedInBirth&&Out.StepResetRefusedInBirth&&Out.StepResolveRefusedInBirth&&Out.OwnBodyUnchangedAfterRefusals;
+}
+std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::CreateWithBirthInitializationProbeForDiagnostics(
+    std::vector<FPrivateRoadCarSeed> Seeds,FPrivateRoadPhysicsWorld& Foreign,EPrivateRoadBirthProbeMode Mode,
+    FPrivateRoadBirthInitializationProbe& Result,FString& Why)
+{
+    Result={};Why.Empty();
+    if(!IsInGameThread()||OriginalComponentStorageOwner||Speed::Input::FPresentationInputScope::IsActive()
+        ||(Mode!=EPrivateRoadBirthProbeMode::Observe&&Mode!=EPrivateRoadBirthProbeMode::FailAfterFirstInitializer&&Mode!=EPrivateRoadBirthProbeMode::ProbeFirstOwnerAndAbort&&Mode!=EPrivateRoadBirthProbeMode::AbortAfterEarlyReferenceOwner))
+    {Refuse(Why,TEXT("native birth diagnostic requires a valid GT test mode"));return {};}
+    FRetainedNativeCall ForeignCall(Foreign.Impl);
+    if(!ForeignCall.Root||ForeignCall.Root->Closed||ForeignCall.Root->Failed
+        ||ForeignCall.Root->RetirementRequested.load()||ForeignCall.Root->NativeOperationIdentity->ActiveGTActualOperation)
+    {Refuse(Why,TEXT("foreign native birth fixture unavailable"));return {};}
+    // Actual retained foreign root only. No foreign mutex or operation is
+    // acquired across callback-capable creation, GC, logging or owner unwind.
+    FBirthInitializationDiagnosticContext Context{ForeignCall.Root,Mode,Result};
+    if(Mode==EPrivateRoadBirthProbeMode::ProbeFirstOwnerAndAbort)Result.FirstOwnerLastStage=TEXT("create-core-call-entered");
+    auto Owner=CreateCore(std::move(Seeds),Why,&Context);
+    if(Mode==EPrivateRoadBirthProbeMode::ProbeFirstOwnerAndAbort)Result.FirstOwnerCreateWhy=Why;
+    Result.CreateReturnedNull=!Owner; // actual return, never a guessed drain
+    return Owner;
+}
+bool FPrivateRoadPhysicsWorld::ProbeOrdinaryInitializersWithoutOperationForDiagnostics(
+    FPrivateRoadPhysicsWorld& Foreign,FPrivateRoadOrdinaryBindingNoOpProbe& Result,FString& Why)
+{
+    Result={};Why.Empty();
+    if(!IsInGameThread()||!Impl||!Foreign.Impl||OriginalComponentStorageOwner
+        ||Speed::Input::FPresentationInputScope::IsActive())
+        return Refuse(Why,TEXT("ordinary NoOp diagnostic requires actual unselected GT entry"));
+    const auto OwnRoot=Impl,ForeignRoot=Foreign.Impl;
+    if(OwnRoot.get()==ForeignRoot.get()||(!OwnRoot.owner_before(ForeignRoot)&&!ForeignRoot.owner_before(OwnRoot))
+        ||&OwnRoot->Gate==&ForeignRoot->Gate)
+        return Refuse(Why,TEXT("ordinary NoOp diagnostic refuses same-root aliases before locks"));
+    // These real call guards OUTLIVE all gate/GC scopes below. Their eventual
+    // destruction can run deferred retirement, only after those locks are gone.
+    FRetainedNativeCall OwnCall(OwnRoot),ForeignCall(ForeignRoot);
+    {
+        FGCScopeGuard NoCallbacks; // destroyed AFTER the two actual gate locks
+        std::scoped_lock Gates(OwnRoot->Gate,ForeignRoot->Gate);
+        const auto ActualNoOperation=[&]()
+        {
+            return !OriginalComponentStorageOwner&&OwnRoot->NativeOperationIdentity&&ForeignRoot->NativeOperationIdentity
+                &&!OwnRoot->NativeOperationIdentity->ActiveGTActualOperation
+                &&!ForeignRoot->NativeOperationIdentity->ActiveGTActualOperation;
+        };
+        const auto Available=[&](const std::shared_ptr<FImpl>& Graph)
+        {
+            return !Graph->Closed&&!Graph->Failed&&!Graph->RetirementRequested.load()
+                &&Graph->RetirementPhase==RetirementDraft::EPhase::Open&&Graph->NativeStorage
+                &&Graph->Access&&!Graph->Access->Retired&&Graph->AcquiredGraphStillLive()
+                &&Graph->OriginalObjectHandlesStillMatch()&&!Graph->Cars.empty();
+        };
+        if(!ActualNoOperation()||!Available(OwnRoot)||!Available(ForeignRoot))
+            return Refuse(Why,TEXT("ordinary NoOp diagnostic refuses unavailable actual owner graphs"));
+        using B=Speed::FEpisodeStateBytesForTesting;
+        struct FPopulation
+        {
+            uint32 OriginalBodies=0,ReferenceBodies=0,Hitboxes=0,WheelBodies=0;
+            uint32 Cars=0,OriginalVehicles=0,ReferenceVehicles=0,OriginalWheelSims=0,ReferenceWheelSims=0,Configurations=0,ReferenceConfigurations=0;
+            bool operator==(const FPopulation&) const=default;
+        };
+        struct FFootprint
+        {
+            TArray<uint8> Original,Reference,Facade;
+            FPopulation Population;
+        };
+        // Declared binding/setup footprint only. Read existing parts/holders;
+        // never construct a native operation, select storage or restore values.
+        const auto Vehicle=[&](TArray<uint8>& Bytes,const Chaos::FSimpleWheeledVehicle& Actual)
+        {
+            const auto ArrayIdentity=[&](const auto& Array)
+            {B::Add(Bytes,Array.GetData());B::Add(Bytes,Array.Num());};
+            B::Add(Bytes,&Actual);B::Add(Bytes,Actual.bSuspensionEnabled);B::Add(Bytes,Actual.bMechanicalSimEnabled);
+            B::Add(Bytes,Actual.bWheelFrictionEnabled);B::Add(Bytes,Actual.NumDrivenWheels);B::Add(Bytes,Actual.bLegacyWheelFrictionPosition);
+            ArrayIdentity(Actual.Engine);ArrayIdentity(Actual.Transmission);ArrayIdentity(Actual.Differential);
+            ArrayIdentity(Actual.Wheels);ArrayIdentity(Actual.Suspension);ArrayIdentity(Actual.Steering);ArrayIdentity(Actual.Aerodynamics);
+            ArrayIdentity(Actual.Aerofoils);ArrayIdentity(Actual.Thrusters);ArrayIdentity(Actual.Axles);
+            ArrayIdentity(Actual.TorqueControlSim);ArrayIdentity(Actual.TargetRotationControlSim);ArrayIdentity(Actual.StabilizeControlSim);
+            for(const auto& Wheel:Actual.Wheels)PartialObservation::AppendCheckedWheel(Bytes,Wheel);
+            for(const auto& Suspension:Actual.Suspension)PartialObservation::FCheckedSuspensionCopy(Suspension).Append(Bytes);
+        };
+        const auto InitialBody=[&](TArray<uint8>& Bytes,const FPrivateRoadSubBodyValues& Values)
+        {
+            B::Add(Bytes,Values.ParentComponent);B::Add(Bytes,Values.LocalPose);AppendInitializerEulerScalars(Bytes,Values.LocalEulerRotation);
+            B::Add(Bytes,Values.CollisionChannel);B::Add(Bytes,Values.AlwaysIgnoredComponents.GetData());
+            B::Array(Bytes,Values.AlwaysIgnoredComponents);
+        };
+        const auto Capture=[&](const std::shared_ptr<FImpl>& Graph,FFootprint& Out)
+        {
+            if(!ActualNoOperation()||!Available(Graph))return false;
+            for(const auto& Node:Graph->Cars)
+            {
+                auto* Component=Node->ComponentWeak.Get();
+                if(!Component||!Node->NativeVehicleRoot||!Node->NativeVehicleRoot->Domain
+                    ||!Node->NativeConfiguration||!Node->ReferenceConfiguration||!Node->OriginalNativeSimulation
+                    ||Component->Access.lock()!=Graph->Access||Node->NativeWheelRoots.size()!=4
+                    ||Node->OriginalWheelBodyBirth.Num()!=4||Node->OriginalWheelObjects.Num()!=4)return false;
+                auto* Box=Cast<USpeedBranchBoxSubBody>(Node->OriginalHitboxBirth.Get());
+                if(!Box||Box->StorageAccess.lock()!=Graph->Access||!Box->OwnedBodyValues||!Box->OwnedSolidValues||!Box->OwnedBoxDomain
+                    ||Box->UsesOriginalBodyStorage())return false;
+                InitialBody(Out.Original,*Box->OwnedBodyValues);
+                if(!PartialObservation::AppendSolidValues(Out.Original,*Box->OwnedSolidValues))return false;
+                B::Add(Out.Original,Box->OwnedBoxDomain->BoxExtent);
+                Box->AppendEpisodeStateForTesting(Out.Reference);AppendInitializerEulerScalars(Out.Reference,Box->PhysicalLocalEulerRotation());
+                B::Add(Out.Reference,Box->AlwaysIgnoredComponentsBodyDomainStorage().GetData());
+                Box->AppendEpisodeStateForTesting(Out.Facade);AppendInitializerEulerScalars(Out.Facade,Box->PhysicalLocalEulerRotation());
+                B::Add(Out.Facade,Box->AlwaysIgnoredComponentsBodyDomainStorage().GetData());
+                ++Out.Population.OriginalBodies;++Out.Population.ReferenceBodies;++Out.Population.Hitboxes;
+                auto& Domain=*Node->NativeVehicleRoot->Domain;
+                auto& OriginalHolder=Node->OriginalNativeSimulation->PVehicle;
+                auto* ReferenceSimulation=static_cast<USpeedSimulation*>(Component->VehicleSimulationPT.Get());
+                if(!OriginalHolder||OriginalHolder.Get()!=Node->OriginalNativeVehicle
+                    ||Domain.VehicleSimulationPT.Get()!=Node->OriginalNativeSimulation
+                    ||!ReferenceSimulation||Component->SkySimulation!=ReferenceSimulation||!ReferenceSimulation->PVehicle)return false;
+                auto& ReferenceHolder=ReferenceSimulation->PVehicle;
+                // Actual unique holder addresses/Get values and allocations,
+                // not a raw pointer wrapped in a replacement unique owner.
+                B::Add(Out.Original,&OriginalHolder);B::Add(Out.Original,OriginalHolder.Get());
+                B::Add(Out.Original,Domain.SkySimulation);B::Add(Out.Original,Domain.VehicleSimulationPT.Get());
+                B::Array(Out.Original,Domain.WheelSubBodies);B::Array(Out.Original,Domain.Wheels);
+                Vehicle(Out.Original,*OriginalHolder);++Out.Population.OriginalVehicles;
+                B::Add(Out.Reference,&ReferenceHolder);B::Add(Out.Reference,ReferenceHolder.Get());
+                Vehicle(Out.Reference,*ReferenceHolder);++Out.Population.ReferenceVehicles;
+                B::Add(Out.Facade,Component->SkySimulation);B::Add(Out.Facade,Component->VehicleSimulationPT.Get());
+                B::Array(Out.Facade,Component->WheelSubBodies);B::Array(Out.Facade,Component->Wheels);
+                // UE private NumDrivenWheels is not observable here; do not claim its capture.
+                const auto& ActualLayout=Component->GetWheelLayoutDimensions();
+                B::Add(Out.Facade,ActualLayout.X);B::Add(Out.Facade,ActualLayout.Y);
+                for(const auto& Configuration:Component->Wheels)
+                {
+                    if(!Configuration)return false;
+                    B::Add(Out.Reference,Configuration.Get());B::Add(Out.Reference,Configuration->SuspensionMaxRaise);B::Add(Out.Reference,Configuration->SuspensionMaxDrop);
+                    ++Out.Population.ReferenceConfigurations;
+                }
+                if(!PartialObservation::AppendCheckedWheelConfig(Out.Original,Node->NativeConfiguration->Wheel)
+                    ||!PartialObservation::AppendCheckedWheelConfig(Out.Reference,Node->ReferenceConfiguration->Wheel))return false;
+                PartialObservation::AppendCheckedSuspensionConfig(Out.Original,Node->NativeConfiguration->Suspension);
+                PartialObservation::AppendCheckedSuspensionConfig(Out.Reference,Node->ReferenceConfiguration->Suspension);
+                for(int32 Index=0;Index<4;++Index)
+                {
+                    auto* Body=Cast<USpeedBranchWheelSubBody>(Node->OriginalWheelBodyBirth[Index].Get());
+                    auto* Configuration=Node->OriginalWheelObjects[Index].Get();const auto& PartRoot=Node->NativeWheelRoots[Index];
+                    if(!Body||!Configuration||!PartRoot||PartRoot->Vehicle!=Node->NativeVehicleRoot
+                        ||Body->StorageAccess.lock()!=Graph->Access||!Body->OwnedBodyValues||!Body->OwnedSolidValues
+                        ||!Body->OwnedWheelDomain||!Body->OwnedWheelRuntime||!Body->OwnedSphereDomain)return false;
+                    if(Body->UsesOriginalBodyStorage())return false;
+                    InitialBody(Out.Original,*Body->OwnedBodyValues);B::Add(Out.Original,Body->OwnedSphereDomain->Radius);
+                    Body->AppendEpisodeStateForTesting(Out.Reference);AppendInitializerEulerScalars(Out.Reference,Body->PhysicalLocalEulerRotation());
+                    B::Add(Out.Reference,Body->AlwaysIgnoredComponentsBodyDomainStorage().GetData());
+                    AppendInitializerEulerScalars(Out.Facade,Body->PhysicalLocalEulerRotation());B::Add(Out.Facade,Body->AlwaysIgnoredComponentsBodyDomainStorage().GetData());
+                    ++Out.Population.OriginalBodies;++Out.Population.ReferenceBodies;++Out.Population.WheelBodies;
+                    const auto& Values=*Body->OwnedWheelDomain;
+                    // Preserve real LIVE storage/allocations. Missing aliases are
+                    // not used as a confounding reason for NoOp refusal.
+                    if(OriginalHolder->Wheels.Num()<=Index||OriginalHolder->Suspension.Num()<=Index
+                        ||ReferenceHolder->Wheels.Num()<=Index||ReferenceHolder->Suspension.Num()<=Index
+                        ||Component->Wheels.Num()<=Index||Values.PWheel!=&OriginalHolder->Wheels[Index]
+                        ||Values.PSuspension!=&OriginalHolder->Suspension[Index]||Values.ChaosWheel!=Configuration
+                        ||Values.WheelComponent!=static_cast<ISpeedWheeledComponent*>(Component)
+                        ||Body->OwnedBodyValues->ParentComponent!=static_cast<ISpeedComponent*>(Component)
+                        ||Body->GetWheelSim()!=&ReferenceHolder->Wheels[Index]
+                        ||Body->GetSuspensionSim()!=&ReferenceHolder->Suspension[Index]
+                        ||Body->GetChaosWheelConfiguration()!=Component->Wheels[Index].Get())return false;
+                    B::Add(Out.Original,Values.WheelComponent);B::Add(Out.Original,Values.ChaosWheel);
+                    B::Add(Out.Original,Values.PWheel);B::Add(Out.Original,Values.PSuspension);B::Add(Out.Original,Values.WheelMass);
+                    B::Add(Out.Original,Values.SuspensionMaxRaiseOverride);B::Add(Out.Original,Values.SuspensionMaxDropOverride);
+                    B::Add(Out.Original,Body->OwnedBodyValues->ParentComponent);
+                    if(!PartialObservation::AppendSolidValues(Out.Original,*Body->OwnedSolidValues))return false;
+                    B::Add(Out.Original,Configuration);B::Add(Out.Original,Configuration->SuspensionMaxRaise);B::Add(Out.Original,Configuration->SuspensionMaxDrop);
+                    Body->AppendEpisodeStateForTesting(Out.Facade); // actual unselected facade; exact private final class
+                    if(OriginalHolder->Wheels.Num()<=Index||OriginalHolder->Suspension.Num()<=Index
+                        ||ReferenceHolder->Wheels.Num()<=Index||ReferenceHolder->Suspension.Num()<=Index)return false;
+                    ++Out.Population.OriginalWheelSims;++Out.Population.ReferenceWheelSims;++Out.Population.Configurations;
+                }
+                ++Out.Population.Cars;
+            }
+            return ActualNoOperation();
+        };
+        auto& OwnNode=*OwnRoot->Cars.front();auto& ForeignNode=*ForeignRoot->Cars.front();
+        auto* OwnComponent=OwnNode.ComponentWeak.Get();auto* OwnBody=OwnNode.OriginalWheelBodyBirth[0].Get();
+        auto* OwnBox=OwnNode.OriginalHitboxBirth.Get();auto* ForeignComponent=ForeignNode.ComponentWeak.Get();
+        if(!OwnComponent||!OwnBody||!OwnBox||!ForeignComponent)return Refuse(Why,TEXT("ordinary initializer NoOp actual subjects missing"));
+        const auto Attempt=[&](const TCHAR* Entry,const TCHAR* Argument,auto&& Call,
+            TUniquePtr<Chaos::FSimpleWheeledVehicle>* ArgumentHolder=nullptr)
+        {
+            FFootprint OwnBefore,ForeignBefore,OwnAfter,ForeignAfter;
+            if(!Capture(OwnRoot,OwnBefore)||!Capture(ForeignRoot,ForeignBefore))return false;
+            FPrivateRoadOrdinaryBindingNoOpCase Row;Row.Entry=Entry;Row.Argument=Argument;
+            const void* const HolderIdentity=ArgumentHolder;
+            const auto* const HolderValue=ArgumentHolder?ArgumentHolder->Get():nullptr;
+            Row.ArgumentHolderObserved=ArgumentHolder!=nullptr;Row.ArgumentHolderWasNonNull=HolderValue!=nullptr;
+            Row.Attempted=true;Row.NoActualOperation=ActualNoOperation();
+            try{Call();}catch(const FPrivateNativeStorageUnavailable&){Row.Refused=true;}
+            if(!Capture(OwnRoot,OwnAfter)||!Capture(ForeignRoot,ForeignAfter))
+            {Result.Cases.push_back(std::move(Row));return false;}
+            Row.NoActualOperation=Row.NoActualOperation&&ActualNoOperation();
+            Row.LiveStorageRoutes=OwnBefore.Population==OwnAfter.Population&&ForeignBefore.Population==ForeignAfter.Population;
+            Row.OwnOriginalUnchanged=OwnBefore.Original==OwnAfter.Original;Row.OwnReferenceUnchanged=OwnBefore.Reference==OwnAfter.Reference;
+            Row.OwnFacadeUnchanged=OwnBefore.Facade==OwnAfter.Facade;
+            Row.ForeignOriginalUnchanged=ForeignBefore.Original==ForeignAfter.Original;
+            Row.ForeignReferenceUnchanged=ForeignBefore.Reference==ForeignAfter.Reference;Row.ForeignFacadeUnchanged=ForeignBefore.Facade==ForeignAfter.Facade;
+            Row.OwnCars=OwnBefore.Population.Cars;Row.ForeignCars=ForeignBefore.Population.Cars;
+            Row.OriginalVehicles=OwnBefore.Population.OriginalVehicles+ForeignBefore.Population.OriginalVehicles;
+            Row.ReferenceVehicles=OwnBefore.Population.ReferenceVehicles+ForeignBefore.Population.ReferenceVehicles;
+            Row.OriginalWheelSims=OwnBefore.Population.OriginalWheelSims+ForeignBefore.Population.OriginalWheelSims;
+            Row.ReferenceWheelSims=OwnBefore.Population.ReferenceWheelSims+ForeignBefore.Population.ReferenceWheelSims;
+            Row.Configurations=OwnBefore.Population.Configurations+ForeignBefore.Population.Configurations;
+            Row.OriginalBodies=OwnBefore.Population.OriginalBodies+ForeignBefore.Population.OriginalBodies;
+            Row.ReferenceBodies=OwnBefore.Population.ReferenceBodies+ForeignBefore.Population.ReferenceBodies;
+            Row.Hitboxes=OwnBefore.Population.Hitboxes+ForeignBefore.Population.Hitboxes;
+            Row.WheelBodies=OwnBefore.Population.WheelBodies+ForeignBefore.Population.WheelBodies;
+            Row.ReferenceConfigurations=OwnBefore.Population.ReferenceConfigurations+ForeignBefore.Population.ReferenceConfigurations;
+            Row.ArgumentHolderUnchanged=ArgumentHolder&&HolderIdentity==ArgumentHolder&&HolderValue==ArgumentHolder->Get();
+            const bool Success=Row.Refused&&Row.NoActualOperation&&Row.LiveStorageRoutes&&Row.OwnOriginalUnchanged&&Row.OwnReferenceUnchanged
+                &&Row.OwnFacadeUnchanged&&Row.ForeignOriginalUnchanged&&Row.ForeignReferenceUnchanged&&Row.ForeignFacadeUnchanged
+                &&(!ArgumentHolder||Row.ArgumentHolderUnchanged);
+            Result.Cases.push_back(std::move(Row));return Success;
+        };
+        for(int32 Population=0;Population<3;++Population)
+        {
+            const TCHAR* Argument=Population==0?TEXT("null"):Population==1?TEXT("own"):TEXT("foreign");
+            ISpeedComponent* Parent=Population==0?nullptr:Population==1?static_cast<ISpeedComponent*>(OwnComponent):static_cast<ISpeedComponent*>(ForeignComponent);
+            if(!Attempt(TEXT("box-virtual"),Argument,[&](){static_cast<USSubBody*>(OwnBox)->Initialize(Parent);})
+                ||!Attempt(TEXT("box-qualified"),Argument,[&](){OwnBox->UBoxSubBody::Initialize(Parent);})
+                ||!Attempt(TEXT("box-solid"),Argument,[&](){OwnBox->USolidSubBody::Initialize(Parent);})
+                ||!Attempt(TEXT("box-base"),Argument,[&](){OwnBox->USSubBody::Initialize(Parent);})
+                ||!Attempt(TEXT("wheel-virtual"),Argument,[&](){static_cast<USSubBody*>(OwnBody)->Initialize(Parent);})
+                ||!Attempt(TEXT("wheel-qualified"),Argument,[&](){OwnBody->USWheelSubBody::Initialize(Parent);})
+                ||!Attempt(TEXT("wheel-sphere"),Argument,[&](){OwnBody->USphereSubBody::Initialize(Parent);})
+                ||!Attempt(TEXT("wheel-solid"),Argument,[&](){OwnBody->USolidSubBody::Initialize(Parent);})
+                ||!Attempt(TEXT("wheel-base"),Argument,[&](){OwnBody->USSubBody::Initialize(Parent);}))
+                return Refuse(Why,TEXT("ordinary initializer NoOp refusal/declared footprint failed; actual effects retained"));
+        }
+        Result.Returned=true;
+    }
+    return true;
+}
+
+bool FPrivateRoadPhysicsWorld::PoisonFacadeMassForValueCommandDiagnostics(FString& Why)
+{
+    Why.Empty();
+    if(!IsInGameThread()||!Impl||OriginalComponentStorageOwner||Speed::Input::FPresentationInputScope::IsActive())
+        return Refuse(Why,TEXT("facade mass diagnostic requires actual unselected GT entry"));
+    FRetainedNativeCall Call(Impl);auto& I=*Call.Root;
+    if(I.NativeOperationIdentity->ActiveGTActualOperation)
+        return Refuse(Why,TEXT("facade mass diagnostic refuses active actual operation before mutex"));
+    std::unique_lock Lock(I.Gate,std::try_to_lock);
+    if(!Lock.owns_lock()||I.Closed||I.Failed||!I.AcquiredGraphStillLive())
+        return Refuse(Why,TEXT("facade mass diagnostic lacks retained quiescent actual graph"));
+    FGCScopeGuard ActualMassTargets;
+    struct FTarget {USolidSubBody* Body;const FPrivateRoadSolidValues* Original;float Before,Poison;};
+    std::vector<FTarget> Targets;Targets.reserve(I.Cars.size()*5);
+    auto Add=[&](auto* Body,const FPrivateRoadSolidValues& Values)
+    {
+        if(!Body||Body->OwnedSolidValues.get()!=&Values
+            ||!FMath::IsFinite(Values.Mass)||Values.Mass<=0)return false;
+        const float Poison=Values.Mass*2.f+1.f;
+        if(!FMath::IsFinite(Poison)||Poison<=0||Poison==Values.Mass)return false;
+        Targets.push_back({Body,&Values,Values.Mass,Poison});return true;
+    };
+    for(const auto& N:I.Cars)
+    {
+        if(!N->NativeBoxRoot||!std::get<1>(N->NativeBoxRoot->Parts)||N->NativeWheelRoots.size()!=4||N->OriginalWheelBodyBirth.Num()!=4)
+            return Refuse(Why,TEXT("facade mass diagnostic missing original body roots"));
+        auto* Box=Cast<USpeedBranchBoxSubBody>(N->OriginalHitboxBirth.Get());
+        if(!Add(Box,*std::get<1>(N->NativeBoxRoot->Parts)))return Refuse(Why,TEXT("facade mass box identity/value unavailable"));
+        for(int32 Index=0;Index<4;++Index)
+        {
+            if(!N->NativeWheelRoots[Index]||!std::get<1>(N->NativeWheelRoots[Index]->Parts))return Refuse(Why,TEXT("facade mass wheel allocation unavailable"));
+            auto* Wheel=Cast<USpeedBranchWheelSubBody>(N->OriginalWheelBodyBirth[Index].Get());
+            if(!Add(Wheel,*std::get<1>(N->NativeWheelRoots[Index]->Parts)))
+                return Refuse(Why,TEXT("facade mass wheel identity/value unavailable"));
+        }
+    }
+    if(Targets.empty())return Refuse(Why,TEXT("facade mass diagnostic has no real subjects"));
+    for(const auto& Target:Targets)
+    {
+        Target.Body->SetMass(Target.Poison); // existing public private-facade sink
+        if(Target.Original->Mass!=Target.Before||Target.Body->GetMass()!=Target.Poison)
+        {
+            I.Failed=true;I.Published.store({});
+            return Refuse(Why,TEXT("facade mass diagnostic changed unexpected state; effects kept"));
+        }
+    }
+    return true;
+}
+
+bool FPrivateRoadPhysicsWorld::ProbeOrdinaryParentInitializationWithoutOperationForDiagnostics(
+    FPrivateRoadPhysicsWorld& Foreign,FPrivateRoadOrdinaryBindingNoOpProbe& Result,FString& Why)
+{
+    Result={};Why.Empty();
+    if(!IsInGameThread()||!Impl||!Foreign.Impl||OriginalComponentStorageOwner
+        ||Speed::Input::FPresentationInputScope::IsActive())
+        return Refuse(Why,TEXT("ordinary NoOp diagnostic requires actual unselected GT entry"));
+    const auto OwnRoot=Impl,ForeignRoot=Foreign.Impl;
+    if(OwnRoot.get()==ForeignRoot.get()||(!OwnRoot.owner_before(ForeignRoot)&&!ForeignRoot.owner_before(OwnRoot))
+        ||&OwnRoot->Gate==&ForeignRoot->Gate)
+        return Refuse(Why,TEXT("ordinary NoOp diagnostic refuses same-root aliases before locks"));
+    // These real call guards OUTLIVE all gate/GC scopes below. Their eventual
+    // destruction can run deferred retirement, only after those locks are gone.
+    FRetainedNativeCall OwnCall(OwnRoot),ForeignCall(ForeignRoot);
+    {
+        FGCScopeGuard NoCallbacks; // destroyed AFTER the two actual gate locks
+        std::scoped_lock Gates(OwnRoot->Gate,ForeignRoot->Gate);
+        const auto ActualNoOperation=[&]()
+        {
+            return !OriginalComponentStorageOwner&&OwnRoot->NativeOperationIdentity&&ForeignRoot->NativeOperationIdentity
+                &&!OwnRoot->NativeOperationIdentity->ActiveGTActualOperation
+                &&!ForeignRoot->NativeOperationIdentity->ActiveGTActualOperation;
+        };
+        const auto Available=[&](const std::shared_ptr<FImpl>& Graph)
+        {
+            return !Graph->Closed&&!Graph->Failed&&!Graph->RetirementRequested.load()
+                &&Graph->RetirementPhase==RetirementDraft::EPhase::Open&&Graph->NativeStorage
+                &&Graph->Access&&!Graph->Access->Retired&&Graph->AcquiredGraphStillLive()
+                &&Graph->OriginalObjectHandlesStillMatch()&&!Graph->Cars.empty();
+        };
+        if(!ActualNoOperation()||!Available(OwnRoot)||!Available(ForeignRoot))
+            return Refuse(Why,TEXT("ordinary NoOp diagnostic refuses unavailable actual owner graphs"));
+        using B=Speed::FEpisodeStateBytesForTesting;
+        struct FPopulation
+        {
+            uint32 OriginalBodies=0,ReferenceBodies=0,Hitboxes=0,WheelBodies=0;
+            uint32 Cars=0,OriginalVehicles=0,ReferenceVehicles=0,OriginalWheelSims=0,ReferenceWheelSims=0,Configurations=0,ReferenceConfigurations=0;
+            bool operator==(const FPopulation&) const=default;
+        };
+        struct FFootprint
+        {
+            TArray<uint8> Original,Reference,Facade;
+            FPopulation Population;
+        };
+        // Declared binding/setup footprint only. Read existing parts/holders;
+        // never construct a native operation, select storage or restore values.
+        const auto Vehicle=[&](TArray<uint8>& Bytes,const Chaos::FSimpleWheeledVehicle& Actual)
+        {
+            const auto ArrayIdentity=[&](const auto& Array)
+            {B::Add(Bytes,Array.GetData());B::Add(Bytes,Array.Num());};
+            B::Add(Bytes,&Actual);B::Add(Bytes,Actual.bSuspensionEnabled);B::Add(Bytes,Actual.bMechanicalSimEnabled);
+            B::Add(Bytes,Actual.bWheelFrictionEnabled);B::Add(Bytes,Actual.NumDrivenWheels);B::Add(Bytes,Actual.bLegacyWheelFrictionPosition);
+            ArrayIdentity(Actual.Engine);ArrayIdentity(Actual.Transmission);ArrayIdentity(Actual.Differential);
+            ArrayIdentity(Actual.Wheels);ArrayIdentity(Actual.Suspension);ArrayIdentity(Actual.Steering);ArrayIdentity(Actual.Aerodynamics);
+            ArrayIdentity(Actual.Aerofoils);ArrayIdentity(Actual.Thrusters);ArrayIdentity(Actual.Axles);
+            ArrayIdentity(Actual.TorqueControlSim);ArrayIdentity(Actual.TargetRotationControlSim);ArrayIdentity(Actual.StabilizeControlSim);
+            for(const auto& Wheel:Actual.Wheels)PartialObservation::AppendCheckedWheel(Bytes,Wheel);
+            for(const auto& Suspension:Actual.Suspension)PartialObservation::FCheckedSuspensionCopy(Suspension).Append(Bytes);
+        };
+        const auto InitialBody=[&](TArray<uint8>& Bytes,const FPrivateRoadSubBodyValues& Values)
+        {
+            B::Add(Bytes,Values.ParentComponent);B::Add(Bytes,Values.LocalPose);AppendInitializerEulerScalars(Bytes,Values.LocalEulerRotation);
+            B::Add(Bytes,Values.CollisionChannel);B::Add(Bytes,Values.AlwaysIgnoredComponents.GetData());
+            B::Array(Bytes,Values.AlwaysIgnoredComponents);
+        };
+        const auto Capture=[&](const std::shared_ptr<FImpl>& Graph,FFootprint& Out)
+        {
+            if(!ActualNoOperation()||!Available(Graph))return false;
+            for(const auto& Node:Graph->Cars)
+            {
+                auto* Component=Node->ComponentWeak.Get();
+                if(!Component||!Node->NativeVehicleRoot||!Node->NativeVehicleRoot->Domain
+                    ||!Node->NativeConfiguration||!Node->ReferenceConfiguration||!Node->OriginalNativeSimulation
+                    ||Component->Access.lock()!=Graph->Access||Node->NativeWheelRoots.size()!=4
+                    ||Node->OriginalWheelBodyBirth.Num()!=4||Node->OriginalWheelObjects.Num()!=4)return false;
+                auto* Box=Cast<USpeedBranchBoxSubBody>(Node->OriginalHitboxBirth.Get());
+                if(!Box||Box->StorageAccess.lock()!=Graph->Access||!Box->OwnedBodyValues||!Box->OwnedSolidValues||!Box->OwnedBoxDomain
+                    ||Box->UsesOriginalBodyStorage())return false;
+                InitialBody(Out.Original,*Box->OwnedBodyValues);
+                if(!PartialObservation::AppendSolidValues(Out.Original,*Box->OwnedSolidValues))return false;
+                B::Add(Out.Original,Box->OwnedBoxDomain->BoxExtent);
+                Box->AppendEpisodeStateForTesting(Out.Reference);AppendInitializerEulerScalars(Out.Reference,Box->PhysicalLocalEulerRotation());
+                B::Add(Out.Reference,Box->AlwaysIgnoredComponentsBodyDomainStorage().GetData());
+                Box->AppendEpisodeStateForTesting(Out.Facade);AppendInitializerEulerScalars(Out.Facade,Box->PhysicalLocalEulerRotation());
+                B::Add(Out.Facade,Box->AlwaysIgnoredComponentsBodyDomainStorage().GetData());
+                ++Out.Population.OriginalBodies;++Out.Population.ReferenceBodies;++Out.Population.Hitboxes;
+                if(!Component->OwnedComponentValues)return false;
+                // Parent-entry values only; no UE-private scheduling bit or full state claim.
+                const auto ParentValues=[&](TArray<uint8>& Bytes,const auto& Values)
+                {
+                    B::Add(Bytes,Values.SpeedCarOwner);B::Add(Bytes,Values.CenterOfMass);
+                    B::Add(Bytes,Values.CenterOfMassOverride);B::Add(Bytes,Values.bEnableCenterOfMassOverride);
+                    B::Add(Bytes,Values.CarLocalInvI);B::Add(Bytes,Values.HitboxSubBody);
+                    B::Add(Bytes,Values.SubBodies.GetData());B::Array(Bytes,Values.SubBodies);
+                    B::Add(Bytes,Values.WheelSubBodies.GetData());B::Array(Bytes,Values.WheelSubBodies);
+                    B::Add(Bytes,Values.Wheels.GetData());B::Array(Bytes,Values.Wheels);
+                };
+                const auto Kinematic=[&](TArray<uint8>& Bytes,const SKinematic& Values)
+                {
+                    B::Add(Bytes,Values.Rotation);B::Add(Bytes,Values.Location);
+                    B::Add(Bytes,Values.Velocity);B::Add(Bytes,Values.AngularVelocity);
+                    B::Add(Bytes,Values.Acceleration);B::Add(Bytes,Values.AngularAcceleration);
+                };
+                ParentValues(Out.Original,*Node->NativeVehicleRoot->Domain);
+                ParentValues(Out.Reference,*Component);ParentValues(Out.Facade,*Component);
+                Kinematic(Out.Original,Component->OwnedComponentValues->BasePhysicsState.Kinematic);
+                Kinematic(Out.Reference,Component->BasePhysicsState.Kinematic);
+                Kinematic(Out.Facade,Component->BasePhysicsState.Kinematic);
+                auto& Domain=*Node->NativeVehicleRoot->Domain;
+                auto& OriginalHolder=Node->OriginalNativeSimulation->PVehicle;
+                auto* ReferenceSimulation=static_cast<USpeedSimulation*>(Component->VehicleSimulationPT.Get());
+                if(!OriginalHolder||OriginalHolder.Get()!=Node->OriginalNativeVehicle
+                    ||Domain.VehicleSimulationPT.Get()!=Node->OriginalNativeSimulation
+                    ||!ReferenceSimulation||Component->SkySimulation!=ReferenceSimulation||!ReferenceSimulation->PVehicle)return false;
+                auto& ReferenceHolder=ReferenceSimulation->PVehicle;
+                // Actual unique holder addresses/Get values and allocations,
+                // not a raw pointer wrapped in a replacement unique owner.
+                B::Add(Out.Original,&OriginalHolder);B::Add(Out.Original,OriginalHolder.Get());
+                B::Add(Out.Original,Domain.SkySimulation);B::Add(Out.Original,Domain.VehicleSimulationPT.Get());
+                B::Array(Out.Original,Domain.WheelSubBodies);B::Array(Out.Original,Domain.Wheels);
+                Vehicle(Out.Original,*OriginalHolder);++Out.Population.OriginalVehicles;
+                B::Add(Out.Reference,&ReferenceHolder);B::Add(Out.Reference,ReferenceHolder.Get());
+                Vehicle(Out.Reference,*ReferenceHolder);++Out.Population.ReferenceVehicles;
+                B::Add(Out.Facade,Component->SkySimulation);B::Add(Out.Facade,Component->VehicleSimulationPT.Get());
+                B::Array(Out.Facade,Component->WheelSubBodies);B::Array(Out.Facade,Component->Wheels);
+                // UE private NumDrivenWheels is not observable here; do not claim its capture.
+                const auto& ActualLayout=Component->GetWheelLayoutDimensions();
+                B::Add(Out.Facade,ActualLayout.X);B::Add(Out.Facade,ActualLayout.Y);
+                for(const auto& Configuration:Component->Wheels)
+                {
+                    if(!Configuration)return false;
+                    B::Add(Out.Reference,Configuration.Get());B::Add(Out.Reference,Configuration->SuspensionMaxRaise);B::Add(Out.Reference,Configuration->SuspensionMaxDrop);
+                    ++Out.Population.ReferenceConfigurations;
+                }
+                if(!PartialObservation::AppendCheckedWheelConfig(Out.Original,Node->NativeConfiguration->Wheel)
+                    ||!PartialObservation::AppendCheckedWheelConfig(Out.Reference,Node->ReferenceConfiguration->Wheel))return false;
+                PartialObservation::AppendCheckedSuspensionConfig(Out.Original,Node->NativeConfiguration->Suspension);
+                PartialObservation::AppendCheckedSuspensionConfig(Out.Reference,Node->ReferenceConfiguration->Suspension);
+                for(int32 Index=0;Index<4;++Index)
+                {
+                    auto* Body=Cast<USpeedBranchWheelSubBody>(Node->OriginalWheelBodyBirth[Index].Get());
+                    auto* Configuration=Node->OriginalWheelObjects[Index].Get();const auto& PartRoot=Node->NativeWheelRoots[Index];
+                    if(!Body||!Configuration||!PartRoot||PartRoot->Vehicle!=Node->NativeVehicleRoot
+                        ||Body->StorageAccess.lock()!=Graph->Access||!Body->OwnedBodyValues||!Body->OwnedSolidValues
+                        ||!Body->OwnedWheelDomain||!Body->OwnedWheelRuntime||!Body->OwnedSphereDomain)return false;
+                    if(Body->UsesOriginalBodyStorage())return false;
+                    InitialBody(Out.Original,*Body->OwnedBodyValues);B::Add(Out.Original,Body->OwnedSphereDomain->Radius);
+                    Body->AppendEpisodeStateForTesting(Out.Reference);AppendInitializerEulerScalars(Out.Reference,Body->PhysicalLocalEulerRotation());
+                    B::Add(Out.Reference,Body->AlwaysIgnoredComponentsBodyDomainStorage().GetData());
+                    AppendInitializerEulerScalars(Out.Facade,Body->PhysicalLocalEulerRotation());B::Add(Out.Facade,Body->AlwaysIgnoredComponentsBodyDomainStorage().GetData());
+                    ++Out.Population.OriginalBodies;++Out.Population.ReferenceBodies;++Out.Population.WheelBodies;
+                    const auto& Values=*Body->OwnedWheelDomain;
+                    // Preserve real LIVE storage/allocations. Missing aliases are
+                    // not used as a confounding reason for NoOp refusal.
+                    if(OriginalHolder->Wheels.Num()<=Index||OriginalHolder->Suspension.Num()<=Index
+                        ||ReferenceHolder->Wheels.Num()<=Index||ReferenceHolder->Suspension.Num()<=Index
+                        ||Component->Wheels.Num()<=Index||Values.PWheel!=&OriginalHolder->Wheels[Index]
+                        ||Values.PSuspension!=&OriginalHolder->Suspension[Index]||Values.ChaosWheel!=Configuration
+                        ||Values.WheelComponent!=static_cast<ISpeedWheeledComponent*>(Component)
+                        ||Body->OwnedBodyValues->ParentComponent!=static_cast<ISpeedComponent*>(Component)
+                        ||Body->GetWheelSim()!=&ReferenceHolder->Wheels[Index]
+                        ||Body->GetSuspensionSim()!=&ReferenceHolder->Suspension[Index]
+                        ||Body->GetChaosWheelConfiguration()!=Component->Wheels[Index].Get())return false;
+                    B::Add(Out.Original,Values.WheelComponent);B::Add(Out.Original,Values.ChaosWheel);
+                    B::Add(Out.Original,Values.PWheel);B::Add(Out.Original,Values.PSuspension);B::Add(Out.Original,Values.WheelMass);
+                    B::Add(Out.Original,Values.SuspensionMaxRaiseOverride);B::Add(Out.Original,Values.SuspensionMaxDropOverride);
+                    B::Add(Out.Original,Body->OwnedBodyValues->ParentComponent);
+                    if(!PartialObservation::AppendSolidValues(Out.Original,*Body->OwnedSolidValues))return false;
+                    B::Add(Out.Original,Configuration);B::Add(Out.Original,Configuration->SuspensionMaxRaise);B::Add(Out.Original,Configuration->SuspensionMaxDrop);
+                    Body->AppendEpisodeStateForTesting(Out.Facade); // actual unselected facade; exact private final class
+                    if(OriginalHolder->Wheels.Num()<=Index||OriginalHolder->Suspension.Num()<=Index
+                        ||ReferenceHolder->Wheels.Num()<=Index||ReferenceHolder->Suspension.Num()<=Index)return false;
+                    ++Out.Population.OriginalWheelSims;++Out.Population.ReferenceWheelSims;++Out.Population.Configurations;
+                }
+                ++Out.Population.Cars;
+            }
+            auto* Bridge=Graph->Access->OriginalBridgeBirth.Get();
+            if(!Bridge||!Bridge->OriginalEpochBridgeStorage)return false;
+            // Exact pending lists copied under their real locks. Both locks end
+            // before any ordinary entry attempt, assertion or logging callback.
+            const auto Pending=[&](FCriticalSection& CS,const TArray<FPendingOp>& Ops,TArray<uint8>& Bytes)
+            {
+                FScopeLock PendingLock(&CS);B::Add(Bytes,Ops.GetData());B::Add(Bytes,Ops.Num());B::Add(Bytes,Ops.Max());
+                for(const auto& Op:Ops){B::Add(Bytes,Op.bAdd);B::Add(Bytes,Op.Comp);}
+            };
+            TArray<uint8> FacadePending;
+            Pending(Bridge->PendingCS,Bridge->PendingOps,FacadePending);
+            Out.Reference.Append(FacadePending);Out.Facade.Append(FacadePending);
+            Pending(Bridge->OriginalEpochBridgeStorage->PendingCS,Bridge->OriginalEpochBridgeStorage->PendingOps,Out.Original);
+            const auto& OriginalRegistry=Bridge->OriginalEpochBridgeStorage->SimulationWorld;
+            const auto& FacadeRegistry=Bridge->SimulationWorld;
+            for(const auto& Node:Graph->Cars)
+            {
+                auto* Component=Node->ComponentWeak.Get();if(!Component||!Component->OwnedComponentValues)return false;
+                B::Add(Out.Original,OriginalRegistry.FindStableId(*Component));
+                B::Add(Out.Original,Component->OwnedComponentValues->PublishedStableId.Load());
+                const auto Id=FacadeRegistry.FindStableId(*Component);
+                B::Add(Out.Reference,Id);B::Add(Out.Facade,Id);
+            }
+            // Membership for these actual components is a partial registry view,
+            // not an enumeration or a permission to apply/rebuild registration.
+            return ActualNoOperation();
+        };
+        auto& OwnNode=*OwnRoot->Cars.front();auto& ForeignNode=*ForeignRoot->Cars.front();
+        auto* OwnComponent=OwnNode.ComponentWeak.Get();auto* OwnBody=OwnNode.OriginalWheelBodyBirth[0].Get();
+        auto* OwnBox=OwnNode.OriginalHitboxBirth.Get();auto* ForeignComponent=ForeignNode.ComponentWeak.Get();
+        if(!OwnComponent||!OwnBody||!OwnBox||!ForeignComponent)return Refuse(Why,TEXT("ordinary parent initializer NoOp actual subjects missing"));
+        const auto Attempt=[&](const TCHAR* Entry,const TCHAR* Argument,auto&& Call,
+            TUniquePtr<Chaos::FSimpleWheeledVehicle>* ArgumentHolder=nullptr)
+        {
+            FFootprint OwnBefore,ForeignBefore,OwnAfter,ForeignAfter;
+            if(!Capture(OwnRoot,OwnBefore)||!Capture(ForeignRoot,ForeignBefore))return false;
+            FPrivateRoadOrdinaryBindingNoOpCase Row;Row.Entry=Entry;Row.Argument=Argument;
+            const void* const HolderIdentity=ArgumentHolder;
+            const auto* const HolderValue=ArgumentHolder?ArgumentHolder->Get():nullptr;
+            Row.ArgumentHolderObserved=ArgumentHolder!=nullptr;Row.ArgumentHolderWasNonNull=HolderValue!=nullptr;
+            Row.Attempted=true;Row.NoActualOperation=ActualNoOperation();
+            try{Call();}catch(const FPrivateNativeStorageUnavailable&){Row.Refused=true;}
+            if(!Capture(OwnRoot,OwnAfter)||!Capture(ForeignRoot,ForeignAfter))
+            {Result.Cases.push_back(std::move(Row));return false;}
+            Row.NoActualOperation=Row.NoActualOperation&&ActualNoOperation();
+            Row.LiveStorageRoutes=OwnBefore.Population==OwnAfter.Population&&ForeignBefore.Population==ForeignAfter.Population;
+            Row.OwnOriginalUnchanged=OwnBefore.Original==OwnAfter.Original;Row.OwnReferenceUnchanged=OwnBefore.Reference==OwnAfter.Reference;
+            Row.OwnFacadeUnchanged=OwnBefore.Facade==OwnAfter.Facade;
+            Row.ForeignOriginalUnchanged=ForeignBefore.Original==ForeignAfter.Original;
+            Row.ForeignReferenceUnchanged=ForeignBefore.Reference==ForeignAfter.Reference;Row.ForeignFacadeUnchanged=ForeignBefore.Facade==ForeignAfter.Facade;
+            Row.OwnCars=OwnBefore.Population.Cars;Row.ForeignCars=ForeignBefore.Population.Cars;
+            Row.OriginalVehicles=OwnBefore.Population.OriginalVehicles+ForeignBefore.Population.OriginalVehicles;
+            Row.ReferenceVehicles=OwnBefore.Population.ReferenceVehicles+ForeignBefore.Population.ReferenceVehicles;
+            Row.OriginalWheelSims=OwnBefore.Population.OriginalWheelSims+ForeignBefore.Population.OriginalWheelSims;
+            Row.ReferenceWheelSims=OwnBefore.Population.ReferenceWheelSims+ForeignBefore.Population.ReferenceWheelSims;
+            Row.Configurations=OwnBefore.Population.Configurations+ForeignBefore.Population.Configurations;
+            Row.OriginalBodies=OwnBefore.Population.OriginalBodies+ForeignBefore.Population.OriginalBodies;
+            Row.ReferenceBodies=OwnBefore.Population.ReferenceBodies+ForeignBefore.Population.ReferenceBodies;
+            Row.Hitboxes=OwnBefore.Population.Hitboxes+ForeignBefore.Population.Hitboxes;
+            Row.WheelBodies=OwnBefore.Population.WheelBodies+ForeignBefore.Population.WheelBodies;
+            Row.ReferenceConfigurations=OwnBefore.Population.ReferenceConfigurations+ForeignBefore.Population.ReferenceConfigurations;
+            Row.ArgumentHolderUnchanged=ArgumentHolder&&HolderIdentity==ArgumentHolder&&HolderValue==ArgumentHolder->Get();
+            const bool Success=Row.Refused&&Row.NoActualOperation&&Row.LiveStorageRoutes&&Row.OwnOriginalUnchanged&&Row.OwnReferenceUnchanged
+                &&Row.OwnFacadeUnchanged&&Row.ForeignOriginalUnchanged&&Row.ForeignReferenceUnchanged&&Row.ForeignFacadeUnchanged
+                &&(!ArgumentHolder||Row.ArgumentHolderUnchanged);
+            Result.Cases.push_back(std::move(Row));return Success;
+        };
+        auto* OwnActor=OwnNode.ActorWeak.Get();auto* ForeignActor=ForeignNode.ActorWeak.Get();
+        if(!OwnActor||!ForeignActor)return Refuse(Why,TEXT("parent initializer actor arguments missing"));
+        for(int32 Population=0;Population<3;++Population)
+        {
+            const TCHAR* Argument=Population==0?TEXT("null"):Population==1?TEXT("own"):TEXT("foreign");
+            AActor* Actor=Population==0?nullptr:Population==1?OwnActor:ForeignActor;
+            if(!Attempt(TEXT("setowner-virtual"),Argument,[&](){OwnComponent->SetOwner(Actor);})
+                ||!Attempt(TEXT("setowner-qualified"),Argument,[&](){OwnComponent->USpeedWheeledComponent::SetOwner(Actor);}))
+                return Refuse(Why,TEXT("ordinary parent SetOwner refusal/declared footprint failed; actual effects retained"));
+        }
+        if(!Attempt(TEXT("initialize-bound"),TEXT("none"),[&](){OwnComponent->InitializeBoundSubBodiesForPhysicalOwner();}))
+            return Refuse(Why,TEXT("ordinary parent InitializeBound refusal/declared footprint failed; actual effects retained"));
+        Result.Returned=true;
+    }
+    return true;
+}
+
+bool FPrivateRoadPhysicsWorld::ProbeOrdinaryBindingsWithoutOperationForDiagnostics(
+    FPrivateRoadPhysicsWorld& Foreign,FPrivateRoadOrdinaryBindingNoOpProbe& Result,FString& Why)
+{
+    Result={};Why.Empty();
+    if(!IsInGameThread()||!Impl||!Foreign.Impl||OriginalComponentStorageOwner
+        ||Speed::Input::FPresentationInputScope::IsActive())
+        return Refuse(Why,TEXT("ordinary NoOp diagnostic requires actual unselected GT entry"));
+    const auto OwnRoot=Impl,ForeignRoot=Foreign.Impl;
+    if(OwnRoot.get()==ForeignRoot.get()||(!OwnRoot.owner_before(ForeignRoot)&&!ForeignRoot.owner_before(OwnRoot))
+        ||&OwnRoot->Gate==&ForeignRoot->Gate)
+        return Refuse(Why,TEXT("ordinary NoOp diagnostic refuses same-root aliases before locks"));
+    // These real call guards OUTLIVE all gate/GC scopes below. Their eventual
+    // destruction can run deferred retirement, only after those locks are gone.
+    FRetainedNativeCall OwnCall(OwnRoot),ForeignCall(ForeignRoot);
+    {
+        FGCScopeGuard NoCallbacks; // destroyed AFTER the two actual gate locks
+        std::scoped_lock Gates(OwnRoot->Gate,ForeignRoot->Gate);
+        const auto ActualNoOperation=[&]()
+        {
+            return !OriginalComponentStorageOwner&&OwnRoot->NativeOperationIdentity&&ForeignRoot->NativeOperationIdentity
+                &&!OwnRoot->NativeOperationIdentity->ActiveGTActualOperation
+                &&!ForeignRoot->NativeOperationIdentity->ActiveGTActualOperation;
+        };
+        const auto Available=[&](const std::shared_ptr<FImpl>& Graph)
+        {
+            return !Graph->Closed&&!Graph->Failed&&!Graph->RetirementRequested.load()
+                &&Graph->RetirementPhase==RetirementDraft::EPhase::Open&&Graph->NativeStorage
+                &&Graph->Access&&!Graph->Access->Retired&&Graph->AcquiredGraphStillLive()
+                &&Graph->OriginalObjectHandlesStillMatch()&&!Graph->Cars.empty();
+        };
+        if(!ActualNoOperation()||!Available(OwnRoot)||!Available(ForeignRoot))
+            return Refuse(Why,TEXT("ordinary NoOp diagnostic refuses unavailable actual owner graphs"));
+        using B=Speed::FEpisodeStateBytesForTesting;
+        struct FPopulation
+        {
+            uint32 Cars=0,OriginalVehicles=0,ReferenceVehicles=0,OriginalWheelSims=0,ReferenceWheelSims=0,Configurations=0,ReferenceConfigurations=0;
+            bool operator==(const FPopulation&) const=default;
+        };
+        struct FFootprint
+        {
+            TArray<uint8> Original,Reference,Facade;
+            FPopulation Population;
+        };
+        // Declared binding/setup footprint only. Read existing parts/holders;
+        // never construct a native operation, select storage or restore values.
+        const auto Vehicle=[&](TArray<uint8>& Bytes,const Chaos::FSimpleWheeledVehicle& Actual)
+        {
+            const auto ArrayIdentity=[&](const auto& Array)
+            {B::Add(Bytes,Array.GetData());B::Add(Bytes,Array.Num());};
+            B::Add(Bytes,&Actual);B::Add(Bytes,Actual.bSuspensionEnabled);B::Add(Bytes,Actual.bMechanicalSimEnabled);
+            B::Add(Bytes,Actual.bWheelFrictionEnabled);B::Add(Bytes,Actual.NumDrivenWheels);B::Add(Bytes,Actual.bLegacyWheelFrictionPosition);
+            ArrayIdentity(Actual.Engine);ArrayIdentity(Actual.Transmission);ArrayIdentity(Actual.Differential);
+            ArrayIdentity(Actual.Wheels);ArrayIdentity(Actual.Suspension);ArrayIdentity(Actual.Steering);ArrayIdentity(Actual.Aerodynamics);
+            ArrayIdentity(Actual.Aerofoils);ArrayIdentity(Actual.Thrusters);ArrayIdentity(Actual.Axles);
+            ArrayIdentity(Actual.TorqueControlSim);ArrayIdentity(Actual.TargetRotationControlSim);ArrayIdentity(Actual.StabilizeControlSim);
+            for(const auto& Wheel:Actual.Wheels)PartialObservation::AppendCheckedWheel(Bytes,Wheel);
+            for(const auto& Suspension:Actual.Suspension)PartialObservation::FCheckedSuspensionCopy(Suspension).Append(Bytes);
+        };
+        const auto Capture=[&](const std::shared_ptr<FImpl>& Graph,FFootprint& Out)
+        {
+            if(!ActualNoOperation()||!Available(Graph))return false;
+            for(const auto& Node:Graph->Cars)
+            {
+                auto* Component=Node->ComponentWeak.Get();
+                if(!Component||!Node->NativeVehicleRoot||!Node->NativeVehicleRoot->Domain
+                    ||!Node->NativeConfiguration||!Node->ReferenceConfiguration||!Node->OriginalNativeSimulation
+                    ||Component->Access.lock()!=Graph->Access||Node->NativeWheelRoots.size()!=4
+                    ||Node->OriginalWheelBodyBirth.Num()!=4||Node->OriginalWheelObjects.Num()!=4)return false;
+                auto& Domain=*Node->NativeVehicleRoot->Domain;
+                auto& OriginalHolder=Node->OriginalNativeSimulation->PVehicle;
+                auto* ReferenceSimulation=static_cast<USpeedSimulation*>(Component->VehicleSimulationPT.Get());
+                if(!OriginalHolder||OriginalHolder.Get()!=Node->OriginalNativeVehicle
+                    ||Domain.VehicleSimulationPT.Get()!=Node->OriginalNativeSimulation
+                    ||!ReferenceSimulation||Component->SkySimulation!=ReferenceSimulation||!ReferenceSimulation->PVehicle)return false;
+                auto& ReferenceHolder=ReferenceSimulation->PVehicle;
+                // Actual unique holder addresses/Get values and allocations,
+                // not a raw pointer wrapped in a replacement unique owner.
+                B::Add(Out.Original,&OriginalHolder);B::Add(Out.Original,OriginalHolder.Get());
+                B::Add(Out.Original,Domain.SkySimulation);B::Add(Out.Original,Domain.VehicleSimulationPT.Get());
+                B::Array(Out.Original,Domain.WheelSubBodies);B::Array(Out.Original,Domain.Wheels);
+                Vehicle(Out.Original,*OriginalHolder);++Out.Population.OriginalVehicles;
+                B::Add(Out.Reference,&ReferenceHolder);B::Add(Out.Reference,ReferenceHolder.Get());
+                Vehicle(Out.Reference,*ReferenceHolder);++Out.Population.ReferenceVehicles;
+                B::Add(Out.Facade,Component->SkySimulation);B::Add(Out.Facade,Component->VehicleSimulationPT.Get());
+                B::Array(Out.Facade,Component->WheelSubBodies);B::Array(Out.Facade,Component->Wheels);
+                // UE private NumDrivenWheels is not observable here; do not claim its capture.
+                const auto& ActualLayout=Component->GetWheelLayoutDimensions();
+                B::Add(Out.Facade,ActualLayout.X);B::Add(Out.Facade,ActualLayout.Y);
+                for(const auto& Configuration:Component->Wheels)
+                {
+                    if(!Configuration)return false;
+                    B::Add(Out.Reference,Configuration.Get());B::Add(Out.Reference,Configuration->SuspensionMaxRaise);B::Add(Out.Reference,Configuration->SuspensionMaxDrop);
+                    ++Out.Population.ReferenceConfigurations;
+                }
+                if(!PartialObservation::AppendCheckedWheelConfig(Out.Original,Node->NativeConfiguration->Wheel)
+                    ||!PartialObservation::AppendCheckedWheelConfig(Out.Reference,Node->ReferenceConfiguration->Wheel))return false;
+                PartialObservation::AppendCheckedSuspensionConfig(Out.Original,Node->NativeConfiguration->Suspension);
+                PartialObservation::AppendCheckedSuspensionConfig(Out.Reference,Node->ReferenceConfiguration->Suspension);
+                for(int32 Index=0;Index<4;++Index)
+                {
+                    auto* Body=Cast<USpeedBranchWheelSubBody>(Node->OriginalWheelBodyBirth[Index].Get());
+                    auto* Configuration=Node->OriginalWheelObjects[Index].Get();const auto& PartRoot=Node->NativeWheelRoots[Index];
+                    if(!Body||!Configuration||!PartRoot||PartRoot->Vehicle!=Node->NativeVehicleRoot
+                        ||Body->StorageAccess.lock()!=Graph->Access||!Body->OwnedBodyValues||!Body->OwnedSolidValues
+                        ||!Body->OwnedWheelDomain||!Body->OwnedWheelRuntime||!Body->OwnedSphereDomain)return false;
+                    const auto& Values=*Body->OwnedWheelDomain;
+                    // Preserve real LIVE storage/allocations. Missing aliases are
+                    // not used as a confounding reason for NoOp refusal.
+                    if(OriginalHolder->Wheels.Num()<=Index||OriginalHolder->Suspension.Num()<=Index
+                        ||ReferenceHolder->Wheels.Num()<=Index||ReferenceHolder->Suspension.Num()<=Index
+                        ||Component->Wheels.Num()<=Index||Values.PWheel!=&OriginalHolder->Wheels[Index]
+                        ||Values.PSuspension!=&OriginalHolder->Suspension[Index]||Values.ChaosWheel!=Configuration
+                        ||Values.WheelComponent!=static_cast<ISpeedWheeledComponent*>(Component)
+                        ||Body->OwnedBodyValues->ParentComponent!=static_cast<ISpeedComponent*>(Component)
+                        ||Body->GetWheelSim()!=&ReferenceHolder->Wheels[Index]
+                        ||Body->GetSuspensionSim()!=&ReferenceHolder->Suspension[Index]
+                        ||Body->GetChaosWheelConfiguration()!=Component->Wheels[Index].Get())return false;
+                    B::Add(Out.Original,Values.WheelComponent);B::Add(Out.Original,Values.ChaosWheel);
+                    B::Add(Out.Original,Values.PWheel);B::Add(Out.Original,Values.PSuspension);B::Add(Out.Original,Values.WheelMass);
+                    B::Add(Out.Original,Values.SuspensionMaxRaiseOverride);B::Add(Out.Original,Values.SuspensionMaxDropOverride);
+                    B::Add(Out.Original,Body->OwnedBodyValues->ParentComponent);
+                    if(!PartialObservation::AppendSolidValues(Out.Original,*Body->OwnedSolidValues))return false;
+                    B::Add(Out.Original,Configuration);B::Add(Out.Original,Configuration->SuspensionMaxRaise);B::Add(Out.Original,Configuration->SuspensionMaxDrop);
+                    Body->AppendEpisodeStateForTesting(Out.Facade); // actual unselected facade; exact private final class
+                    if(OriginalHolder->Wheels.Num()<=Index||OriginalHolder->Suspension.Num()<=Index
+                        ||ReferenceHolder->Wheels.Num()<=Index||ReferenceHolder->Suspension.Num()<=Index)return false;
+                    ++Out.Population.OriginalWheelSims;++Out.Population.ReferenceWheelSims;++Out.Population.Configurations;
+                }
+                ++Out.Population.Cars;
+            }
+            return ActualNoOperation();
+        };
+        auto& OwnNode=*OwnRoot->Cars.front();auto& ForeignNode=*ForeignRoot->Cars.front();
+        auto* OwnComponent=OwnNode.ComponentWeak.Get();auto* OwnBody=OwnNode.OriginalWheelBodyBirth[0].Get();
+        if(!OwnComponent||!OwnBody)return Refuse(Why,TEXT("ordinary NoOp actual subjects missing"));
+        const auto Attempt=[&](const TCHAR* Entry,const TCHAR* Argument,auto&& Call,
+            TUniquePtr<Chaos::FSimpleWheeledVehicle>* ArgumentHolder=nullptr)
+        {
+            FFootprint OwnBefore,ForeignBefore,OwnAfter,ForeignAfter;
+            if(!Capture(OwnRoot,OwnBefore)||!Capture(ForeignRoot,ForeignBefore))return false;
+            FPrivateRoadOrdinaryBindingNoOpCase Row;Row.Entry=Entry;Row.Argument=Argument;
+            const void* const HolderIdentity=ArgumentHolder;
+            const auto* const HolderValue=ArgumentHolder?ArgumentHolder->Get():nullptr;
+            Row.ArgumentHolderObserved=ArgumentHolder!=nullptr;Row.ArgumentHolderWasNonNull=HolderValue!=nullptr;
+            Row.Attempted=true;Row.NoActualOperation=ActualNoOperation();
+            try{Call();}catch(const FPrivateNativeStorageUnavailable&){Row.Refused=true;}
+            if(!Capture(OwnRoot,OwnAfter)||!Capture(ForeignRoot,ForeignAfter))
+            {Result.Cases.push_back(std::move(Row));return false;}
+            Row.NoActualOperation=Row.NoActualOperation&&ActualNoOperation();
+            Row.LiveStorageRoutes=OwnBefore.Population==OwnAfter.Population&&ForeignBefore.Population==ForeignAfter.Population;
+            Row.OwnOriginalUnchanged=OwnBefore.Original==OwnAfter.Original;Row.OwnReferenceUnchanged=OwnBefore.Reference==OwnAfter.Reference;
+            Row.OwnFacadeUnchanged=OwnBefore.Facade==OwnAfter.Facade;
+            Row.ForeignOriginalUnchanged=ForeignBefore.Original==ForeignAfter.Original;
+            Row.ForeignReferenceUnchanged=ForeignBefore.Reference==ForeignAfter.Reference;Row.ForeignFacadeUnchanged=ForeignBefore.Facade==ForeignAfter.Facade;
+            Row.OwnCars=OwnBefore.Population.Cars;Row.ForeignCars=ForeignBefore.Population.Cars;
+            Row.OriginalVehicles=OwnBefore.Population.OriginalVehicles+ForeignBefore.Population.OriginalVehicles;
+            Row.ReferenceVehicles=OwnBefore.Population.ReferenceVehicles+ForeignBefore.Population.ReferenceVehicles;
+            Row.OriginalWheelSims=OwnBefore.Population.OriginalWheelSims+ForeignBefore.Population.OriginalWheelSims;
+            Row.ReferenceWheelSims=OwnBefore.Population.ReferenceWheelSims+ForeignBefore.Population.ReferenceWheelSims;
+            Row.Configurations=OwnBefore.Population.Configurations+ForeignBefore.Population.Configurations;
+            Row.ReferenceConfigurations=OwnBefore.Population.ReferenceConfigurations+ForeignBefore.Population.ReferenceConfigurations;
+            Row.ArgumentHolderUnchanged=ArgumentHolder&&HolderIdentity==ArgumentHolder&&HolderValue==ArgumentHolder->Get();
+            const bool Success=Row.Refused&&Row.NoActualOperation&&Row.LiveStorageRoutes&&Row.OwnOriginalUnchanged&&Row.OwnReferenceUnchanged
+                &&Row.OwnFacadeUnchanged&&Row.ForeignOriginalUnchanged&&Row.ForeignReferenceUnchanged&&Row.ForeignFacadeUnchanged
+                &&(!ArgumentHolder||Row.ArgumentHolderUnchanged);
+            Result.Cases.push_back(std::move(Row));return Success;
+        };
+        for(int32 Population=0;Population<3;++Population)
+        {
+            const TCHAR* Argument=Population==0?TEXT("null"):Population==1?TEXT("own"):TEXT("foreign");
+            const auto* Node=Population==1?&OwnNode:Population==2?&ForeignNode:nullptr;
+            UChaosVehicleWheel* Configuration=Node?Node->OriginalWheelObjects[0].Get():nullptr;
+            Chaos::FSimpleWheelSim* Wheel=Node?&Node->OriginalNativeVehicle->Wheels[0]:nullptr;
+            Chaos::FSimpleSuspensionSim* Suspension=Node?&Node->OriginalNativeVehicle->Suspension[0]:nullptr;
+            Chaos::FSimpleWheeledVehicle* Allocation=Node?Node->OriginalNativeVehicle:nullptr;
+            if(!Attempt(TEXT("configuration"),Argument,[&](){Speed::NativeKinematics::FWheelBindingAccess::BindChaosWheel(*OwnBody,Configuration);})
+                ||!Attempt(TEXT("wheel"),Argument,[&](){Speed::NativeKinematics::FWheelBindingAccess::BindWheel(*OwnBody,Wheel);})
+                ||!Attempt(TEXT("suspension"),Argument,[&](){Speed::NativeKinematics::FWheelBindingAccess::BindSuspension(*OwnBody,Suspension);})
+                ||!Attempt(TEXT("bind-pointer"),Argument,[&](){OwnComponent->BindWheelSimulationPointers(Allocation);}))
+                return Refuse(Why,TEXT("ordinary NoOp binding refusal/footprint failed; actual effects retained"));
+        }
+        if(!Attempt(TEXT("bind-noarg"),TEXT("none"),[&](){OwnComponent->BindWheelSimulationPointers();})
+            ||!Attempt(TEXT("clear"),TEXT("none"),[&](){OwnComponent->ClearWheelSimulationPointers();}))
+            return Refuse(Why,TEXT("ordinary NoOp whole-entry refusal failed; actual effects retained"));
+        TUniquePtr<Chaos::FSimpleWheeledVehicle> ActualEmptyHolder;
+        if(!Attempt(TEXT("IAS-setup"),TEXT("null"),[&](){OwnComponent->SetupVehicle(ActualEmptyHolder);},&ActualEmptyHolder)
+            ||!Attempt(TEXT("IAS-setup"),TEXT("own"),[&](){OwnComponent->SetupVehicle(OwnNode.OriginalNativeSimulation->PVehicle);},&OwnNode.OriginalNativeSimulation->PVehicle)
+            ||!Attempt(TEXT("IAS-setup"),TEXT("foreign"),[&](){OwnComponent->SetupVehicle(ForeignNode.OriginalNativeSimulation->PVehicle);},&ForeignNode.OriginalNativeSimulation->PVehicle))
+            return Refuse(Why,TEXT("ordinary NoOp pre-Super refusal failed; actual holders/effects retained"));
+        Result.Returned=true;
+    }
+    return true;
+}
+
+#endif
+
+bool FPrivateRoadPhysicsWorld::HasExactRegisteredRosterRetained(const std::shared_ptr<FImpl>& Root,const FPrivateNativeOperation& Operation,FString& Why)
+{
+    const auto& I=*Root;
+    if(!Operation.HasExactRootAndGate(I.NativeOperationIdentity))
+        return Refuse(Why,TEXT("original roster read requires its actual retained root and owned mutex"));
+    if(!I.Bridge)return Refuse(Why,TEXT("private native registry bridge missing"));
+    if(!I.OriginalObjectHandlesStillMatch())
+        return Refuse(Why,TEXT("original wheel/hitbox handle unresolved, stale or different from actual birth role"));
+    // Inspect the actual pending queue under its original lock. This check
+    // detects queued/committed topology drift BEFORE private input preparation
+    // or physics. It is not a lease excluding later/global native mutations.
+    FScopeLock PendingLock(&I.Bridge->PendingCSEpochStorage());
+    if(I.Bridge->bCanonicalFrameActiveEpochStorage()||!I.Bridge->PendingOpsEpochStorage().IsEmpty())
+        return Refuse(Why,TEXT("private native registry has an active frame or pending mutation"));
+    const auto& Actual=I.Bridge->SimulationWorldEpochStorage().GetAdapters();
+    if(Actual.Num()!=int32(I.Cars.size()))return Refuse(Why,TEXT("private native registered roster changed"));
+    for(const auto& N:I.Cars)
+        if(!N->StableId||!Actual.Contains(N->Component)
+            ||I.Bridge->SimulationWorldEpochStorage().FindAdapterByStableId(N->StableId)!=N->Component
+            ||N->Component->GetPublishedSimulationStableId()!=N->StableId)
+            return Refuse(Why,TEXT("private native registered identity changed"));
+    return true;
+}
+bool FPrivateRoadPhysicsWorld::StepRetained(const std::shared_ptr<FImpl>& Root,const std::vector<FPrivateRoadRequest>& Requests,bool Resimulation,FString& Why
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+    ,FHitAcceptanceDiagnosticContext* HitContext
+#endif
+    )
+{
+    Why.Empty();if(OriginalComponentStorageOwner||!IsInGameThread()||Speed::Input::FPresentationInputScope::IsActive())return Refuse(Why,TEXT("private step requires GT physical caller"));
+    auto& I=*Root;
+    if(I.NativeOperationIdentity->ActiveGTActualOperation)
+        return Refuse(Why,TEXT("same graph native operation already active; Step refused before mutex"));
+    std::unique_lock Lock(I.Gate,std::try_to_lock);
+    if(!Lock.owns_lock()||I.Closed||I.Failed||Requests.size()!=I.Cars.size())return Refuse(Why,TEXT("private step owner/roster unavailable"));
+    FPrivateNativeOperation Operation(Root,I.NativeOperationIdentity,I.NativeStorage,FPrivateNativeOperation::EKind::Step,std::move(Lock));
+    if(!I.AcquiredGraphStillLive())return Refuse(Why,TEXT("original acquired graph unavailable before Step"));
+    if(!IsValid(I.Driver)||!I.OriginalActorWorldStillMatches(I.Driver,I.World.Get())||I.Driver->HasActorBegunPlay()
+        ||I.Driver->IsActorBeingDestroyed())return Refuse(Why,TEXT("private driver lifecycle changed"));
+    for(const auto& N:I.Cars)
+        if(!IsValid(N->Actor)||!IsValid(N->Component)||N->Actor->IsActorBeingDestroyed()||N->Actor->HasActorBegunPlay()
+            ||!I.OriginalActorWorldStillMatches(N->Actor,I.World.Get())||N->Component->GetOwner()!=N->Actor
+            ||!I.OriginalMovementStillMatches(*N)||N->Component->GetClass()!=USpeedBranchWheeledComponent::StaticClass())
+            return Refuse(Why,TEXT("private native actor/component lifetime changed"));
+    for(const auto& Pin:I.Pins)if(!IsValid(Pin.Get()))return Refuse(Why,TEXT("private native graph object invalidated"));
+    // Waiting for actual synchronization is a non-mutating admission refusal,
+    // not a failed physical step. Refuse BEFORE opening the native stage, so
+    // repeated caller attempts cannot retire or erase the original baseline.
+    {
+        FOriginalComponentStorageScope OriginalStartupRead(*I.Access);
+        if(I.Driver->NextPrivate(Operation)&&I.Access->RequiresInitialPublication&&!I.Access->InitialPublicationReleased)
+            return Refuse(Why,TEXT("awaiting actual initial publication and common activation; no timer release"));
+    }
+    if(!I.Diagnostics||!I.Diagnostics->Begin())return Refuse(Why,TEXT("native diagnostic owner unavailable"));
+    std::shared_ptr<const FPrivateRoadPublication> Completed;
+    bool DiagnosticActive=true;ON_SCOPE_EXIT{if(DiagnosticActive)I.Diagnostics->End();};
+    bool Advanced=false;try {Advanced=[&]() -> bool
+    {
+    Speed::RoadSettings::FOriginalRoadSettingsScope SettingsStep(I.DeclaredSettings);
+    FGCScopeGuard NativeGCExclusion;
+    FOriginalComponentStorageScope OriginalStorage(*I.Access);
+    if(!HasExactRegisteredRosterRetained(Root,Operation,Why))return false;
+    const U64 Frame=I.Driver->NextPrivate(Operation);
+    if(Frame&&I.Access->RequiresInitialPublication&&!I.Access->InitialPublicationReleased)
+        return Refuse(Why,TEXT("awaiting actual initial publication and common activation; no timer release"));
+    if(Frame>=uint64(MAX_int32-1)||Chaos::FPhysicsSolverBase::IsNetworkPhysicsPredictionEnabled()||!NoNetworkOwner(I.World.Get()))return Refuse(Why,TEXT("private step native domain changed"));
+    std::vector<FBranchInputFilter::FPrepared> Plans;Plans.reserve(I.Cars.size());
+    I.Access->Slots.Empty();I.Access->ContactDispatches.clear();I.Access->ContactDispatchOverflow=false;
+    ON_SCOPE_EXIT{I.Access->Active=false;I.Access->Slots.Empty();};
+    for(const auto& N:I.Cars)
+    {
+        if(!N->Component||!N->Component->HasIsolatedNativeConstruction())return Refuse(Why,TEXT("private native construction changed before step"));
+        const FPrivateRoadRequest* Found=nullptr;
+        for(const auto& R:Requests)if(R.Actor==N->Seed.Actor)
+        {if(Found||R.Incarnation!=N->Seed.Incarnation)return Refuse(Why,TEXT("private request duplicate/incarnation mismatch"));Found=&R;}
+        if(!Found)return Refuse(Why,TEXT("private actor request missing"));
+        auto Plan=std::holds_alternative<FPrediction>(Found->Evidence)?N->Filter->PrepareRemote(std::get<FPrediction>(Found->Evidence))
+            :N->Filter->PrepareLocal(std::get<std::shared_ptr<const BranchV2::FInputFrame>>(Found->Evidence));
+        if(!Plan||!N->Filter->CanCommit(*Plan)||Plan->ReadProcessed()->Frame!=Frame)return Refuse(Why,TEXT("private frame input preparation refused"));
+        const auto Processed=Plan->ReadProcessed();
+        // This road kernel does not execute menu/reset commands or unknown
+        // game actions. Do not silently consume them as successful physics.
+        constexpr uint32 Supported=(1u<<0)|(1u<<1)|(1u<<2)|(1u<<5)|(1u<<6);
+        if(Processed->ActiveMask&~Supported)return Refuse(Why,TEXT("private road action domain unsupported"));
+        for(size_t A=0;A<ActionCount;++A)
+            if(!(Supported&(uint32(1)<<A))&&Processed->Requested[A])return Refuse(Why,TEXT("private road action value unsupported"));
+        const auto UnsupportedEdge=[&](uint32 Action){return Action>=32||!(Supported&(uint32(1)<<Action));};
+        if(const auto* Local=std::get_if<std::shared_ptr<const BranchV2::FInputFrame>>(&Processed->Evidence))
+        {for(const auto& E:(*Local)->GetData().Transitions)if(UnsupportedEdge(E.Action))return Refuse(Why,TEXT("private road local command edge unsupported"));}
+        if(const auto* Authority=std::get_if<std::shared_ptr<const FPacket>>(&Processed->Evidence))
+        {for(const auto& E:(*Authority)->Input.Edges)if(UnsupportedEdge(E.Action))return Refuse(Why,TEXT("private road authority command edge unsupported"));}
+        I.Access->Slots.Add(N->Component,{Processed,false,N->Seed.Actor,N->Seed.Incarnation});Plans.push_back(std::move(*Plan));
+    }
+    I.Access->Frame=Frame;I.Access->Active=true;
+    // No rollback claim: any physical failure retires this private branch.
+    const auto Fail=[&](const TCHAR* Reason){I.Failed=true;I.Published.store({});return Refuse(Why,Reason);};
+    try
+    {
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+    if(HitContext&&!ProbeHitAcceptanceRetained(I,Operation,*HitContext))return Fail(TEXT("native shape hit acceptance controls refused"));
+    if(HitContext&&!ProbeMassResponseRetained(I,Operation,*HitContext))return Fail(TEXT("native mass response boundary controls refused"));
+#endif
+    if(!I.Driver->AdvancePrivate(Operation,Resimulation))return Fail(TEXT("private canonical native step failed"));
+    for(size_t N=0;N<I.Cars.size();++N)
+    {
+        const auto* Slot=I.Access->Slots.Find(I.Cars[N]->Component);
+        if(!Slot||!Slot->Consumed||!I.Cars[N]->Filter->Commit(Plans[N]))return Fail(TEXT("private consumed-input/filter commit failed"));
+    }
+    auto Out=std::make_shared<FPrivateRoadPublication>();Out->LocalKernelLifetime=I.Lifetime;Out->Frame=Frame;
+    Out->AwaitingInitialPublication=I.Access->RequiresInitialPublication&&!I.Access->InitialPublicationReleased;
+    if(I.DeclaredSettings)Out->DeclaredSettingsIdentity=I.DeclaredSettings->CanonicalIdentity();
+    Out->ContactDispatchObservationComplete=!I.Access->ContactDispatchOverflow;
+    std::sort(I.Access->ContactDispatches.begin(),I.Access->ContactDispatches.end(),[](const auto& A,const auto& B)
+        {return A.ActorA==B.ActorA?A.ActorB<B.ActorB:A.ActorA<B.ActorA;});
+    Out->ContactDispatchPairs=I.Access->ContactDispatches;
+    if(!Out->ContactDispatchPairs.empty())
+    {
+        if(I.VehicleContactFrameCount==MAX_uint64)return Fail(TEXT("native contact diagnostic exhausted"));
+        ++I.VehicleContactFrameCount;
+    }
+    Out->VehicleContactFrameCount=I.VehicleContactFrameCount;
+    Out->NativeNetworkComponents=NativeNetworkComponentCount(I.World.Get());
+    Out->RenderScenePresent=I.World->Scene!=nullptr;Out->PhysicsScenePresent=I.World->GetPhysicsScene()!=nullptr;
+    for(const auto& N:I.Cars)if(AHUD::OnShowDebugInfo.IsBoundToObject(N->Component))++Out->NativeDebugDelegateBindings;
+    if(Out->NativeNetworkComponents||Out->NativeDebugDelegateBindings||Out->RenderScenePresent||Out->PhysicsScenePresent)return Fail(TEXT("external network/debug binding appeared in private native graph"));
+    if(!I.Driver->ReadLatestSimulationSnapshot(Out->Physics)||Out->Physics.NumFrame!=Frame
+        ||Out->Physics.PresentationBodies.Num()!=int32(I.Cars.size()))return Fail(TEXT("private native publication mismatch"));
+    // Build from actual ORIGINAL roots, not facade addresses captured by an
+    // external caller. Unknown/stale references refuse the observation, and
+    // never become a zero value or a complete-state/lifetime certificate.
+    OriginalBodyCapture::FReferences BodyReferences;
+    bool BodyReferencesComplete=true;
+    using BodyRole=OriginalBodyCapture::EReferenceRole;
+    const auto BindBodyReference=[&](const void* P,const FImpl::FCar& N,BodyRole Role,uint16 Index=0)
+    {return BodyReferences.Add(P,{N.Seed.Actor,N.Seed.Incarnation,uint16(Role),Index});};
+    // The sole static source is the actual retained flat-plane recipe and its
+    // original weak/pinned component, not a numeric alias assigned to a car.
+    const auto& Sources=I.Bridge->AnalyticSourceComponentsEpochStorage();
+    const auto* FloorSource=Sources.Find(1);auto* Floor=I.OriginalFloorWeak.Get();
+    const auto& Geometry=I.Bridge->AnalyticWorldDataEpochStorage();
+    if(!I.AcquiredGraphStillLive()||!Floor||Sources.Num()!=1||!FloorSource||FloorSource->Get()!=Floor
+        ||!Geometry.IsValid()||Geometry!=I.OriginalFlatGeometry||Geometry->Planes.Num()!=1
+        ||Geometry->Planes[0].SourceId!=1||Geometry->Planes[0].SurfaceId!=2
+        ||Geometry->Planes[0].FeatureId!=3||Geometry->Planes[0].PrimitiveId!=4)
+        BodyReferencesComplete=false;
+    if(BodyReferencesComplete&&!BodyReferences.Add(Floor,{0,0,uint16(BodyRole::StaticSource),0,Geometry->Planes[0].SourceId}))
+        BodyReferencesComplete=false;
+    for(const auto& N:I.Cars)
+    {
+        auto* C=N->ComponentWeak.Get();
+        if(!BodyReferencesComplete||!C||!N->NativeVehicleRoot||!N->NativeBoxRoot||N->NativeWheelRoots.size()!=4||N->OriginalWheelObjects.Num()!=4)
+        {BodyReferencesComplete=false;break;}
+        auto* Box=Cast<USpeedBranchBoxSubBody>(C->GetHitboxSubBodyForConfiguration());
+        if(!Box||N->NativeBoxRoot->Vehicle!=N->NativeVehicleRoot
+            ||C->OriginalWheeledDomain.get()!=N->NativeVehicleRoot->Domain.get()
+            ||Box->StorageAccess.lock()!=I.Access
+            ||Box->OwnedBodyValues.get()!=std::get<0>(N->NativeBoxRoot->Parts).get()
+            ||Box->OwnedSolidValues.get()!=std::get<1>(N->NativeBoxRoot->Parts).get()
+            ||Box->OwnedBoxDomain.get()!=std::get<2>(N->NativeBoxRoot->Parts).get()
+            ||!BindBodyReference(static_cast<ISpeedComponent*>(C),*N,BodyRole::Component)
+            ||!BindBodyReference(static_cast<ISpeedWheeledComponent*>(C),*N,BodyRole::Component)
+            ||!BindBodyReference(C,*N,BodyRole::Component)||!BindBodyReference(Box,*N,BodyRole::Box))
+        {BodyReferencesComplete=false;break;}
+        const auto& Wheels=C->ReadWheelSubBodiesForPhysics();
+        const auto& NativeDomain=N->NativeVehicleRoot->Domain;
+        if(!NativeDomain||!NativeDomain->VehicleSimulationPT)
+        {BodyReferencesComplete=false;break;}
+        auto* NativeSimulation=static_cast<USpeedSimulation*>(NativeDomain->VehicleSimulationPT.Get());
+        if(NativeSimulation!=N->OriginalNativeSimulation||NativeDomain->SkySimulation!=NativeSimulation)
+        {BodyReferencesComplete=false;break;}
+        auto* NativeVehicle=NativeSimulation->PVehicle.Get();
+        if(Wheels.Num()!=4||!NativeVehicle||NativeVehicle!=N->OriginalNativeVehicle
+            ||NativeVehicle->Wheels.Num()!=4||NativeVehicle->Suspension.Num()!=4
+            ||NativeVehicle->Wheels.GetData()!=N->OriginalNativeWheelAllocation
+            ||NativeVehicle->Suspension.GetData()!=N->OriginalNativeSuspensionAllocation)
+        {BodyReferencesComplete=false;break;}
+        for(uint16 W=0;W<4;++W)
+        {
+            const auto& WheelRoot=N->NativeWheelRoots[W];
+            if(!WheelRoot){BodyReferencesComplete=false;break;}
+            const auto& Domain=std::get<3>(WheelRoot->Parts);
+            auto* OriginalWheelObject=N->OriginalWheelObjects[W].Get();
+            auto* Body=Cast<USpeedBranchWheelSubBody>(Wheels[W].Get());
+            if(WheelRoot->Vehicle!=N->NativeVehicleRoot||!Body||Body->OwnedBodyValues.get()!=std::get<0>(WheelRoot->Parts).get()
+                ||Body->StorageAccess.lock()!=I.Access
+                ||Body->OwnedSolidValues.get()!=std::get<1>(WheelRoot->Parts).get()
+                ||Body->OwnedWheelRuntime.get()!=std::get<2>(WheelRoot->Parts).get()
+                ||Body->OwnedWheelDomain.get()!=Domain.get()
+                ||Body->OwnedSphereDomain.get()!=std::get<4>(WheelRoot->Parts).get()
+                ||!Domain||!OriginalWheelObject||Domain->ChaosWheel!=OriginalWheelObject
+                ||Domain->PWheel!=&NativeVehicle->Wheels[W]||Domain->PSuspension!=&NativeVehicle->Suspension[W]
+                ||NativeVehicle->Wheels[W].SetupPtr!=&N->NativeConfiguration->Wheel
+                ||NativeVehicle->Suspension[W].SetupPtr!=&N->NativeConfiguration->Suspension
+                ||!BindBodyReference(Wheels[W].Get(),*N,BodyRole::Wheel,W)
+                ||!BindBodyReference(Domain->ChaosWheel,*N,BodyRole::WheelObject,W)
+                ||!BindBodyReference(Domain->PWheel,*N,BodyRole::NativeWheel,W)
+                ||!BindBodyReference(Domain->PSuspension,*N,BodyRole::NativeSuspension,W))
+            {BodyReferencesComplete=false;break;}
+        }
+        if(!BodyReferencesComplete)break;
+    }
+    BodyReferencesComplete=BodyReferencesComplete&&BodyReferences.Seal();
+    for(const auto& N:I.Cars)
+    {
+        auto State=N->Filter->Capture();if(!State||State->Next!=Frame+1)return Fail(TEXT("private filter publication mismatch"));
+        Out->Actors.push_back({N->Seed.Actor,N->Seed.Incarnation,N->StableId,*State,I.Access->Slots.FindChecked(N->Component).Input,
+            N->Component->CanMove(),N->Component->IsFrozen(),N->Component->WheeledPhysicsStateStorage().nbFramesbeforeCanMove});
+        {
+            // This code runs inside the actual original storage scope above.
+            // Compare to the actual retained fields, not an assumed copy or
+            // a caller-supplied certificate. Only diagnostic counts escape.
+            const auto* C=N->Component;
+            const ISpeedComponent& Interface=*C;
+            const unsigned int LocalFrame=static_cast<unsigned int>(Frame);
+            const int32 Idx=LocalFrame % SpeedConstants::RecordedHistorySize;
+            const SKinematic* FacadeCurrent=&C->BasePhysicsState.Kinematic;
+            const SKinematic* FacadeFrame=C->RecordedBaseFrames[Idx]==LocalFrame
+                ? &C->RecordedBaseStates[Idx].Kinematic : FacadeCurrent;
+            const SKinematic* OriginalCurrent=&C->BasePhysicsStateStorage().Kinematic;
+            const SKinematic* OriginalFrame=C->RecordedBaseFramesWheeledDomainStorage()[Idx]==LocalFrame
+                ? &C->RecordedBaseStatesWheeledDomainStorage()[Idx].Kinematic : OriginalCurrent;
+            const SKinematic* Views[]={&C->GetKinematicState(),&Interface.GetKinematicState(),
+                &C->USpeedWheeledComponent::GetKinematicState(),&C->GetKinematicStateForFrame(LocalFrame),
+                &Interface.GetKinematicStateForFrame(LocalFrame),&C->USpeedWheeledComponent::GetKinematicStateForFrame(LocalFrame)};
+            auto& Observation=Out->Actors.back();
+            const void* PhysViews[8][3]={
+                {&C->GetPhysRotation(),&Interface.GetPhysRotation(),&C->ISpeedComponent::GetPhysRotation()},
+                {&C->GetPhysCOMVelocity(),&Interface.GetPhysCOMVelocity(),&C->ISpeedComponent::GetPhysCOMVelocity()},
+                {&C->GetPhysAngularVelocity(),&Interface.GetPhysAngularVelocity(),&C->ISpeedComponent::GetPhysAngularVelocity()},
+                {&C->GetPhysAcceleration(),&Interface.GetPhysAcceleration(),&C->ISpeedComponent::GetPhysAcceleration()},
+                {&C->GetPhysAngularAcceleration(),&Interface.GetPhysAngularAcceleration(),&C->ISpeedComponent::GetPhysAngularAcceleration()},
+                {&C->GetPhysCOM(),&Interface.GetPhysCOM(),&C->USpeedWheeledComponent::GetPhysCOM()},
+                {&C->GetPhysCenterOfMassLocal(),&Interface.GetPhysCenterOfMassLocal(),&C->USpeedWheeledComponent::GetPhysCenterOfMassLocal()},
+                {&C->GetPhysCOMLocation(),&Interface.GetPhysCOMLocation(),&C->ISpeedComponent::GetPhysCOMLocation()},
+            };
+            const void* LegacyPhys[]={&FacadeCurrent->Rotation,static_cast<const FVector*>(&FacadeCurrent->Velocity),static_cast<const FVector*>(&FacadeCurrent->AngularVelocity),static_cast<const FVector*>(&FacadeCurrent->Acceleration),static_cast<const FVector*>(&FacadeCurrent->AngularAcceleration),static_cast<const FVector*>(&FacadeCurrent->Location),&C->CenterOfMass,static_cast<const FVector*>(&FacadeCurrent->Location)};
+            const void* OriginalPhys[]={&OriginalCurrent->Rotation,static_cast<const FVector*>(&OriginalCurrent->Velocity),static_cast<const FVector*>(&OriginalCurrent->AngularVelocity),static_cast<const FVector*>(&OriginalCurrent->Acceleration),static_cast<const FVector*>(&OriginalCurrent->AngularAcceleration),static_cast<const FVector*>(&OriginalCurrent->Location),&C->CenterOfMassWheeledDomainStorage(),static_cast<const FVector*>(&OriginalCurrent->Location)};
+            for(int32 Member=0;Member<8;++Member)for(const void* View:PhysViews[Member])
+            {
+                ++Observation.PublicPhysReferenceViews;
+                if(View==LegacyPhys[Member]&&View!=OriginalPhys[Member])++Observation.PublicPhysReferenceFacadeViews;
+                if(View==OriginalPhys[Member])++Observation.PublicPhysReferenceOriginalViews;
+            }
+            for(int32 Index=0;Index<6;++Index)
+            {
+                const SKinematic* ExpectedFacade=Index<3?FacadeCurrent:FacadeFrame;
+                const SKinematic* ExpectedOriginal=Index<3?OriginalCurrent:OriginalFrame;
+                ++Observation.PublicComponentKinematicViews;
+                if(Views[Index]==ExpectedFacade && Views[Index]!=ExpectedOriginal)
+                    ++Observation.PublicComponentKinematicFacadeViews;
+                if(Views[Index]==ExpectedOriginal)++Observation.PublicComponentKinematicOriginalViews;
+            }
+        }
+        if(BodyReferencesComplete)
+        {
+            try
+            {
+                OriginalBodyCapture::FWriter W(BodyReferences);
+                W.Value(uint32(0x31424749));W.Value(uint16(1));W.Value(N->Seed.Actor);W.Value(N->Seed.Incarnation);
+                W.Value(Geometry->SchemaVersion);OriginalBodyCapture::AppendPlane(W,Geometry->Planes[0]);
+                const auto AppendPart=[&](const auto& P)
+                {if(!P)throw Replay::FFieldError("missing original body root part");OriginalBodyCapture::Append(W,*P);};
+                W.Value(uint16(BodyRole::Box));W.Value(uint16(0));
+                AppendPart(std::get<0>(N->NativeBoxRoot->Parts));
+                AppendPart(std::get<1>(N->NativeBoxRoot->Parts));
+                AppendPart(std::get<2>(N->NativeBoxRoot->Parts));
+                for(uint16 Index=0;Index<4;++Index)
+                {
+                    const auto& WheelRoot=N->NativeWheelRoots[Index];W.Value(uint16(BodyRole::Wheel));W.Value(Index);
+                    AppendPart(std::get<0>(WheelRoot->Parts));AppendPart(std::get<1>(WheelRoot->Parts));
+                    AppendPart(std::get<2>(WheelRoot->Parts));AppendPart(std::get<3>(WheelRoot->Parts));AppendPart(std::get<4>(WheelRoot->Parts));
+                }
+                Out->Actors.back().OriginalBodyDomainValues=W.Bytes();
+                Out->Actors.back().OriginalBodyDomainsAvailable=true;
+            }
+            catch(const Replay::FFieldError&){} // explicit UNKNOWN, never a full-state admission
+        }
+        if(BodyReferencesComplete)
+        {
+            try
+            {
+                const auto* C=N->ComponentWeak.Get();
+                const auto* StaticWorld=I.Bridge->GetStaticCollisionWorld();
+                if(!C||!C->OwnedComponentValues||!StaticWorld
+                    ||!(StaticWorld->GetImmutableQueryIdentity1075()==I.Access->OriginalQueryIdentity)
+                    ||!I.AcquiredGraphStillLive())
+                    throw Replay::FFieldError("original component capture graph changed");
+                OriginalBodyCapture::FWriter W(BodyReferences);
+                W.Value(uint32(0x31434749));W.Value(uint16(1));W.Value(N->Seed.Actor);W.Value(N->Seed.Incarnation);
+                OriginalComponentCapture::AppendOwned(W,*C->OwnedComponentValues,N->StableId,
+                    StaticWorld,Geometry->Planes[0].SourceId);
+                Out->Actors.back().OriginalComponentDomainValues=W.Bytes();
+                Out->Actors.back().OriginalComponentDomainAvailable=true;
+            }
+            catch(const Replay::FFieldError&){} // UNKNOWN, no restore/exclusion authority
+        }
+        const auto* Hitbox=N->Component->GetHitboxSubBodyForConfiguration();
+        if(!Hitbox)return Fail(TEXT("native hitbox diagnostics missing"));
+        {
+            // Actual public reference identities of the original box and four
+            // wheel objects under the real owner scope; no lease is inferred.
+            auto ObserveBodyViews=[&](const auto* OriginalBody,const ISweeper& ShapeView)
+            {
+                if(!OriginalBody)return false;
+                const SKinematic* Legacy=&OriginalBody->Kinematics;
+                const SKinematic* Original=&Speed::NativeKinematics::FBodyRead::Body(Operation,*OriginalBody);
+                // Box/sphere and solid sweepers have distinct ISweeper bases.
+                // Observe each real subobject through its unambiguous base.
+                const ISolidSweeper& SolidView=*OriginalBody;
+                const SKinematic* Views[]={&OriginalBody->GetKinematicState(),
+                    &OriginalBody->USSubBody::GetKinematicState(),
+                    &OriginalBody->USolidSubBody::GetKinematicState(),
+                    &SolidView.GetKinematicState(),&ShapeView.GetKinematicState()};
+                auto& Observation=Out->Actors.back();
+                for(const auto* View:Views)
+                {
+                    ++Observation.PublicBodyKinematicViews;
+                    if(View==Legacy&&View!=Original)++Observation.PublicBodyKinematicFacadeViews;
+                    if(View==Original)++Observation.PublicBodyKinematicOriginalViews;
+                }
+                return true;
+            };
+            const auto* OriginalBox=Cast<USpeedBranchBoxSubBody>(Hitbox);
+            if(!OriginalBox||!ObserveBodyViews(OriginalBox,static_cast<const IBoxSweeper&>(*OriginalBox)))
+                return Fail(TEXT("original box public-view diagnostics missing"));
+            for(const auto& Entry:N->Component->ReadWheelSubBodiesForPhysics())
+            {
+                const auto* OriginalWheel=Cast<USpeedBranchWheelSubBody>(Entry.Get());
+                if(!OriginalWheel||!ObserveBodyViews(OriginalWheel,static_cast<const ISphereSweeper&>(*OriginalWheel)))
+                    return Fail(TEXT("original wheel public-view diagnostics missing"));
+            }
+        }
+        {
+            // Real reference identities, even during original routing. Empty
+            // hit/constraint values do not certify real contact presence.
+            auto& Observation=Out->Actors.back();
+            auto ObserveHits=[&](const auto* Body)
+            {
+                if(!Body)return false;
+                const SHitResult* Legacy[]={&Body->CurrentHit,&Body->FutureHit};
+                const SHitResult* Native[]={&Speed::NativeKinematics::FBodyRead::CurrentHit(Operation,*Body),
+                    &Speed::NativeKinematics::FBodyRead::FutureHit(Operation,*Body)};
+                const SHitResult* Views[]={&Body->GetHit(),&Body->GetFutureHit(),
+                    &Body->USSubBody::GetHit(),&Body->USSubBody::GetFutureHit(),
+                    &Body->USolidSubBody::GetHit(),&Body->USolidSubBody::GetFutureHit()};
+                for(int32 I=0;I<6;++I)
+                {
+                    ++Observation.PublicContactReferenceViews;
+                    if(Views[I]==Legacy[I%2]&&Views[I]!=Native[I%2])++Observation.PublicContactReferenceFacadeViews;
+                    if(Views[I]==Native[I%2])++Observation.PublicContactReferenceOriginalViews;
+                }
+                Observation.PublicContactPredicateChecks+=3;
+                if(Body->HasHit()==Legacy[0]->bBlockingHit)++Observation.PublicContactPredicateMatches;
+                if(Body->WillHit()==Legacy[1]->bBlockingHit)++Observation.PublicContactPredicateMatches;
+                if(Body->GetFutureTOI()==Legacy[1]->TOI)++Observation.PublicContactPredicateMatches;
+                return true;
+            };
+            const auto* Box=Cast<USpeedBranchBoxSubBody>(Hitbox);
+            if(!Box||!ObserveHits(Box))return Fail(TEXT("original box contact-view diagnostics missing"));
+            for(const auto& Entry:N->Component->ReadWheelSubBodiesForPhysics())
+            {
+                const auto* Wheel=Cast<USpeedBranchWheelSubBody>(Entry.Get());
+                if(!Wheel||!ObserveHits(Wheel))return Fail(TEXT("original wheel contact-view diagnostics missing"));
+            }
+            const auto* Legacy=&N->Component->PhysicalConstraints;
+            const auto* Native=&Speed::NativeKinematics::FComponentRead::Constraints(Operation,*N->Component);
+            const TArray<FPhysicalContactConstraint>* Views[]={&N->Component->GetPhysicalConstraints(),
+                &N->Component->ISpeedComponent::GetPhysicalConstraints()};
+            for(const auto* View:Views)
+            {
+                ++Observation.PublicContactReferenceViews;
+                if(View==Legacy&&View!=Native)++Observation.PublicContactReferenceFacadeViews;
+                if(View==Native)++Observation.PublicContactReferenceOriginalViews;
+            }
+        }
+        Out->Actors.back().NativeHitboxHalfExtent=Hitbox->GetBoxExtent();
+        Out->Actors.back().NativeHitboxCenter=Speed::NativeKinematics::FBodyRead::Body(Operation,*Hitbox).Location;
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+        // This is a read-only declared-subset observation, not a complete-state
+        // capture through the guarded restore provider. Unknown remains false.
+        auto& Observation=Out->Actors.back();
+        Observation.NativeSolidInitializationWitness=N->SolidInitializationWitness;
+        // Values copied from the actual retained native parts under this real
+        // canonical Step. Availability is separate from every partial-state flag.
+        Observation.BirthMassConfigurationAvailable=bool(N->NativeBoxRoot)&&bool(std::get<1>(N->NativeBoxRoot->Parts))&&N->NativeWheelRoots.size()==4
+            &&N->OriginalWheelBodyBirth.Num()==4;
+        Observation.BirthMassConfigurationBypassObserved=true;Observation.BirthMassFacadeDistinct=true;
+        auto ObserveMassStore=[&](const FPrivateRoadSolidValues& Values,const USolidSubBody* Body)
+        {
+            if(!Body)return false;
+            ++Observation.BirthMassBodyCount;
+            Observation.BirthMassValueReturns+=Values.DiagnosticBirthMassValueReturns;
+            Observation.BirthMassConfigReturns+=Values.DiagnosticBirthMassConfigReturns;
+            Observation.BirthMassValidConfigReturns+=Values.DiagnosticBirthMassValidConfigReturns;
+            Observation.BirthMassConfigurationBypassObserved=Observation.BirthMassConfigurationBypassObserved
+                &&Values.DiagnosticBirthMassConfigReturns>0
+                &&Values.DiagnosticBirthMassValidConfigReturns==0
+                &&Values.DiagnosticBirthMassValueReturns==0;
+            const float FacadeMass=Body->GetMass();
+            Observation.BirthMassFacadeDistinct=Observation.BirthMassFacadeDistinct
+                &&FMath::IsFinite(FacadeMass)&&FacadeMass!=Values.Mass;
+            return true;
+        };
+        if(Observation.BirthMassConfigurationAvailable)
+        {
+            if(!ObserveMassStore(*std::get<1>(N->NativeBoxRoot->Parts),N->OriginalHitboxBirth.Get()))
+                Observation.BirthMassConfigurationAvailable=false;
+            for(int32 Index=0;Index<4&&Observation.BirthMassConfigurationAvailable;++Index)
+                if(!N->NativeWheelRoots[Index]||!std::get<1>(N->NativeWheelRoots[Index]->Parts)||!ObserveMassStore(*std::get<1>(N->NativeWheelRoots[Index]->Parts),
+                    N->OriginalWheelBodyBirth[Index].Get()))Observation.BirthMassConfigurationAvailable=false;
+            if(Observation.BirthMassBodyCount!=5)Observation.BirthMassConfigurationAvailable=false;
+        }
+        if(N->Component->CopyActualCacheDiagnosticValues(Observation.NativeSleep,Observation.NativeQuantization))
+            PartialObservation::FNativeWheelCapture::Capture(*N->Component,N->Seed.Actor,N->Seed.Incarnation,
+                N->NativeConfiguration->Wheel,N->NativeConfiguration->Suspension,Observation);
+        if(Observation.NativePartialValuesAvailable)
+        {
+            TArray<uint8> RuntimeValues;
+            for(const auto& Entry:N->Component->ReadWheelSubBodiesForPhysics())
+            {
+                const auto* Wheel=Cast<USpeedBranchWheelSubBody>(Entry.Get());
+                if(!Wheel||!Wheel->UsesOriginalBodyStorage()||!Wheel->OwnedWheelRuntime
+                    ||!PartialObservation::AppendWheelRuntime(RuntimeValues,*Wheel->OwnedWheelRuntime))
+                {Observation.NativePartialValuesAvailable=false;break;}
+                Observation.NativeWheelRenderRotations.push_back(Wheel->OwnedWheelRuntime->RenderData.RollRotation);
+            }
+            if(Observation.NativePartialValuesAvailable&&!RuntimeValues.IsEmpty())
+                Observation.NativeWheelRuntimeValues.assign(RuntimeValues.GetData(),RuntimeValues.GetData()+RuntimeValues.Num());
+            else Observation.NativePartialValuesAvailable=false;
+        }
+        if(Observation.NativePartialValuesAvailable)
+        {
+            TArray<uint8> SolidValues;
+            for(const auto* Body:N->Component->GetSubBodies())
+            {
+                const FPrivateRoadSolidValues* Values=nullptr;
+                if(const auto* Box=Cast<USpeedBranchBoxSubBody>(Body))Values=Box->UsesOriginalBodyStorage()?Box->OwnedSolidValues.get():nullptr;
+                else if(const auto* Wheel=Cast<USpeedBranchWheelSubBody>(Body))Values=Wheel->UsesOriginalBodyStorage()?Wheel->OwnedSolidValues.get():nullptr;
+                if(!Values||!PartialObservation::AppendSolidValues(SolidValues,*Values))
+                {Observation.NativePartialValuesAvailable=false;break;}
+            }
+            if(Observation.NativePartialValuesAvailable&&!SolidValues.IsEmpty())
+                Observation.NativeSolidValues.assign(SolidValues.GetData(),SolidValues.GetData()+SolidValues.Num());
+            else Observation.NativePartialValuesAvailable=false;
+        }
+#endif
+    }
+    if(I.Access->RequiresInitialPublication)for(const auto& A:Out->Actors)
+    {
+        if(Frame==0&&(A.CanMove||!A.Frozen||A.CountdownFrames!=1))return Fail(TEXT("initial publication moved before synchronization"));
+        if(Frame>0&&(!A.CanMove||A.Frozen||A.CountdownFrames))return Fail(TEXT("common startup activation not applied"));
+    }
+    Completed=std::move(Out);return true;
+    }
+    catch(...) {return Fail(TEXT("private native branch retired after step/publication exception"));}
+    }();} catch(...) {Why=TEXT("original native preparation exception");}
+    // Original physical stack, routing and GC exclusion have ended.
+    I.Diagnostics->End();DiagnosticActive=false;
+    bool DiagnosticsComplete=false;
+    try {DiagnosticsComplete=I.Diagnostics->Flush();}
+    catch(...) {Why=TEXT("original native diagnostic callback exception");}
+    const auto Terminal=[&](const TCHAR* Message)
+    {I.Failed=true;I.Published.store({});Completed.reset();if(Why.IsEmpty())Why=Message;return false;};
+    if(!Advanced||!DiagnosticsComplete||!Completed)return Terminal(TEXT("native stage or diagnostic boundary refused"));
+    // No UObject dereference occurs until real strong/weak lifetime validity is
+    // rechecked after arbitrary genuine output-device callbacks have returned.
+    if(!I.AcquiredGraphStillLive())return Terminal(TEXT("original acquired graph invalidated by actual Step diagnostic callback"));
+    for(const auto& Pin:I.Pins)if(!IsValid(Pin.Get()))return Terminal(TEXT("native lifetime invalidated by external diagnostic callback"));
+    if(!I.World.IsValid()||I.World->bIsTearingDown||!IsValid(I.Driver)||I.Driver->IsActorBeingDestroyed())
+        return Terminal(TEXT("native world/driver retired by external diagnostic callback"));
+    for(const auto& N:I.Cars)if(!IsValid(N->Actor)||!IsValid(N->Component)||N->Actor->IsActorBeingDestroyed())
+        return Terminal(TEXT("native participant retired by external diagnostic callback"));
+    I.Published.store(std::move(Completed));return true;
+}
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+bool FPrivateRoadPhysicsWorld::ProbeHitAcceptanceRetained(FImpl& I,const FPrivateNativeOperation& Operation,FHitAcceptanceDiagnosticContext& Context)
+{
+    auto& Result=Context.Result;
+    auto& Foreign=*Context.ForeignRoot;
+    // The foreign root is retained for genuine negative raw subjects only.
+    // Never hold its gate across this callback-capable real Step. Its GT
+    // mutation entries reject the selected own original-storage scope; its
+    // read-only counter entries may acquire their normally unlocked gate.
+    if(!IsInGameThread()||Foreign.Closed||Foreign.Failed
+        ||Foreign.NativeOperationIdentity->ActiveGTActualOperation
+        ||!I.AcquiredGraphStillLive()||!Foreign.AcquiredGraphStillLive()
+        ||I.OriginalBoxesWeak.IsEmpty()||I.OriginalWheelsWeak.IsEmpty()
+        ||Foreign.OriginalBoxesWeak.IsEmpty()||Foreign.Cars.empty())return false;
+    auto* Box=I.OriginalBoxesWeak[0].Get();auto* Wheel=I.OriginalWheelsWeak[0].Get();
+    auto* ForeignBox=Foreign.OriginalBoxesWeak[0].Get();auto* Floor=I.OriginalFloorWeak.Get();
+    if(!Box||!Wheel||!ForeignBox||!Floor||!ForeignBox->OwnedBodyValues
+        ||Floor->GetMobility()!=EComponentMobility::Static||Floor->GetCollisionObjectType()!=ECC_WorldStatic)return false;
+    auto& BV=FPrivateNativeStorageAccess::Part<FPrivateRoadSubBodyValues>(Operation,static_cast<USSubBody*>(Box));
+    auto& WV=FPrivateNativeStorageAccess::Part<FPrivateRoadSubBodyValues>(Operation,static_cast<USSubBody*>(Wheel));
+    auto& BD=FPrivateNativeStorageAccess::Part<FPrivateRoadBoxDomain>(Operation,Box);
+    if(!BV.ParentComponent)return false;
+    auto& CV=FPrivateNativeStorageAccess::Part<USpeedBranchWheeledComponent::FOwnedComponentValues>(Operation,BV.ParentComponent);
+    if(I.Cars.empty())return false;
+    const auto& BindingNode=*I.Cars.front();
+    TArray<Speed::NativeKinematics::FCanonicalMassAppendDiagnostics> CapturedMass;
+    if(!BindingNode.Component||!BindingNode.Component->ProbeNativeWheelBindingStepRefusalForDiagnostics(
+        Operation,BindingNode.OriginalNativeVehicle,BindingNode.OriginalWheelBodyBirth,BindingNode.OriginalWheelObjects,CapturedMass))return false;
+    if(CapturedMass.Num()!=8)return false; // actual four before and four after, first car only
+    const U64 ActualFrame=I.Driver->NextPrivate(Operation);
+    for(int32 Index=0;Index<CapturedMass.Num();++Index)
+    {
+        const auto& Captured=CapturedMass[Index];FPrivateRoadCanonicalMassDiagnosticRow Row;
+        Row.Actor=BindingNode.Seed.Actor;Row.Frame=ActualFrame;
+        Row.Capture=uint32(Index/4);Row.Wheel=uint32(Index%4);
+        Row.CanonicalMassBits=std::bit_cast<uint32>(Captured.CanonicalMass);
+        Row.FacadeMassBits=std::bit_cast<uint32>(Captured.FacadeMass);
+        Row.MassOffset=Captured.MassOffset;Row.MassBytes=Captured.MassBytes;
+        Row.EncodedBytes=Captured.EncodedBytes;Row.OriginalEncodingBytes=Captured.OriginalEncodingBytes;
+        Row.SourceValidated=Captured.SourceValidated;Row.EncodedMassMatches=Captured.EncodedMassMatches;
+        Row.OriginalEncodingMatches=Captured.OriginalEncodingMatches;Row.FacadeDistinct=Captured.FacadeDistinct;Row.ValuesFinite=Captured.ValuesFinite;
+        Result.CanonicalMassDiagnosticRows.push_back(Row);
+    }
+    if(BindingNode.OriginalHitboxBirth.Get()!=Box)return false;
+    TArray<uint8> ActualBoxOutput;
+    const auto CapturedBox=Speed::NativeKinematics::FSolidMassAccess::AppendCanonicalEpisodeForTesting(Operation,*Box,ActualBoxOutput);
+    auto& BoxRow=Result.CanonicalMassBoxDiagnostic;
+    BoxRow.Actor=BindingNode.Seed.Actor;BoxRow.Frame=I.Driver->NextPrivate(Operation);
+    BoxRow.CanonicalMassBits=std::bit_cast<uint32>(CapturedBox.CanonicalMass);BoxRow.FacadeMassBits=std::bit_cast<uint32>(CapturedBox.FacadeMass);
+    BoxRow.MassOffset=CapturedBox.MassOffset;BoxRow.MassBytes=CapturedBox.MassBytes;
+    BoxRow.EncodedBytes=CapturedBox.EncodedBytes;BoxRow.OriginalEncodingBytes=CapturedBox.OriginalEncodingBytes;
+    BoxRow.SourceValidated=CapturedBox.SourceValidated;BoxRow.EncodedMassMatches=CapturedBox.EncodedMassMatches;
+    BoxRow.OriginalEncodingMatches=CapturedBox.OriginalEncodingMatches;BoxRow.FacadeDistinct=CapturedBox.FacadeDistinct;BoxRow.ValuesFinite=CapturedBox.ValuesFinite;
+    Result.CanonicalMassBoxObserved=true; // only after the actual complete fixed Box path returned
+    TArray<uint8> ForeignOutput;ForeignOutput.Add(0xCA);ForeignOutput.Add(0xFE);
+    const auto ForeignBefore=ForeignOutput;
+    try{(void)Speed::NativeKinematics::FSolidMassAccess::AppendCanonicalEpisodeForTesting(Operation,*ForeignBox,ForeignOutput);}
+    catch(const FPrivateNativeStorageUnavailable&){Result.CanonicalMassForeignStepRefused=true;}
+    Result.CanonicalMassForeignStepOutUnchanged=ForeignOutput==ForeignBefore;
+    if(!Result.CanonicalMassForeignStepRefused||!Result.CanonicalMassForeignStepOutUnchanged)return false;
+    Result.BirthWheelBindingRefusedDuringStep=true; // only after real Step guard test returned true
+    // Reference Birth proof never escapes its real Birth call. Exercise the
+    // actual body entry's Birth-only preflight under this genuine Step instead.
+    bool ReferenceBodyRefused=false;
+    const auto* ReferenceWheelBefore=Wheel->GetWheelSim();const auto ReferenceMassBefore=Wheel->GetMass();const auto ReferenceIndexBefore=Wheel->Idx();
+    try{Wheel->ValidateReferenceWheelBindingBirth(Operation,static_cast<ISpeedComponent*>(BindingNode.Component),static_cast<ISpeedWheeledComponent*>(BindingNode.Component));}
+    catch(const FPrivateNativeStorageUnavailable&){ReferenceBodyRefused=true;}
+    Result.ReferenceBindingBodyRefusedDuringStep=ReferenceBodyRefused&&ReferenceWheelBefore==Wheel->GetWheelSim()
+        &&ReferenceMassBefore==Wheel->GetMass()&&ReferenceIndexBefore==Wheel->Idx();
+    if(!Result.ReferenceBindingBodyRefusedDuringStep)return false;
+    const auto CaptureRetirementNamed=[&]() {
+        TArray<uint8> Bytes;using B=Speed::FEpisodeStateBytesForTesting;
+        const auto& V=FPrivateNativeStorageAccess::Part<const FPrivateRoadWheelDomain>(Operation,Wheel);
+        B::Add(Bytes,V.PWheel);B::Add(Bytes,V.PSuspension);B::Add(Bytes,V.ChaosWheel);
+        B::Add(Bytes,Wheel->GetWheelSim());B::Add(Bytes,Wheel->GetSuspensionSim());B::Add(Bytes,Wheel->GetChaosWheelConfiguration());
+        return Bytes;
+    };
+    const auto BeforeRetirementRefusal=CaptureRetirementNamed();
+    const auto ActualBirthRoot=Wheel->OriginalOwnerRoot.lock();
+    Result.RetirementStepOtherPredicatesPositive=Operation.Kind==FPrivateNativeOperation::EKind::Step
+        &&Operation.HasExactRootAndGate(Operation.Identity)&&ActualBirthRoot
+        &&Operation.Root.get()==ActualBirthRoot.get()&&!Operation.Root.owner_before(ActualBirthRoot)
+        &&!ActualBirthRoot.owner_before(Operation.Root);
+    if(!Result.RetirementStepOtherPredicatesPositive)return false;
+    try{FPrivateNativeStorageAccess::RequireRetirementRoot(Operation,ActualBirthRoot);}
+    catch(const FPrivateNativeStorageUnavailable&){Result.RetirementKindRefusedInStep=true;}
+    if(!Result.RetirementKindRefusedInStep||BeforeRetirementRefusal!=CaptureRetirementNamed())return false;
+    try{Wheel->ClearReferenceWheelBindingsAtRetirement(Operation);}
+    catch(const FPrivateNativeStorageUnavailable&){Result.RetirementClearRefusedInStep=true;}
+    Result.RetirementStepFootprintUnchanged=BeforeRetirementRefusal==CaptureRetirementNamed();
+    if(!Result.RetirementClearRefusedInStep||!Result.RetirementStepFootprintUnchanged)return false;
+    if(!BindingNode.Component->ProbeNativeFirstOwnerStepRefusalForDiagnostics(Operation,BindingNode.Actor,
+        BindingNode.OriginalHitboxBirth,BindingNode.OriginalWheelBodyBirth,BindingNode.OriginalWheelObjects))return false;
+    Result.BirthOwnerTraversalRefusedDuringStep=true;
+    const auto SavedBoxBody=BV;const auto SavedWheelBody=WV;const auto SavedBoxDomain=BD;
+    const auto* SavedStaticWorld=CV.StaticRestingWorld;
+    // These are exact C++ value fixtures for named contact caches only. This
+    // diagnostic supplies neither a state-restore provider nor a complete lease.
+    const auto RestoreFixture=[&](){BV=SavedBoxBody;WV=SavedWheelBody;BD=SavedBoxDomain;CV.StaticRestingWorld=SavedStaticWorld;};
+    ON_SCOPE_EXIT{RestoreFixture();};
+    using Bytes=Speed::FEpisodeStateBytesForTesting;
+    const auto HitEqual=[](const SHitResult& L,const SHitResult& R)
+    {TArray<uint8> A,B;Bytes::Add(A,L);Bytes::Add(B,R);return A==B;};
+    const auto Capture=[&](){TArray<uint8> Out;Box->AppendEpisodeStateForTesting(Out);Wheel->AppendEpisodeStateForTesting(Out);return Out;};
+    const auto Empty=SHitResult{};
+    SHitResult H;H.bHit=true;H.bBlockingHit=true;H.Component=Floor;H.TOI=0.125f;H.FrameTag=111;
+    SHitResult J=H;J.Component=Box;J.FrameTag=222;
+    const auto Reset=[&]()
+    {
+        RestoreFixture();BV.CurrentHit={};BV.FutureHit={};BV.SphereHit={};BV.IgnoredComponents.Empty();
+        WV.CurrentHit={};WV.FutureHit={};WV.IgnoredComponents.Empty();
+        BD.LastResolvedSphereHit={};BD.LastResolvedSphereHitFrame=INDEX_NONE;BD.HitCountThisFrame.Empty();BD.MaxHitsPerComponentPerFrame=4;
+        CV.StaticRestingWorld=I.Bridge->GetStaticCollisionWorld();
+    };
+    const TCHAR* Names[]={TEXT("WheelKeepsBothHitsPrefersCurrent"),TEXT("WheelKeepsBothHitsFutureFallback"),
+        TEXT("BoxInvalidComponentEarlyReturn"),TEXT("BoxSphereCacheFrameAndNonreciprocalPeer"),
+        TEXT("BoxStaticBelowCap"),TEXT("BoxStaticAtCap"),TEXT("BoxExactInitialAtCap"),TEXT("BoxExactRepeatAtCap")};
+    for(int32 Case=0;Case<UE_ARRAY_COUNT(Names);++Case)
+    {
+        FPrivateRoadHitAcceptanceCase Observation;Observation.Name=Names[Case];TArray<uint8> LegacyValues;
+        for(int32 Mode=0;Mode<2;++Mode)
+        {
+            Reset();SHitResult Expected=H;
+            if(Case<2){WV.CurrentHit=H;WV.FutureHit=J;if(Case==1){WV.CurrentHit.Component=nullptr;WV.FutureHit=H;}}
+            else
+            {
+                BV.FutureHit=H;
+                if(Case==2){BV.FutureHit.Component=nullptr;BV.FutureHit.SubBody=Wheel;WV.FutureHit=H;}
+                if(Case==3){BV.FutureHit.SubBody=Wheel;WV.CurrentHit=H;WV.FutureHit=H;}
+                if(Case>=4)BD.HitCountThisFrame.Add(H.Component,Case==4?2u:3u);
+                if(Case>=6)
+                {
+                    // Deliberately authored predicate fixture, not an acquired
+                    // collision/source certificate or actual solver contact.
+                    BV.FutureHit.SourceId=1;BV.FutureHit.SurfaceId=1;
+                    BV.FutureHit.ContactFeatureThis=Speed::EContactFeatureKind::Vertex;
+                    BV.FutureHit.ContactFeatureIndexThis=0;BV.FutureHit.ContactFeatureOther=Speed::EContactFeatureKind::Face;
+                    BV.FutureHit.TOI=Case==6?0.f:0.125f;
+                }
+                Expected=BV.FutureHit;
+            }
+            const auto WheelCurrentBefore=WV.CurrentHit,WheelFutureBefore=WV.FutureHit;
+            USSubBody* Subject=Case<2?static_cast<USSubBody*>(Wheel):static_cast<USSubBody*>(Box);
+            if(Mode==0){Subject->AcceptHit();++Result.LegacyCalls;}
+            else{Speed::NativeKinematics::FBodyWrite::AcceptHit(Operation,Subject);++Result.NativeCalls;}
+            bool ExpectedValues=false;
+            if(Case<2)
+                ExpectedValues=HitEqual(WV.CurrentHit,WheelCurrentBefore)&&HitEqual(WV.FutureHit,WheelFutureBefore)
+                    &&WV.IgnoredComponents.Num()==1&&WV.IgnoredComponents[0]==Floor;
+            else if(Case==2)
+                ExpectedValues=HitEqual(BV.CurrentHit,Expected)&&HitEqual(BV.FutureHit,Empty)
+                    &&BV.IgnoredComponents.IsEmpty()&&WV.IgnoredComponents.IsEmpty()
+                    &&HitEqual(BV.SphereHit,Empty)&&BD.LastResolvedSphereHitFrame==INDEX_NONE;
+            else if(Case==3)
+                ExpectedValues=HitEqual(BV.CurrentHit,Expected)&&HitEqual(BV.FutureHit,Empty)
+                    &&HitEqual(BV.SphereHit,Expected)&&HitEqual(BD.LastResolvedSphereHit,Expected)
+                    &&BD.LastResolvedSphereHitFrame==static_cast<int32>(CV.BaseGameState.NumFrame)
+                    &&HitEqual(WV.CurrentHit,WheelCurrentBefore)&&HitEqual(WV.FutureHit,WheelFutureBefore)
+                    &&WV.IgnoredComponents.Num()==1&&WV.IgnoredComponents[0]==Floor;
+            else
+                ExpectedValues=HitEqual(BV.CurrentHit,Expected)&&HitEqual(BV.FutureHit,Empty)
+                    &&BD.HitCountThisFrame.FindRef(H.Component)==(Case==4?3u:4u)
+                    &&(Case==5?(BV.IgnoredComponents.Num()==1&&BV.IgnoredComponents[0]==Floor):BV.IgnoredComponents.IsEmpty());
+            if(Mode==0){Observation.LegacyExpected=ExpectedValues;LegacyValues=Capture();}
+            else{Observation.NativeExpected=ExpectedValues;Observation.LegacyNativeEqual=LegacyValues==Capture();}
+        }
+        Result.Cases.push_back(std::move(Observation));
+    }
+    Reset();BV.FutureHit=H;BV.FutureHit.Component=nullptr;BV.FutureHit.SubBody=Wheel;WV.FutureHit=H;
+    const auto BaseExpected=BV.FutureHit;
+    // The unchanged base path is intentionally different from Box early return.
+    Box->USSubBody::AcceptHit();
+    Result.BaseBehaviorDistinguished=HitEqual(BV.CurrentHit,BaseExpected)&&HitEqual(BV.FutureHit,Empty)
+        &&BV.IgnoredComponents.Num()==1&&BV.IgnoredComponents[0]==Wheel&&WV.IgnoredComponents.IsEmpty();
+    const auto ForeignBeforeCurrent=ForeignBox->OwnedBodyValues->CurrentHit;
+    const auto ForeignBeforeFuture=ForeignBox->OwnedBodyValues->FutureHit;
+    const auto ForeignBeforeIgnored=ForeignBox->OwnedBodyValues->IgnoredComponents;
+    Result.AllRefusalsBeforeWrite=true;
+    for(int32 Case=0;Case<3;++Case)
+    {
+        Reset();BV.FutureHit=H;
+        if(Case==1)BV.FutureHit.SubBody=ForeignBox;
+        if(Case==2)BV.ParentComponent=Foreign.Cars[0]->Component;
+        const auto Before=Capture();bool Refused=false;
+        try{Speed::NativeKinematics::FBodyWrite::AcceptHit(Operation,Case==0?static_cast<USSubBody*>(ForeignBox):static_cast<USSubBody*>(Box));}
+        catch(const FPrivateNativeStorageUnavailable&){Refused=true;}
+        if(Refused)++Result.Refusals;
+        Result.AllRefusalsBeforeWrite=Result.AllRefusalsBeforeWrite&&Refused&&Before==Capture()
+            &&HitEqual(ForeignBeforeCurrent,ForeignBox->OwnedBodyValues->CurrentHit)
+            &&HitEqual(ForeignBeforeFuture,ForeignBox->OwnedBodyValues->FutureHit)
+            &&ForeignBeforeIgnored==ForeignBox->OwnedBodyValues->IgnoredComponents;
+    }
+    Reset();
+    auto* ActualBirthParent=SavedBoxBody.ParentComponent;
+    BV.ParentComponent=nullptr; // makes a wrongly entered initializer observable
+    const auto BeforeBirthAttempt=Capture();bool BirthRefused=false;
+    try{Speed::NativeKinematics::FBodyWrite::Initialize(Operation,Box,ActualBirthParent);}
+    catch(const FPrivateNativeStorageUnavailable&){BirthRefused=true;}
+    Result.BirthInitializationRefusedDuringStep=BirthRefused&&BeforeBirthAttempt==Capture();
+    Result.ActualStepOperation=true;
+    return Result.Cases.size()==8&&Result.LegacyCalls==8&&Result.NativeCalls==8
+        &&Result.BirthInitializationRefusedDuringStep&&Result.BaseBehaviorDistinguished&&Result.Refusals==3&&Result.AllRefusalsBeforeWrite
+        &&std::all_of(Result.Cases.begin(),Result.Cases.end(),[](const auto& X){return X.LegacyExpected&&X.NativeExpected&&X.LegacyNativeEqual;});
+}
+bool FPrivateRoadPhysicsWorld::ProbeMassResponseRetained(FImpl& I,const FPrivateNativeOperation& Operation,FHitAcceptanceDiagnosticContext& Context)
+{
+    auto& Result=Context.Result;const auto& Foreign=*Context.ForeignRoot;
+    FPrivateNativeStorageAccess::RequireStep(Operation);
+    if(I.Cars.size()!=2||Foreign.Cars.empty()||I.OriginalWheelsWeak.Num()!=8||Foreign.OriginalBoxesWeak.IsEmpty())return false;
+    auto* Component=I.Cars[0]->Component;auto* OtherParent=I.Cars[1]->Component;
+    auto* ForeignBox=Foreign.OriginalBoxesWeak[0].Get();auto* ForeignParent=Foreign.Cars[0]->Component;
+    auto* Box=I.OriginalBoxesWeak[0].Get();auto* Wheel=I.OriginalWheelsWeak[0].Get();auto* Floor=I.OriginalFloorWeak.Get();
+    auto* SameGraphOtherWheel=I.OriginalWheelsWeak[4].Get();
+    if(!Component||!OtherParent||!ForeignBox||!ForeignParent||!Box||!Wheel||!Floor||!SameGraphOtherWheel||!ForeignBox->OwnedBodyValues)return false;
+    if(Speed::NativeKinematics::FBodyRead::Parent(Operation,*SameGraphOtherWheel)!=static_cast<ISpeedComponent*>(OtherParent)
+        ||!Speed::NativeKinematics::FComponentRead::SubBodies(Operation,*OtherParent).Contains(SameGraphOtherWheel))return false;
+    auto& D=FPrivateNativeStorageAccess::Part<USpeedWheeledComponent::FOriginalWheeledDomain>(Operation,static_cast<ISpeedComponent*>(Component));
+    auto& C=FPrivateNativeStorageAccess::Part<USpeedBranchWheeledComponent::FOwnedComponentValues>(Operation,static_cast<ISpeedComponent*>(Component));
+    if(D.SubBodies.Num()!=5)return false;
+    const auto SavedRoster=D.SubBodies;const auto SavedConstraints=C.PhysicalConstraints;
+    auto& BoxDomain=FPrivateNativeStorageAccess::Part<FPrivateRoadBoxDomain>(Operation,Box);const auto SavedBoxDomain=BoxDomain;
+    std::vector<FPrivateRoadSubBodyValues> SavedBodies;
+    std::vector<FPrivateRoadWheelRuntimeValues> SavedRuntime;
+    for(USSubBody* Body:SavedRoster)SavedBodies.push_back(FPrivateNativeStorageAccess::Part<FPrivateRoadSubBodyValues>(Operation,Body));
+    for(int32 Index=0;Index<4;++Index)
+    {
+        auto* Body=I.OriginalWheelsWeak[Index].Get();if(!Body)return false;
+        SavedRuntime.push_back(FPrivateNativeStorageAccess::Part<FPrivateRoadWheelRuntimeValues>(Operation,Body));
+    }
+    // Named test-domain cleanup only. This never captures a complete world,
+    // supplies a restore provider, opens a guard or acknowledges rollback.
+    const auto Cleanup=[&]()
+    {
+        D.SubBodies=SavedRoster;C.PhysicalConstraints=SavedConstraints;BoxDomain=SavedBoxDomain;
+        for(int32 Index=0;Index<5;++Index)FPrivateNativeStorageAccess::Part<FPrivateRoadSubBodyValues>(Operation,SavedRoster[Index])=SavedBodies[size_t(Index)];
+        for(int32 Index=0;Index<4;++Index)FPrivateNativeStorageAccess::Part<FPrivateRoadWheelRuntimeValues>(Operation,I.OriginalWheelsWeak[Index].Get())=SavedRuntime[size_t(Index)];
+    };
+    ON_SCOPE_EXIT{Cleanup();};
+    auto& BV=FPrivateNativeStorageAccess::Part<FPrivateRoadSubBodyValues>(Operation,static_cast<USSubBody*>(Box));
+    auto& WV=FPrivateNativeStorageAccess::Part<FPrivateRoadSubBodyValues>(Operation,static_cast<USSubBody*>(Wheel));
+    using Bytes=Speed::FEpisodeStateBytesForTesting;
+    const auto Capture=[&]()
+    {
+        TArray<uint8> Out;
+        for(USSubBody* Body:SavedRoster)Body->AppendEpisodeStateForTesting(Out);
+        Bytes::Array(Out,D.SubBodies);Bytes::Add(Out,C.PhysicalConstraints.Num());
+        for(const auto& V:C.PhysicalConstraints)
+        {
+            Bytes::Add(Out,V.Normal);Bytes::Add(Out,V.ContactPoint);Bytes::Add(Out,V.OtherComponent);Bytes::Add(Out,V.SourceSubBody);
+            Bytes::Add(Out,V.PenetrationDepth);Bytes::Add(Out,V.TOI);Bytes::Add(Out,V.PairKey);Bytes::Add(Out,V.FramesSinceSeen);Bytes::Add(Out,V.bPersistent);
+        }
+        return Out;
+    };
+    const auto Prime=[&]()
+    {
+        Cleanup();BV.CurrentHit={};BV.FutureHit={};WV.CurrentHit={};WV.FutureHit={};
+        BV.CurrentHit.FrameTag=731;BV.FutureHit.FrameTag=733;
+        WV.CurrentHit.FrameTag=991;WV.FutureHit.FrameTag=997;
+        FPhysicalContactConstraint Transient;Transient.FramesSinceSeen=37;Transient.bPersistent=false;
+        C.PhysicalConstraints.Add(Transient);
+        // Both programs must actually reach the persistent relevance consumer:
+        // increment0->1 is within the unchanged one-frame persistence bound.
+        FPhysicalContactConstraint Persistent;Persistent.Normal=FVector::UpVector;Persistent.ContactPoint=FVector(1,2,3);
+        Persistent.OtherComponent=Floor;Persistent.SourceSubBody=Box;Persistent.FramesSinceSeen=0;Persistent.bPersistent=true;
+        C.PhysicalConstraints.Add(Persistent);
+    };
+    constexpr float Delta=1.f/300.f;
+    Prime();Component->ResetForFrame(Delta);++Result.MassLegacyResetReturns;const auto LegacyReset=Capture();
+    Prime();Speed::NativeKinematics::FComponentWrite::ResetFrame(Operation,Component,Delta);++Result.MassNativeResetReturns;
+    Result.MassResetLegacyNativeEqual=LegacyReset==Capture();
+    Result.MassResetDistinctBoxWheel=BV.CurrentHit.FrameTag==0&&BV.FutureHit.FrameTag==0
+        &&WV.CurrentHit.FrameTag==991&&WV.FutureHit.FrameTag==0;
+    Cleanup();BV.CurrentHit.FrameTag=53;BV.CurrentHit.bBlockingHit=false;WV.CurrentHit.FrameTag=59;WV.CurrentHit.bBlockingHit=false;
+    const auto NoHitBefore=Capture();
+    Speed::NativeKinematics::FBodyWrite::ResolveCurrentHit(Operation,Box,Delta,0.f);++Result.MassNoHitResolveReturns;
+    Speed::NativeKinematics::FBodyWrite::ResolveCurrentHit(Operation,Wheel,Delta,0.f);++Result.MassNoHitResolveReturns;
+    Result.MassNoHitUnchanged=NoHitBefore==Capture();
+    const auto ForeignCurrent=ForeignBox->OwnedBodyValues->CurrentHit,ForeignFuture=ForeignBox->OwnedBodyValues->FutureHit;
+    const auto ForeignIgnored=ForeignBox->OwnedBodyValues->IgnoredComponents;
+    const auto HitEqual=[](const SHitResult& X,const SHitResult& Y)
+    {TArray<uint8> A,B;Bytes::Add(A,X);Bytes::Add(B,Y);return A==B;};
+    Result.MassRefusalsBeforeWrite=true;
+    for(int32 Case=0;Case<12;++Case)
+    {
+        Prime();
+        if(Case==3)D.SubBodies.Last()=ForeignBox;
+        if(Case==4||Case==9)BV.ParentComponent=nullptr;
+        if(Case==5||Case==10)BV.ParentComponent=OtherParent;
+        if(Case>=6&&Case<=8)
+        {
+            BV.CurrentHit.bHit=BV.CurrentHit.bBlockingHit=true;
+            BV.CurrentHit.Component=Case==6?static_cast<UPrimitiveComponent*>(ForeignBox):static_cast<UPrimitiveComponent*>(Wheel);
+            BV.CurrentHit.SubBody=Case==6?static_cast<USSubBody*>(ForeignBox):static_cast<USSubBody*>(Wheel);
+            if(Case==7)WV.ParentComponent=nullptr;
+            if(Case==8)WV.ParentComponent=OtherParent;
+        }
+        if(Case==11)D.SubBodies.Last()=SameGraphOtherWheel;
+        const auto Before=Capture();bool Refused=false;
+        try
+        {
+            if(Case==0)Speed::NativeKinematics::FBodyWrite::ResetFrame(Operation,ForeignBox,Delta);
+            else if(Case==1)Speed::NativeKinematics::FBodyWrite::ResolveCurrentHit(Operation,ForeignBox,Delta,0.f);
+            else if(Case==2)Speed::NativeKinematics::FComponentWrite::ResetFrame(Operation,ForeignParent,Delta);
+            else if(Case==3||Case==11)Speed::NativeKinematics::FComponentWrite::ResetFrame(Operation,Component,Delta);
+            else if(Case==4||Case==5)Speed::NativeKinematics::FBodyWrite::ResetFrame(Operation,Box,Delta);
+            else Speed::NativeKinematics::FBodyWrite::ResolveCurrentHit(Operation,Box,Delta,0.f);
+        }
+        catch(const FPrivateNativeStorageUnavailable&){Refused=true;}
+        if(Refused)++Result.MassBoundaryRefusals;
+        Result.MassRefusalsBeforeWrite=Result.MassRefusalsBeforeWrite&&Refused&&Before==Capture()
+            &&HitEqual(ForeignCurrent,ForeignBox->OwnedBodyValues->CurrentHit)
+            &&HitEqual(ForeignFuture,ForeignBox->OwnedBodyValues->FutureHit)
+            &&ForeignIgnored==ForeignBox->OwnedBodyValues->IgnoredComponents;
+    }
+    Cleanup();
+    return Result.MassLegacyResetReturns==1&&Result.MassNativeResetReturns==1&&Result.MassResetLegacyNativeEqual
+        &&Result.MassResetDistinctBoxWheel&&Result.MassNoHitResolveReturns==2&&Result.MassNoHitUnchanged
+        &&Result.MassBoundaryRefusals==12&&Result.MassRefusalsBeforeWrite;
+}
+
+bool FPrivateRoadPhysicsWorld::StepWithHitAcceptanceProbeForDiagnostics(const std::vector<FPrivateRoadRequest>& Requests,
+    bool Resimulation,FPrivateRoadPhysicsWorld& Foreign,FPrivateRoadHitAcceptanceProbe& Result,FString& Why)
+{
+    Result={};Why.Empty();
+    if(!IsInGameThread()||OriginalComponentStorageOwner||this==&Foreign)return Refuse(Why,TEXT("hit probe needs distinct GT-owned graphs"));
+    FRetainedNativeCall OwnCall(Impl),ForeignCall(Foreign.Impl);
+    if(!OwnCall.Root||!ForeignCall.Root||OwnCall.Root==ForeignCall.Root
+        ||ForeignCall.Root->NativeOperationIdentity->ActiveGTActualOperation)return Refuse(Why,TEXT("foreign probe graph unavailable"));
+    // No foreign mutex is acquired or retained across Own Step. Real retained
+    // roots/GT pins supply test subjects, not foreign operation authority.
+    if(ForeignCall.Root->Closed||ForeignCall.Root->Failed)return Refuse(Why,TEXT("foreign probe graph closed"));
+    FHitAcceptanceDiagnosticContext Context{ForeignCall.Root,Result};
+    return StepRetained(OwnCall.Root,Requests,Resimulation,Why,&Context);
+}
+#endif
+
+bool FPrivateRoadPhysicsWorld::Step(const std::vector<FPrivateRoadRequest>& Requests,bool Resimulation,FString& Why)
+{
+    if(!IsInGameThread()){Why.Empty();return Refuse(Why,TEXT("private step requires GT physical caller"));}
+    FRetainedNativeCall Call(Impl);
+    return StepRetained(Call.Root,Requests,Resimulation,Why);
+}
+std::shared_ptr<const FPrivateRoadPublication> FPrivateRoadPhysicsWorld::ReadLatest() const noexcept
+{
+    const auto Root=Impl;
+    return Root->Published.load(); // immutable value acquisition, no native object read
+}
+bool FPrivateRoadPhysicsWorld::ReleaseInitialPublicationRetained(const std::shared_ptr<FImpl>& Root,const std::shared_ptr<const FPrivateRoadPublication>& Baseline,FString& Why)
+{
+    Why.Empty();if(OriginalComponentStorageOwner||!IsInGameThread()||Speed::Input::FPresentationInputScope::IsActive())return Refuse(Why,TEXT("startup release requires original GT owner"));
+    auto& I=*Root;
+    if(I.NativeOperationIdentity->ActiveGTActualOperation)
+        return Refuse(Why,TEXT("same graph native operation already active; activation refused before mutex"));
+    std::unique_lock Lock(I.Gate,std::try_to_lock);
+    if(!Lock.owns_lock()||I.Closed||I.Failed||I.Access->Active)return Refuse(Why,TEXT("startup original owner unavailable"));
+    FPrivateNativeOperation Operation(Root,I.NativeOperationIdentity,I.NativeStorage,FPrivateNativeOperation::EKind::Activation,std::move(Lock));
+    if(!I.AcquiredGraphStillLive())return Refuse(Why,TEXT("startup original acquired graph unavailable"));
+    if(!Operation.HasExactRootAndGate(I.NativeOperationIdentity)||I.Closed||I.Failed||I.Access->Active||!I.Access->RequiresInitialPublication
+        ||I.Access->InitialPublicationReleased||!Baseline||Baseline!=I.Published.load()
+        ||!Baseline->AwaitingInitialPublication||Baseline->Frame!=0||Baseline->LocalKernelLifetime!=I.Lifetime
+        ||!I.World.IsValid()||I.World->bIsTearingDown||!I.Driver||!IsValid(I.Driver)
+        ||Baseline->Actors.size()!=I.Cars.size())return Refuse(Why,TEXT("startup original baseline/boundary unavailable"));
+    if(!I.Diagnostics||!I.Diagnostics->Begin())return Refuse(Why,TEXT("startup diagnostics unavailable"));
+    bool ActivationOutboxActive=true;ON_SCOPE_EXIT{if(ActivationOutboxActive)I.Diagnostics->End();};
+    const bool Activated=[&]() -> bool
+    {
+    FGCScopeGuard ActivationMathOnly;
+    FOriginalComponentStorageScope OriginalStorage(*I.Access);
+    Speed::RoadSettings::FOriginalRoadSettingsScope SettingsActivation(I.DeclaredSettings);
+    if(I.DeclaredSettings&&Baseline->DeclaredSettingsIdentity!=I.DeclaredSettings->CanonicalIdentity())
+        return Refuse(Why,TEXT("startup declared settings recipe changed"));
+    if(I.Driver->NextPrivate(Operation)!=1)return Refuse(Why,TEXT("original startup physical counter changed"));
+    if(!HasExactRegisteredRosterRetained(Root,Operation,Why))return false;
+    for(const auto& Pin:I.Pins)if(!IsValid(Pin.Get()))return Refuse(Why,TEXT("startup native graph invalidated"));
+    for(const auto& N:I.Cars)
+    {
+        const auto* C=N->Component;
+        if(!IsValid(N->Actor)||!IsValid(C)||N->Actor->IsActorBeingDestroyed()||N->Actor->HasActorBegunPlay()
+            ||!I.OriginalActorWorldStillMatches(N->Actor,I.World.Get())||C->GetOwner()!=N->Actor||!I.OriginalMovementStillMatches(*N)
+            ||C->GetClass()!=USpeedBranchWheeledComponent::StaticClass()||!C->HasIsolatedNativeConstruction()||!C->IsFrozen()||C->CanMove()
+            ||C->WheeledPhysicsStateStorage().bStartCountdown||C->WheeledPhysicsStateStorage().nbFramesbeforeCanMove!=1)
+            return Refuse(Why,TEXT("startup native identity or closed gate changed"));
+    }
+    // Same established physical countdown-release operations, at a common
+    // explicit boundary instead of an arbitrary elapsed frame count.
+    for(const auto& N:I.Cars)
+    {
+        auto* C=N->Component;C->WheeledPhysicsStateStorage().nbFramesbeforeCanMove=0;C->WheeledPhysicsStateStorage().bStartCountdown=false;
+        C->SinceCanMoveFrameWheeledDomainStorage()=C->NumFrame()+1;C->bSimTimelineWasCanMoveWheeledDomainStorage()=true;
+        C->bSimTimelineHasGroundStateWheeledDomainStorage()=true;C->bSimTimelineWasGroundedWheeledDomainStorage()=C->IsOnTheGround();
+        C->ResetWheelTransientStateForCurrentPose(false);C->UnFreezeMovement();
+    }
+    // Real optional diagnostic edge after physical activation, dispatched by
+    // the original outbox outside math/GC/routing and before commit read-back.
+    SPEED_NATIVE_LOG(LogTemp,Verbose,TEXT("[IASOriginalActivationCompleted] frame=%llu actors=%u"),I.Driver->NextPrivate(Operation),uint32(I.Cars.size()));
+    return true;
+    }();
+    I.Diagnostics->End();ActivationOutboxActive=false;
+    if(!I.Diagnostics->Flush()||!Activated){I.Failed=true;I.Published.store({});return false;}
+    const auto StartupFailed=[&](const TCHAR* Reason)
+    {I.Failed=true;I.Published.store({});return Refuse(Why,Reason);};
+    if(!I.AcquiredGraphStillLive())return StartupFailed(TEXT("startup acquired graph invalidated by actual callback"));
+    {
+        FGCScopeGuard ActivationReadBackOnly;
+        FOriginalComponentStorageScope OriginalActivationReadBack(*I.Access);
+        if(!HasExactRegisteredRosterRetained(Root,Operation,Why)||I.Driver->NextPrivate(Operation)!=1||I.Published.load()!=Baseline)
+            return StartupFailed(TEXT("startup original registry/counter/publication changed during callback"));
+        for(const auto& N:I.Cars)
+        {
+            const auto* C=N->ComponentWeak.Get();
+            // CanMove must STILL be closed by the synchronization bit here.
+            // Check the actual prepared physical state before committing it.
+            if(!C||C->CanMove()||C->IsFrozen()||C->WheeledPhysicsStateStorage().bStartCountdown
+                ||C->WheeledPhysicsStateStorage().nbFramesbeforeCanMove!=0
+                ||C->SinceCanMoveFrameWheeledDomainStorage()!=C->NumFrame()+1)
+                return StartupFailed(TEXT("startup actual physical activation failed read-back"));
+        }
+        I.Access->InitialPublicationReleased=true;
+        // Success-only commit, then verify the real combined CanMove result
+        // without any callback or physical step between checks.
+        for(const auto& N:I.Cars)if(!N->ComponentWeak->CanMove())
+        {I.Access->InitialPublicationReleased=false;return StartupFailed(TEXT("startup committed native gate did not open"));}
+    }
+    return true;
+}
+bool FPrivateRoadPhysicsWorld::ReleaseInitialPublication(const std::shared_ptr<const FPrivateRoadPublication>& Baseline,FString& Why)
+{
+    if(!IsInGameThread()){Why.Empty();return Refuse(Why,TEXT("startup release requires original GT owner"));}
+    FRetainedNativeCall Call(Impl);
+    return ReleaseInitialPublicationRetained(Call.Root,Baseline,Why);
+}
+std::vector<FNativeConfigurationLifetimeValues> FPrivateRoadPhysicsWorld::ReadNativeConfigurationLifetimeRetained(const std::shared_ptr<FImpl>& Root)
+{
+    if(!IsInGameThread())return {};
+    auto& I=*Root;
+    if(I.NativeOperationIdentity->ActiveGTActualOperation)return {};
+    std::unique_lock Lock(I.Gate,std::try_to_lock);if(!Lock.owns_lock())return {};
+    std::vector<FNativeConfigurationLifetimeValues> Values;
+    for(const auto& Trace:I.NativeConfigurationLifetime)Values.push_back(Trace->Read());
+    return Values;
+}
+std::vector<FNativeConfigurationLifetimeValues> FPrivateRoadPhysicsWorld::ReadNativeConfigurationLifetimeForDiagnostics() const
+{
+    if(!IsInGameThread())return {};
+    FRetainedNativeCall Call(Impl);
+    return ReadNativeConfigurationLifetimeRetained(Call.Root);
+}
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+std::vector<std::shared_ptr<const FNativeConfigurationLifetimeTrace>> FPrivateRoadPhysicsWorld::CaptureNativeConfigurationLifetimeObserversForDiagnostics()
+{
+    if(!IsInGameThread())return {};
+    FRetainedNativeCall Call(Impl);
+    const auto& I=*Call.Root;
+    if(I.NativeOperationIdentity->ActiveGTActualOperation)return {};
+    std::unique_lock Lock(I.Gate,std::try_to_lock);
+    if(!Lock.owns_lock())return {};
+    std::vector<std::shared_ptr<const FNativeConfigurationLifetimeTrace>> Values;
+    for(const auto& Trace:I.NativeConfigurationLifetime)Values.push_back(Trace);
+    return Values; // counter allocations only; no simulation/config reference escapes
+}
+FPrivateRoadPhysicsWorld::FOriginalWorldReadProbe FPrivateRoadPhysicsWorld::ObserveOriginalWorldReadRetained(const std::shared_ptr<FImpl>& Root)
+{
+    FOriginalWorldReadProbe Result;
+    try
+    {
+        if(!Root||OriginalComponentStorageOwner||!IsInGameThread()
+            ||Speed::RoadSettings::SelectedOriginalRoadSettings()
+            ||Speed::Input::FPresentationInputScope::IsActive())return Result;
+        auto& I=*Root;
+        if(I.NativeOperationIdentity->ActiveGTActualOperation)return Result;
+        std::unique_lock Lock(I.Gate,std::try_to_lock);
+        if(!Lock.owns_lock()||I.Closed||I.Failed||!I.Access||I.Access->Active
+            ||!I.DeclaredSettings||!I.AcquiredGraphStillLive())return Result;
+        auto* Expected=I.OriginalWorldWeak.Get();
+        if(!Expected)return Result;
+        TObjectPtr<UWorld> KnownWorld=Expected;
+        {
+            FGCScopeGuard KnownWorldReadOnly;
+            if(!I.AcquiredGraphStillLive())return Result;
+            // Only this real owner can mint its settings scope. This probe never
+            // enters FOriginalComponentStorageScope or advances physical state.
+            Result.Admitted=true;
+            {
+                Speed::RoadSettings::FOriginalRoadSettingsScope OwnRecipe(I.DeclaredSettings);
+                Result.SameOriginal=KnownWorld.Get()==Expected;
+            }
+        }
+        if(!I.AcquiredGraphStillLive())Result.SameOriginal=false;
+        return Result;
+    }
+    catch(...){return FOriginalWorldReadProbe{};}
+}
+FPrivateRoadPhysicsWorld::FOriginalWorldReadProbe FPrivateRoadPhysicsWorld::ObserveOriginalWorldReadForDiagnostics()
+{
+    if(!IsInGameThread())return {};
+    FRetainedNativeCall Call(Impl);
+    return ObserveOriginalWorldReadRetained(Call.Root);
+}
+#endif
+
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+struct FPrivateRoadPhysicsWorld::FRetirementBindingDiagnosticContext
+{
+    const std::shared_ptr<FImpl> ForeignRoot; // actual retained call, does not escape
+    FPrivateRoadRetirementForeignProbe& Result;
+};
+std::shared_ptr<const FPrivateRoadRetirementBindingTrace>
+FPrivateRoadPhysicsWorld::CaptureRetirementBindingObserverForDiagnostics()
+{
+    if(!IsInGameThread())return {};
+    FRetainedNativeCall Call(Impl);
+    const auto& I=*Call.Root;
+    if(I.NativeOperationIdentity->ActiveGTActualOperation)return {};
+    std::unique_lock Lock(I.Gate,std::try_to_lock);
+    if(!Lock.owns_lock())return {};
+    return I.RetirementBindingTrace; // standalone counters, not graph retention
+}
+bool FPrivateRoadPhysicsWorld::CloseWithForeignRetirementBindingProbeForDiagnostics(
+ FPrivateRoadPhysicsWorld& Foreign,FPrivateRoadRetirementForeignProbe& Result)
+{
+    Result={};
+    if(!IsInGameThread()||OriginalComponentStorageOwner||this==&Foreign)return false;
+    FRetainedNativeCall Call(Impl),ForeignCall(Foreign.Impl);
+    if(!Call.Root||!ForeignCall.Root||ForeignCall.Root->Closed||ForeignCall.Root->Failed
+        ||ForeignCall.Root->NativeOperationIdentity->ActiveGTActualOperation
+        ||!ForeignCall.Root->AcquiredGraphStillLive()||ForeignCall.Root->OriginalWheelsWeak.IsEmpty())return false;
+    FRetirementBindingDiagnosticContext Context{ForeignCall.Root,Result};
+    return CloseRetained(Call.Root,&Context);
+}
+#endif
+
+bool FPrivateRoadPhysicsWorld::CloseRetained(const std::shared_ptr<FImpl>& Root
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+    ,FRetirementBindingDiagnosticContext* RetirementContext
+#endif
+    )
+{
+    using RetirementDraft::EPhase;
+    if(!IsInGameThread()||OriginalComponentStorageOwner)return false;
+    auto& I=*Root;
+    if(I.NativeOperationIdentity->ActiveGTActualOperation)return false;
+    std::unique_lock Lock(I.Gate,std::try_to_lock);
+    // This b22 profile has SYNCHRONOUS GT Step, no private worker. This is only
+    // exclusion of its real current Step, NOT source/capture/async owner join.
+    if(!Lock.owns_lock()||I.Access->Active)return false;
+    if(I.RetirementPhase==EPhase::Retired)return true;
+    if(I.RetirementPhase!=EPhase::Open)return false; // interrupted is never retired
+    FPrivateNativeOperation Operation(Root,I.NativeOperationIdentity,I.NativeStorage,FPrivateNativeOperation::EKind::Retirement,std::move(Lock));
+    I.RetirementPhase=EPhase::AdmissionClosed;
+    I.Failed=true; // existing Step and ReleaseInitialPublication now refuse
+    I.Published.store({});
+    const auto Interrupt=[&]() -> bool {
+        I.RetirementPhase=EPhase::Interrupted;
+        I.Published.store({});
+        // Retain owner, native roots/configs/pins. Caller must not destroy Owner
+        // after false. No automatic retry of partly executed callbacks.
+        return false;
+    };
+    // An empty weak identity is only accepted if no corresponding original
+    // pointer was acquired. Pointer PRESENCE checks do not dereference a dead
+    // UObject and do not convert an interrupted birth into a fake return.
+    if((I.OriginalWorldWeak.IsExplicitlyNull()&&I.World.Get()!=nullptr)
+        ||(I.OriginalBridgeWeak.IsExplicitlyNull()&&I.Bridge!=nullptr))return Interrupt();
+    try {
+        // The registry phase still REQUIRES the real callback census. Known
+        // diagnostic logs use the actual existing outbox. No stub validation.
+        if(!I.Diagnostics||!I.Diagnostics->Begin())return Interrupt();
+        bool OutboxActive=true;
+        ON_SCOPE_EXIT {if(OutboxActive)I.Diagnostics->End();};
+        {
+            FGCScopeGuard RegistryOnly; // never extends to Flush/DestroyWorld!
+            FOriginalComponentStorageScope OriginalRetirement(*I.Access);
+            auto* Bridge=I.OriginalBridgeWeak.Get();
+            if(!I.OriginalBridgeWeak.IsExplicitlyNull()&&(!Bridge||Bridge->HasAnyFlags(RF_BeginDestroyed|RF_FinishDestroyed)))return Interrupt();
+            for(const auto& Weak:I.OriginalComponentsWeak) {
+                auto* C=Weak.Get();
+                if(!C||C->HasAnyFlags(RF_BeginDestroyed|RF_FinishDestroyed))return Interrupt();
+                if(!Bridge)return Interrupt();
+                Bridge->UnregisterSpeedComponent(C);
+            }
+            if(Bridge)Bridge->ApplyPendingOps(); // actual original call must RETURN
+        }
+        I.RetirementPhase=EPhase::RegistryReturned;
+        I.Access->Active=false;
+        I.Access->Slots.Empty();I.Access->World=nullptr;I.Access->Retired=true;
+        I.Diagnostics->End();OutboxActive=false;
+        // Outbox callbacks may invalidate UObjects or invoke actual GC. C++
+        // roots live in FImpl independently. No original route/GC guard held.
+        if(!I.Diagnostics->Flush())return Interrupt();
+        if(!I.OriginalWorldWeak.IsExplicitlyNull())
+        {
+            auto* World=I.OriginalWorldWeak.Get();
+            if(!World||World->HasAnyFlags(RF_BeginDestroyed|RF_FinishDestroyed))return Interrupt();
+            I.RetirementPhase=EPhase::WorldCallbacksEntered;
+            World->DestroyWorld(false); // NO FGCScopeGuard around real callbacks
+            I.RetirementPhase=EPhase::WorldCallbacksReturned; // actual returned call
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+            ++I.RetirementBindingTrace->WorldDestroyReturns;
+#endif
+        } // null original weak identity means no world was ever constructed
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+        // Values-only named original pointer triples; no additional root owner
+        // is retained across the later actual native/configuration destructors.
+        std::vector<std::array<const void*,3>> OriginalPointersBeforeDetach;
+        for(const auto& N:I.Cars)for(const auto& W:N->NativeWheelRoots) {
+            if(!W||!std::get<3>(W->Parts))return Interrupt();
+            const auto& V=*std::get<3>(W->Parts);
+            OriginalPointersBeforeDetach.push_back({V.PWheel,V.PSuspension,V.ChaosWheel});
+        }
+        if(RetirementContext) {
+            FGCScopeGuard NegativeSubjectsOnly; // no callbacks/destructors here
+            auto& F=*RetirementContext->ForeignRoot;
+            if(F.NativeOperationIdentity->ActiveGTActualOperation||F.Closed||F.Failed||F.RetirementRequested.load()||!F.AcquiredGraphStillLive()||F.OriginalWheelsWeak.IsEmpty())return Interrupt();
+            std::unique_lock ForeignReadLock(F.Gate,std::try_to_lock);if(!ForeignReadLock.owns_lock())return Interrupt();
+            auto* ForeignWheel=F.OriginalWheelsWeak[0].Get();
+            if(!ForeignWheel||ForeignWheel->OriginalBodyIdentity.Get()!=ForeignWheel||ForeignWheel->HasAnyFlags(RF_BeginDestroyed|RF_FinishDestroyed))return Interrupt();
+            const auto CaptureNamedBothRoots=[&]() {
+                TArray<uint8> Bytes;using B=Speed::FEpisodeStateBytesForTesting;
+                uint32 Observed=0,Unresolved=0,Flagged=0,GraphIndex=0;
+                for(const auto* Graph:{&I,&F}) {
+                    B::Add(Bytes,GraphIndex++);
+                    for(const auto& N:Graph->Cars)for(const auto& W:N->NativeWheelRoots) {
+                        const auto& V=*std::get<3>(W->Parts);
+                        B::Add(Bytes,V.PWheel);B::Add(Bytes,V.PSuspension);B::Add(Bytes,V.ChaosWheel);
+                    }
+                    uint32 SubjectIndex=0;
+                    for(const auto& Weak:Graph->OriginalWheelsWeak) {
+                        const auto Index=SubjectIndex++;
+                        const auto* W=Weak.Get();if(!W){++Unresolved;continue;}
+                        if(W->HasAnyFlags(RF_BeginDestroyed|RF_FinishDestroyed)){++Flagged;continue;}
+                        ++Observed;B::Add(Bytes,Index);
+                        B::Add(Bytes,W->GetWheelSim());B::Add(Bytes,W->GetSuspensionSim());B::Add(Bytes,W->GetChaosWheelConfiguration());
+                    }
+                }
+                // Skipped subjects have no invented null pointer values.
+                return std::make_tuple(Bytes,Observed,Unresolved,Flagged);
+            };
+            const auto Before=CaptureNamedBothRoots();
+            // Isolate the genuine validator: a foreign leaf call would also
+            // refuse because foreign StorageAccess has not reset, masking Root.
+            FPrivateNativeStorageAccess::RequireRetirementRoot(Operation,Root);
+            ++RetirementContext->Result.OwnRootValidationReturns;
+            const auto ForeignBirthRoot=ForeignWheel->OriginalOwnerRoot.lock();
+            if(!ForeignBirthRoot||ForeignBirthRoot.get()!=RetirementContext->ForeignRoot.get()
+                ||ForeignBirthRoot.owner_before(RetirementContext->ForeignRoot)
+                ||RetirementContext->ForeignRoot.owner_before(ForeignBirthRoot))return Interrupt();
+            ++RetirementContext->Result.ActualRetirementCalls;
+            try{FPrivateNativeStorageAccess::RequireRetirementRoot(Operation,ForeignBirthRoot);}
+            catch(const FPrivateNativeStorageUnavailable&){RetirementContext->Result.ForeignRootValidatorRefused=true;}
+            const auto After=CaptureNamedBothRoots();
+            RetirementContext->Result.NamedFacadeSubjectsObserved=std::get<1>(After);
+            RetirementContext->Result.NamedWeakUnresolved=std::get<2>(After);
+            RetirementContext->Result.NamedGarbageFlagSkips=std::get<3>(After);
+            RetirementContext->Result.NamedFootprintUnchanged=Before==After;
+            if(!RetirementContext->Result.ForeignRootValidatorRefused||!RetirementContext->Result.NamedFootprintUnchanged)return Interrupt();
+        }
+#endif
+        // Never reuse World/raw I.Driver/raw N.Component after this point.
+        // Weak identity/serial + garbage flags resolve each actual survivor.
+        {
+            FGCScopeGuard DetachOnly;
+            for(const auto& Weak:I.OriginalWheelsWeak) {
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+                ++I.RetirementBindingTrace->WeakVisited;
+#endif
+                auto* W=Weak.Get();
+                if(!W) {
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+                    ++I.RetirementBindingTrace->WeakUnresolved;
+#endif
+                    continue;
+                }
+                if(W->HasAnyFlags(RF_BeginDestroyed|RF_FinishDestroyed)) {
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+                    ++I.RetirementBindingTrace->GarbageFlagSkips;
+#endif
+                    continue;
+                }
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+                ++I.RetirementBindingTrace->LiveResolved;
+#endif
+                W->StorageAccess.reset();
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+                // Real direct facade cells observed AFTER callbacks/reset.
+                // A present configuration alone does not prove wheel/suspension changes.
+                const bool HadWheel=W->PWheel!=nullptr,HadSuspension=W->PSuspension!=nullptr,HadConfiguration=W->ChaosWheel!=nullptr;
+                auto& Trace=*I.RetirementBindingTrace;
+                Trace.AnyFacadeBindingPresentBefore+=HadWheel||HadSuspension||HadConfiguration;
+                Trace.FacadeWheelPresentBefore+=HadWheel;Trace.FacadeSuspensionPresentBefore+=HadSuspension;Trace.FacadeConfigurationPresentBefore+=HadConfiguration;
+#endif
+                W->ClearReferenceWheelBindingsAtRetirement(Operation);
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+                ++Trace.FacadeClearReturns;
+                const bool WheelNull=W->PWheel==nullptr,SuspensionNull=W->PSuspension==nullptr,ConfigurationNull=W->ChaosWheel==nullptr;
+                Trace.FacadeWheelNullAfter+=WheelNull;Trace.FacadeSuspensionNullAfter+=SuspensionNull;Trace.FacadeConfigurationNullAfter+=ConfigurationNull;
+                Trace.FacadeWheelChangedFromPresent+=HadWheel&&WheelNull;Trace.FacadeSuspensionChangedFromPresent+=HadSuspension&&SuspensionNull;Trace.FacadeConfigurationChangedFromPresent+=HadConfiguration&&ConfigurationNull;
+#endif
+                W->OwnedBodyValues.reset();W->OwnedSolidValues.reset();
+                W->OwnedWheelRuntime.reset();W->OwnedWheelDomain.reset();W->OwnedSphereDomain.reset();
+            }
+            for(const auto& Weak:I.OriginalBoxesWeak)if(auto* B=Weak.Get()) {
+                if(B->HasAnyFlags(RF_BeginDestroyed|RF_FinishDestroyed))continue;
+                B->StorageAccess.reset();B->OwnedBodyValues.reset();
+                B->OwnedSolidValues.reset();B->OwnedBoxDomain.reset();
+            }
+            for(const auto& Weak:I.OriginalComponentsWeak)if(auto* C=Weak.Get()) {
+                if(C->HasAnyFlags(RF_BeginDestroyed|RF_FinishDestroyed))continue;
+                C->Access.reset();C->OriginalWheeledRoute.reset();
+                // NativeCppKeepAlive MUST already hold these original roots.
+                C->OriginalWheeledDomain.reset();C->OwnedComponentValues.reset();
+                // Reference/facade simulation: preserve original destruction
+                // order; its config-pinning wrapper survives through native dtor.
+                C->SkySimulationWheeledDomainStorage()=nullptr;
+                // Move unique ownership into FCar while the wrapper is alive.
+                // Actual native destructor executes later OUTSIDE this GC guard.
+                for(auto& N:I.Cars)if(N->ComponentWeak==Weak) {
+                    N->RetiringReferenceSimulation=MoveTemp(C->VehicleSimulationPTWheeledDomainStorage());
+                    break;
+                }
+            }
+            if(auto* D=I.OriginalDriverWeak.Get()) {
+                if(!D->HasAnyFlags(RF_BeginDestroyed|RF_FinishDestroyed)) {
+                    D->Access.reset();D->OriginalDriverRoute.reset();D->OriginalDriverStorage.reset();
+                }
+            }
+            if(auto* B=I.OriginalBridgeWeak.Get()) {
+                if(!B->HasAnyFlags(RF_BeginDestroyed|RF_FinishDestroyed)) {
+                    B->OriginalEpochRoute.reset();B->OriginalEpochBridgeStorage.reset();
+                }
+            }
+        }
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+        size_t OriginalOrdinal=0;
+        for(const auto& N:I.Cars)for(const auto& W:N->NativeWheelRoots) {
+            const auto& V=*std::get<3>(W->Parts);
+            const std::array<const void*,3> After{V.PWheel,V.PSuspension,V.ChaosWheel};
+            if(OriginalOrdinal>=OriginalPointersBeforeDetach.size())return Interrupt();
+            I.RetirementBindingTrace->FacadeClearsKeptOriginalPointers&=OriginalPointersBeforeDetach[OriginalOrdinal++]==After;
+            ++I.RetirementBindingTrace->OriginalPointerTriplesCompared;
+        }
+        if(OriginalOrdinal!=OriginalPointersBeforeDetach.size())return Interrupt();
+        OriginalPointersBeforeDetach.clear();
+#endif
+        I.RetirementPhase=EPhase::SurvivingFacadesDetached;
+        // Concrete typed walk: no UObject read, raw old component, world query,
+        // reset helper or synthetic drain boolean participates in this phase.
+        for(auto& N:I.Cars) {
+            if(!N->NativeVehicleRoot)
+            {
+                if(N->NativeBoxRoot||!N->NativeWheelRoots.empty())return Interrupt();
+                continue; // this actual car had not reached native domain birth
+            }
+            for(auto& W:N->NativeWheelRoots) {
+                if(!W||!RetirementDraft::DisconnectWheelRoot(*W,N->NativeVehicleRoot))return Interrupt();
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+                ++I.RetirementBindingTrace->OriginalWheelDisconnectReturns;
+#endif
+            }
+            if(N->NativeBoxRoot&&!RetirementDraft::DisconnectBoxRoot(*N->NativeBoxRoot,N->NativeVehicleRoot))return Interrupt();
+        }
+        for(auto& N:I.Cars) {
+            if(N->NativeVehicleRoot&&!RetirementDraft::ReleaseNativeVehicle(*N->NativeVehicleRoot))return Interrupt();
+            N->RetiringReferenceSimulation.Reset(); // no GC exclusion over native dtor
+        }
+        // Release table aliases only after real native simulation destructors
+        // and callback phases returned. Existing original roots still retain
+        // all actual cpp backends through this point, including refusal.
+        if(!I.NativeStorage->ReleaseAtRetirement(Operation))return Interrupt();
+        I.NativeDriverStorage.reset();I.NativeBridgeStorage.reset();
+        I.Pins.Empty();I.World.Reset();
+        I.Bridge=nullptr;I.Driver=nullptr;I.Cars.clear();
+        I.NativeCppKeepAlive.clear(); // actual last-owner native destructors
+        I.RetirementPhase=EPhase::NativeReferencesReleased;
+        I.Closed=true; // only AFTER real return, detachment, native release
+        I.RetirementPhase=EPhase::Retired;
+        I.NativeOperationIdentity->Retired.store(true); // only after actual full phased Close returned its native releases
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+        ++I.RetirementBindingTrace->CloseReturns;
+#endif
+        return true; // finite synchronous profile only, NOT full native/source lease
+    } catch(...) {return Interrupt();}
+}
+bool FPrivateRoadPhysicsWorld::Close()
+{
+    if(!IsInGameThread())return false;
+    FRetainedNativeCall Call(Impl);
+    return CloseRetained(Call.Root);
+}
+}
+
+USpeedBranchBoxSubBody::USpeedBranchBoxSubBody(const FObjectInitializer& Initializer)
+    :Super(Initializer),OwnedBodyValues(std::make_shared<Speed::Netcode::Prediction::FPrivateRoadSubBodyValues>()),OwnedSolidValues(std::make_shared<Speed::Netcode::Prediction::FPrivateRoadSolidValues>()),OwnedBoxDomain(std::make_shared<Speed::Netcode::Prediction::FPrivateRoadBoxDomain>()){OwnedBodyValues->SubBodyType=ESubBodyType::Hitbox;}
+TWeakObjectPtr<USSubBody> USpeedBranchBoxSubBody::GetPhysicsWeakIdentity() const
+{
+    if(!UsesOriginalBodyStorage())return Super::GetPhysicsWeakIdentity();
+    if(OriginalBodyIdentity.Get()!=this)throw Speed::NativeObjectRead::FUnresolvedOriginal();
+    return OriginalBodyIdentity; // real original weak serial, not an index minted during math
+}
+bool USpeedBranchBoxSubBody::UsesOriginalBodyStorage() const
+{
+    if(!IsInGameThread()||!Speed::Netcode::Prediction::OriginalComponentStorageOwner)return false;
+    const auto A=StorageAccess.lock();
+    return OwnedBodyValues&&A&&Speed::Netcode::Prediction::OriginalComponentStorageOwner==A.get();
+}
+void USpeedBranchBoxSubBody::ApplyNativeFakePhysicsOn(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,USolidSubBody& OtherSubBody,const SHitResult& Hit,const float& DeltaTime,const FFakePhysicsImpactContext* ImpactContext)
+{
+    using namespace Speed::Netcode::Prediction;
+    (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadSubBodyValues>(Operation,this);
+    (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadSolidValues>(Operation,this);
+    (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadBoxDomain>(Operation,this);
+    (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadSubBodyValues>(Operation,&OtherSubBody);
+    (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadSolidValues>(Operation,&OtherSubBody);
+    // This sealed native subtype inherits the original empty base operation.
+    // Do not dispatch the extensible public callback or fabricate an impulse.
+    (void)Hit;(void)DeltaTime;(void)ImpactContext;
+}
+void USpeedBranchWheelSubBody::ApplyNativeFakePhysicsOn(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,USolidSubBody& OtherSubBody,const SHitResult& Hit,const float& DeltaTime,const FFakePhysicsImpactContext* ImpactContext)
+{
+    using namespace Speed::Netcode::Prediction;
+    (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadSubBodyValues>(Operation,this);
+    (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadSolidValues>(Operation,this);
+    (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadSphereDomain>(Operation,this);
+    (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadWheelDomain>(Operation,this);
+    (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadSubBodyValues>(Operation,&OtherSubBody);
+    (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadSolidValues>(Operation,&OtherSubBody);
+    // This sealed native subtype inherits the original empty base operation.
+    // Do not dispatch the extensible public callback or fabricate an impulse.
+    (void)Hit;(void)DeltaTime;(void)ImpactContext;
+}
+
+void USpeedBranchBoxSubBody::CheckOrdinaryBodyInitializationEntry() const
+{throw Speed::Netcode::Prediction::FPrivateNativeStorageUnavailable{};}
+void USpeedBranchBoxSubBody::InitializeReference(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,
+    const Speed::Netcode::Prediction::FPrivateReferenceOwnerBirth& Proof,ISpeedComponent* Parent)
+{InitializeReferenceBox(Operation,Proof,Parent);}
+
+void USpeedBranchBoxSubBody::InitializeNative(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,ISpeedComponent* Parent)
+{
+    using namespace Speed::Netcode::Prediction;FPrivateNativeStorageAccess::RequireBirth(Operation);
+    (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadSubBodyValues>(Operation,this);
+    (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadSolidValues>(Operation,this);
+    (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadBoxDomain>(Operation,this);
+    Speed::NativeKinematics::FComponentRead::ValidateCurrentAndSubBodies(Operation,Parent);
+    InitializeNativeBox(Operation,Parent);
+}
+FMatrix USpeedBranchBoxSubBody::ComputeNativeInitialInverseTensor(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation) const
+{
+    using namespace Speed::Netcode::Prediction;FPrivateNativeStorageAccess::RequireBirth(Operation);
+    (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadSubBodyValues>(Operation,this);
+    (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadSolidValues>(Operation,this);
+    (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadBoxDomain>(Operation,this);
+    return InitialNativeInverseTensor(Operation);
+}
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+USpeedBranchWheelSubBody::FReferenceBindingFixtureValues
+USpeedBranchWheelSubBody::ReadReferenceBindingFixtureForDiagnostics(
+ const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation) const
+{
+    namespace P=Speed::Netcode::Prediction;P::FPrivateNativeStorageAccess::RequireBirth(Operation);
+    (void)P::FPrivateNativeStorageAccess::Part<const P::FPrivateRoadSubBodyValues>(Operation,this);
+    (void)P::FPrivateNativeStorageAccess::Part<const P::FPrivateRoadWheelDomain>(Operation,this);
+    return {USWheelSubBody::WheelMassWheelDomainStorage(),USWheelSubBody::SuspensionMaxRaiseOverrideWheelDomainStorage(),
+        USWheelSubBody::SuspensionMaxDropOverrideWheelDomainStorage(),USSubBody::ParentComponentBodyDomainStorage(),
+        USWheelSubBody::WheelComponentWheelDomainStorage()};
+}
+void USpeedBranchWheelSubBody::WriteReferenceBindingFixtureForDiagnostics(
+ const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const FReferenceBindingFixtureValues& Values)
+{
+    namespace P=Speed::Netcode::Prediction;P::FPrivateNativeStorageAccess::RequireBirth(Operation);
+    (void)P::FPrivateNativeStorageAccess::Part<const P::FPrivateRoadSubBodyValues>(Operation,this);
+    (void)P::FPrivateNativeStorageAccess::Part<const P::FPrivateRoadWheelDomain>(Operation,this);
+    // Named temporary fixture fields only, actual Birth operation required.
+    // Not an authoritatively restorable snapshot or an ordinary mutation issuer.
+    USWheelSubBody::WheelMassWheelDomainStorage()=Values.Mass;
+    USWheelSubBody::SuspensionMaxRaiseOverrideWheelDomainStorage()=Values.Raise;
+    USWheelSubBody::SuspensionMaxDropOverrideWheelDomainStorage()=Values.Drop;
+    USSubBody::ParentComponentBodyDomainStorage()=Values.Parent;
+    USWheelSubBody::WheelComponentWheelDomainStorage()=Values.WheelParent;
+}
+#endif
+
+void USpeedBranchWheelSubBody::ClearReferenceWheelBindingsAtOwnerBirth(
+ const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation)
+{
+    namespace P=Speed::Netcode::Prediction;
+    P::FPrivateNativeStorageAccess::RequireBirthRoot(Operation,OriginalOwnerRoot.lock());
+    if(OriginalBodyIdentity.Get()!=this||HasAnyFlags(RF_BeginDestroyed|RF_FinishDestroyed)
+        ||!StorageAccess.expired())throw P::FPrivateNativeStorageUnavailable{};
+    // EXACTLY two early facade fields, no configuration clear, index or target
+    // writes. This phase precedes real wheel storage-table registration.
+    PWheel=nullptr;PSuspension=nullptr;
+}
+
+void USpeedBranchWheelSubBody::ClearReferenceWheelBindingsAtRetirement(
+ const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation)
+{
+    namespace P=Speed::Netcode::Prediction;
+    // OriginalOwnerRoot was captured once from the real FImpl at body birth.
+    // No lookup of an incompletely registered native storage table is needed.
+    const auto ActualBirthRoot=OriginalOwnerRoot.lock();
+    P::FPrivateNativeStorageAccess::RequireRetirementRoot(Operation,ActualBirthRoot);
+    if(OriginalBodyIdentity.Get()!=this||HasAnyFlags(RF_BeginDestroyed|RF_FinishDestroyed)
+        ||!StorageAccess.expired())throw P::FPrivateNativeStorageUnavailable{};
+    // Exact facade cells, old order. Never a routed getter or pointed write.
+    PWheel=nullptr;PSuspension=nullptr;ChaosWheel=nullptr;
+}
+
+void USpeedBranchWheelSubBody::ValidateReferenceWheelBindingBirth(
+ const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,
+ const ISpeedComponent* Parent,const ISpeedWheeledComponent* WheeledParent) const
+{
+    namespace P=Speed::Netcode::Prediction;P::FPrivateNativeStorageAccess::RequireBirth(Operation);
+    (void)P::FPrivateNativeStorageAccess::Part<const P::FPrivateRoadSubBodyValues>(Operation,this);
+    (void)P::FPrivateNativeStorageAccess::Part<const P::FPrivateRoadSolidValues>(Operation,this);
+    (void)P::FPrivateNativeStorageAccess::Part<const P::FPrivateRoadWheelDomain>(Operation,this);
+    if(OriginalBodyIdentity.Get()!=this||HasAnyFlags(RF_BeginDestroyed|RF_FinishDestroyed)
+        ||!Parent||!WheeledParent||USSubBody::ParentComponentBodyDomainStorage()!=Parent
+        ||USWheelSubBody::WheelComponentWheelDomainStorage()!=WheeledParent)
+        throw P::FPrivateNativeStorageUnavailable{};
+}
+
+void USpeedBranchWheelSubBody::CheckOrdinaryBodyInitializationEntry() const
+{throw Speed::Netcode::Prediction::FPrivateNativeStorageUnavailable{};}
+void USpeedBranchWheelSubBody::InitializeReference(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,
+    const Speed::Netcode::Prediction::FPrivateReferenceOwnerBirth& Proof,ISpeedComponent* Parent)
+{InitializeReferenceWheel(Operation,Proof,Parent);}
+
+void USpeedBranchWheelSubBody::InitializeNative(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,ISpeedComponent* Parent)
+{
+    using namespace Speed::Netcode::Prediction;FPrivateNativeStorageAccess::RequireBirth(Operation);
+    (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadSubBodyValues>(Operation,this);
+    (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadSolidValues>(Operation,this);
+    (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadSphereDomain>(Operation,this);
+    (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadWheelDomain>(Operation,this);
+    Speed::NativeKinematics::FComponentRead::ValidateCurrentAndSubBodies(Operation,Parent);
+    InitializeNativeWheel(Operation,Parent);
+}
+FMatrix USpeedBranchWheelSubBody::ComputeNativeInitialInverseTensor(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation) const
+{
+    using namespace Speed::Netcode::Prediction;FPrivateNativeStorageAccess::RequireBirth(Operation);
+    (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadSubBodyValues>(Operation,this);
+    (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadSolidValues>(Operation,this);
+    (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadSphereDomain>(Operation,this);
+    (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadWheelDomain>(Operation,this);
+    return InitialNativeInverseTensor(Operation);
+}
+
+void USpeedBranchBoxSubBody::AcceptNativeHit(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation)
+{
+    using namespace Speed::Netcode::Prediction;
+    (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadSubBodyValues>(Operation,this);
+    (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadSolidValues>(Operation,this);
+    (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadBoxDomain>(Operation,this);
+    AcceptNativeBoxHit(Operation);
+}
+void USpeedBranchWheelSubBody::AcceptNativeHit(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation)
+{
+    using namespace Speed::Netcode::Prediction;
+    (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadSubBodyValues>(Operation,this);
+    (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadSolidValues>(Operation,this);
+    (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadSphereDomain>(Operation,this);
+    (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadWheelDomain>(Operation,this);
+    AcceptNativeWheelHit(Operation);
+}
+
+void USpeedBranchBoxSubBody::UpdateNativeKinematicsFromOwner(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const SKinematic& ParentKinematic)
+{
+    using namespace Speed::Netcode::Prediction;
+    (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadSubBodyValues>(Operation,this);
+    (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadSolidValues>(Operation,this);
+    (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadBoxDomain>(Operation,this);
+    UpdateNativeBaseKinematicsFromOwner(Operation,ParentKinematic);
+}
+void USpeedBranchWheelSubBody::UpdateNativeKinematicsFromOwner(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const SKinematic& ParentKinematic)
+{
+    using namespace Speed::Netcode::Prediction;
+    (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadSubBodyValues>(Operation,this);
+    (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadSolidValues>(Operation,this);
+    (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadSphereDomain>(Operation,this);
+    (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadWheelDomain>(Operation,this);
+    UpdateNativeWheelKinematicsFromOwner(Operation,ParentKinematic);
+}
+
+FMatrix USpeedBranchBoxSubBody::ComputeNativeWorldInvInertiaTensor(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation) const
+{
+    using namespace Speed::Netcode::Prediction;
+    const auto& Body=FPrivateNativeStorageAccess::Part<const FPrivateRoadSubBodyValues>(Operation,this);
+    const auto& Solid=FPrivateNativeStorageAccess::Part<const FPrivateRoadSolidValues>(Operation,this);
+    (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadBoxDomain>(Operation,this);
+    if(!Body.ParentComponent)return FMatrix::Identity; // real original null-parent branch
+    const FQuat ChassisQ=Speed::NativeKinematics::FComponentRead::Rotation(Operation,*Body.ParentComponent);
+    const FQuat HitboxRelQ=Body.LocalPose.GetRotation();
+    const FQuat Qworld=ChassisQ*HitboxRelQ;
+    const FMatrix R=FQuatRotationMatrix(Qworld);
+    return R.GetTransposed()*Solid.InvInertiaLocal*R;
+}
+FMatrix USpeedBranchWheelSubBody::ComputeNativeWorldInvInertiaTensor(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation) const
+{
+    using namespace Speed::Netcode::Prediction;
+    // Actual final wheel inherits the sphere tensor rule: no parent-dependent
+    // rotation or fabricated fallback is inserted.
+    (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadSubBodyValues>(Operation,this);
+    (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadSphereDomain>(Operation,this);
+    (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadWheelDomain>(Operation,this);
+    const auto& Solid=FPrivateNativeStorageAccess::Part<const FPrivateRoadSolidValues>(Operation,this);
+    return Solid.InvInertiaLocal;
+}
+
+const Speed::FKinematicState& USpeedBranchBoxSubBody::ReadPhysicsSweeperKinematics() const
+{
+    return Speed::NativeKinematics::FBodyRead::Body(*this);
+}
+
+Speed::FKinematicState& USpeedBranchBoxSubBody::KinematicsStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->Kinematics:USSubBody::KinematicsStorage();
+}
+Speed::FKinematicState const& USpeedBranchBoxSubBody::KinematicsStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->Kinematics:USSubBody::KinematicsStorage();
+}
+SHitResult& USpeedBranchBoxSubBody::FutureHitStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->FutureHit:USSubBody::FutureHitStorage();
+}
+SHitResult const& USpeedBranchBoxSubBody::FutureHitStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->FutureHit:USSubBody::FutureHitStorage();
+}
+SHitResult& USpeedBranchBoxSubBody::CurrentHitStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->CurrentHit:USSubBody::CurrentHitStorage();
+}
+SHitResult const& USpeedBranchBoxSubBody::CurrentHitStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->CurrentHit:USSubBody::CurrentHitStorage();
+}
+SHitResult& USpeedBranchBoxSubBody::GroundHitStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->GroundHit:USSubBody::GroundHitStorage();
+}
+SHitResult const& USpeedBranchBoxSubBody::GroundHitStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->GroundHit:USSubBody::GroundHitStorage();
+}
+SHitResult& USpeedBranchBoxSubBody::BoxHitStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->BoxHit:USSubBody::BoxHitStorage();
+}
+SHitResult const& USpeedBranchBoxSubBody::BoxHitStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->BoxHit:USSubBody::BoxHitStorage();
+}
+SHitResult& USpeedBranchBoxSubBody::SphereHitStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->SphereHit:USSubBody::SphereHitStorage();
+}
+SHitResult const& USpeedBranchBoxSubBody::SphereHitStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->SphereHit:USSubBody::SphereHitStorage();
+}
+SHitResult& USpeedBranchBoxSubBody::WheelHitStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->WheelHit:USSubBody::WheelHitStorage();
+}
+SHitResult const& USpeedBranchBoxSubBody::WheelHitStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->WheelHit:USSubBody::WheelHitStorage();
+}
+USpeedBranchWheelSubBody::USpeedBranchWheelSubBody(const FObjectInitializer& Initializer)
+    :Super(Initializer),
+     OwnedBodyValues(std::make_shared<Speed::Netcode::Prediction::FPrivateRoadSubBodyValues>()),
+     OwnedSolidValues(std::make_shared<Speed::Netcode::Prediction::FPrivateRoadSolidValues>()),
+     OwnedWheelRuntime(std::make_shared<Speed::Netcode::Prediction::FPrivateRoadWheelRuntimeValues>()),
+     OwnedWheelDomain(std::make_shared<Speed::Netcode::Prediction::FPrivateRoadWheelDomain>()),
+     OwnedSphereDomain(std::make_shared<Speed::Netcode::Prediction::FPrivateRoadSphereDomain>())
+{
+    OwnedBodyValues->SubBodyType=ESubBodyType::Wheel;
+    OwnedBodyValues->IgnoredSubBodyTypes.AddUnique(ESubBodyType::Wheel);
+    OwnedSolidValues->bApplyRestForce=false;
+    OwnedSolidValues->Mass=USWheelSubBody::DefaultWheelMass;
+}
+TWeakObjectPtr<USSubBody> USpeedBranchWheelSubBody::GetPhysicsWeakIdentity() const
+{
+    if(!UsesOriginalBodyStorage())return Super::GetPhysicsWeakIdentity();
+    if(OriginalBodyIdentity.Get()!=this)throw Speed::NativeObjectRead::FUnresolvedOriginal();
+    return OriginalBodyIdentity; // real original weak serial, not an index minted during math
+}
+bool USpeedBranchWheelSubBody::UsesOriginalBodyStorage() const
+{
+    if(!IsInGameThread()||!Speed::Netcode::Prediction::OriginalComponentStorageOwner)return false;
+    const auto A=StorageAccess.lock();
+    return OwnedBodyValues&&A&&Speed::Netcode::Prediction::OriginalComponentStorageOwner==A.get();
+}
+const Speed::FKinematicState& USpeedBranchWheelSubBody::ReadPhysicsSweeperKinematics() const
+{
+    return Speed::NativeKinematics::FBodyRead::Body(*this);
+}
+
+Speed::FKinematicState& USpeedBranchWheelSubBody::KinematicsStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->Kinematics:USSubBody::KinematicsStorage();
+}
+Speed::FKinematicState const& USpeedBranchWheelSubBody::KinematicsStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->Kinematics:USSubBody::KinematicsStorage();
+}
+SHitResult& USpeedBranchWheelSubBody::FutureHitStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->FutureHit:USSubBody::FutureHitStorage();
+}
+SHitResult const& USpeedBranchWheelSubBody::FutureHitStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->FutureHit:USSubBody::FutureHitStorage();
+}
+SHitResult& USpeedBranchWheelSubBody::CurrentHitStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->CurrentHit:USSubBody::CurrentHitStorage();
+}
+SHitResult const& USpeedBranchWheelSubBody::CurrentHitStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->CurrentHit:USSubBody::CurrentHitStorage();
+}
+SHitResult& USpeedBranchWheelSubBody::GroundHitStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->GroundHit:USSubBody::GroundHitStorage();
+}
+SHitResult const& USpeedBranchWheelSubBody::GroundHitStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->GroundHit:USSubBody::GroundHitStorage();
+}
+SHitResult& USpeedBranchWheelSubBody::BoxHitStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->BoxHit:USSubBody::BoxHitStorage();
+}
+SHitResult const& USpeedBranchWheelSubBody::BoxHitStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->BoxHit:USSubBody::BoxHitStorage();
+}
+SHitResult& USpeedBranchWheelSubBody::SphereHitStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->SphereHit:USSubBody::SphereHitStorage();
+}
+SHitResult const& USpeedBranchWheelSubBody::SphereHitStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->SphereHit:USSubBody::SphereHitStorage();
+}
+SHitResult& USpeedBranchWheelSubBody::WheelHitStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->WheelHit:USSubBody::WheelHitStorage();
+}
+SHitResult const& USpeedBranchWheelSubBody::WheelHitStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->WheelHit:USSubBody::WheelHitStorage();
+}
+float& USpeedBranchWheelSubBody::SuspensionForceRuntimeStorage()
+{
+    return OwnedWheelRuntime&&UsesOriginalBodyStorage()?OwnedWheelRuntime->SuspensionForce:USWheelSubBody::SuspensionForceRuntimeStorage();
+}
+float const& USpeedBranchWheelSubBody::SuspensionForceRuntimeStorage() const
+{
+    return OwnedWheelRuntime&&UsesOriginalBodyStorage()?OwnedWheelRuntime->SuspensionForce:USWheelSubBody::SuspensionForceRuntimeStorage();
+}
+uint8& USpeedBranchWheelSubBody::bIsJumpingRuntimeStorage()
+{
+    return OwnedWheelRuntime&&UsesOriginalBodyStorage()?OwnedWheelRuntime->bIsJumping:USWheelSubBody::bIsJumpingRuntimeStorage();
+}
+uint8 const& USpeedBranchWheelSubBody::bIsJumpingRuntimeStorage() const
+{
+    return OwnedWheelRuntime&&UsesOriginalBodyStorage()?OwnedWheelRuntime->bIsJumping:USWheelSubBody::bIsJumpingRuntimeStorage();
+}
+bool& USpeedBranchWheelSubBody::bJumpUnilateralSupportRuntimeStorage()
+{
+    return OwnedWheelRuntime&&UsesOriginalBodyStorage()?OwnedWheelRuntime->bJumpUnilateralSupport:USWheelSubBody::bJumpUnilateralSupportRuntimeStorage();
+}
+bool const& USpeedBranchWheelSubBody::bJumpUnilateralSupportRuntimeStorage() const
+{
+    return OwnedWheelRuntime&&UsesOriginalBodyStorage()?OwnedWheelRuntime->bJumpUnilateralSupport:USWheelSubBody::bJumpUnilateralSupportRuntimeStorage();
+}
+uint8& USpeedBranchWheelSubBody::ConsecutiveGroundFramesRuntimeStorage()
+{
+    return OwnedWheelRuntime&&UsesOriginalBodyStorage()?OwnedWheelRuntime->ConsecutiveGroundFrames:USWheelSubBody::ConsecutiveGroundFramesRuntimeStorage();
+}
+uint8 const& USpeedBranchWheelSubBody::ConsecutiveGroundFramesRuntimeStorage() const
+{
+    return OwnedWheelRuntime&&UsesOriginalBodyStorage()?OwnedWheelRuntime->ConsecutiveGroundFrames:USWheelSubBody::ConsecutiveGroundFramesRuntimeStorage();
+}
+float& USpeedBranchWheelSubBody::SteeringAngleRuntimeStorage()
+{
+    return OwnedWheelRuntime&&UsesOriginalBodyStorage()?OwnedWheelRuntime->SteeringAngle:USWheelSubBody::SteeringAngleRuntimeStorage();
+}
+float const& USpeedBranchWheelSubBody::SteeringAngleRuntimeStorage() const
+{
+    return OwnedWheelRuntime&&UsesOriginalBodyStorage()?OwnedWheelRuntime->SteeringAngle:USWheelSubBody::SteeringAngleRuntimeStorage();
+}
+float& USpeedBranchWheelSubBody::OmegaRuntimeStorage()
+{
+    return OwnedWheelRuntime&&UsesOriginalBodyStorage()?OwnedWheelRuntime->Omega:USWheelSubBody::OmegaRuntimeStorage();
+}
+float const& USpeedBranchWheelSubBody::OmegaRuntimeStorage() const
+{
+    return OwnedWheelRuntime&&UsesOriginalBodyStorage()?OwnedWheelRuntime->Omega:USWheelSubBody::OmegaRuntimeStorage();
+}
+float& USpeedBranchWheelSubBody::RollAngleRuntimeStorage()
+{
+    return OwnedWheelRuntime&&UsesOriginalBodyStorage()?OwnedWheelRuntime->RollAngle:USWheelSubBody::RollAngleRuntimeStorage();
+}
+float const& USpeedBranchWheelSubBody::RollAngleRuntimeStorage() const
+{
+    return OwnedWheelRuntime&&UsesOriginalBodyStorage()?OwnedWheelRuntime->RollAngle:USWheelSubBody::RollAngleRuntimeStorage();
+}
+bool& USpeedBranchWheelSubBody::bWasOnGroundPrevFrameRuntimeStorage()
+{
+    return OwnedWheelRuntime&&UsesOriginalBodyStorage()?OwnedWheelRuntime->bWasOnGroundPrevFrame:USWheelSubBody::bWasOnGroundPrevFrameRuntimeStorage();
+}
+bool const& USpeedBranchWheelSubBody::bWasOnGroundPrevFrameRuntimeStorage() const
+{
+    return OwnedWheelRuntime&&UsesOriginalBodyStorage()?OwnedWheelRuntime->bWasOnGroundPrevFrame:USWheelSubBody::bWasOnGroundPrevFrameRuntimeStorage();
+}
+bool& USpeedBranchWheelSubBody::bCountedGroundFrameRuntimeStorage()
+{
+    return OwnedWheelRuntime&&UsesOriginalBodyStorage()?OwnedWheelRuntime->bCountedGroundFrame:USWheelSubBody::bCountedGroundFrameRuntimeStorage();
+}
+bool const& USpeedBranchWheelSubBody::bCountedGroundFrameRuntimeStorage() const
+{
+    return OwnedWheelRuntime&&UsesOriginalBodyStorage()?OwnedWheelRuntime->bCountedGroundFrame:USWheelSubBody::bCountedGroundFrameRuntimeStorage();
+}
+bool& USpeedBranchWheelSubBody::bContactVelocityLockedRuntimeStorage()
+{
+    return OwnedWheelRuntime&&UsesOriginalBodyStorage()?OwnedWheelRuntime->bContactVelocityLocked:USWheelSubBody::bContactVelocityLockedRuntimeStorage();
+}
+bool const& USpeedBranchWheelSubBody::bContactVelocityLockedRuntimeStorage() const
+{
+    return OwnedWheelRuntime&&UsesOriginalBodyStorage()?OwnedWheelRuntime->bContactVelocityLocked:USWheelSubBody::bContactVelocityLockedRuntimeStorage();
+}
+bool& USpeedBranchWheelSubBody::bCrossedIntoCompressionThisFrameRuntimeStorage()
+{
+    return OwnedWheelRuntime&&UsesOriginalBodyStorage()?OwnedWheelRuntime->bCrossedIntoCompressionThisFrame:USWheelSubBody::bCrossedIntoCompressionThisFrameRuntimeStorage();
+}
+bool const& USpeedBranchWheelSubBody::bCrossedIntoCompressionThisFrameRuntimeStorage() const
+{
+    return OwnedWheelRuntime&&UsesOriginalBodyStorage()?OwnedWheelRuntime->bCrossedIntoCompressionThisFrame:USWheelSubBody::bCrossedIntoCompressionThisFrameRuntimeStorage();
+}
+FVector& USpeedBranchWheelSubBody::ForwardAxisRuntimeStorage()
+{
+    return OwnedWheelRuntime&&UsesOriginalBodyStorage()?OwnedWheelRuntime->ForwardAxis:USWheelSubBody::ForwardAxisRuntimeStorage();
+}
+FVector const& USpeedBranchWheelSubBody::ForwardAxisRuntimeStorage() const
+{
+    return OwnedWheelRuntime&&UsesOriginalBodyStorage()?OwnedWheelRuntime->ForwardAxis:USWheelSubBody::ForwardAxisRuntimeStorage();
+}
+FVector& USpeedBranchWheelSubBody::RightAxisRuntimeStorage()
+{
+    return OwnedWheelRuntime&&UsesOriginalBodyStorage()?OwnedWheelRuntime->RightAxis:USWheelSubBody::RightAxisRuntimeStorage();
+}
+FVector const& USpeedBranchWheelSubBody::RightAxisRuntimeStorage() const
+{
+    return OwnedWheelRuntime&&UsesOriginalBodyStorage()?OwnedWheelRuntime->RightAxis:USWheelSubBody::RightAxisRuntimeStorage();
+}
+FVector& USpeedBranchWheelSubBody::UpAxisRuntimeStorage()
+{
+    return OwnedWheelRuntime&&UsesOriginalBodyStorage()?OwnedWheelRuntime->UpAxis:USWheelSubBody::UpAxisRuntimeStorage();
+}
+FVector const& USpeedBranchWheelSubBody::UpAxisRuntimeStorage() const
+{
+    return OwnedWheelRuntime&&UsesOriginalBodyStorage()?OwnedWheelRuntime->UpAxis:USWheelSubBody::UpAxisRuntimeStorage();
+}
+SWheelRenderData& USpeedBranchWheelSubBody::RenderDataRuntimeStorage()
+{
+    return OwnedWheelRuntime&&UsesOriginalBodyStorage()?OwnedWheelRuntime->RenderData:USWheelSubBody::RenderDataRuntimeStorage();
+}
+SWheelRenderData const& USpeedBranchWheelSubBody::RenderDataRuntimeStorage() const
+{
+    return OwnedWheelRuntime&&UsesOriginalBodyStorage()?OwnedWheelRuntime->RenderData:USWheelSubBody::RenderDataRuntimeStorage();
+}
+float& USpeedBranchBoxSubBody::MassSolidStorage()
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->Mass:USolidSubBody::MassSolidStorage();
+}
+float const& USpeedBranchBoxSubBody::MassSolidStorage() const
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->Mass:USolidSubBody::MassSolidStorage();
+}
+bool& USpeedBranchBoxSubBody::bIsMainSubBodySolidStorage()
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->bIsMainSubBody:USolidSubBody::bIsMainSubBodySolidStorage();
+}
+bool const& USpeedBranchBoxSubBody::bIsMainSubBodySolidStorage() const
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->bIsMainSubBody:USolidSubBody::bIsMainSubBodySolidStorage();
+}
+bool& USpeedBranchBoxSubBody::bApplyRestForceSolidStorage()
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->bApplyRestForce:USolidSubBody::bApplyRestForceSolidStorage();
+}
+bool const& USpeedBranchBoxSubBody::bApplyRestForceSolidStorage() const
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->bApplyRestForce:USolidSubBody::bApplyRestForceSolidStorage();
+}
+bool& USpeedBranchBoxSubBody::EnableFakePhysicsSolidStorage()
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->EnableFakePhysics:USolidSubBody::EnableFakePhysicsSolidStorage();
+}
+bool const& USpeedBranchBoxSubBody::EnableFakePhysicsSolidStorage() const
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->EnableFakePhysics:USolidSubBody::EnableFakePhysicsSolidStorage();
+}
+bool& USpeedBranchBoxSubBody::bEnableConstraintOnSubBodyHitSolidStorage()
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->bEnableConstraintOnSubBodyHit:USolidSubBody::bEnableConstraintOnSubBodyHitSolidStorage();
+}
+bool const& USpeedBranchBoxSubBody::bEnableConstraintOnSubBodyHitSolidStorage() const
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->bEnableConstraintOnSubBodyHit:USolidSubBody::bEnableConstraintOnSubBodyHitSolidStorage();
+}
+float& USpeedBranchBoxSubBody::RestitutionSolidStorage()
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->Restitution:USolidSubBody::RestitutionSolidStorage();
+}
+float const& USpeedBranchBoxSubBody::RestitutionSolidStorage() const
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->Restitution:USolidSubBody::RestitutionSolidStorage();
+}
+float& USpeedBranchBoxSubBody::SphereBoxRestitutionOverrideSolidStorage()
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->SphereBoxRestitutionOverride:USolidSubBody::SphereBoxRestitutionOverrideSolidStorage();
+}
+float const& USpeedBranchBoxSubBody::SphereBoxRestitutionOverrideSolidStorage() const
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->SphereBoxRestitutionOverride:USolidSubBody::SphereBoxRestitutionOverrideSolidStorage();
+}
+float& USpeedBranchBoxSubBody::SphereBoxFrictionOverrideSolidStorage()
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->SphereBoxFrictionOverride:USolidSubBody::SphereBoxFrictionOverrideSolidStorage();
+}
+float const& USpeedBranchBoxSubBody::SphereBoxFrictionOverrideSolidStorage() const
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->SphereBoxFrictionOverride:USolidSubBody::SphereBoxFrictionOverrideSolidStorage();
+}
+float& USpeedBranchBoxSubBody::SphereBoxManifoldFrictionOverrideSolidStorage()
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->SphereBoxManifoldFrictionOverride:USolidSubBody::SphereBoxManifoldFrictionOverrideSolidStorage();
+}
+float const& USpeedBranchBoxSubBody::SphereBoxManifoldFrictionOverrideSolidStorage() const
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->SphereBoxManifoldFrictionOverride:USolidSubBody::SphereBoxManifoldFrictionOverrideSolidStorage();
+}
+bool& USpeedBranchBoxSubBody::bUseCoupledContactImpulseSolidStorage()
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->bUseCoupledContactImpulse:USolidSubBody::bUseCoupledContactImpulseSolidStorage();
+}
+bool const& USpeedBranchBoxSubBody::bUseCoupledContactImpulseSolidStorage() const
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->bUseCoupledContactImpulse:USolidSubBody::bUseCoupledContactImpulseSolidStorage();
+}
+bool& USpeedBranchBoxSubBody::bUsePostNormalFrictionImpulseSolidStorage()
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->bUsePostNormalFrictionImpulse:USolidSubBody::bUsePostNormalFrictionImpulseSolidStorage();
+}
+bool const& USpeedBranchBoxSubBody::bUsePostNormalFrictionImpulseSolidStorage() const
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->bUsePostNormalFrictionImpulse:USolidSubBody::bUsePostNormalFrictionImpulseSolidStorage();
+}
+bool& USpeedBranchBoxSubBody::bUsePersistentBilateralContactSolidStorage()
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->bUsePersistentBilateralContact:USolidSubBody::bUsePersistentBilateralContactSolidStorage();
+}
+bool const& USpeedBranchBoxSubBody::bUsePersistentBilateralContactSolidStorage() const
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->bUsePersistentBilateralContact:USolidSubBody::bUsePersistentBilateralContactSolidStorage();
+}
+float& USpeedBranchBoxSubBody::CoupledContactMaxLinearSpeedSolidStorage()
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->CoupledContactMaxLinearSpeed:USolidSubBody::CoupledContactMaxLinearSpeedSolidStorage();
+}
+float const& USpeedBranchBoxSubBody::CoupledContactMaxLinearSpeedSolidStorage() const
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->CoupledContactMaxLinearSpeed:USolidSubBody::CoupledContactMaxLinearSpeedSolidStorage();
+}
+float& USpeedBranchBoxSubBody::CoupledContactMaxAngularSpeedSolidStorage()
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->CoupledContactMaxAngularSpeed:USolidSubBody::CoupledContactMaxAngularSpeedSolidStorage();
+}
+float const& USpeedBranchBoxSubBody::CoupledContactMaxAngularSpeedSolidStorage() const
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->CoupledContactMaxAngularSpeed:USolidSubBody::CoupledContactMaxAngularSpeedSolidStorage();
+}
+float& USpeedBranchBoxSubBody::CoupledContactMaxAbsLocalNormalYSolidStorage()
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->CoupledContactMaxAbsLocalNormalY:USolidSubBody::CoupledContactMaxAbsLocalNormalYSolidStorage();
+}
+float const& USpeedBranchBoxSubBody::CoupledContactMaxAbsLocalNormalYSolidStorage() const
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->CoupledContactMaxAbsLocalNormalY:USolidSubBody::CoupledContactMaxAbsLocalNormalYSolidStorage();
+}
+float& USpeedBranchBoxSubBody::StaticFrictionSolidStorage()
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->StaticFriction:USolidSubBody::StaticFrictionSolidStorage();
+}
+float const& USpeedBranchBoxSubBody::StaticFrictionSolidStorage() const
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->StaticFriction:USolidSubBody::StaticFrictionSolidStorage();
+}
+float& USpeedBranchBoxSubBody::DynamicFrictionSolidStorage()
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->DynamicFriction:USolidSubBody::DynamicFrictionSolidStorage();
+}
+float const& USpeedBranchBoxSubBody::DynamicFrictionSolidStorage() const
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->DynamicFriction:USolidSubBody::DynamicFrictionSolidStorage();
+}
+float& USpeedBranchBoxSubBody::ImpactThresholdSolidStorage()
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->ImpactThreshold:USolidSubBody::ImpactThresholdSolidStorage();
+}
+float const& USpeedBranchBoxSubBody::ImpactThresholdSolidStorage() const
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->ImpactThreshold:USolidSubBody::ImpactThresholdSolidStorage();
+}
+float& USpeedBranchBoxSubBody::HitDampingSolidStorage()
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->HitDamping:USolidSubBody::HitDampingSolidStorage();
+}
+float const& USpeedBranchBoxSubBody::HitDampingSolidStorage() const
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->HitDamping:USolidSubBody::HitDampingSolidStorage();
+}
+FMatrix& USpeedBranchBoxSubBody::InvInertiaLocalSolidStorage()
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->InvInertiaLocal:USolidSubBody::InvInertiaLocalSolidStorage();
+}
+FMatrix const& USpeedBranchBoxSubBody::InvInertiaLocalSolidStorage() const
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->InvInertiaLocal:USolidSubBody::InvInertiaLocalSolidStorage();
+}
+int& USpeedBranchBoxSubBody::idxSolidStorage()
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->idx:USolidSubBody::idxSolidStorage();
+}
+int const& USpeedBranchBoxSubBody::idxSolidStorage() const
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->idx:USolidSubBody::idxSolidStorage();
+}
+float& USpeedBranchWheelSubBody::MassSolidStorage()
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->Mass:USolidSubBody::MassSolidStorage();
+}
+float const& USpeedBranchWheelSubBody::MassSolidStorage() const
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->Mass:USolidSubBody::MassSolidStorage();
+}
+bool& USpeedBranchWheelSubBody::bIsMainSubBodySolidStorage()
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->bIsMainSubBody:USolidSubBody::bIsMainSubBodySolidStorage();
+}
+bool const& USpeedBranchWheelSubBody::bIsMainSubBodySolidStorage() const
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->bIsMainSubBody:USolidSubBody::bIsMainSubBodySolidStorage();
+}
+bool& USpeedBranchWheelSubBody::bApplyRestForceSolidStorage()
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->bApplyRestForce:USolidSubBody::bApplyRestForceSolidStorage();
+}
+bool const& USpeedBranchWheelSubBody::bApplyRestForceSolidStorage() const
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->bApplyRestForce:USolidSubBody::bApplyRestForceSolidStorage();
+}
+bool& USpeedBranchWheelSubBody::EnableFakePhysicsSolidStorage()
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->EnableFakePhysics:USolidSubBody::EnableFakePhysicsSolidStorage();
+}
+bool const& USpeedBranchWheelSubBody::EnableFakePhysicsSolidStorage() const
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->EnableFakePhysics:USolidSubBody::EnableFakePhysicsSolidStorage();
+}
+bool& USpeedBranchWheelSubBody::bEnableConstraintOnSubBodyHitSolidStorage()
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->bEnableConstraintOnSubBodyHit:USolidSubBody::bEnableConstraintOnSubBodyHitSolidStorage();
+}
+bool const& USpeedBranchWheelSubBody::bEnableConstraintOnSubBodyHitSolidStorage() const
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->bEnableConstraintOnSubBodyHit:USolidSubBody::bEnableConstraintOnSubBodyHitSolidStorage();
+}
+float& USpeedBranchWheelSubBody::RestitutionSolidStorage()
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->Restitution:USolidSubBody::RestitutionSolidStorage();
+}
+float const& USpeedBranchWheelSubBody::RestitutionSolidStorage() const
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->Restitution:USolidSubBody::RestitutionSolidStorage();
+}
+float& USpeedBranchWheelSubBody::SphereBoxRestitutionOverrideSolidStorage()
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->SphereBoxRestitutionOverride:USolidSubBody::SphereBoxRestitutionOverrideSolidStorage();
+}
+float const& USpeedBranchWheelSubBody::SphereBoxRestitutionOverrideSolidStorage() const
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->SphereBoxRestitutionOverride:USolidSubBody::SphereBoxRestitutionOverrideSolidStorage();
+}
+float& USpeedBranchWheelSubBody::SphereBoxFrictionOverrideSolidStorage()
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->SphereBoxFrictionOverride:USolidSubBody::SphereBoxFrictionOverrideSolidStorage();
+}
+float const& USpeedBranchWheelSubBody::SphereBoxFrictionOverrideSolidStorage() const
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->SphereBoxFrictionOverride:USolidSubBody::SphereBoxFrictionOverrideSolidStorage();
+}
+float& USpeedBranchWheelSubBody::SphereBoxManifoldFrictionOverrideSolidStorage()
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->SphereBoxManifoldFrictionOverride:USolidSubBody::SphereBoxManifoldFrictionOverrideSolidStorage();
+}
+float const& USpeedBranchWheelSubBody::SphereBoxManifoldFrictionOverrideSolidStorage() const
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->SphereBoxManifoldFrictionOverride:USolidSubBody::SphereBoxManifoldFrictionOverrideSolidStorage();
+}
+bool& USpeedBranchWheelSubBody::bUseCoupledContactImpulseSolidStorage()
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->bUseCoupledContactImpulse:USolidSubBody::bUseCoupledContactImpulseSolidStorage();
+}
+bool const& USpeedBranchWheelSubBody::bUseCoupledContactImpulseSolidStorage() const
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->bUseCoupledContactImpulse:USolidSubBody::bUseCoupledContactImpulseSolidStorage();
+}
+bool& USpeedBranchWheelSubBody::bUsePostNormalFrictionImpulseSolidStorage()
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->bUsePostNormalFrictionImpulse:USolidSubBody::bUsePostNormalFrictionImpulseSolidStorage();
+}
+bool const& USpeedBranchWheelSubBody::bUsePostNormalFrictionImpulseSolidStorage() const
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->bUsePostNormalFrictionImpulse:USolidSubBody::bUsePostNormalFrictionImpulseSolidStorage();
+}
+bool& USpeedBranchWheelSubBody::bUsePersistentBilateralContactSolidStorage()
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->bUsePersistentBilateralContact:USolidSubBody::bUsePersistentBilateralContactSolidStorage();
+}
+bool const& USpeedBranchWheelSubBody::bUsePersistentBilateralContactSolidStorage() const
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->bUsePersistentBilateralContact:USolidSubBody::bUsePersistentBilateralContactSolidStorage();
+}
+float& USpeedBranchWheelSubBody::CoupledContactMaxLinearSpeedSolidStorage()
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->CoupledContactMaxLinearSpeed:USolidSubBody::CoupledContactMaxLinearSpeedSolidStorage();
+}
+float const& USpeedBranchWheelSubBody::CoupledContactMaxLinearSpeedSolidStorage() const
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->CoupledContactMaxLinearSpeed:USolidSubBody::CoupledContactMaxLinearSpeedSolidStorage();
+}
+float& USpeedBranchWheelSubBody::CoupledContactMaxAngularSpeedSolidStorage()
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->CoupledContactMaxAngularSpeed:USolidSubBody::CoupledContactMaxAngularSpeedSolidStorage();
+}
+float const& USpeedBranchWheelSubBody::CoupledContactMaxAngularSpeedSolidStorage() const
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->CoupledContactMaxAngularSpeed:USolidSubBody::CoupledContactMaxAngularSpeedSolidStorage();
+}
+float& USpeedBranchWheelSubBody::CoupledContactMaxAbsLocalNormalYSolidStorage()
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->CoupledContactMaxAbsLocalNormalY:USolidSubBody::CoupledContactMaxAbsLocalNormalYSolidStorage();
+}
+float const& USpeedBranchWheelSubBody::CoupledContactMaxAbsLocalNormalYSolidStorage() const
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->CoupledContactMaxAbsLocalNormalY:USolidSubBody::CoupledContactMaxAbsLocalNormalYSolidStorage();
+}
+float& USpeedBranchWheelSubBody::StaticFrictionSolidStorage()
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->StaticFriction:USolidSubBody::StaticFrictionSolidStorage();
+}
+float const& USpeedBranchWheelSubBody::StaticFrictionSolidStorage() const
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->StaticFriction:USolidSubBody::StaticFrictionSolidStorage();
+}
+float& USpeedBranchWheelSubBody::DynamicFrictionSolidStorage()
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->DynamicFriction:USolidSubBody::DynamicFrictionSolidStorage();
+}
+float const& USpeedBranchWheelSubBody::DynamicFrictionSolidStorage() const
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->DynamicFriction:USolidSubBody::DynamicFrictionSolidStorage();
+}
+float& USpeedBranchWheelSubBody::ImpactThresholdSolidStorage()
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->ImpactThreshold:USolidSubBody::ImpactThresholdSolidStorage();
+}
+float const& USpeedBranchWheelSubBody::ImpactThresholdSolidStorage() const
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->ImpactThreshold:USolidSubBody::ImpactThresholdSolidStorage();
+}
+float& USpeedBranchWheelSubBody::HitDampingSolidStorage()
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->HitDamping:USolidSubBody::HitDampingSolidStorage();
+}
+float const& USpeedBranchWheelSubBody::HitDampingSolidStorage() const
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->HitDamping:USolidSubBody::HitDampingSolidStorage();
+}
+FMatrix& USpeedBranchWheelSubBody::InvInertiaLocalSolidStorage()
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->InvInertiaLocal:USolidSubBody::InvInertiaLocalSolidStorage();
+}
+FMatrix const& USpeedBranchWheelSubBody::InvInertiaLocalSolidStorage() const
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->InvInertiaLocal:USolidSubBody::InvInertiaLocalSolidStorage();
+}
+int& USpeedBranchWheelSubBody::idxSolidStorage()
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->idx:USolidSubBody::idxSolidStorage();
+}
+int const& USpeedBranchWheelSubBody::idxSolidStorage() const
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->idx:USolidSubBody::idxSolidStorage();
+}
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+Speed::Netcode::Prediction::FPrivateRoadSolidValues USpeedBranchBoxSubBody::ReadLegacySolidDiagnosticValues() const
+{
+    Speed::Netcode::Prediction::FPrivateRoadSolidValues V;
+    V.Mass=USolidSubBody::MassSolidStorage();
+    V.bIsMainSubBody=USolidSubBody::bIsMainSubBodySolidStorage();
+    V.bApplyRestForce=USolidSubBody::bApplyRestForceSolidStorage();
+    V.EnableFakePhysics=USolidSubBody::EnableFakePhysicsSolidStorage();
+    V.bEnableConstraintOnSubBodyHit=USolidSubBody::bEnableConstraintOnSubBodyHitSolidStorage();
+    V.Restitution=USolidSubBody::RestitutionSolidStorage();
+    V.SphereBoxRestitutionOverride=USolidSubBody::SphereBoxRestitutionOverrideSolidStorage();
+    V.SphereBoxFrictionOverride=USolidSubBody::SphereBoxFrictionOverrideSolidStorage();
+    V.SphereBoxManifoldFrictionOverride=USolidSubBody::SphereBoxManifoldFrictionOverrideSolidStorage();
+    V.bUseCoupledContactImpulse=USolidSubBody::bUseCoupledContactImpulseSolidStorage();
+    V.bUsePostNormalFrictionImpulse=USolidSubBody::bUsePostNormalFrictionImpulseSolidStorage();
+    V.bUsePersistentBilateralContact=USolidSubBody::bUsePersistentBilateralContactSolidStorage();
+    V.CoupledContactMaxLinearSpeed=USolidSubBody::CoupledContactMaxLinearSpeedSolidStorage();
+    V.CoupledContactMaxAngularSpeed=USolidSubBody::CoupledContactMaxAngularSpeedSolidStorage();
+    V.CoupledContactMaxAbsLocalNormalY=USolidSubBody::CoupledContactMaxAbsLocalNormalYSolidStorage();
+    V.StaticFriction=USolidSubBody::StaticFrictionSolidStorage();
+    V.DynamicFriction=USolidSubBody::DynamicFrictionSolidStorage();
+    V.ImpactThreshold=USolidSubBody::ImpactThresholdSolidStorage();
+    V.HitDamping=USolidSubBody::HitDampingSolidStorage();
+    V.InvInertiaLocal=USolidSubBody::InvInertiaLocalSolidStorage();
+    V.idx=USolidSubBody::idxSolidStorage();
+    return V; // diagnostic copy only, never physical initialization
+}
+Speed::Netcode::Prediction::FPrivateRoadSolidValues USpeedBranchWheelSubBody::ReadLegacySolidDiagnosticValues() const
+{
+    Speed::Netcode::Prediction::FPrivateRoadSolidValues V;
+    V.Mass=USolidSubBody::MassSolidStorage();
+    V.bIsMainSubBody=USolidSubBody::bIsMainSubBodySolidStorage();
+    V.bApplyRestForce=USolidSubBody::bApplyRestForceSolidStorage();
+    V.EnableFakePhysics=USolidSubBody::EnableFakePhysicsSolidStorage();
+    V.bEnableConstraintOnSubBodyHit=USolidSubBody::bEnableConstraintOnSubBodyHitSolidStorage();
+    V.Restitution=USolidSubBody::RestitutionSolidStorage();
+    V.SphereBoxRestitutionOverride=USolidSubBody::SphereBoxRestitutionOverrideSolidStorage();
+    V.SphereBoxFrictionOverride=USolidSubBody::SphereBoxFrictionOverrideSolidStorage();
+    V.SphereBoxManifoldFrictionOverride=USolidSubBody::SphereBoxManifoldFrictionOverrideSolidStorage();
+    V.bUseCoupledContactImpulse=USolidSubBody::bUseCoupledContactImpulseSolidStorage();
+    V.bUsePostNormalFrictionImpulse=USolidSubBody::bUsePostNormalFrictionImpulseSolidStorage();
+    V.bUsePersistentBilateralContact=USolidSubBody::bUsePersistentBilateralContactSolidStorage();
+    V.CoupledContactMaxLinearSpeed=USolidSubBody::CoupledContactMaxLinearSpeedSolidStorage();
+    V.CoupledContactMaxAngularSpeed=USolidSubBody::CoupledContactMaxAngularSpeedSolidStorage();
+    V.CoupledContactMaxAbsLocalNormalY=USolidSubBody::CoupledContactMaxAbsLocalNormalYSolidStorage();
+    V.StaticFriction=USolidSubBody::StaticFrictionSolidStorage();
+    V.DynamicFriction=USolidSubBody::DynamicFrictionSolidStorage();
+    V.ImpactThreshold=USolidSubBody::ImpactThresholdSolidStorage();
+    V.HitDamping=USolidSubBody::HitDampingSolidStorage();
+    V.InvInertiaLocal=USolidSubBody::InvInertiaLocalSolidStorage();
+    V.idx=USolidSubBody::idxSolidStorage();
+    return V; // diagnostic copy only, never physical initialization
+}
+#endif
+TAtomic<uint64>& USpeedBranchWheeledComponent::PublishedSimulationStableIdStorage()
+{
+    return UsesOriginalComponentStorage()?OwnedComponentValues->PublishedStableId:ISpeedComponent::PublishedSimulationStableIdStorage();
+}
+TAtomic<uint64> const& USpeedBranchWheeledComponent::PublishedSimulationStableIdStorage() const
+{
+    return UsesOriginalComponentStorage()?OwnedComponentValues->PublishedStableId:ISpeedComponent::PublishedSimulationStableIdStorage();
+}
+USpeedBranchWheeledComponent::USpeedBranchWheeledComponent(const FObjectInitializer& Initializer)
+    :Super(Initializer.SetDefaultSubobjectClass<USpeedBranchBoxSubBody>(HitboxName).SetDefaultSubobjectClass<USpeedBranchWheelSubBody>(WheelNames[0]).SetDefaultSubobjectClass<USpeedBranchWheelSubBody>(WheelNames[1]).SetDefaultSubobjectClass<USpeedBranchWheelSubBody>(WheelNames[2]).SetDefaultSubobjectClass<USpeedBranchWheelSubBody>(WheelNames[3]),ESpeedWheeledNetworkConstruction::IAmSpeedOnly)
+{
+    // Super registers this native object with the global HUD debug multicast.
+    // Revoke that unrelated callback before the private factory registers it.
+    // Bound-entry removal is not a certificate for every possible escaped view.
+    AHUD::OnShowDebugInfo.RemoveAll(this);
+    // ASpeedCar deliberately applies its generic road recipe only to the
+    // exact generic component class. This specialized native owner explicitly
+    // adopts that SAME existing recipe at construction, without retuning it.
+    Speed::Driving::ApplyStockRoadCar(*this);
+    PrimaryComponentTick.bCanEverTick=false;PrimaryComponentTick.bStartWithTickEnabled=false;
+    SetAsyncPhysicsTickEnabled(false);
+    // No IAS legacy network DSOs are constructed. The factory also requires
+    // Chaos prediction disabled before construction, and censuses zero actual
+    // UE NetworkPhysics objects before every private canonical transition.
+}
+void USpeedBranchWheeledComponent::CheckOrdinaryOwnerInitializationEntry() const
+{throw Speed::Netcode::Prediction::FPrivateNativeStorageUnavailable{};}
+
+void USpeedBranchWheeledComponent::CheckOrdinaryComponentBindingEntry() const
+{throw Speed::Netcode::Prediction::FPrivateNativeStorageUnavailable{};}
+void USpeedBranchWheeledComponent::OnRegister() {UPawnMovementComponent::OnRegister();}
+void USpeedBranchWheeledComponent::OnCreatePhysicsState() {UActorComponent::OnCreatePhysicsState();}
+void USpeedBranchWheeledComponent::OnDestroyPhysicsState() {UActorComponent::OnDestroyPhysicsState();}
+void USpeedBranchWheeledComponent::BeginPlay() {UActorComponent::BeginPlay();}
+bool USpeedBranchWheeledComponent::ReadOriginalLegacyGameModePresence() const
+{
+    const auto A=Access.lock();
+    if(!IsInGameThread()||!A||!A->SelectsOriginalStorage()||!A->OriginalWorldHasNoGameMode()
+        ||A->FindOriginalComponentAlias(this,GetOwner())!=this)throw Speed::NativeObjectRead::FUnresolvedOriginal();
+    return false; // actual resolved absence, same legacy predicate; NOT IAS authority role
+}
+bool USpeedBranchWheeledComponent::HasIsolatedNativeConstruction() const
+{
+    // Check actual stored pointers as well as the world's object census: an
+    // inherited CDO reference is not an absent native network participant.
+    return NetworkConstruction==ESpeedWheeledNetworkConstruction::IAmSpeedOnly
+        &&Speed::NativeObjectRead::IsResolvedNull(NetworkPhysicsComponent)
+        &&Speed::NativeObjectRead::IsResolvedNull(SNetworkPhysicsComponentWheeledDomainStorage())
+        &&Speed::NativeObjectRead::IsResolvedNull(WheeledNetworkPhysicsComponentWheeledDomainStorage())
+        &&Speed::NativeObjectRead::IsResolvedNull(SNetworkSettingsWheeledDomainStorage())
+        &&Speed::NativeObjectRead::IsResolvedNull(NetDataAssetWheeledDomainStorage())&&!AHUD::OnShowDebugInfo.IsBoundToObject(this)
+#if !UE_BUILD_SHIPPING
+        &&!ISpeedComponent::IsPhysicsPhaseObservationEnabled() // actual base stored observer, no masked count
+#endif
+        ;
+}
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+bool USpeedBranchWheeledComponent::CopyActualCacheDiagnosticValues(
+    Speed::CommonState::FSleepValues& Sleep,Speed::CommonState::FQuantizationValues& Quantization) const
+{
+    const auto A=Access.lock();
+    if(!IsInGameThread()||!A||!A->Active||A->World!=GetWorld()||!A->Slots.Contains(this))return false;
+    const auto S=Speed::FCommonCacheValueAccess::Capture(SleepStateStorage());
+    const auto Q=Speed::FCommonCacheValueAccess::Capture(KinematicQuantizationCacheStorage());
+    if(!Speed::CommonState::ValidCaches(S,Q))return false;
+    Sleep=S;Quantization=Q;return true;
+}
+#endif
+bool USpeedBranchWheeledComponent::UsesOriginalComponentStorage() const
+{
+    if(!IsInGameThread()||!Speed::Netcode::Prediction::OriginalComponentStorageOwner)return false;
+    const auto A=Access.lock();
+    return OwnedComponentValues&&A&&Speed::Netcode::Prediction::OriginalComponentStorageOwner==A.get();
+}
+SubBodyConfig USpeedBranchWheeledComponent::GetSubBodyConfig(const USSubBody& SubBody) const
+{
+    if(!UsesOriginalComponentStorage())return Super::GetSubBodyConfig(SubBody);
+    // The exact native base profile returns the same default-invalid config
+    // for every subbody, including the hitbox. Its redundant hitbox handle
+    // reads do not contribute configuration. Preserve those ordinary facade
+    // calls above; original construction uses the unchanged declared value.
+    // This result grants no topology, execution, lifetime or restore authority.
+    return SubBodyConfig{};
+}
+void* USpeedBranchWheeledComponent::SuspendStorageRoutingForExternalObservation() const
+{
+    if(!UsesOriginalComponentStorage())return nullptr;
+    auto* Original=const_cast<Speed::Netcode::Prediction::FPrivateRoadAccess*>(
+        Speed::Netcode::Prediction::OriginalComponentStorageOwner);
+    Speed::Netcode::Prediction::OriginalComponentStorageOwner=nullptr;
+    return Original;
+}
+void USpeedBranchWheeledComponent::ResumeStorageRoutingAfterExternalObservation(void* Token) const
+{
+    if(!Token)return;
+    if(Speed::Netcode::Prediction::OriginalComponentStorageOwner)std::terminate();
+    Speed::Netcode::Prediction::OriginalComponentStorageOwner=
+        static_cast<const Speed::Netcode::Prediction::FPrivateRoadAccess*>(Token);
+}
+void USpeedBranchWheeledComponent::EstablishOriginalComponentStorage()
+{
+    if(OwnedComponentValues)std::terminate(); // once at real birth, never restore
+    // Never import a mutable facade value into the physical owner. Default
+    // values are native type defaults; the original factory explicitly applies
+    // its seed/countdown/freeze, then the real physical steps evolve them.
+    OwnedComponentValues=std::make_shared<FOwnedComponentValues>();
+}
+SBaseGameState& USpeedBranchWheeledComponent::BaseGameStateStorage()
+{
+    return UsesOriginalComponentStorage()?OwnedComponentValues->BaseGameState:USpeedWheeledComponent::BaseGameStateStorage();
+}
+const SBaseGameState& USpeedBranchWheeledComponent::BaseGameStateStorage() const
+{
+    return UsesOriginalComponentStorage()?OwnedComponentValues->BaseGameState:USpeedWheeledComponent::BaseGameStateStorage();
+}
+const FVector& USpeedBranchWheeledComponent::ReadPhysicsCOM() const
+{
+    return BasePhysicsStateStorage().Kinematic.Location;
+}
+const FVector& USpeedBranchWheeledComponent::ReadPhysicsCenterOfMassLocal() const
+{
+    return CenterOfMassWheeledDomainStorage();
+}
+const SKinematic& USpeedBranchWheeledComponent::ReadPhysicsKinematicState() const
+{
+	return BasePhysicsStateStorage().Kinematic;
+}
+
+const SKinematic& USpeedBranchWheeledComponent::ReadPhysicsKinematicStateForFrame(const unsigned int& LocalFrame) const
+{
+	const int32 Idx = LocalFrame % SpeedConstants::RecordedHistorySize;
+	if (RecordedBaseFramesWheeledDomainStorage()[Idx] == LocalFrame)
+	{
+		return RecordedBaseStatesWheeledDomainStorage()[Idx].Kinematic;
+	}
+	return BasePhysicsStateStorage().Kinematic;
+}
+
+
+FBasePhysicsState& USpeedBranchWheeledComponent::BasePhysicsStateStorage()
+{
+    return UsesOriginalComponentStorage()?OwnedComponentValues->BasePhysicsState:USpeedWheeledComponent::BasePhysicsStateStorage();
+}
+const FBasePhysicsState& USpeedBranchWheeledComponent::BasePhysicsStateStorage() const
+{
+    return UsesOriginalComponentStorage()?OwnedComponentValues->BasePhysicsState:USpeedWheeledComponent::BasePhysicsStateStorage();
+}
+FWheeledGameState& USpeedBranchWheeledComponent::WheeledGameStateStorage()
+{
+    return UsesOriginalComponentStorage()?OwnedComponentValues->WheeledGameState:USpeedWheeledComponent::WheeledGameStateStorage();
+}
+const FWheeledGameState& USpeedBranchWheeledComponent::WheeledGameStateStorage() const
+{
+    return UsesOriginalComponentStorage()?OwnedComponentValues->WheeledGameState:USpeedWheeledComponent::WheeledGameStateStorage();
+}
+FWheeledPhysicsState& USpeedBranchWheeledComponent::WheeledPhysicsStateStorage()
+{
+    return UsesOriginalComponentStorage()?OwnedComponentValues->WheeledPhysicsState:USpeedWheeledComponent::WheeledPhysicsStateStorage();
+}
+const FWheeledPhysicsState& USpeedBranchWheeledComponent::WheeledPhysicsStateStorage() const
+{
+    return UsesOriginalComponentStorage()?OwnedComponentValues->WheeledPhysicsState:USpeedWheeledComponent::WheeledPhysicsStateStorage();
+}
+FWheeledInputState& USpeedBranchWheeledComponent::WheeledPhysicalInputStorage()
+{
+    return UsesOriginalComponentStorage()?OwnedComponentValues->WheeledPhysicalInput:USpeedWheeledComponent::WheeledPhysicalInputStorage();
+}
+const FWheeledInputState& USpeedBranchWheeledComponent::WheeledPhysicalInputStorage() const
+{
+    return UsesOriginalComponentStorage()?OwnedComponentValues->WheeledPhysicalInput:USpeedWheeledComponent::WheeledPhysicalInputStorage();
+}
+TArray<FPhysicalContactConstraint>& USpeedBranchWheeledComponent::PhysicalConstraintsStorage()
+{
+    return UsesOriginalComponentStorage()?OwnedComponentValues->PhysicalConstraints:ISpeedComponent::PhysicalConstraintsStorage();
+}
+TArray<FPhysicalContactConstraint> const& USpeedBranchWheeledComponent::PhysicalConstraintsStorage() const
+{
+    return UsesOriginalComponentStorage()?OwnedComponentValues->PhysicalConstraints:ISpeedComponent::PhysicalConstraintsStorage();
+}
+Speed::FSimulationSleepState& USpeedBranchWheeledComponent::SleepStateStorage()
+{
+    return UsesOriginalComponentStorage()?OwnedComponentValues->SleepState:ISpeedComponent::SleepStateStorage();
+}
+Speed::FSimulationSleepState const& USpeedBranchWheeledComponent::SleepStateStorage() const
+{
+    return UsesOriginalComponentStorage()?OwnedComponentValues->SleepState:ISpeedComponent::SleepStateStorage();
+}
+Speed::FIdentityKinematicQuantizationCache& USpeedBranchWheeledComponent::KinematicQuantizationCacheStorage()
+{
+    return UsesOriginalComponentStorage()?OwnedComponentValues->KinematicQuantizationCache:ISpeedComponent::KinematicQuantizationCacheStorage();
+}
+Speed::FIdentityKinematicQuantizationCache const& USpeedBranchWheeledComponent::KinematicQuantizationCacheStorage() const
+{
+    return UsesOriginalComponentStorage()?OwnedComponentValues->KinematicQuantizationCache:ISpeedComponent::KinematicQuantizationCacheStorage();
+}
+const Speed::IStaticCollisionWorld*& USpeedBranchWheeledComponent::StaticRestingWorldStorage()
+{
+    return UsesOriginalComponentStorage()?OwnedComponentValues->StaticRestingWorld:ISpeedComponent::StaticRestingWorldStorage();
+}
+const Speed::IStaticCollisionWorld* const& USpeedBranchWheeledComponent::StaticRestingWorldStorage() const
+{
+    return UsesOriginalComponentStorage()?OwnedComponentValues->StaticRestingWorld:ISpeedComponent::StaticRestingWorldStorage();
+}
+float& USpeedBranchWheeledComponent::StaticSupportFrameHorizonStorage()
+{
+    return UsesOriginalComponentStorage()?OwnedComponentValues->StaticSupportFrameHorizon:ISpeedComponent::StaticSupportFrameHorizonStorage();
+}
+float const& USpeedBranchWheeledComponent::StaticSupportFrameHorizonStorage() const
+{
+    return UsesOriginalComponentStorage()?OwnedComponentValues->StaticSupportFrameHorizon:ISpeedComponent::StaticSupportFrameHorizonStorage();
+}
+bool USpeedBranchWheeledComponent::IsInitialSynchronizationComplete() const
+{
+    const auto A=Access.lock();return A&&(!A->RequiresInitialPublication||A->InitialPublicationReleased);
+}
+void USpeedBranchWheeledComponent::UpdateInputs()
+{
+    const auto A=Access.lock();bInputFrameRejectedV2WheeledDomainStorage()=true;
+    const auto* Slot=A?A->Slots.Find(this):nullptr;
+    if(!IsInGameThread()||!A||!A->Active||A->World!=GetWorld()||!Slot||!Slot->Input
+        ||Slot->Input->Frame!=A->Frame||uint64(NumFrame())!=A->Frame+1
+        ||FrameInputStreamWheeledDomainStorage()||FrameInputStreamV2WheeledDomainStorage()||CanonicalInputSnapshotWheeledDomainStorage()||InputReservationV2WheeledDomainStorage()||ReservedInputFrameV2WheeledDomainStorage()
+        ||HasProducedInputAuthority()||HasLegacyRemoteInputAuthority())return;
+    const auto& Applied=Slot->Input->Applied;
+    bProducedInputFrameOwnedWheeledDomainStorage()=true; // actual frame ownership, no Device authority.
+    WheeledPhysicalInputStorage().Throttle=uint8(Applied[0]);WheeledPhysicalInputStorage().Brake=uint8(Applied[1]);WheeledPhysicalInputStorage().Steer=int8(Applied[2]);
+    WheeledPhysicalInputStorage().bCanMove=CanMove();
+    WheeledPhysicalInputStorage().Camera={};WheeledPhysicalInputStorage().Camera.Flags=1;
+    WheeledPhysicalInputStorage().Camera.Yaw=int8(Applied[5]);WheeledPhysicalInputStorage().Camera.Pitch=int8(Applied[6]);
+    SyncWheeledPhysicalInputToState();bInputFrameRejectedV2WheeledDomainStorage()=false;
+}
+const USpeedWorldSubsystem* USpeedBranchBoxSubBody::ResolveEpochBridgeForSweep(UWorld* W,const Speed::IStaticCollisionWorld* StaticWorld) const
+{
+    if(!UsesOriginalBodyStorage())return Super::ResolveEpochBridgeForSweep(W,StaticWorld);
+    const auto A=StorageAccess.lock();
+    if(!IsInGameThread()||!A||!A->FindOriginalComponentAlias(GetParentComponent(),GetOwner())
+        ||!GetParentComponent()||GetParentComponent()->GetStaticCollisionWorldForFrame()!=StaticWorld)
+        throw Speed::NativeObjectRead::FUnresolvedOriginal();
+    return A->OriginalBridgeForFrame(W,StaticWorld);
+}
+void USpeedBranchBoxSubBody::ResolveCurrentHitPrv(const float& Delta,const float& SimTime)
+{
+    // Capture the genuine dispatch participant before Super can update caches.
+    // Weak validity after the synchronous call never invents a lifetime lease.
+    const bool Blocking=CurrentHitStorage().bBlockingHit;
+    const auto Peer=CurrentHitStorage().Component;
+    const bool WasSolid=Cast<USolidSubBody>(Peer.Get())!=nullptr;
+    Super::ResolveCurrentHitPrv(Delta,SimTime); // unchanged native solver, once
+    if(Blocking&&WasSolid&&Peer.IsValid())
+    {
+        // ISpeedComponent is native C++, NOT a UObject/UInterface. Resolve
+        // through the genuine owning actor, then verify the adjusted native
+        // base address rather than performing an invalid Unreal Cast.
+        const auto A=StorageAccess.lock();
+        auto* Owner=A?A->FindOriginalComponentAlias(GetParentComponent(),GetOwner()):nullptr;
+        if(Owner&&GetParentComponent()==static_cast<ISpeedComponent*>(Owner))
+            if(auto* SolidPeer=Cast<USolidSubBody>(Peer.Get()))
+                Owner->ObserveContactPair(*this,*SolidPeer,Cast<UBoxSubBody>(SolidPeer)?0:1);
+    }
+}
+void USpeedBranchWheeledComponent::RegisterWheelGroundContact(const SWheelGroundContact& Contact)
+{
+    Super::RegisterWheelGroundContact(Contact); // preserve genuine registration, once
+    const auto* Other=Cast<UBoxSubBody>(Contact.SurfaceComponent.Get());
+    if(Contact.Wheel&&Other)ObserveContactPair(*Contact.Wheel,*Other,2);
+}
+void USpeedBranchWheeledComponent::ObserveContactPair(const USSubBody& SubBody,const USSubBody& Other,uint8 Kind)
+{
+    const auto A=Access.lock();
+    if(Kind>2||!IsInGameThread()||!A||!A->Active||A->World!=GetWorld()||SubBody.GetParentComponent()!=this
+        ||Other.GetWorld()!=A->World||Other.GetOwner()==GetOwner())return;
+    const auto* C=A->FindOriginalComponentAlias(Other.GetParentComponent(),Other.GetOwner());
+    if(A->FindOriginalComponentAlias(this,GetOwner())!=this)return;
+    if(!C||Other.GetParentComponent()!=static_cast<const ISpeedComponent*>(C))return;
+    const auto* Self=A->Slots.Find(this);const auto* Peer=C?A->Slots.Find(C):nullptr;
+    if(!Self||!Peer||!Self->Input||!Peer->Input||Self->Input->Frame!=A->Frame||Peer->Input->Frame!=A->Frame
+        ||!Self->Actor||!Peer->Actor||Self->Actor==Peer->Actor)return;
+    const auto Low=FMath::Min(Self->Actor,Peer->Actor),High=FMath::Max(Self->Actor,Peer->Actor);
+    const auto Increment=[&](auto& P)
+    {
+        uint32& Count=Kind==0?P.Dispatches:(Kind==1?P.BoxWheelDispatches:P.WheelRegistrations);
+        if(Count==MAX_uint32)A->ContactDispatchOverflow=true;else ++Count;
+    };
+    for(auto& P:A->ContactDispatches)if(P.ActorA==Low&&P.ActorB==High){Increment(P);return;}
+    // Fixed finite roster has at most120 unordered pairs. Never grow beyond
+    // the actual reserved roster capacity inside a canonical physical call.
+    if(A->ContactDispatches.size()>=A->ContactDispatches.capacity()){A->ContactDispatchOverflow=true;return;}
+    A->ContactDispatches.push_back({Low,High,0,0,0});Increment(A->ContactDispatches.back());
+}
+bool USpeedBranchWheeledComponent::ValidateCanonicalFrameCommit(uint64 Frame) const
+{
+    const auto A=Access.lock();const auto* Slot=A?A->Slots.Find(this):nullptr;
+    return IsInGameThread()&&A&&A->Active&&A->World==GetWorld()&&A->Frame==Frame&&Slot&&Slot->Input
+        &&!Slot->Consumed&&!bInputFrameRejectedV2WheeledDomainStorage()&&PreparedCanonicalInputFrameWheeledDomainStorage().IsSet()&&PreparedCanonicalInputFrameWheeledDomainStorage().GetValue()==Frame;
+}
+bool USpeedBranchWheeledComponent::CommitCanonicalFrame(uint64 Frame) noexcept
+{
+    if(!ValidateCanonicalFrameCommit(Frame))return false;Access.lock()->Slots.FindChecked(this).Consumed=true;return true;
+}
+void USpeedBranchWheeledComponent::AbortCanonicalFrame(uint64,ECanonicalFrameAbortReason) noexcept {bInputFrameRejectedV2WheeledDomainStorage()=true;}
+ASpeedBranchCar::ASpeedBranchCar(const FObjectInitializer& Initializer)
+    :Super(Initializer.SetDefaultSubobjectClass<USpeedBranchWheeledComponent>(VehicleMovementComponentName))
+{PrimaryActorTick.bCanEverTick=false;PrimaryActorTick.bStartWithTickEnabled=false;SetReplicates(false);}
+void ASpeedBranchCar::BeginPlay() {AActor::BeginPlay();}
+ASpeedBranchSimulation::ASpeedBranchSimulation()
+{bAsyncPhysicsTickEnabled=false;PrimaryActorTick.bCanEverTick=false;PrimaryActorTick.bStartWithTickEnabled=false;SetReplicates(false);}
+void ASpeedBranchSimulation::BeginPlay() {AActor::BeginPlay();}
+UWorld* ASpeedBranchSimulation::ResolveOriginalPhysicalWorld() const
+{
+    const auto A=Access.lock();
+    if(A&&A->SelectsOriginalStorage())
+        return A->OriginalDriverBirth.Get()==this&&A->OriginalActorWorldStillMatches(this)?A->World:nullptr;
+    return AActor::GetWorld(); // real ordinary Engine facade outside the private route
+}
+bool ASpeedBranchSimulation::InitializePrivate(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,USpeedWorldSubsystem& Bridge)
+{
+    (void)ReadNativeCanonicalFrame(Operation); // genuine native backing before owner reads
+    if(!IsInGameThread()||!Access.lock()||GetEngineFPS()!=300)return false;
+    SpeedWorldSubsystemDriverStorage()=&Bridge;if(!EnsureSimulationWorldReady())return false;
+    SealSimulationInputs();InitializeCanonicalFrame(0);return ReadNativeCanonicalFrame(Operation)==0;
+}
+bool ASpeedBranchSimulation::AdvancePrivate(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,bool Resimulation)
+{
+    const auto Frame=ReadNativeCanonicalFrame(Operation);
+    const auto A=Access.lock();
+    if(!IsInGameThread()||!A||!A->Active||A->Frame!=Frame||A->World!=ResolveOriginalPhysicalWorld())return false;
+    FCanonicalFrameContext Context(Frame);Context.Purpose=Resimulation?ECanonicalFramePurpose::Resimulation:ECanonicalFramePurpose::Forward;
+    if(!StepNativeCanonicalFrame(Operation,Context))return false;
+    // Same success-only counter as RunCanonicalFrames, in actual retained state.
+    IncrementNativeCanonicalFrame(Operation);return true;
+}
+
+// All domains below are part of the pending vertical epoch hunk, not a lease.
+ISpeedComponent*& USpeedBranchBoxSubBody::ParentComponentBodyDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->ParentComponent:USSubBody::ParentComponentBodyDomainStorage();
+}
+ISpeedComponent* const& USpeedBranchBoxSubBody::ParentComponentBodyDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->ParentComponent:USSubBody::ParentComponentBodyDomainStorage();
+}
+USSubBody::ESubBodyType& USpeedBranchBoxSubBody::SubBodyTypeBodyDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->SubBodyType:USSubBody::SubBodyTypeBodyDomainStorage();
+}
+USSubBody::ESubBodyType const& USpeedBranchBoxSubBody::SubBodyTypeBodyDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->SubBodyType:USSubBody::SubBodyTypeBodyDomainStorage();
+}
+ECollisionChannel& USpeedBranchBoxSubBody::CollisionChannelBodyDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->CollisionChannel:USSubBody::CollisionChannelBodyDomainStorage();
+}
+ECollisionChannel const& USpeedBranchBoxSubBody::CollisionChannelBodyDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->CollisionChannel:USSubBody::CollisionChannelBodyDomainStorage();
+}
+FCollisionResponseParams& USpeedBranchBoxSubBody::ResponseParamsBodyDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->ResponseParams:USSubBody::ResponseParamsBodyDomainStorage();
+}
+FCollisionResponseParams const& USpeedBranchBoxSubBody::ResponseParamsBodyDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->ResponseParams:USSubBody::ResponseParamsBodyDomainStorage();
+}
+TArray<UPrimitiveComponent*>& USpeedBranchBoxSubBody::AlwaysIgnoredComponentsBodyDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->AlwaysIgnoredComponents:USSubBody::AlwaysIgnoredComponentsBodyDomainStorage();
+}
+TArray<UPrimitiveComponent*> const& USpeedBranchBoxSubBody::AlwaysIgnoredComponentsBodyDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->AlwaysIgnoredComponents:USSubBody::AlwaysIgnoredComponentsBodyDomainStorage();
+}
+TArray<UPrimitiveComponent*>& USpeedBranchBoxSubBody::IgnoredComponentsBodyDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->IgnoredComponents:USSubBody::IgnoredComponentsBodyDomainStorage();
+}
+TArray<UPrimitiveComponent*> const& USpeedBranchBoxSubBody::IgnoredComponentsBodyDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->IgnoredComponents:USSubBody::IgnoredComponentsBodyDomainStorage();
+}
+TArray<USSubBody::ESubBodyType>& USpeedBranchBoxSubBody::IgnoredSubBodyTypesBodyDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->IgnoredSubBodyTypes:USSubBody::IgnoredSubBodyTypesBodyDomainStorage();
+}
+TArray<USSubBody::ESubBodyType> const& USpeedBranchBoxSubBody::IgnoredSubBodyTypesBodyDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->IgnoredSubBodyTypes:USSubBody::IgnoredSubBodyTypesBodyDomainStorage();
+}
+TArray<TWeakObjectPtr<UBoxSubBody>>& USpeedBranchBoxSubBody::ExternalBoxSubBodiesBodyDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->ExternalBoxSubBodies:USSubBody::ExternalBoxSubBodiesBodyDomainStorage();
+}
+TArray<TWeakObjectPtr<UBoxSubBody>> const& USpeedBranchBoxSubBody::ExternalBoxSubBodiesBodyDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->ExternalBoxSubBodies:USSubBody::ExternalBoxSubBodiesBodyDomainStorage();
+}
+TArray<TWeakObjectPtr<USphereSubBody>>& USpeedBranchBoxSubBody::ExternalSphereSubBodiesBodyDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->ExternalSphereSubBodies:USSubBody::ExternalSphereSubBodiesBodyDomainStorage();
+}
+TArray<TWeakObjectPtr<USphereSubBody>> const& USpeedBranchBoxSubBody::ExternalSphereSubBodiesBodyDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->ExternalSphereSubBodies:USSubBody::ExternalSphereSubBodiesBodyDomainStorage();
+}
+TArray<TWeakObjectPtr<USWheelSubBody>>& USpeedBranchBoxSubBody::ExternalWheelSubBodiesBodyDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->ExternalWheelSubBodies:USSubBody::ExternalWheelSubBodiesBodyDomainStorage();
+}
+TArray<TWeakObjectPtr<USWheelSubBody>> const& USpeedBranchBoxSubBody::ExternalWheelSubBodiesBodyDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->ExternalWheelSubBodies:USSubBody::ExternalWheelSubBodiesBodyDomainStorage();
+}
+TArray<TWeakObjectPtr<UCylinderSubBody>>& USpeedBranchBoxSubBody::ExternalCylinderSubBodiesBodyDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->ExternalCylinderSubBodies:USSubBody::ExternalCylinderSubBodiesBodyDomainStorage();
+}
+TArray<TWeakObjectPtr<UCylinderSubBody>> const& USpeedBranchBoxSubBody::ExternalCylinderSubBodiesBodyDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->ExternalCylinderSubBodies:USSubBody::ExternalCylinderSubBodiesBodyDomainStorage();
+}
+FVector& USpeedBranchBoxSubBody::BoxExtentBoxDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->BoxExtent:UBoxSubBody::BoxExtentBoxDomainStorage();
+}
+FVector const& USpeedBranchBoxSubBody::BoxExtentBoxDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->BoxExtent:UBoxSubBody::BoxExtentBoxDomainStorage();
+}
+bool& USpeedBranchBoxSubBody::bProductionNonpenetratingSphereContactsBoxDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->bProductionNonpenetratingSphereContacts:UBoxSubBody::bProductionNonpenetratingSphereContactsBoxDomainStorage();
+}
+bool const& USpeedBranchBoxSubBody::bProductionNonpenetratingSphereContactsBoxDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->bProductionNonpenetratingSphereContacts:UBoxSubBody::bProductionNonpenetratingSphereContactsBoxDomainStorage();
+}
+TArray<FVector>& USpeedBranchBoxSubBody::CurrentGroundContactsWSBoxDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->CurrentGroundContactsWS:UBoxSubBody::CurrentGroundContactsWSBoxDomainStorage();
+}
+TArray<FVector> const& USpeedBranchBoxSubBody::CurrentGroundContactsWSBoxDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->CurrentGroundContactsWS:UBoxSubBody::CurrentGroundContactsWSBoxDomainStorage();
+}
+TArray<FVector>& USpeedBranchBoxSubBody::PreviousFrameGroundContactsWSBoxDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->PreviousFrameGroundContactsWS:UBoxSubBody::PreviousFrameGroundContactsWSBoxDomainStorage();
+}
+TArray<FVector> const& USpeedBranchBoxSubBody::PreviousFrameGroundContactsWSBoxDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->PreviousFrameGroundContactsWS:UBoxSubBody::PreviousFrameGroundContactsWSBoxDomainStorage();
+}
+TArray<FVector>& USpeedBranchBoxSubBody::CurrentGroundNormalsWSBoxDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->CurrentGroundNormalsWS:UBoxSubBody::CurrentGroundNormalsWSBoxDomainStorage();
+}
+TArray<FVector> const& USpeedBranchBoxSubBody::CurrentGroundNormalsWSBoxDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->CurrentGroundNormalsWS:UBoxSubBody::CurrentGroundNormalsWSBoxDomainStorage();
+}
+TArray<FVector>& USpeedBranchBoxSubBody::PrevGroundContactsLSBoxDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->PrevGroundContactsLS:UBoxSubBody::PrevGroundContactsLSBoxDomainStorage();
+}
+TArray<FVector> const& USpeedBranchBoxSubBody::PrevGroundContactsLSBoxDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->PrevGroundContactsLS:UBoxSubBody::PrevGroundContactsLSBoxDomainStorage();
+}
+TArray<FVector>& USpeedBranchBoxSubBody::LatchedEdgeContactsLSBoxDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->LatchedEdgeContactsLS:UBoxSubBody::LatchedEdgeContactsLSBoxDomainStorage();
+}
+TArray<FVector> const& USpeedBranchBoxSubBody::LatchedEdgeContactsLSBoxDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->LatchedEdgeContactsLS:UBoxSubBody::LatchedEdgeContactsLSBoxDomainStorage();
+}
+bool& USpeedBranchBoxSubBody::bEdgeSupportLatchedBoxDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->bEdgeSupportLatched:UBoxSubBody::bEdgeSupportLatchedBoxDomainStorage();
+}
+bool const& USpeedBranchBoxSubBody::bEdgeSupportLatchedBoxDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->bEdgeSupportLatched:UBoxSubBody::bEdgeSupportLatchedBoxDomainStorage();
+}
+int32& USpeedBranchBoxSubBody::EdgeSupportLatchFrameBoxDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->EdgeSupportLatchFrame:UBoxSubBody::EdgeSupportLatchFrameBoxDomainStorage();
+}
+int32 const& USpeedBranchBoxSubBody::EdgeSupportLatchFrameBoxDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->EdgeSupportLatchFrame:UBoxSubBody::EdgeSupportLatchFrameBoxDomainStorage();
+}
+bool& USpeedBranchBoxSubBody::bRoofSurfaceTraversalLatchedBoxDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->bRoofSurfaceTraversalLatched:UBoxSubBody::bRoofSurfaceTraversalLatchedBoxDomainStorage();
+}
+bool const& USpeedBranchBoxSubBody::bRoofSurfaceTraversalLatchedBoxDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->bRoofSurfaceTraversalLatched:UBoxSubBody::bRoofSurfaceTraversalLatchedBoxDomainStorage();
+}
+int32& USpeedBranchBoxSubBody::LastRoofSurfaceContactFrameBoxDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->LastRoofSurfaceContactFrame:UBoxSubBody::LastRoofSurfaceContactFrameBoxDomainStorage();
+}
+int32 const& USpeedBranchBoxSubBody::LastRoofSurfaceContactFrameBoxDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->LastRoofSurfaceContactFrame:UBoxSubBody::LastRoofSurfaceContactFrameBoxDomainStorage();
+}
+TWeakObjectPtr<UPrimitiveComponent>& USpeedBranchBoxSubBody::RoofSurfaceCompBoxDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->RoofSurfaceComp:UBoxSubBody::RoofSurfaceCompBoxDomainStorage();
+}
+TWeakObjectPtr<UPrimitiveComponent> const& USpeedBranchBoxSubBody::RoofSurfaceCompBoxDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->RoofSurfaceComp:UBoxSubBody::RoofSurfaceCompBoxDomainStorage();
+}
+FVector& USpeedBranchBoxSubBody::CompositeGroundNormalBoxDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->CompositeGroundNormal:UBoxSubBody::CompositeGroundNormalBoxDomainStorage();
+}
+FVector const& USpeedBranchBoxSubBody::CompositeGroundNormalBoxDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->CompositeGroundNormal:UBoxSubBody::CompositeGroundNormalBoxDomainStorage();
+}
+TMap<TWeakObjectPtr<UPrimitiveComponent>, uint32>& USpeedBranchBoxSubBody::HitCountThisFrameBoxDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->HitCountThisFrame:UBoxSubBody::HitCountThisFrameBoxDomainStorage();
+}
+TMap<TWeakObjectPtr<UPrimitiveComponent>, uint32> const& USpeedBranchBoxSubBody::HitCountThisFrameBoxDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->HitCountThisFrame:UBoxSubBody::HitCountThisFrameBoxDomainStorage();
+}
+uint32& USpeedBranchBoxSubBody::MaxHitsPerComponentPerFrameBoxDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->MaxHitsPerComponentPerFrame:UBoxSubBody::MaxHitsPerComponentPerFrameBoxDomainStorage();
+}
+uint32 const& USpeedBranchBoxSubBody::MaxHitsPerComponentPerFrameBoxDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->MaxHitsPerComponentPerFrame:UBoxSubBody::MaxHitsPerComponentPerFrameBoxDomainStorage();
+}
+TArray<float>& USpeedBranchBoxSubBody::PrevLambdaNBoxDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->PrevLambdaN:UBoxSubBody::PrevLambdaNBoxDomainStorage();
+}
+TArray<float> const& USpeedBranchBoxSubBody::PrevLambdaNBoxDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->PrevLambdaN:UBoxSubBody::PrevLambdaNBoxDomainStorage();
+}
+bool& USpeedBranchBoxSubBody::bGroundContactStableBoxDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->bGroundContactStable:UBoxSubBody::bGroundContactStableBoxDomainStorage();
+}
+bool const& USpeedBranchBoxSubBody::bGroundContactStableBoxDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->bGroundContactStable:UBoxSubBody::bGroundContactStableBoxDomainStorage();
+}
+int32& USpeedBranchBoxSubBody::LastResolvedGroundHitFrameBoxDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->LastResolvedGroundHitFrame:UBoxSubBody::LastResolvedGroundHitFrameBoxDomainStorage();
+}
+int32 const& USpeedBranchBoxSubBody::LastResolvedGroundHitFrameBoxDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->LastResolvedGroundHitFrame:UBoxSubBody::LastResolvedGroundHitFrameBoxDomainStorage();
+}
+bool& USpeedBranchBoxSubBody::bHasGroundContactBoxDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->bHasGroundContact:UBoxSubBody::bHasGroundContactBoxDomainStorage();
+}
+bool const& USpeedBranchBoxSubBody::bHasGroundContactBoxDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->bHasGroundContact:UBoxSubBody::bHasGroundContactBoxDomainStorage();
+}
+bool& USpeedBranchBoxSubBody::bFreshEdgeRecoverCandidateBoxDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->bFreshEdgeRecoverCandidate:UBoxSubBody::bFreshEdgeRecoverCandidateBoxDomainStorage();
+}
+bool const& USpeedBranchBoxSubBody::bFreshEdgeRecoverCandidateBoxDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->bFreshEdgeRecoverCandidate:UBoxSubBody::bFreshEdgeRecoverCandidateBoxDomainStorage();
+}
+float& USpeedBranchBoxSubBody::StableTimeBoxDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->StableTime:UBoxSubBody::StableTimeBoxDomainStorage();
+}
+float const& USpeedBranchBoxSubBody::StableTimeBoxDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->StableTime:UBoxSubBody::StableTimeBoxDomainStorage();
+}
+bool& USpeedBranchBoxSubBody::bGroundHitFromSweepBoxDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->bGroundHitFromSweep:UBoxSubBody::bGroundHitFromSweepBoxDomainStorage();
+}
+bool const& USpeedBranchBoxSubBody::bGroundHitFromSweepBoxDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->bGroundHitFromSweep:UBoxSubBody::bGroundHitFromSweepBoxDomainStorage();
+}
+bool& USpeedBranchBoxSubBody::bGroundPlaneValidBoxDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->bGroundPlaneValid:UBoxSubBody::bGroundPlaneValidBoxDomainStorage();
+}
+bool const& USpeedBranchBoxSubBody::bGroundPlaneValidBoxDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->bGroundPlaneValid:UBoxSubBody::bGroundPlaneValidBoxDomainStorage();
+}
+FVector& USpeedBranchBoxSubBody::GroundPlanePointWSBoxDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->GroundPlanePointWS:UBoxSubBody::GroundPlanePointWSBoxDomainStorage();
+}
+FVector const& USpeedBranchBoxSubBody::GroundPlanePointWSBoxDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->GroundPlanePointWS:UBoxSubBody::GroundPlanePointWSBoxDomainStorage();
+}
+FVector& USpeedBranchBoxSubBody::GroundPlaneNBoxDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->GroundPlaneN:UBoxSubBody::GroundPlaneNBoxDomainStorage();
+}
+FVector const& USpeedBranchBoxSubBody::GroundPlaneNBoxDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->GroundPlaneN:UBoxSubBody::GroundPlaneNBoxDomainStorage();
+}
+float& USpeedBranchBoxSubBody::GroundPlaneDBoxDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->GroundPlaneD:UBoxSubBody::GroundPlaneDBoxDomainStorage();
+}
+float const& USpeedBranchBoxSubBody::GroundPlaneDBoxDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->GroundPlaneD:UBoxSubBody::GroundPlaneDBoxDomainStorage();
+}
+TWeakObjectPtr<UPrimitiveComponent>& USpeedBranchBoxSubBody::GroundCompBoxDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->GroundComp:UBoxSubBody::GroundCompBoxDomainStorage();
+}
+TWeakObjectPtr<UPrimitiveComponent> const& USpeedBranchBoxSubBody::GroundCompBoxDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->GroundComp:UBoxSubBody::GroundCompBoxDomainStorage();
+}
+uint64& USpeedBranchBoxSubBody::EstablishedSupportSourceIdBoxDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->EstablishedSupportSourceId:UBoxSubBody::EstablishedSupportSourceIdBoxDomainStorage();
+}
+uint64 const& USpeedBranchBoxSubBody::EstablishedSupportSourceIdBoxDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->EstablishedSupportSourceId:UBoxSubBody::EstablishedSupportSourceIdBoxDomainStorage();
+}
+uint64& USpeedBranchBoxSubBody::EstablishedSupportSurfaceIdBoxDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->EstablishedSupportSurfaceId:UBoxSubBody::EstablishedSupportSurfaceIdBoxDomainStorage();
+}
+uint64 const& USpeedBranchBoxSubBody::EstablishedSupportSurfaceIdBoxDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->EstablishedSupportSurfaceId:UBoxSubBody::EstablishedSupportSurfaceIdBoxDomainStorage();
+}
+int32& USpeedBranchBoxSubBody::FreshSupportClampUntilFrameBoxDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->FreshSupportClampUntilFrame:UBoxSubBody::FreshSupportClampUntilFrameBoxDomainStorage();
+}
+int32 const& USpeedBranchBoxSubBody::FreshSupportClampUntilFrameBoxDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->FreshSupportClampUntilFrame:UBoxSubBody::FreshSupportClampUntilFrameBoxDomainStorage();
+}
+FVector& USpeedBranchBoxSubBody::FreshSupportClampNBoxDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->FreshSupportClampN:UBoxSubBody::FreshSupportClampNBoxDomainStorage();
+}
+FVector const& USpeedBranchBoxSubBody::FreshSupportClampNBoxDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->FreshSupportClampN:UBoxSubBody::FreshSupportClampNBoxDomainStorage();
+}
+TWeakObjectPtr<UPrimitiveComponent>& USpeedBranchBoxSubBody::FreshSupportClampCompBoxDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->FreshSupportClampComp:UBoxSubBody::FreshSupportClampCompBoxDomainStorage();
+}
+TWeakObjectPtr<UPrimitiveComponent> const& USpeedBranchBoxSubBody::FreshSupportClampCompBoxDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->FreshSupportClampComp:UBoxSubBody::FreshSupportClampCompBoxDomainStorage();
+}
+FVector& USpeedBranchBoxSubBody::PrevGroundNormalBoxDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->PrevGroundNormal:UBoxSubBody::PrevGroundNormalBoxDomainStorage();
+}
+FVector const& USpeedBranchBoxSubBody::PrevGroundNormalBoxDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->PrevGroundNormal:UBoxSubBody::PrevGroundNormalBoxDomainStorage();
+}
+bool& USpeedBranchBoxSubBody::bHadGroundContactPrevFrameBoxDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->bHadGroundContactPrevFrame:UBoxSubBody::bHadGroundContactPrevFrameBoxDomainStorage();
+}
+bool const& USpeedBranchBoxSubBody::bHadGroundContactPrevFrameBoxDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->bHadGroundContactPrevFrame:UBoxSubBody::bHadGroundContactPrevFrameBoxDomainStorage();
+}
+FVector& USpeedBranchBoxSubBody::PrevContactNormalBoxDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->PrevContactNormal:UBoxSubBody::PrevContactNormalBoxDomainStorage();
+}
+FVector const& USpeedBranchBoxSubBody::PrevContactNormalBoxDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->PrevContactNormal:UBoxSubBody::PrevContactNormalBoxDomainStorage();
+}
+bool& USpeedBranchBoxSubBody::bHadContactPrevFrameBoxDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->bHadContactPrevFrame:UBoxSubBody::bHadContactPrevFrameBoxDomainStorage();
+}
+bool const& USpeedBranchBoxSubBody::bHadContactPrevFrameBoxDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->bHadContactPrevFrame:UBoxSubBody::bHadContactPrevFrameBoxDomainStorage();
+}
+float& USpeedBranchBoxSubBody::MinSlopCmBoxDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->MinSlopCm:UBoxSubBody::MinSlopCmBoxDomainStorage();
+}
+float const& USpeedBranchBoxSubBody::MinSlopCmBoxDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->MinSlopCm:UBoxSubBody::MinSlopCmBoxDomainStorage();
+}
+int32& USpeedBranchBoxSubBody::LastWallOrGutterFrameBoxDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->LastWallOrGutterFrame:UBoxSubBody::LastWallOrGutterFrameBoxDomainStorage();
+}
+int32 const& USpeedBranchBoxSubBody::LastWallOrGutterFrameBoxDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->LastWallOrGutterFrame:UBoxSubBody::LastWallOrGutterFrameBoxDomainStorage();
+}
+FVector& USpeedBranchBoxSubBody::LastWallOrGutterNBoxDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->LastWallOrGutterN:UBoxSubBody::LastWallOrGutterNBoxDomainStorage();
+}
+FVector const& USpeedBranchBoxSubBody::LastWallOrGutterNBoxDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->LastWallOrGutterN:UBoxSubBody::LastWallOrGutterNBoxDomainStorage();
+}
+float& USpeedBranchBoxSubBody::LastWallOrGutterUpDotBoxDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->LastWallOrGutterUpDot:UBoxSubBody::LastWallOrGutterUpDotBoxDomainStorage();
+}
+float const& USpeedBranchBoxSubBody::LastWallOrGutterUpDotBoxDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->LastWallOrGutterUpDot:UBoxSubBody::LastWallOrGutterUpDotBoxDomainStorage();
+}
+SHitResult& USpeedBranchBoxSubBody::LastResolvedSphereHitBoxDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->LastResolvedSphereHit:UBoxSubBody::LastResolvedSphereHitBoxDomainStorage();
+}
+SHitResult const& USpeedBranchBoxSubBody::LastResolvedSphereHitBoxDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->LastResolvedSphereHit:UBoxSubBody::LastResolvedSphereHitBoxDomainStorage();
+}
+int32& USpeedBranchBoxSubBody::LastResolvedSphereHitFrameBoxDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->LastResolvedSphereHitFrame:UBoxSubBody::LastResolvedSphereHitFrameBoxDomainStorage();
+}
+int32 const& USpeedBranchBoxSubBody::LastResolvedSphereHitFrameBoxDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->LastResolvedSphereHitFrame:UBoxSubBody::LastResolvedSphereHitFrameBoxDomainStorage();
+}
+FTransform USpeedBranchBoxSubBody::PhysicalLocalPose() const {return UsesOriginalBodyStorage()?OwnedBodyValues->LocalPose:USSubBody::PhysicalLocalPose();}
+void USpeedBranchBoxSubBody::SetPhysicalLocalOffset(const FVector& V) {if(UsesOriginalBodyStorage())OwnedBodyValues->LocalPose.SetLocation(V);else USSubBody::SetPhysicalLocalOffset(V);}
+ISpeedComponent*& USpeedBranchWheelSubBody::ParentComponentBodyDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->ParentComponent:USSubBody::ParentComponentBodyDomainStorage();
+}
+ISpeedComponent* const& USpeedBranchWheelSubBody::ParentComponentBodyDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->ParentComponent:USSubBody::ParentComponentBodyDomainStorage();
+}
+USSubBody::ESubBodyType& USpeedBranchWheelSubBody::SubBodyTypeBodyDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->SubBodyType:USSubBody::SubBodyTypeBodyDomainStorage();
+}
+USSubBody::ESubBodyType const& USpeedBranchWheelSubBody::SubBodyTypeBodyDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->SubBodyType:USSubBody::SubBodyTypeBodyDomainStorage();
+}
+ECollisionChannel& USpeedBranchWheelSubBody::CollisionChannelBodyDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->CollisionChannel:USSubBody::CollisionChannelBodyDomainStorage();
+}
+ECollisionChannel const& USpeedBranchWheelSubBody::CollisionChannelBodyDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->CollisionChannel:USSubBody::CollisionChannelBodyDomainStorage();
+}
+FCollisionResponseParams& USpeedBranchWheelSubBody::ResponseParamsBodyDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->ResponseParams:USSubBody::ResponseParamsBodyDomainStorage();
+}
+FCollisionResponseParams const& USpeedBranchWheelSubBody::ResponseParamsBodyDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->ResponseParams:USSubBody::ResponseParamsBodyDomainStorage();
+}
+TArray<UPrimitiveComponent*>& USpeedBranchWheelSubBody::AlwaysIgnoredComponentsBodyDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->AlwaysIgnoredComponents:USSubBody::AlwaysIgnoredComponentsBodyDomainStorage();
+}
+TArray<UPrimitiveComponent*> const& USpeedBranchWheelSubBody::AlwaysIgnoredComponentsBodyDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->AlwaysIgnoredComponents:USSubBody::AlwaysIgnoredComponentsBodyDomainStorage();
+}
+TArray<UPrimitiveComponent*>& USpeedBranchWheelSubBody::IgnoredComponentsBodyDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->IgnoredComponents:USSubBody::IgnoredComponentsBodyDomainStorage();
+}
+TArray<UPrimitiveComponent*> const& USpeedBranchWheelSubBody::IgnoredComponentsBodyDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->IgnoredComponents:USSubBody::IgnoredComponentsBodyDomainStorage();
+}
+TArray<USSubBody::ESubBodyType>& USpeedBranchWheelSubBody::IgnoredSubBodyTypesBodyDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->IgnoredSubBodyTypes:USSubBody::IgnoredSubBodyTypesBodyDomainStorage();
+}
+TArray<USSubBody::ESubBodyType> const& USpeedBranchWheelSubBody::IgnoredSubBodyTypesBodyDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->IgnoredSubBodyTypes:USSubBody::IgnoredSubBodyTypesBodyDomainStorage();
+}
+TArray<TWeakObjectPtr<UBoxSubBody>>& USpeedBranchWheelSubBody::ExternalBoxSubBodiesBodyDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->ExternalBoxSubBodies:USSubBody::ExternalBoxSubBodiesBodyDomainStorage();
+}
+TArray<TWeakObjectPtr<UBoxSubBody>> const& USpeedBranchWheelSubBody::ExternalBoxSubBodiesBodyDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->ExternalBoxSubBodies:USSubBody::ExternalBoxSubBodiesBodyDomainStorage();
+}
+TArray<TWeakObjectPtr<USphereSubBody>>& USpeedBranchWheelSubBody::ExternalSphereSubBodiesBodyDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->ExternalSphereSubBodies:USSubBody::ExternalSphereSubBodiesBodyDomainStorage();
+}
+TArray<TWeakObjectPtr<USphereSubBody>> const& USpeedBranchWheelSubBody::ExternalSphereSubBodiesBodyDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->ExternalSphereSubBodies:USSubBody::ExternalSphereSubBodiesBodyDomainStorage();
+}
+TArray<TWeakObjectPtr<USWheelSubBody>>& USpeedBranchWheelSubBody::ExternalWheelSubBodiesBodyDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->ExternalWheelSubBodies:USSubBody::ExternalWheelSubBodiesBodyDomainStorage();
+}
+TArray<TWeakObjectPtr<USWheelSubBody>> const& USpeedBranchWheelSubBody::ExternalWheelSubBodiesBodyDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->ExternalWheelSubBodies:USSubBody::ExternalWheelSubBodiesBodyDomainStorage();
+}
+TArray<TWeakObjectPtr<UCylinderSubBody>>& USpeedBranchWheelSubBody::ExternalCylinderSubBodiesBodyDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->ExternalCylinderSubBodies:USSubBody::ExternalCylinderSubBodiesBodyDomainStorage();
+}
+TArray<TWeakObjectPtr<UCylinderSubBody>> const& USpeedBranchWheelSubBody::ExternalCylinderSubBodiesBodyDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->ExternalCylinderSubBodies:USSubBody::ExternalCylinderSubBodiesBodyDomainStorage();
+}
+ISpeedWheeledComponent*& USpeedBranchWheelSubBody::WheelComponentWheelDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->WheelComponent:USWheelSubBody::WheelComponentWheelDomainStorage();
+}
+ISpeedWheeledComponent* const& USpeedBranchWheelSubBody::WheelComponentWheelDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->WheelComponent:USWheelSubBody::WheelComponentWheelDomainStorage();
+}
+UChaosVehicleWheel*& USpeedBranchWheelSubBody::ChaosWheelWheelDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->ChaosWheel:USWheelSubBody::ChaosWheelWheelDomainStorage();
+}
+UChaosVehicleWheel* const& USpeedBranchWheelSubBody::ChaosWheelWheelDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->ChaosWheel:USWheelSubBody::ChaosWheelWheelDomainStorage();
+}
+Chaos::FSimpleWheelSim*& USpeedBranchWheelSubBody::PWheelWheelDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->PWheel:USWheelSubBody::PWheelWheelDomainStorage();
+}
+Chaos::FSimpleWheelSim* const& USpeedBranchWheelSubBody::PWheelWheelDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->PWheel:USWheelSubBody::PWheelWheelDomainStorage();
+}
+Chaos::FSimpleSuspensionSim*& USpeedBranchWheelSubBody::PSuspensionWheelDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->PSuspension:USWheelSubBody::PSuspensionWheelDomainStorage();
+}
+Chaos::FSimpleSuspensionSim* const& USpeedBranchWheelSubBody::PSuspensionWheelDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->PSuspension:USWheelSubBody::PSuspensionWheelDomainStorage();
+}
+float& USpeedBranchWheelSubBody::WheelMassWheelDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->WheelMass:USWheelSubBody::WheelMassWheelDomainStorage();
+}
+float const& USpeedBranchWheelSubBody::WheelMassWheelDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->WheelMass:USWheelSubBody::WheelMassWheelDomainStorage();
+}
+float& USpeedBranchWheelSubBody::SuspensionSpringRateWheelDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->SuspensionSpringRate:USWheelSubBody::SuspensionSpringRateWheelDomainStorage();
+}
+float const& USpeedBranchWheelSubBody::SuspensionSpringRateWheelDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->SuspensionSpringRate:USWheelSubBody::SuspensionSpringRateWheelDomainStorage();
+}
+float& USpeedBranchWheelSubBody::SuspensionDampingCompressionRatioWheelDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->SuspensionDampingCompressionRatio:USWheelSubBody::SuspensionDampingCompressionRatioWheelDomainStorage();
+}
+float const& USpeedBranchWheelSubBody::SuspensionDampingCompressionRatioWheelDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->SuspensionDampingCompressionRatio:USWheelSubBody::SuspensionDampingCompressionRatioWheelDomainStorage();
+}
+float& USpeedBranchWheelSubBody::SuspensionDampingReboundRatioWheelDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->SuspensionDampingReboundRatio:USWheelSubBody::SuspensionDampingReboundRatioWheelDomainStorage();
+}
+float const& USpeedBranchWheelSubBody::SuspensionDampingReboundRatioWheelDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->SuspensionDampingReboundRatio:USWheelSubBody::SuspensionDampingReboundRatioWheelDomainStorage();
+}
+bool& USpeedBranchWheelSubBody::bUseSuspensionForceModelOverrideWheelDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->bUseSuspensionForceModelOverride:USWheelSubBody::bUseSuspensionForceModelOverrideWheelDomainStorage();
+}
+bool const& USpeedBranchWheelSubBody::bUseSuspensionForceModelOverrideWheelDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->bUseSuspensionForceModelOverride:USWheelSubBody::bUseSuspensionForceModelOverrideWheelDomainStorage();
+}
+bool& USpeedBranchWheelSubBody::bClampSuspensionForceToPositiveWheelDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->bClampSuspensionForceToPositive:USWheelSubBody::bClampSuspensionForceToPositiveWheelDomainStorage();
+}
+bool const& USpeedBranchWheelSubBody::bClampSuspensionForceToPositiveWheelDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->bClampSuspensionForceToPositive:USWheelSubBody::bClampSuspensionForceToPositiveWheelDomainStorage();
+}
+bool& USpeedBranchWheelSubBody::bClampPositiveUntilFirstCompressionWheelDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->bClampPositiveUntilFirstCompression:USWheelSubBody::bClampPositiveUntilFirstCompressionWheelDomainStorage();
+}
+bool const& USpeedBranchWheelSubBody::bClampPositiveUntilFirstCompressionWheelDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->bClampPositiveUntilFirstCompression:USWheelSubBody::bClampPositiveUntilFirstCompressionWheelDomainStorage();
+}
+bool& USpeedBranchWheelSubBody::bUseEffectiveSuspensionSweepRadiusWheelDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->bUseEffectiveSuspensionSweepRadius:USWheelSubBody::bUseEffectiveSuspensionSweepRadiusWheelDomainStorage();
+}
+bool const& USpeedBranchWheelSubBody::bUseEffectiveSuspensionSweepRadiusWheelDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->bUseEffectiveSuspensionSweepRadius:USWheelSubBody::bUseEffectiveSuspensionSweepRadiusWheelDomainStorage();
+}
+bool& USpeedBranchWheelSubBody::bUseIncreasingDisplacementAsCompressionWheelDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->bUseIncreasingDisplacementAsCompression:USWheelSubBody::bUseIncreasingDisplacementAsCompressionWheelDomainStorage();
+}
+bool const& USpeedBranchWheelSubBody::bUseIncreasingDisplacementAsCompressionWheelDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->bUseIncreasingDisplacementAsCompression:USWheelSubBody::bUseIncreasingDisplacementAsCompressionWheelDomainStorage();
+}
+bool& USpeedBranchWheelSubBody::bUseCompressionCrossingContactImpulseWheelDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->bUseCompressionCrossingContactImpulse:USWheelSubBody::bUseCompressionCrossingContactImpulseWheelDomainStorage();
+}
+bool const& USpeedBranchWheelSubBody::bUseCompressionCrossingContactImpulseWheelDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->bUseCompressionCrossingContactImpulse:USWheelSubBody::bUseCompressionCrossingContactImpulseWheelDomainStorage();
+}
+uint8& USpeedBranchWheelSubBody::GroundForceApplicationModeWheelDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->GroundForceApplicationMode:USWheelSubBody::GroundForceApplicationModeWheelDomainStorage();
+}
+uint8 const& USpeedBranchWheelSubBody::GroundForceApplicationModeWheelDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->GroundForceApplicationMode:USWheelSubBody::GroundForceApplicationModeWheelDomainStorage();
+}
+uint8& USpeedBranchWheelSubBody::ContactImpulseApplicationModeWheelDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->ContactImpulseApplicationMode:USWheelSubBody::ContactImpulseApplicationModeWheelDomainStorage();
+}
+uint8 const& USpeedBranchWheelSubBody::ContactImpulseApplicationModeWheelDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->ContactImpulseApplicationMode:USWheelSubBody::ContactImpulseApplicationModeWheelDomainStorage();
+}
+float& USpeedBranchWheelSubBody::SuspensionStiffnessForceScaleWheelDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->SuspensionStiffnessForceScale:USWheelSubBody::SuspensionStiffnessForceScaleWheelDomainStorage();
+}
+float const& USpeedBranchWheelSubBody::SuspensionStiffnessForceScaleWheelDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->SuspensionStiffnessForceScale:USWheelSubBody::SuspensionStiffnessForceScaleWheelDomainStorage();
+}
+float& USpeedBranchWheelSubBody::SuspensionStiffnessReferenceDisplacementWheelDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->SuspensionStiffnessReferenceDisplacement:USWheelSubBody::SuspensionStiffnessReferenceDisplacementWheelDomainStorage();
+}
+float const& USpeedBranchWheelSubBody::SuspensionStiffnessReferenceDisplacementWheelDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->SuspensionStiffnessReferenceDisplacement:USWheelSubBody::SuspensionStiffnessReferenceDisplacementWheelDomainStorage();
+}
+float& USpeedBranchWheelSubBody::SuspensionPreRestCompressionDampingScaleWheelDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->SuspensionPreRestCompressionDampingScale:USWheelSubBody::SuspensionPreRestCompressionDampingScaleWheelDomainStorage();
+}
+float const& USpeedBranchWheelSubBody::SuspensionPreRestCompressionDampingScaleWheelDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->SuspensionPreRestCompressionDampingScale:USWheelSubBody::SuspensionPreRestCompressionDampingScaleWheelDomainStorage();
+}
+bool& USpeedBranchWheelSubBody::bClampNegativeSuspensionDisplacementWheelDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->bClampNegativeSuspensionDisplacement:USWheelSubBody::bClampNegativeSuspensionDisplacementWheelDomainStorage();
+}
+bool const& USpeedBranchWheelSubBody::bClampNegativeSuspensionDisplacementWheelDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->bClampNegativeSuspensionDisplacement:USWheelSubBody::bClampNegativeSuspensionDisplacementWheelDomainStorage();
+}
+bool& USpeedBranchWheelSubBody::bDisableSuspensionBumpStopForceWheelDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->bDisableSuspensionBumpStopForce:USWheelSubBody::bDisableSuspensionBumpStopForceWheelDomainStorage();
+}
+bool const& USpeedBranchWheelSubBody::bDisableSuspensionBumpStopForceWheelDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->bDisableSuspensionBumpStopForce:USWheelSubBody::bDisableSuspensionBumpStopForceWheelDomainStorage();
+}
+float& USpeedBranchWheelSubBody::SuspensionSpringRateCmOverrideWheelDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->SuspensionSpringRateCmOverride:USWheelSubBody::SuspensionSpringRateCmOverrideWheelDomainStorage();
+}
+float const& USpeedBranchWheelSubBody::SuspensionSpringRateCmOverrideWheelDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->SuspensionSpringRateCmOverride:USWheelSubBody::SuspensionSpringRateCmOverrideWheelDomainStorage();
+}
+float& USpeedBranchWheelSubBody::SuspensionCompressionDampingOverrideWheelDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->SuspensionCompressionDampingOverride:USWheelSubBody::SuspensionCompressionDampingOverrideWheelDomainStorage();
+}
+float const& USpeedBranchWheelSubBody::SuspensionCompressionDampingOverrideWheelDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->SuspensionCompressionDampingOverride:USWheelSubBody::SuspensionCompressionDampingOverrideWheelDomainStorage();
+}
+float& USpeedBranchWheelSubBody::SuspensionReboundDampingOverrideWheelDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->SuspensionReboundDampingOverride:USWheelSubBody::SuspensionReboundDampingOverrideWheelDomainStorage();
+}
+float const& USpeedBranchWheelSubBody::SuspensionReboundDampingOverrideWheelDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->SuspensionReboundDampingOverride:USWheelSubBody::SuspensionReboundDampingOverrideWheelDomainStorage();
+}
+float& USpeedBranchWheelSubBody::SuspensionMaxRaiseOverrideWheelDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->SuspensionMaxRaiseOverride:USWheelSubBody::SuspensionMaxRaiseOverrideWheelDomainStorage();
+}
+float const& USpeedBranchWheelSubBody::SuspensionMaxRaiseOverrideWheelDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->SuspensionMaxRaiseOverride:USWheelSubBody::SuspensionMaxRaiseOverrideWheelDomainStorage();
+}
+float& USpeedBranchWheelSubBody::SuspensionMaxDropOverrideWheelDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->SuspensionMaxDropOverride:USWheelSubBody::SuspensionMaxDropOverrideWheelDomainStorage();
+}
+float const& USpeedBranchWheelSubBody::SuspensionMaxDropOverrideWheelDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->SuspensionMaxDropOverride:USWheelSubBody::SuspensionMaxDropOverrideWheelDomainStorage();
+}
+float& USpeedBranchWheelSubBody::ConfiguredStaticSpringCompressionWheelDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->ConfiguredStaticSpringCompression:USWheelSubBody::ConfiguredStaticSpringCompressionWheelDomainStorage();
+}
+float const& USpeedBranchWheelSubBody::ConfiguredStaticSpringCompressionWheelDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->ConfiguredStaticSpringCompression:USWheelSubBody::ConfiguredStaticSpringCompressionWheelDomainStorage();
+}
+float& USpeedBranchWheelSubBody::RadiusSphereDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedSphereDomain->Radius:USphereSubBody::RadiusSphereDomainStorage();
+}
+float const& USpeedBranchWheelSubBody::RadiusSphereDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedSphereDomain->Radius:USphereSubBody::RadiusSphereDomainStorage();
+}
+FTransform USpeedBranchWheelSubBody::PhysicalLocalPose() const {return UsesOriginalBodyStorage()?OwnedBodyValues->LocalPose:USSubBody::PhysicalLocalPose();}
+void USpeedBranchWheelSubBody::SetPhysicalLocalOffset(const FVector& V) {if(UsesOriginalBodyStorage())OwnedBodyValues->LocalPose.SetLocation(V);else USSubBody::SetPhysicalLocalOffset(V);}
+
+float USpeedBranchWheelSubBody::PhysicalSuspensionRestLength() const
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->SuspensionMaxRaiseOverride:USWheelSubBody::PhysicalSuspensionRestLength();
+}
+
+FVector USpeedBranchBoxSubBody::PhysicalLocalOffset() const {return UsesOriginalBodyStorage()?OwnedBodyValues->LocalPose.GetLocation():USSubBody::PhysicalLocalOffset();}
+FQuat USpeedBranchBoxSubBody::PhysicalLocalRotation() const {return UsesOriginalBodyStorage()?OwnedBodyValues->LocalPose.GetRotation():USSubBody::PhysicalLocalRotation();}
+FRotator USpeedBranchBoxSubBody::PhysicalLocalEulerRotation() const
+{return UsesOriginalBodyStorage()?OwnedBodyValues->LocalEulerRotation:USSubBody::PhysicalLocalEulerRotation();}
+void USpeedBranchBoxSubBody::SetPhysicalLocalRotation(const FQuat& V)
+{
+    if(UsesOriginalBodyStorage())
+    {
+        OwnedBodyValues->LocalEulerRotation=V.Rotator();
+        OwnedBodyValues->LocalPose.SetRotation(V);
+    }
+    else USSubBody::SetPhysicalLocalRotation(V);
+}
+
+FVector USpeedBranchWheelSubBody::PhysicalLocalOffset() const {return UsesOriginalBodyStorage()?OwnedBodyValues->LocalPose.GetLocation():USSubBody::PhysicalLocalOffset();}
+FQuat USpeedBranchWheelSubBody::PhysicalLocalRotation() const {return UsesOriginalBodyStorage()?OwnedBodyValues->LocalPose.GetRotation():USSubBody::PhysicalLocalRotation();}
+FRotator USpeedBranchWheelSubBody::PhysicalLocalEulerRotation() const
+{return UsesOriginalBodyStorage()?OwnedBodyValues->LocalEulerRotation:USSubBody::PhysicalLocalEulerRotation();}
+void USpeedBranchWheelSubBody::SetPhysicalLocalRotation(const FQuat& V)
+{
+    if(UsesOriginalBodyStorage())
+    {
+        OwnedBodyValues->LocalEulerRotation=V.Rotator();
+        OwnedBodyValues->LocalPose.SetRotation(V);
+    }
+    else USSubBody::SetPhysicalLocalRotation(V);
+}
+
+// Explicit public facade binding effects. Native physical methods use the
+// separately private unchanged binding operations above, never these entries.
+void USpeedBranchWheelSubBody::CheckOrdinaryWheelBindingEntry() const
+{throw Speed::Netcode::Prediction::FPrivateNativeStorageUnavailable{};}
+void USpeedBranchWheelSubBody::ApplyPublicChaosWheel(UChaosVehicleWheel* Value)
+{
+    ChaosWheel=Value;
+    if(ChaosWheel&&SuspensionMaxRaiseOverride>=0.0f&&SuspensionMaxDropOverride>=0.0f)
+    {
+        ChaosWheel->SuspensionMaxRaise=SuspensionMaxRaiseOverride;
+        ChaosWheel->SuspensionMaxDrop=SuspensionMaxDropOverride;
+    }
+}
+void USpeedBranchWheelSubBody::ApplyPublicWheelSim(Chaos::FSimpleWheelSim* Value)
+{
+    PWheel=Value;
+    if(!PWheel)return;
+    PWheel->SetMassPerWheel(WheelMass);
+    Mass=WheelMass; // actual public facade solid backing, never native Storage
+}
+void USpeedBranchWheelSubBody::ApplyPublicSuspensionSim(Chaos::FSimpleSuspensionSim* Value)
+{
+    PSuspension=Value;
+}
+
+void USpeedBranchBoxSubBody::ResolveNativeCurrentHit(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const float& Delta,const float& SimTime)
+{
+    // Capture the genuine dispatch participant before Super can update caches.
+    // Weak validity after the synchronous call never invents a lifetime lease.
+    const bool Blocking=Speed::NativeKinematics::FBodyRead::CurrentHit(Operation,*this).bBlockingHit;
+    if(!Blocking)return;
+    const auto Peer=Speed::NativeKinematics::FBodyRead::CurrentHit(Operation,*this).Component;
+    const bool WasSolid=Cast<USolidSubBody>(Peer.Get())!=nullptr;
+    ResolveNativeBoxCurrentHit(Operation,Delta,SimTime); // shared original program, once
+    if(Blocking&&WasSolid&&Peer.IsValid())
+    {
+        // ISpeedComponent is native C++, NOT a UObject/UInterface. Resolve
+        // through the genuine owning actor, then verify the adjusted native
+        // base address rather than performing an invalid Unreal Cast.
+        const auto A=StorageAccess.lock();
+        auto* Owner=A?A->FindOriginalComponentAlias(GetParentComponent(),GetOwner()):nullptr;
+        if(Owner&&GetParentComponent()==static_cast<ISpeedComponent*>(Owner))
+            if(auto* SolidPeer=Cast<USolidSubBody>(Peer.Get()))
+                Owner->ObserveContactPair(*this,*SolidPeer,Cast<UBoxSubBody>(SolidPeer)?0:1);
+    }
+}
+void USpeedBranchBoxSubBody::ValidateNativeResetFrame(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation) const
+{
+    namespace P=Speed::Netcode::Prediction;
+    P::FPrivateNativeStorageAccess::RequireStep(Operation);
+    (void)P::FPrivateNativeStorageAccess::Part<const P::FPrivateRoadSubBodyValues>(Operation,this);
+    (void)P::FPrivateNativeStorageAccess::Part<const P::FPrivateRoadSolidValues>(Operation,this);
+    (void)P::FPrivateNativeStorageAccess::Part<const P::FPrivateRoadBoxDomain>(Operation,this);
+}
+void USpeedBranchBoxSubBody::ResetNativeForFrame(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const float& Delta)
+{
+    ValidateNativeResetFrame(Operation);
+    ResetNativeBoxForFrame(Operation,Delta);
+}
+void USpeedBranchWheelSubBody::ValidateNativeResetFrame(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation) const
+{
+    namespace P=Speed::Netcode::Prediction;
+    P::FPrivateNativeStorageAccess::RequireStep(Operation);
+    (void)P::FPrivateNativeStorageAccess::Part<const P::FPrivateRoadSubBodyValues>(Operation,this);
+    (void)P::FPrivateNativeStorageAccess::Part<const P::FPrivateRoadSolidValues>(Operation,this);
+    (void)P::FPrivateNativeStorageAccess::Part<const P::FPrivateRoadSphereDomain>(Operation,this);
+    (void)P::FPrivateNativeStorageAccess::Part<const P::FPrivateRoadWheelDomain>(Operation,this);
+    (void)P::FPrivateNativeStorageAccess::Part<const P::FPrivateRoadWheelRuntimeValues>(Operation,this);
+}
+void USpeedBranchWheelSubBody::ResetNativeForFrame(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const float& Delta)
+{
+    ValidateNativeResetFrame(Operation);
+    USWheelSubBody::ResetForFrame(Delta); // no mass read/write in this unchanged wheel reset
+}
+void USpeedBranchWheelSubBody::ResolveNativeCurrentHit(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const float& Delta,const float& SimTime)
+{ResolveNativeSphereCurrentHit(Operation,Delta,SimTime);}

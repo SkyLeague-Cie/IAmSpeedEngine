@@ -1,5 +1,7 @@
 #pragma once
+namespace Speed::Netcode::Prediction {class FPrivateNativeOperation;}
 namespace Speed { struct FCommonComponentValueAccess; }
+namespace Speed::NativeKinematics { class FComponentRead; class FComponentWrite; }
 #include "IAmSpeed/World/Simulation/PreparedSimulationRestore.h"
 
 #include "CoreMinimal.h"
@@ -90,6 +92,23 @@ namespace Speed { struct FNativeBallMechanicalWitnessForTesting; }
 #endif
 class IAMSPEED_API ISpeedComponent
 {
+    friend class Speed::NativeKinematics::FComponentRead;
+    friend class Speed::NativeKinematics::FComponentWrite;
+    class FLegacyFrameResetAccess;class FNativeFrameResetAccess;
+    template<class TAccess> void ResetForFrameBody(TAccess& Storage,const float& Delta);
+    void ResetNativeForFrame(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const float& Delta);
+    static void ValidateNativeFrameOwner(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const ISpeedComponent* Component);
+    void RegisterPhysicalConstraintForPhysics(const FPhysicalContactConstraint& Constraint);
+    void ClearPhysicalConstraintsForPhysics();
+    // Default adapters retain their existing virtual getter semantics. The
+    // private native car overrides these without exporting its storage.
+    virtual const SKinematic& ReadPhysicsKinematicState() const { return GetKinematicState(); }
+    virtual const SKinematic& ReadPhysicsKinematicStateForFrame(const unsigned int& Frame) const
+    { return GetKinematicStateForFrame(Frame); }
+    virtual const FVector& ReadPhysicsCOM() const { return GetPhysCOM(); }
+    virtual const FVector& ReadPhysicsCenterOfMassLocal() const { return GetPhysCenterOfMassLocal(); }
+    virtual const TArray<FPhysicalContactConstraint>& PublicPhysicalConstraintsView() const { return PhysicalConstraintsStorage(); }
+    virtual TArray<FPhysicalContactConstraint>& PublicPhysicalConstraintsMutableView() { return PhysicalConstraintsStorage(); }
 #if !UE_BUILD_SHIPPING
     friend struct Speed::FNativeBallMechanicalWitnessForTesting;
 #endif
@@ -108,9 +127,12 @@ public:
 	{
 		if (PhysicsPhaseObserver) PhysicsPhaseObserver->Observe(*this, Phase, Delta);
 	}
-	/** Return false on a conflicting observer; never replace another fixture. */
+    /** Permanent native profiles can forbid external callbacks by construction. */
+    virtual bool AllowsPhysicsPhaseObserverInstallation() const { return true; }
+	/** Return false on a forbidden/conflicting observer; never replace a fixture. */
 	bool TryInstallPhysicsPhaseObserver(ISpeedPhysicsPhaseObserver& Observer)
 	{
+        if (!AllowsPhysicsPhaseObserverInstallation()) return false;
 		if (PhysicsPhaseObserver && PhysicsPhaseObserver != &Observer) return false;
 		PhysicsPhaseObserver = &Observer;
 		return true;
@@ -182,7 +204,7 @@ public:
 	/** Terminal cancellation before global publication; must not throw or allocate. */
 	virtual void AbortCanonicalFrame(uint64 Frame, ECanonicalFrameAbortReason Reason) noexcept {}
 	/** Read-only identity publication; querying this never mutates the world registry. */
-	uint64 GetPublishedSimulationStableId() const { return PublishedSimulationStableId.Load(); }
+	uint64 GetPublishedSimulationStableId() const { return PublishedSimulationStableIdStorage().Load(); }
     /** Complete prepared restore is opt-in. Legacy payload validation does not
      * qualify mechanical/gameplay/caches/lifecycle state for this transaction. */
     virtual std::unique_ptr<Speed::IPreparedSimulationComponentRestore>
@@ -245,6 +267,8 @@ public:
 	virtual FMatrix ComputeWorldInvInertiaTensorOfSubBody(const USSubBody& SubBody) const = 0;
 
 	// =========== Kinematics getters and setters =================
+    // Public views remain legacy references. Private owner storage uses a
+    // separate module-internal reader; these references are not snapshots.
 	virtual const SKinematic& GetKinematicState() const = 0;
 	virtual const SKinematic& GetKinematicStateForFrame(const unsigned int& NumFrame) const = 0;
 	// Derives the component/mesh-origin state for rendering and local sub-body geometry.
@@ -319,12 +343,12 @@ public:
 	/** Binds immutable query geometry for this frame; cleared at completion/restore, never snapshotted. */
 	void SetStaticCollisionWorldForFrame(const Speed::IStaticCollisionWorld* World, float FrameHorizon = 0)
 	{
-		StaticRestingWorld = World;
-		StaticSupportFrameHorizon = World ? FrameHorizon : 0;
+		StaticRestingWorldStorage() = World;
+		StaticSupportFrameHorizonStorage() = World ? FrameHorizon : 0;
 	}
 	/** Common conservative horizon for support admission in CCD and integration.
 	 * It must not shorten just because the sweep returned an earlier impact. */
-	float GetStaticSupportFrameHorizon() const { return StaticSupportFrameHorizon; }
+	float GetStaticSupportFrameHorizon() const { return StaticSupportFrameHorizonStorage(); }
 	/** Returns a currently feasible resting reaction, or zero; does not mutate physical state. */
 	FVector GetStaticRestingReaction(double* StopAfterSeconds = nullptr) const;
 	/** True when certified support keeps this whole interval below the speed cap;
@@ -342,7 +366,7 @@ public:
 	 * certifies a torque-free support law; this is not complete mechanical rest. */
 	bool HasExactStaticFaceSupport() const;
 	/** Frame-local immutable geometry, also available during preparation and canonical quantization. */
-	const Speed::IStaticCollisionWorld* GetStaticCollisionWorldForFrame() const { return StaticRestingWorld; }
+	const Speed::IStaticCollisionWorld* GetStaticCollisionWorldForFrame() const { return StaticRestingWorldStorage(); }
 
 	// Called once per physics frame to reset any cached info in the component or its sub-bodies (e.g. hit info)
 	virtual void ResetForFrame(const float& Delta);
@@ -371,7 +395,7 @@ public:
 
 	void RegisterPhysicalConstraint(const FPhysicalContactConstraint& Constraint);
 	void ClearPhysicalConstraints();
-	const TArray<FPhysicalContactConstraint>& GetPhysicalConstraints() const { return PhysicalConstraints; }
+	const TArray<FPhysicalContactConstraint>& GetPhysicalConstraints() const { return PublicPhysicalConstraintsView(); }
 	/** True when another sub-body supplies a live constraint: an isolated
 	 * rigid-body contact response must then defer to the coupled solver. */
 	virtual bool HasActivePhysicalConstraintsOtherThan(const USSubBody* Source) const;
@@ -415,6 +439,20 @@ protected:
 		check(Payload.IsEmpty());
 	}
 
+    virtual TAtomic<uint64>& PublishedSimulationStableIdStorage() {return PublishedSimulationStableId;}
+    virtual TAtomic<uint64> const& PublishedSimulationStableIdStorage() const {return PublishedSimulationStableId;}
+    // Legacy fields remain unchanged. Private owners can separate the common
+    // value blocks from facade calls; this grants no restore or borrow lease.
+    virtual TArray<FPhysicalContactConstraint>& PhysicalConstraintsStorage() {return PhysicalConstraints;}
+    virtual TArray<FPhysicalContactConstraint> const& PhysicalConstraintsStorage() const {return PhysicalConstraints;}
+    virtual Speed::FSimulationSleepState& SleepStateStorage() {return SleepState;}
+    virtual Speed::FSimulationSleepState const& SleepStateStorage() const {return SleepState;}
+    virtual Speed::FIdentityKinematicQuantizationCache& KinematicQuantizationCacheStorage() {return KinematicQuantizationCache;}
+    virtual Speed::FIdentityKinematicQuantizationCache const& KinematicQuantizationCacheStorage() const {return KinematicQuantizationCache;}
+    virtual const Speed::IStaticCollisionWorld*& StaticRestingWorldStorage() {return StaticRestingWorld;}
+    virtual const Speed::IStaticCollisionWorld* const& StaticRestingWorldStorage() const {return StaticRestingWorld;}
+    virtual float& StaticSupportFrameHorizonStorage() {return StaticSupportFrameHorizon;}
+    virtual float const& StaticSupportFrameHorizonStorage() const {return StaticSupportFrameHorizon;}
 	TArray<FPhysicalContactConstraint> PhysicalConstraints;
 	Speed::FSimulationSleepState SleepState;
 	Speed::FIdentityKinematicQuantizationCache KinematicQuantizationCache;
@@ -428,4 +466,82 @@ private:
 	// Borrowed only during the world's canonical step; no historical/cache state.
 	const Speed::IStaticCollisionWorld* StaticRestingWorld = nullptr;
 	float StaticSupportFrameHorizon = 0;
+
+private:
+    template<class TAccess> void SetPhysAccelerationBody(TAccess& Storage,const FVector& NewAcceleration);
+    void SetPhysAccelerationNative(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const FVector& NewAcceleration);
+    template<class TAccess> void SetPhysAngularAccelerationBody(TAccess& Storage,const FVector& NewAngularAcceleration);
+    void SetPhysAngularAccelerationNative(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const FVector& NewAngularAcceleration);
+    template<class TAccess> void AddPhysImpulseBatchAtPointsBody(TAccess& Storage,const TArray<FVector>& Impulses,const TArray<FVector>& WorldPoints,const USolidSubBody* SubBody);
+    void AddPhysImpulseBatchAtPointsNative(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const TArray<FVector>& Impulses,const TArray<FVector>& WorldPoints,const USolidSubBody* SubBody);
+    template<class TAccess> void AddPhysForceAtPointBody(TAccess& Storage,const FVector& Force,const FVector& WorldPoint,const USolidSubBody* SubBody);
+    void AddPhysForceAtPointNative(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const FVector& Force,const FVector& WorldPoint,const USolidSubBody* SubBody);
+    template<class TAccess> void AddPhysForceBatchAtPointsBody(TAccess& Storage,const TArray<FVector>& Forces,const TArray<FVector>& WorldPoints,const USolidSubBody* SubBody);
+    void AddPhysForceBatchAtPointsNative(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const TArray<FVector>& Forces,const TArray<FVector>& WorldPoints,const USolidSubBody* SubBody);
+    class FLegacyChildrenUpdateAccess;class FNativeChildrenUpdateAccess;
+protected:
+    // Same shared arithmetic/order; access supplies actual callback validation.
+    template<class TAccess> void UpdateSubBodiesKinematicsBody(TAccess& Storage)
+    {
+        // Every child observes the same parent state; derive origin from COM once.
+        const SKinematic OriginState = Storage.Origin();
+        const int32 NumBodies = Storage.SubBodies().Num();
+        for (int32 Index=0;Index<NumBodies;++Index)
+        {
+            // Resolve this index again after each actual child callback. The
+            // checked reference access revalidates cardinality/weak roster;
+            // no TArray iterator or element borrow survives Update.
+            USSubBody* SubBody = Storage.SubBodies()[Index];
+            Storage.Update(SubBody,OriginState);
+        }
+    }
+private:
+    void UpdateSubBodiesKinematicsNative(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation);
+    class FLegacyImpulseAccess;class FNativeImpulseAccess;
+    template<class TAccess> void AddPhysImpulseAtPointBody(TAccess& Storage,const FVector& Impulse,const FVector& Point,const USolidSubBody* SubBody);
+    void AddPhysImpulseAtPointNative(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const FVector& Impulse,const FVector& Point,const USolidSubBody* SubBody);
+    class FLegacyVelocityAccess;class FNativeVelocityAccess;
+    template<class TAccess> void SetPhysCOMLocationBody(TAccess& Storage,const FVector& NewCOMLocation);
+    void SetPhysCOMLocationNative(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const FVector& NewCOMLocation);
+    template<class TAccess> void SetPhysLocationBody(TAccess& Storage,const FVector& NewLocation);
+    void SetPhysLocationNative(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const FVector& NewLocation);
+    template<class TAccess> void SetPhysRotationBody(TAccess& Storage,const FQuat& NewRotation);
+    void SetPhysRotationNative(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const FQuat& NewRotation);
+    template<class TAccess> void SetPhysRotationPreserveCOMBody(TAccess& Storage,const FQuat& NewRotation);
+    void SetPhysRotationPreserveCOMNative(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const FQuat& NewRotation);
+    template<class TAccess> void SetPhysVelocityBody(TAccess& Storage,const FVector& NewVelocity);
+    void SetPhysVelocityNative(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const FVector& NewVelocity);
+    template<class TAccess> void SetPhysAngularVelocityBody(TAccess& Storage,const FVector& NewAngularVelocity);
+    void SetPhysAngularVelocityNative(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const FVector& NewAngularVelocity);
+    template<class TAccess> void SetPhysVelocityAtPointBody(TAccess& Storage,const FVector& NewVelocity,const FVector& Point);
+    void SetPhysVelocityAtPointNative(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const FVector& NewVelocity,const FVector& Point);
+    template<class TAccess> void AddPhysVelocityBody(TAccess& Storage,const FVector& DeltaVelocity);
+    void AddPhysVelocityNative(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const FVector& DeltaVelocity);
+    template<class TAccess> FVector AddPhysLocationBody(TAccess& Storage,const FVector& DeltaLocation);
+    FVector AddPhysLocationNative(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const FVector& DeltaLocation);
+    template<class TAccess> FQuat AddPhysRotationBody(TAccess& Storage,const FQuat& DeltaRotation);
+    FQuat AddPhysRotationNative(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const FQuat& DeltaRotation);
+    template<class TAccess> void AddPhysAngularVelocityBody(TAccess& Storage,const FVector& DeltaAngularVelocity);
+    void AddPhysAngularVelocityNative(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const FVector& DeltaAngularVelocity);
+    template<class TAccess> void AddPhysAccelerationBody(TAccess& Storage,const FVector& DeltaAcceleration);
+    void AddPhysAccelerationNative(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const FVector& DeltaAcceleration);
+    template<class TAccess> void AddPhysAngularAccelerationBody(TAccess& Storage,const FVector& DeltaAngularAcceleration);
+    void AddPhysAngularAccelerationNative(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const FVector& DeltaAngularAcceleration);
+    template<class TAccess> void AddPhysAngularAccelerationLocalBody(TAccess& Storage,const FVector& LocalAngularAccel);
+    void AddPhysAngularAccelerationLocalNative(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const FVector& LocalAngularAccel);
+    template<class TAccess> void SetPhysCOMVelocityBody(TAccess& Storage,const FVector& NewCOMVelocity);
+    void SetPhysCOMVelocityNative(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const FVector& NewCOMVelocity);
+    template<class TAccess> void SetPhysCOMVelocityRawBody(TAccess& Storage,const FVector& NewVelocity);
+    void SetPhysCOMVelocityRawNative(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const FVector& NewVelocity);
+    template<class TAccess> void SetPhysAngularVelocityRawBody(TAccess& Storage,const FVector& NewAngularVelocity);
+    void SetPhysAngularVelocityRawNative(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const FVector& NewAngularVelocity);
+    class FLegacyConstraintAccess;class FNativeConstraintAccess;
+    template<class TAccess> bool IsPhysicalConstraintStillRelevantBody(TAccess& Storage,const FPhysicalContactConstraint& Constraint) const;
+    bool IsPhysicalConstraintStillRelevantNative(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const FPhysicalContactConstraint& Constraint) const;
+    template<class TAccess> void ProjectLinearDeltaAgainstConstraintsBody(TAccess& Storage,FVector& DeltaLinear) const;
+    void ProjectLinearDeltaAgainstConstraintsNative(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,FVector& DeltaLinear) const;
+    template<class TAccess> void ProjectAngularDeltaAgainstConstraintsBody(TAccess& Storage,FVector& DeltaAngular) const;
+    void ProjectAngularDeltaAgainstConstraintsNative(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,FVector& DeltaAngular) const;
+    template<class TAccess> void ProjectPointDeltaAgainstConstraintsBody(TAccess& Storage,FVector& DeltaLinear,FVector& DeltaAngular) const;
+    void ProjectPointDeltaAgainstConstraintsNative(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,FVector& DeltaLinear,FVector& DeltaAngular) const;
 };

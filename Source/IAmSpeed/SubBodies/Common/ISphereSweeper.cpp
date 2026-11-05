@@ -1,4 +1,5 @@
 #include "ISphereSweeper.h"
+#include "IAmSpeed/World/Simulation/Internal/BodyKinematicRead.h"
 #include "IAmSpeed/Base/SpeedConstant.h"
 #include "IAmSpeed/Base/SUtils.h"
 #include "IAmSpeed/SubBodies/Solid/BoxSubBody.h"
@@ -22,7 +23,7 @@ bool ISphereSweeper::SweepVsGround(UWorld* World, SHitResult& OutHit, const floa
     OutTOI = DeltaTime;
     OutHit = SHitResult();
 
-    const Speed::FKinematicState& KS = GetKinematicState();
+    const Speed::FKinematicState& KS = Speed::NativeKinematics::FBodyRead::Sweeper(*this);
     const FVector Start = KS.Location;
     const FVector End =
         Start +
@@ -45,7 +46,7 @@ bool ISphereSweeper::SweepVsBoxes(UWorld* World, SHitResult& OutHit, const float
 	const TArray<TWeakObjectPtr<UBoxSubBody>>& OtherBoxes = GetExternalBoxSubBodies();
 	if (OtherBoxes.IsEmpty()) return false;
 
-    const Speed::FKinematicState& KS = GetKinematicState();
+    const Speed::FKinematicState& KS = Speed::NativeKinematics::FBodyRead::Sweeper(*this);
     SSphere ThisSphere(
         KS.Location,
         GetRadiusWithMargin(),
@@ -108,7 +109,7 @@ bool ISphereSweeper::SweepVsSpheres(UWorld* World, SHitResult& OutHit, const flo
 	const TArray<TWeakObjectPtr<USphereSubBody>>& OtherSpheres = GetExternalSphereSubBodies();
 	if (OtherSpheres.IsEmpty()) return false;
 
-    const Speed::FKinematicState& KS = GetKinematicState();
+    const Speed::FKinematicState& KS = Speed::NativeKinematics::FBodyRead::Sweeper(*this);
     const SSphere ThisSphere(
         KS.Location,
         GetRadiusWithMargin(),
@@ -167,7 +168,7 @@ bool ISphereSweeper::SweepVsWheels(UWorld* World, SHitResult& OutHit, const floa
     OutHit = SHitResult();
 	const TArray<TWeakObjectPtr<USWheelSubBody>>& OtherWheels = GetExternalWheelSubBodies();
 	if (OtherWheels.IsEmpty()) return false;
-    const Speed::FKinematicState& KS = GetKinematicState();
+    const Speed::FKinematicState& KS = Speed::NativeKinematics::FBodyRead::Sweeper(*this);
     const SSphere ThisSphere(
         KS.Location,
         GetRadiusWithMargin(),
@@ -220,7 +221,7 @@ bool ISphereSweeper::SweepVsWheels(UWorld* World, SHitResult& OutHit, const floa
 
 SSphere ISphereSweeper::MakeSphere() const
 {
-    const SKinematic& KS = GetKinematicState();
+    const SKinematic& KS = Speed::NativeKinematics::FBodyRead::Sweeper(*this);
     return SSphere(
         KS.Location,
         GetRadiusWithMargin(),

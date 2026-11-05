@@ -22,6 +22,13 @@ public class IAmSpeed : ModuleRules
 			PublicAdditionalLibraries.Add(Path.Combine(GameInputSdk, "Binaries", "x64", "GameInput.lib"));
 		}
 
+		// Direct OS datagrams; no UE Networking/Sockets/NetDriver dependency.
+		if (Target.Platform == UnrealTargetPlatform.Win64)
+		{
+			PublicSystemLibraries.Add("ws2_32.lib");
+			PublicSystemLibraries.Add("iphlpapi.lib");
+		}
+
 		PublicDependencyModuleNames.AddRange(new string[] { "Core", "CoreUObject", "Engine", "InputCore",
 			"EnhancedInput", "ChaosVehicles", "PhysicsCore", "Chaos", "ChaosVehiclesCore", "Landscape"});
 		if (Target.Platform == UnrealTargetPlatform.Linux && Target.Configuration != UnrealTargetConfiguration.Shipping)

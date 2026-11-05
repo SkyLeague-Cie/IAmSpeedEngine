@@ -40,4 +40,15 @@ SHitResult SHitResult::FromAnalyticHit(
 	return Result;
 }
 
+SHitResult SHitResult::FromAnalyticHit(
+    const Analytic::FWorldHit& Hit, const float Delta,
+    const TWeakObjectPtr<UPrimitiveComponent>& ExistingComponent, const uint32 InFrameTag)
+{
+    // The raw null assignment resets its weak pointer without a tracked read.
+    // Keep the ordinary overload's body and callback order exactly intact.
+    auto Result=FromAnalyticHit(Hit,Delta,static_cast<UPrimitiveComponent*>(nullptr),InFrameTag);
+    if(Hit.bHit&&ExistingComponent.IsValid())Result.Component=ExistingComponent;
+    return Result;
+}
+
 } // namespace Speed

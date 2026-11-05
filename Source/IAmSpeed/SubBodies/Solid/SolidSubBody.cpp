@@ -2,6 +2,16 @@
 
 
 #include "SolidSubBody.h"
+#include <bit>
+#include <type_traits>
+#include <utility>
+#include "IAmSpeed/Netcode/client-prediction/PrivateRoadNativeObjects.h"
+#include "IAmSpeed/Netcode/client-prediction/PrivateNativeStorageMap.h"
+#include "IAmSpeed/World/Simulation/Internal/SolidPropertiesAccess.h"
+#include "IAmSpeed/World/Simulation/Internal/ComponentContactWrite.h"
+#include "IAmSpeed/World/Simulation/Internal/ComponentKinematicRead.h"
+#include "IAmSpeed/World/Simulation/Internal/BodyKinematicRead.h"
+#include "IAmSpeed/World/Simulation/RoadSettings/NativeRoadSettingsRead.h"
 #include "IAmSpeed/Components/ISpeedComponent.h"
 #include "IAmSpeed/Base/PhysicalContactConstraint.h"
 #include "Configs/SubBodyConfig.h"
@@ -22,20 +32,18 @@ static TAutoConsoleVariable<float> CVarIAmSpeedSphereBoxManifoldFrictionOverride
     -1.0f,
     TEXT("Forces friction only for persistent sphere/box manifolds when >= 0. Negative values use subbody manifold overrides or ordinary sphere/box friction."));
 
-namespace
-{
-    float ResolveSphereBoxGlobalRestitution(
+float Speed::NativeKinematics::FSolidRestitutionPolicy::Resolve(
         const USolidSubBody& Sphere,
         const USolidSubBody& Box,
         const float FallbackRestitution)
     {
-        const float SphereOverride = Sphere.GetSphereBoxRestitutionOverride();
+        const float SphereOverride = Speed::NativeKinematics::FSolidPropertiesAccess::GetSphereBoxRestitutionOverride(Sphere);
         if (SphereOverride >= 0.f)
         {
             return FMath::Clamp(SphereOverride, 0.f, 1.f);
         }
 
-        const float BoxOverride = Box.GetSphereBoxRestitutionOverride();
+        const float BoxOverride = Speed::NativeKinematics::FSolidPropertiesAccess::GetSphereBoxRestitutionOverride(Box);
         if (BoxOverride >= 0.f)
         {
             return FMath::Clamp(BoxOverride, 0.f, 1.f);
@@ -43,71 +51,199 @@ namespace
 
         return FMath::Clamp(FallbackRestitution, 0.f, 1.f);
     }
-}
 
-void USolidSubBody::Initialize(ISpeedComponent* InParentComponent)
+class USolidSubBody::FLegacyBirthInitializeAccess
 {
-	Super::Initialize(InParentComponent);
+    USolidSubBody& Owner;
+public:
+    explicit FLegacyBirthInitializeAccess(USolidSubBody& Value):Owner(Value){}
+    virtual void CheckCallbackBoundary() const {}
+    void Base(ISpeedComponent* Parent) const {Owner.USSubBody::Initialize(Parent);}
+    SubBodyConfig Configuration(ISpeedComponent* Parent) const {return Parent->GetSubBodyConfig(Owner);}
+    FMatrix InitialInverse() const {return Owner.InitInvInertiaTensor();}
+    void Mass(float Value) const {Owner.MassSolidStorage()=Value;}
+    decltype(auto) Restitution() const {return Owner.RestitutionSolidStorage();}
+    decltype(auto) StaticFriction() const {return Owner.StaticFrictionSolidStorage();}
+    decltype(auto) DynamicFriction() const {return Owner.DynamicFrictionSolidStorage();}
+    decltype(auto) ImpactThreshold() const {return Owner.ImpactThresholdSolidStorage();}
+    decltype(auto) IsMain() const {return Owner.bIsMainSubBodySolidStorage();}
+    decltype(auto) EnableFake() const {return Owner.EnableFakePhysicsSolidStorage();}
+    decltype(auto) HitDamping() const {return Owner.HitDampingSolidStorage();}
+    decltype(auto) InverseLocal() const {return Owner.InvInertiaLocalSolidStorage();}
+};
+class USolidSubBody::FNativeBirthInitializeAccess final
+{
+    USolidSubBody& Owner;const Speed::Netcode::Prediction::FPrivateNativeOperation& Op;
+    decltype(auto) Values() const {return Speed::Netcode::Prediction::FPrivateNativeStorageAccess::Part<Speed::Netcode::Prediction::FPrivateRoadSolidValues>(Op,&Owner);}
+public:
+    void CheckCallbackBoundary() const {}
+    FNativeBirthInitializeAccess(USolidSubBody& Value,const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation):Owner(Value),Op(Operation)
+    {Speed::Netcode::Prediction::FPrivateNativeStorageAccess::RequireBirth(Op);(void)Values();}
+    void Base(ISpeedComponent* Parent) const {Owner.InitializeNativeBase(Op,Parent);}
+    SubBodyConfig Configuration(ISpeedComponent* Parent) const
+    {
+        // Observe the one actual completed configuration return, not an assumed
+        // valid path. A thrown access produces no completed-return observation.
+        const SubBodyConfig Result=Speed::NativeKinematics::FComponentRead::BirthSubBodyConfiguration(Op,*Parent,Owner);
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+        auto& Destination=Values();
+        if(Destination.DiagnosticBirthMassConfigReturns==MAX_uint32
+            ||(Result.bValid&&Destination.DiagnosticBirthMassValidConfigReturns==MAX_uint32))
+            throw Speed::Netcode::Prediction::FPrivateNativeStorageUnavailable{};
+        ++Destination.DiagnosticBirthMassConfigReturns;
+        if(Result.bValid)++Destination.DiagnosticBirthMassValidConfigReturns;
+#endif
+        return Result;
+    }
+    FMatrix InitialInverse() const {return Speed::NativeKinematics::FBodyRead::InitialInverseTensor(Op,&Owner);}
+    void Mass(float Value) const
+    {
+        // A value command consumes the real destination inside this call. No
+        // canonical mass reference is returned across the next callback check.
+        auto& Destination=Values();
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+        if(Destination.DiagnosticBirthMassValueReturns==MAX_uint32)
+            throw Speed::Netcode::Prediction::FPrivateNativeStorageUnavailable{};
+#endif
+        Destination.Mass=Value;
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+        const uint32 Requested=std::bit_cast<uint32>(Value);
+        const uint32 Observed=std::bit_cast<uint32>(Destination.Mass);
+        if(Requested!=Observed)throw Speed::Netcode::Prediction::FPrivateNativeStorageUnavailable{};
+        ++Destination.DiagnosticBirthMassValueReturns;
+        Destination.DiagnosticBirthMassRequestedBits=Requested;
+        Destination.DiagnosticBirthMassObservedBits=Observed;
+#endif
+    }
+    decltype(auto) Restitution() const {return (Values().Restitution);}
+    decltype(auto) StaticFriction() const {return (Values().StaticFriction);}
+    decltype(auto) DynamicFriction() const {return (Values().DynamicFriction);}
+    decltype(auto) ImpactThreshold() const {return (Values().ImpactThreshold);}
+    decltype(auto) IsMain() const {return (Values().bIsMainSubBody);}
+    decltype(auto) EnableFake() const {return (Values().EnableFakePhysics);}
+    decltype(auto) HitDamping() const {return (Values().HitDamping);}
+    decltype(auto) InverseLocal() const {return (Values().InvInertiaLocal);}
+};
+
+class USolidSubBody::FReferenceBirthInitializeAccess final : public FLegacyBirthInitializeAccess
+{
+    USolidSubBody& Owner;
+    const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation;
+    const Speed::Netcode::Prediction::FPrivateReferenceOwnerBirth& Proof;
+    ISpeedComponent* const RequestedParent;
+public:
+    FReferenceBirthInitializeAccess(USolidSubBody& Value,const Speed::Netcode::Prediction::FPrivateNativeOperation& Op,
+        const Speed::Netcode::Prediction::FPrivateReferenceOwnerBirth& ActualProof,ISpeedComponent* Parent)
+      :FLegacyBirthInitializeAccess(Value),Owner(Value),Operation(Op),Proof(ActualProof),RequestedParent(Parent)
+    {CheckCallbackBoundary();}
+    FReferenceBirthInitializeAccess(const FReferenceBirthInitializeAccess&)=delete;
+    FReferenceBirthInitializeAccess& operator=(const FReferenceBirthInitializeAccess&)=delete;
+    void CheckCallbackBoundary() const override
+    {Proof.RequireInitializerBody(Operation,Owner,RequestedParent);}
+    void Base(ISpeedComponent* Parent) const
+    {CheckCallbackBoundary();Owner.InitializeReferenceBase(Operation,Proof,Parent);CheckCallbackBoundary();}
+};
+
+template<class TAccess>
+void USolidSubBody::InitializeBirthBody(TAccess& Storage,ISpeedComponent* InParentComponent)
+{
+    Storage.CheckCallbackBoundary();
+	Storage.Base(InParentComponent);
+	Storage.CheckCallbackBoundary();
 
 	if (InParentComponent)
 	{
-		SubBodyConfig Config = InParentComponent->GetSubBodyConfig(*this);
+		SubBodyConfig Config = Storage.Configuration(InParentComponent);
+		Storage.CheckCallbackBoundary();
         if (Config.bValid)
         {
-            Mass = Config.Mass;
-            Restitution = Config.Restitution;
-            StaticFriction = Config.StaticFriction;
-            DynamicFriction = Config.DynamicFriction;
-            ImpactThreshold = Config.ImpactThreshold;
-            bIsMainSubBody = Config.bIsMainSubBody;
-            EnableFakePhysics = Config.bEnableFakePhysics;
-            HitDamping = FMath::Clamp(Config.HitDamping, 0.f, 1.f);
+            Storage.Mass(Config.Mass);
+            Storage.CheckCallbackBoundary();
+            Storage.Restitution() = Config.Restitution;
+            Storage.CheckCallbackBoundary();
+            Storage.StaticFriction() = Config.StaticFriction;
+            Storage.CheckCallbackBoundary();
+            Storage.DynamicFriction() = Config.DynamicFriction;
+            Storage.CheckCallbackBoundary();
+            Storage.ImpactThreshold() = Config.ImpactThreshold;
+            Storage.CheckCallbackBoundary();
+            Storage.IsMain() = Config.bIsMainSubBody;
+            Storage.CheckCallbackBoundary();
+            Storage.EnableFake() = Config.bEnableFakePhysics;
+            Storage.CheckCallbackBoundary();
+            Storage.HitDamping() = FMath::Clamp(Config.HitDamping, 0.f, 1.f);
+            Storage.CheckCallbackBoundary();
         }
-		InvInertiaLocal = InitInvInertiaTensor();
+		const FMatrix InitialInverse = Storage.InitialInverse();
+		Storage.CheckCallbackBoundary();
+		Storage.InverseLocal() = InitialInverse;
+		Storage.CheckCallbackBoundary();
 	}
 }
 
+void USolidSubBody::Initialize(ISpeedComponent* InParentComponent)
+{CheckOrdinaryBodyInitializationEntry();FLegacyBirthInitializeAccess Storage(*this);InitializeBirthBody(Storage,InParentComponent);}
+void USolidSubBody::InitializeNativeSolid(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,ISpeedComponent* Parent)
+{
+    static_assert(std::is_void_v<decltype(std::declval<const FNativeBirthInitializeAccess&>().Mass(0.0f))>);
+    FNativeBirthInitializeAccess Storage(*this,Operation);InitializeBirthBody(Storage,Parent);
+}
+void USolidSubBody::InitializeReferenceSolid(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,
+    const Speed::Netcode::Prediction::FPrivateReferenceOwnerBirth& Proof,ISpeedComponent* Parent)
+{FReferenceBirthInitializeAccess Storage(*this,Operation,Proof,Parent);InitializeBirthBody(Storage,Parent);}
+FMatrix USolidSubBody::ComputeNativeInitialInverseTensor(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation) const
+{(void)Operation;throw Speed::Netcode::Prediction::FPrivateNativeStorageUnavailable{};}
+
+
 void USolidSubBody::ApplyImpulse(const FVector& LinearImpulse, const FVector& WorldPoint)
 {
-	if (ParentComponent)
+	if (ParentComponentBodyDomainStorage())
 	{
-		ParentComponent->ApplyImpulse(LinearImpulse, WorldPoint, this);
+		ParentComponentBodyDomainStorage()->ApplyImpulse(LinearImpulse, WorldPoint, this);
 	}
 }
 
 void USolidSubBody::SetSphereBoxRestitutionOverride(float InRestitution)
 {
-    SphereBoxRestitutionOverride = InRestitution < 0.f ? -1.f : FMath::Clamp(InRestitution, 0.f, 1.f);
+    PublicSolid_SphereBoxRestitutionOverrideStorage() = InRestitution < 0.f ? -1.f : FMath::Clamp(InRestitution, 0.f, 1.f);
 }
 
 void USolidSubBody::RegisterCurrentHitAsConstraint()
 {
-    if (!CurrentHit.bBlockingHit || !CurrentHit.Component.IsValid())
+    if (!CurrentHitStorage().bBlockingHit || !CurrentHitStorage().Component.IsValid())
     {
         return;
     }
 
     RegisterContactAsConstraint(
-        CurrentHit.ImpactPoint,
-        CurrentHit.ImpactNormal,
-        CurrentHit.Component.Get(),
-        Cast<USolidSubBody>(CurrentHit.SubBody.Get()),
-        CurrentHit.PenetrationDepth,
-        CurrentHit.TOI,
+        CurrentHitStorage().ImpactPoint,
+        CurrentHitStorage().ImpactNormal,
+        CurrentHitStorage().Component,
+        Cast<USolidSubBody>(CurrentHitStorage().SubBody.Get()),
+        CurrentHitStorage().PenetrationDepth,
+        CurrentHitStorage().TOI,
         false
     );
 }
 
 void USolidSubBody::RegisterContactAsConstraint(
-    const FVector& ContactPointWS,
-    const FVector& NormalWS,
-    UPrimitiveComponent* OtherComponent,
-    USolidSubBody* OtherSubBody,
-    float PenetrationDepth,
-    float TOI,
-    bool bPersistent)
+    const FVector& P,const FVector& N,UPrimitiveComponent* Other,USolidSubBody* Solid,
+    float Depth,float Time,bool Persistent)
+{RegisterContactWithReference(P,N,Other,Solid,Depth,Time,Persistent,nullptr);}
+void USolidSubBody::RegisterContactAsConstraint(
+    const FVector& P,const FVector& N,const TWeakObjectPtr<UPrimitiveComponent>& Other,
+    USolidSubBody* Solid,float Depth,float Time,bool Persistent)
 {
-    if (!ParentComponent || !OtherComponent)
+    const auto Snapshot=Other; // immutable local copy spans the complete synchronous call
+    RegisterContactWithReference(P,N,Snapshot.Get(),Solid,Depth,Time,Persistent,&Snapshot);
+}
+
+void USolidSubBody::RegisterContactWithReference(
+    const FVector& ContactPointWS,const FVector& NormalWS,UPrimitiveComponent* OtherComponent,
+    USolidSubBody* OtherSubBody,float PenetrationDepth,float TOI,bool bPersistent,
+    const TWeakObjectPtr<UPrimitiveComponent>* ExistingReference)
+{
+    if (!ParentComponentBodyDomainStorage() || !OtherComponent)
     {
         return;
     }
@@ -118,18 +254,18 @@ void USolidSubBody::RegisterContactAsConstraint(
     }
 
     const bool bStaticConstraint = OtherComponent->GetCollisionObjectType() == ECC_WorldStatic;
-    const bool bDynamicSolidConstraint = OtherSubBody && OtherSubBody->ParentComponent;
+    const bool bDynamicSolidConstraint = OtherSubBody && OtherSubBody->ParentComponentBodyDomainStorage();
     if (!bStaticConstraint && !bDynamicSolidConstraint)
     {
         return;
     }
 
     const bool bRegisterThisConstraint =
-        bStaticConstraint || (bDynamicSolidConstraint && bEnableConstraintOnSubBodyHit);
+        bStaticConstraint || (bDynamicSolidConstraint && bEnableConstraintOnSubBodyHitSolidStorage());
     const bool bRegisterOtherConstraint =
         bDynamicSolidConstraint &&
-        OtherSubBody->bEnableConstraintOnSubBodyHit &&
-        OtherSubBody->ParentComponent != ParentComponent;
+        OtherSubBody->bEnableConstraintOnSubBodyHitSolidStorage() &&
+        OtherSubBody->ParentComponentBodyDomainStorage() != ParentComponentBodyDomainStorage();
     if (!bRegisterThisConstraint && !bRegisterOtherConstraint)
     {
         return;
@@ -144,8 +280,9 @@ void USolidSubBody::RegisterContactAsConstraint(
     FPhysicalContactConstraint Constraint;
     Constraint.Normal = N;
     Constraint.ContactPoint = ContactPointWS;
-    Constraint.OtherComponent = OtherComponent;
-    Constraint.SourceSubBody = this;
+    if(ExistingReference)Constraint.OtherComponent = *ExistingReference;
+    else Constraint.OtherComponent = OtherComponent;
+    Constraint.SourceSubBody = GetPhysicsWeakIdentity();
     Constraint.PenetrationDepth = PenetrationDepth;
     Constraint.TOI = TOI;
     Constraint.PairKey = USSubBody::MakePairKey(this, OtherComponent);
@@ -153,7 +290,7 @@ void USolidSubBody::RegisterContactAsConstraint(
 
     if (bRegisterThisConstraint)
     {
-        ParentComponent->RegisterPhysicalConstraint(Constraint);
+        Speed::NativeKinematics::FComponentWrite::RegisterConstraint(*ParentComponentBodyDomainStorage(),Constraint);
     }
 
     if (bRegisterOtherConstraint)
@@ -161,13 +298,13 @@ void USolidSubBody::RegisterContactAsConstraint(
         FPhysicalContactConstraint OtherConstraint;
         OtherConstraint.Normal = -N;
         OtherConstraint.ContactPoint = ContactPointWS;
-        OtherConstraint.OtherComponent = this;
-        OtherConstraint.SourceSubBody = OtherSubBody;
+        OtherConstraint.OtherComponent = GetPhysicsWeakIdentity();
+        OtherConstraint.SourceSubBody = OtherSubBody->GetPhysicsWeakIdentity();
         OtherConstraint.PenetrationDepth = PenetrationDepth;
         OtherConstraint.TOI = TOI;
         OtherConstraint.PairKey = USSubBody::MakePairKey(OtherSubBody, this);
         OtherConstraint.bPersistent = false;
-        OtherSubBody->ParentComponent->RegisterPhysicalConstraint(OtherConstraint);
+        Speed::NativeKinematics::FComponentWrite::RegisterConstraint(*OtherSubBody->ParentComponentBodyDomainStorage(),OtherConstraint);
 
         /*
         UE_LOG(LogTemp, Log,
@@ -183,15 +320,23 @@ void USolidSubBody::RegisterContactAsConstraint(
 }
 
 void USolidSubBody::RegisterContactManifoldAsConstraints(
-    const TArray<FVector>& ContactPointsWS,
-    const FVector& NormalWS,
-    UPrimitiveComponent* OtherComponent,
-    float PenetrationDepth,
-    float TOI,
-    bool bPersistent,
-    int32 MaxContacts)
+    const TArray<FVector>& Points,const FVector& N,UPrimitiveComponent* Other,
+    float Depth,float Time,bool Persistent,int32 Max)
+{RegisterManifoldWithReference(Points,N,Other,Depth,Time,Persistent,Max,nullptr);}
+void USolidSubBody::RegisterContactManifoldAsConstraints(
+    const TArray<FVector>& Points,const FVector& N,const TWeakObjectPtr<UPrimitiveComponent>& Other,
+    float Depth,float Time,bool Persistent,int32 Max)
 {
-    if (!ParentComponent || !OtherComponent || ContactPointsWS.Num() == 0)
+    const auto Snapshot=Other; // never retain a pointer to a caller's mutable hit cell
+    RegisterManifoldWithReference(Points,N,Snapshot.Get(),Depth,Time,Persistent,Max,&Snapshot);
+}
+
+void USolidSubBody::RegisterManifoldWithReference(
+    const TArray<FVector>& ContactPointsWS,const FVector& NormalWS,UPrimitiveComponent* OtherComponent,
+    float PenetrationDepth,float TOI,bool bPersistent,int32 MaxContacts,
+    const TWeakObjectPtr<UPrimitiveComponent>* ExistingReference)
+{
+    if (!ParentComponentBodyDomainStorage() || !OtherComponent || ContactPointsWS.Num() == 0)
     {
         return;
     }
@@ -207,14 +352,14 @@ void USolidSubBody::RegisterContactManifoldAsConstraints(
     {
         for (const FVector& P : ContactPointsWS)
         {
-            RegisterContactAsConstraint(P, N, OtherComponent, nullptr, PenetrationDepth, TOI, bPersistent);
+            RegisterContactWithReference(P, N, OtherComponent, nullptr, PenetrationDepth, TOI, bPersistent,ExistingReference);
         }
         return;
     }
 
     // Cas rare : trop de points. On garde des points répartis autour du COM,
     // ce qui donne de meilleurs bras de levier pour la projection angulaire.
-    const FVector COM = GetKinematicState().Location                     ;
+    const FVector COM = Speed::NativeKinematics::FBodyRead::Body(*this).Location                     ;
 
     TArray<FVector> Sorted = ContactPointsWS;
     Sorted.Sort([&COM](const FVector& A, const FVector& B)
@@ -225,7 +370,7 @@ void USolidSubBody::RegisterContactManifoldAsConstraints(
     const int32 NumToRegister = FMath::Min(MaxContacts, Sorted.Num());
     for (int32 i = 0; i < NumToRegister; ++i)
     {
-        RegisterContactAsConstraint(Sorted[i], N, OtherComponent, nullptr, PenetrationDepth, TOI, bPersistent);
+        RegisterContactWithReference(Sorted[i], N, OtherComponent, nullptr, PenetrationDepth, TOI, bPersistent,ExistingReference);
     }
 }
 
@@ -266,13 +411,13 @@ float USolidSubBody::ResolveSphereBoxFriction(
     const USolidSubBody& Box,
     float FallbackFriction)
 {
-    const float ForcedOverride = CVarIAmSpeedSphereBoxFrictionOverride.GetValueOnAnyThread();
+    const float ForcedOverride = Speed::RoadSettings::ReadOriginalOrLegacy<24>([](){ return CVarIAmSpeedSphereBoxFrictionOverride.GetValueOnAnyThread(); });
     if (ForcedOverride >= 0.0f)
     {
         return ForcedOverride;
     }
-    const float SphereOverride = Sphere.GetSphereBoxFrictionOverride();
-    const float BoxOverride = Box.GetSphereBoxFrictionOverride();
+    const float SphereOverride = Speed::NativeKinematics::FSolidPropertiesAccess::GetSphereBoxFrictionOverride(Sphere);
+    const float BoxOverride = Speed::NativeKinematics::FSolidPropertiesAccess::GetSphereBoxFrictionOverride(Box);
     if (SphereOverride >= 0.0f || BoxOverride >= 0.0f)
     {
         return FMath::Max(SphereOverride, BoxOverride);
@@ -286,14 +431,14 @@ float USolidSubBody::ResolveSphereBoxManifoldFriction(
     const float FallbackFriction)
 {
     const float ForcedOverride =
-        CVarIAmSpeedSphereBoxManifoldFrictionOverride.GetValueOnAnyThread();
+        Speed::RoadSettings::ReadOriginalOrLegacy<25>([](){ return CVarIAmSpeedSphereBoxManifoldFrictionOverride.GetValueOnAnyThread(); });
     if (ForcedOverride >= 0.0f)
     {
         return ForcedOverride;
     }
 
-    const float SphereOverride = Sphere.GetSphereBoxManifoldFrictionOverride();
-    const float BoxOverride = Box.GetSphereBoxManifoldFrictionOverride();
+    const float SphereOverride = Speed::NativeKinematics::FSolidPropertiesAccess::GetSphereBoxManifoldFrictionOverride(Sphere);
+    const float BoxOverride = Speed::NativeKinematics::FSolidPropertiesAccess::GetSphereBoxManifoldFrictionOverride(Box);
     if (SphereOverride >= 0.0f || BoxOverride >= 0.0f)
     {
         return FMath::Max(SphereOverride, BoxOverride);
@@ -303,20 +448,20 @@ float USolidSubBody::ResolveSphereBoxManifoldFriction(
 
 float USolidSubBody::ResolveSphereBoxRestitution(const USolidSubBody& Sphere, const USolidSubBody& Box, float FallbackRestitution)
 {
-    const float ForcedOverride = CVarIAmSpeedSphereBoxRestitutionOverride.GetValueOnAnyThread();
+    const float ForcedOverride = Speed::RoadSettings::ReadOriginalOrLegacy<29>([](){ return CVarIAmSpeedSphereBoxRestitutionOverride.GetValueOnAnyThread(); });
     if (ForcedOverride >= 0.f)
     {
         return FMath::Clamp(ForcedOverride, 0.f, 1.f);
     }
 
-    return ResolveSphereBoxGlobalRestitution(Sphere, Box, FallbackRestitution);
+    return Speed::NativeKinematics::FSolidRestitutionPolicy::Resolve(Sphere, Box, FallbackRestitution);
 }
 
 FVector USolidSubBody::GetVelocityAtPoint(const FVector& Point) const
 {
-    if (ParentComponent)
+    if (ParentComponentBodyDomainStorage())
     {
-        return ParentComponent->GetPhysVelocityAtPoint(Point);
+        return Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).VelocityAtPoint(Point);
     }
     return FVector::ZeroVector;
 }
@@ -349,9 +494,9 @@ void USolidSubBody::SolveOverlap(
         const float wA = InvMassA / InvMassSum;
         const float wB = InvMassB / InvMassSum;
 
-        ThisComp.SetPhysLocation(ThisComp.GetPhysLocation() + corr * wA);
+        ThisComp.SetPhysLocation(Speed::NativeKinematics::FComponentRead::Of(ThisComp).Location() + corr * wA);
         if (OtherComp)
-            OtherComp->SetPhysLocation(OtherComp->GetPhysLocation() - corr * wB);
+            OtherComp->SetPhysLocation(Speed::NativeKinematics::FComponentRead::Of(*OtherComp).Location() - corr * wB);
     }
 
     // -------------------------
@@ -396,11 +541,66 @@ void USolidSubBody::SolveOverlap(
     }
 }
 
+void USolidSubBody::ApplyNativeFakePhysicsOn(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,USolidSubBody& OtherSubBody,const SHitResult& Hit,const float& DeltaTime,const FFakePhysicsImpactContext* ImpactContext)
+{
+    (void)Operation;(void)OtherSubBody;(void)Hit;(void)DeltaTime;(void)ImpactContext;
+    // No public virtual fallback on an unsupported native subtype.
+    throw Speed::Netcode::Prediction::FPrivateNativeStorageUnavailable{};
+}
+
+FMatrix USolidSubBody::ComputeNativeWorldInvInertiaTensor(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation) const
+{
+    (void)Operation;
+    // Unsupported native subtype refuses BEFORE old Storage, virtual public
+    // getters or any native state mutation. Missing is never a zero matrix.
+    throw Speed::Netcode::Prediction::FPrivateNativeStorageUnavailable{};
+}
+
 FMatrix USolidSubBody::ComputeWorldInvInertiaTensor() const
 {
-    if (ParentComponent)
+    if (ParentComponentBodyDomainStorage())
     {
-        return ParentComponent->ComputeWorldInvInertiaTensorOfSubBody(*this);
+        return ParentComponentBodyDomainStorage()->ComputeWorldInvInertiaTensorOfSubBody(*this);
     }
     return FMatrix::Identity;
 }
+
+
+// Same ordered diagnostic fields shared by ordinary and canonical paths.
+#if !UE_BUILD_SHIPPING
+void USolidSubBody::AppendSolidEpisodeTailForTesting(TArray<uint8>& Out) const
+{
+        using B=Speed::FEpisodeStateBytesForTesting;
+        B::Add(Out,bIsMainSubBodySolidStorage());
+        B::Add(Out,bApplyRestForceSolidStorage());
+        B::Add(Out,EnableFakePhysicsSolidStorage());
+        B::Add(Out,bEnableConstraintOnSubBodyHitSolidStorage());
+        B::Add(Out,RestitutionSolidStorage());
+        B::Add(Out,SphereBoxRestitutionOverrideSolidStorage());
+        B::Add(Out,SphereBoxFrictionOverrideSolidStorage());
+        B::Add(Out,SphereBoxManifoldFrictionOverrideSolidStorage());
+        B::Add(Out,bUseCoupledContactImpulseSolidStorage());
+        B::Add(Out,bUsePostNormalFrictionImpulseSolidStorage());
+        B::Add(Out,bUsePersistentBilateralContactSolidStorage());
+        B::Add(Out,CoupledContactMaxLinearSpeedSolidStorage());
+        B::Add(Out,CoupledContactMaxAngularSpeedSolidStorage());
+        B::Add(Out,CoupledContactMaxAbsLocalNormalYSolidStorage());
+        B::Add(Out,StaticFrictionSolidStorage());
+        B::Add(Out,DynamicFrictionSolidStorage());
+        B::Add(Out,ImpactThresholdSolidStorage());
+        B::Add(Out,HitDampingSolidStorage());
+        B::Add(Out,InvInertiaLocalSolidStorage());
+        B::Add(Out,idxSolidStorage());
+    }
+#endif
+
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+void USolidSubBody::AppendCanonicalEpisodeStateForTesting(
+    const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,TArray<uint8>& Out,
+    Speed::NativeKinematics::FCanonicalMassAppendDiagnostics& Diagnostics) const
+{
+    // Unsupported shapes refuse before any bytes are appended.
+    (void)Operation;(void)Out;(void)Diagnostics;
+    throw Speed::Netcode::Prediction::FPrivateNativeStorageUnavailable{};
+}
+#endif

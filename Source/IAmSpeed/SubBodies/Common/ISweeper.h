@@ -4,9 +4,12 @@
 class UBoxSubBody;
 class USphereSubBody;
 class USWheelSubBody;
+namespace Speed::NativeKinematics { class FBodyRead; }
 
 class ISweeper
 {
+    friend class Speed::NativeKinematics::FBodyRead;
+    virtual const Speed::FKinematicState& ReadPhysicsSweeperKinematics() const { return GetKinematicState(); }
 public:
 	virtual bool InternalSweep(UWorld* World, const FVector& Start, const FVector& End, SHitResult& OutHit, const float& delta) = 0;
 	virtual const Speed::FKinematicState& GetKinematicState() const = 0;

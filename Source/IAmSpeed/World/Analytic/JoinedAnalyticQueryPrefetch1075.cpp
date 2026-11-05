@@ -1,4 +1,5 @@
 #include "JoinedAnalyticQueryPrefetch1075.h"
+#include "IAmSpeed/World/Simulation/NativeEpochDiagnostics.h"
 #include <mutex>
 
 namespace Speed::Analytic
@@ -95,7 +96,7 @@ void ResetAnalyticPrefetchStats1075()
 void LogAnalyticPrefetchStats1075(const TCHAR* Context)
 {
     const auto S=SnapshotAnalyticPrefetchStats1075();
-    UE_LOG(LogTemp,Display,TEXT("[IAmSpeedAnalyticPrefetch1075] Context=%s Scopes=%llu Batches=%llu FallbackScopes=%llu Captured=%llu Computed=%llu Reused=%llu Rejected=%llu Unused=%llu LogicalMax=%d NativeMax=%d UsefulLaneMax=%d RejectContext=%llu RejectType=%llu RejectDt=%llu RejectBound=%llu RejectQuery=%llu RejectNumeric=%llu Scope=SpeculativeGeometryOnly Consumption=OriginalSerialOrder WheelRequested=%d WheelEffective=0 WheelStatus=%s"),
+    SPEED_NATIVE_LOG(LogTemp,Display,TEXT("[IAmSpeedAnalyticPrefetch1075] Context=%s Scopes=%llu Batches=%llu FallbackScopes=%llu Captured=%llu Computed=%llu Reused=%llu Rejected=%llu Unused=%llu LogicalMax=%d NativeMax=%d UsefulLaneMax=%d RejectContext=%llu RejectType=%llu RejectDt=%llu RejectBound=%llu RejectQuery=%llu RejectNumeric=%llu Scope=SpeculativeGeometryOnly Consumption=OriginalSerialOrder WheelRequested=%d WheelEffective=0 WheelStatus=%s"),
         Context?Context:TEXT(""),S.ScopeAttempts,S.PreparedBatches,S.FallbackScopes,S.Captured,
         S.Computed,S.Reused,S.Rejected,S.Unused,S.MaximumLogicalLanes,S.MaximumNativeThreads,S.MaximumNonEmptyLanes,
         S.RejectedReasons[2],S.RejectedReasons[3],S.RejectedReasons[4],S.RejectedReasons[5],S.RejectedReasons[6],S.RejectedReasons[7],IsWheelSuspensionPrefetch1075Requested()?1:0,WheelSuspensionPrefetch1075Status());

@@ -1,4 +1,5 @@
 #include "TorusWorldQuery.h"
+#include "IAmSpeed/World/Simulation/NativeEpochDiagnostics.h"
 #include "IAmSpeed/SubBodies/Solid/TorusSphereSweep.h"
 #include "IAmSpeed/SubBodies/Solid/TorusBoxSweep.h"
 #include "IAmSpeed/SubBodies/Solid/TorusBoxGeometry.h"
@@ -53,7 +54,7 @@ FWorldHit SweepTorusBoundedTrajectory(const FWorldQuery& Query,const FTorusSurfa
     if (Contact.Result==Geometry::ETorusSweepResult::Miss) return {};
     if (Contact.Result!=Geometry::ETorusSweepResult::Hit)
     {
-        UE_LOG(LogTemp,Error,TEXT("[TorusTrajectoryUnresolved] Shape=%d R=%.17g r=%.17g Radius=%.17g Half=%s Bound=%.17g OverlapTolerance=%.17g Surface=%llu TorusPose=%s P0=%s P25=%s P50=%s P75=%s P1=%s"),
+        SPEED_NATIVE_LOG(LogTemp,Error,TEXT("[TorusTrajectoryUnresolved] Shape=%d R=%.17g r=%.17g Radius=%.17g Half=%s Bound=%.17g OverlapTolerance=%.17g Surface=%llu TorusPose=%s P0=%s P25=%s P50=%s P75=%s P1=%s"),
             int32(Query.Shape),Torus.Geometry.MajorRadius,Torus.Geometry.TubeRadius,Query.Radius,*Query.HalfExtent.ToString(),
             MotionBoundCm,Query.InitialOverlapTolerance,Torus.SurfaceId,*Torus.Pose.ToString(),
             *LocalPoseAt(0.).ToString(),*LocalPoseAt(.25).ToString(),*LocalPoseAt(.5).ToString(),*LocalPoseAt(.75).ToString(),*LocalPoseAt(1.).ToString());

@@ -1,4 +1,5 @@
 #include "AnalyticWorldData.h"
+#include "IAmSpeed/World/Simulation/NativeEpochDiagnostics.h"
 #include "TensorContactTopology.h"
 #include "AnalyticWorldQuery.h"
 
@@ -2681,7 +2682,7 @@ bool FAnalyticWorldData::FinalizeAndValidate(
 	if (TensorBezierPatches.Num() + PiecewiseTensorBezierPatches.Num() > 0 ||
 		Triangles.Num() > 1000)
 	{
-		UE_LOG(LogTemp, Display,
+		SPEED_NATIVE_LOG(LogTemp, Display,
 			TEXT("[AnalyticWorldFinalizeTiming] TotalSeconds=%.6f TensorSeconds=%.6f PiecewiseSeconds=%.6f TriangleSeconds=%.6f Tensors=%d Piecewise=%d Triangles=%d"),
 			FPlatformTime::Seconds() - FinalizeStartSeconds,
 			TensorSeconds, PiecewiseSeconds,
@@ -2802,7 +2803,7 @@ bool FAnalyticWorldData::AppendFinalizedNonCompactPlanes(
 		CompactBvh.Reserve(2 * CompactPrimitiveIndices.Num());
 		BuildCompactBvhNode(0, CompactPrimitiveIndices.Num());
 	}
-	UE_LOG(LogTemp, Display,
+	SPEED_NATIVE_LOG(LogTemp, Display,
 		TEXT("[AnalyticWorldIncrementalPlaneTiming] Seconds=%.6f Planes=%d"),
 		FPlatformTime::Seconds() - StartSeconds, Planes.Num());
 	return true;
@@ -3350,7 +3351,7 @@ void FAnalyticWorldData::BuildCompactRuntimePatches()
 			AdditionalPlanarDomainComponents[ComponentIndex].bAuthorityEligible =
 				bFaceInteriorAuthorityCertified;
 		}
-		UE_LOG(LogTemp, Display,
+		SPEED_NATIVE_LOG(LogTemp, Display,
 			TEXT("[AnalyticPlaneDomain] Primitive=%016llX Group=%016llX Triangles=%d SourceAreaCm2=%.9g PolygonAreaCm2=%.9g AreaResidualCm2=%.9g PlaneResidualCm=%.9g RawPlaneResidualCm=%.9g Symmetrized=%d Normal=%s PlaneOffset=%.17g BoundsMin=%s BoundsMax=%s UniformPolicy=%d FaceInteriorAuthority=%d RectangularAreaCm2=%.9g FillRatio=%.9g BoundaryEdges=%d BoundarySides=%u BoundaryManifold=%d BoundaryDegrees=%d/%d/%d SingleLoop=%d PolygonVertices=%d PolygonComponents=%d RectangleBoundary=%d Qualified=%d"),
 			Plane.PrimitiveId, Group.GroupId, Group.TriangleCount,
 			Group.Area, PolygonDomainArea,
@@ -3376,7 +3377,7 @@ void FAnalyticWorldData::BuildCompactRuntimePatches()
 			{
 				if (VertexDegree.Value == 2 ||
 					!MeshVertices.IsValidIndex(VertexDegree.Key)) continue;
-				UE_LOG(LogTemp, Display,
+				SPEED_NATIVE_LOG(LogTemp, Display,
 					TEXT("[AnalyticPlaneBoundaryJunction] Primitive=%016llX Vertex=%d Degree=%d Position=%s"),
 					Plane.PrimitiveId, VertexDegree.Key, VertexDegree.Value,
 					*MeshVertices[VertexDegree.Key].ToString());
@@ -3440,7 +3441,7 @@ void FAnalyticWorldData::BuildCompactRuntimePatches()
 		}
 		++MainFloorCededPlaneCount;
 	}
-	UE_LOG(LogTemp, Display, TEXT(
+	SPEED_NATIVE_LOG(LogTemp, Display, TEXT(
 		"[AnalyticMainFloorGutterCession] Planes=%d EndAbsX=%.6f SideAbsY=%.6f CornerSum=%.6f"),
 		MainFloorCededPlaneCount, MainFloorEndTangentAbsX,
 		MainFloorSideTangentAbsY, MainFloorCornerTangentSum);
@@ -3509,7 +3510,7 @@ void FAnalyticWorldData::BuildCompactRuntimePatches()
 			GoalFloor.bRequiresCompactOptIn = true;
 			GoalFloor.bAuthorityEligible = GoalFloor.bQueryCollisionEnabled;
 		}
-		UE_LOG(LogTemp, Display, TEXT(
+		SPEED_NATIVE_LOG(LogTemp, Display, TEXT(
 			"[AnalyticLocalizedGoalFloor] Count=2 AbsX=[%.3f,%.3f] Y=[%.3f,%.3f] Z=%.3f Certified=1"),
 			GoalFloorMinimumAbsX, GoalFloorMaximumAbsX, -GoalFloorHalfExtentY,
 			GoalFloorHalfExtentY, GoalFloorZ);
@@ -3519,14 +3520,14 @@ void FAnalyticWorldData::BuildCompactRuntimePatches()
 		// made it depart from the source by hundreds of centimetres at the finite
 		// ends.  The source-fitted two-dimensional lower-corner tensor network
 		// below is the sole authority for this genuinely two-dimensional junction.
-		UE_LOG(LogTemp, Display, TEXT(
+		SPEED_NATIVE_LOG(LogTemp, Display, TEXT(
 			"[AnalyticLocalizedVerticalTransition] Count=0 ReplacedBy=LowerFieldCornerC2"));
 
 		// The old finite X=+/-6575 goal-edge planes are intentionally absent.
 		// They crossed the rounded source sheet by more than 15 cm and exposed a
 		// hard upper edge.  The source-fitted finite interior-cap network below
 		// now owns this junction and overlaps the transverse boundary providers.
-		UE_LOG(LogTemp, Display, TEXT(
+		SPEED_NATIVE_LOG(LogTemp, Display, TEXT(
 			"[AnalyticLocalizedGoalEdgeClosure] Count=0 ReplacedBy=FiniteInteriorCapC2"));
 	}
 	TSet<int32> AddedFitIndices;
@@ -3689,7 +3690,7 @@ void FAnalyticWorldData::BuildCompactRuntimePatches()
 			bUsesCanonicalFamily = true;
 			CanonicalGroupId = Candidate.OrbitId;
 			CanonicalSymmetryAxisMask = Orbit->SymmetryAxisMask;
-			UE_LOG(LogTemp, Display,
+			SPEED_NATIVE_LOG(LogTemp, Display,
 				TEXT("[AnalyticCompactCanonicalSource] Region=%016llX Source=Network Orbit=%016llX Mask=%u"),
 				Region.RegionId, Candidate.OrbitId,
 				static_cast<uint32>(TransformMask));
@@ -3749,7 +3750,7 @@ void FAnalyticWorldData::BuildCompactRuntimePatches()
 						bUsesCanonicalFamily = true;
 						CanonicalGroupId = Family.FamilyId;
 						CanonicalSymmetryAxisMask = Family.SymmetryAxisMask;
-						UE_LOG(LogTemp, Display,
+						SPEED_NATIVE_LOG(LogTemp, Display,
 							TEXT("[AnalyticCompactCanonicalSource] Region=%016llX Source=Family Family=%016llX"),
 							Region.RegionId, Family.FamilyId);
 					}
@@ -3856,7 +3857,7 @@ void FAnalyticWorldData::BuildCompactRuntimePatches()
 								CanonicalNetworkControlPoints, Parameter)));
 				}
 				AdditionalResidualAgreementAllowanceCm = MaximumCurveDisplacementCm;
-				UE_LOG(LogTemp, Display, TEXT(
+				SPEED_NATIVE_LOG(LogTemp, Display, TEXT(
 					"[AnalyticCompactSupportPolish] Region=%016llX VerticalEndpointControlIndex=%d SignedVerticalEndpointExtensionCm=%.9g UpperHorizontalContinuationCm=%.9g MaximumControlDisplacementCm=%.9g MaximumCurveDisplacementCm=%.9g"),
 					Region.RegionId, VerticalEndpointControlIndex,
 					SignedVerticalEndpointExtensionCm,
@@ -4141,7 +4142,7 @@ void FAnalyticWorldData::BuildCompactRuntimePatches()
 				Continuation.bAuthorityEligible =
 					Continuation.bApproximationCertified &&
 					Continuation.bQueryCollisionEnabled;
-				UE_LOG(LogTemp, Display, TEXT(
+				SPEED_NATIVE_LOG(LogTemp, Display, TEXT(
 					"[AnalyticUpperHorizontalContinuation] Primitive=%016llX Cells=%d LengthCm=%.9g BoundsMin=%s BoundsMax=%s Certified=%d"),
 					Continuation.PrimitiveId, Continuation.Cells.Num(),
 					FVector3d::Distance(UpperHorizontalContinuationStart,
@@ -4343,7 +4344,7 @@ void FAnalyticWorldData::BuildCompactRuntimePatches()
 			Patch.Bounds += Section + Patch.MaximumExtrusionCoordinate *
 				Patch.ExtrusionAxis;
 		}
-		UE_LOG(LogTemp, Display, TEXT(
+		SPEED_NATIVE_LOG(LogTemp, Display, TEXT(
 			"[AnalyticExtrudedFiniteDomain] Primitive=%016llX Boundary=%.9g Min=%.9g Max=%.9g"),
 			Patch.PrimitiveId, FiniteBoundaryMagnitude,
 			Patch.MinimumExtrusionCoordinate,
@@ -4467,7 +4468,7 @@ void FAnalyticWorldData::BuildCompactRuntimePatches()
 				FMath::Max(3.0, SourceResidualCm + 2.0));
 			Image.bAuthorityEligible = FMath::IsFinite(ImageResidualCm) &&
 				ImageResidualCm <= MaximumAllowedResidualCm;
-			UE_LOG(LogTemp, Display, TEXT(
+			SPEED_NATIVE_LOG(LogTemp, Display, TEXT(
 				"[AnalyticExtrudedSourceSymmetry] Source=%016llX Image=%016llX Mask=%u SourceResidualCm=%.9g ImageResidualCm=%.9g AllowedCm=%.9g Certified=%d"),
 				SourcePatch.PrimitiveId, Image.PrimitiveId, TransformMask,
 				SourceResidualCm, ImageResidualCm, MaximumAllowedResidualCm,
@@ -4665,7 +4666,7 @@ void FAnalyticWorldData::BuildCompactRuntimePatches()
 			ShortVerticalSegments.Add(SegmentIndex);
 		}
 	}
-	UE_LOG(LogTemp, Display, TEXT(
+	SPEED_NATIVE_LOG(LogTemp, Display, TEXT(
 		"[AnalyticVerticalRuledScan] Segments=%d Short=%d ShortEndpoints=%d LongEndpoints=%d"),
 		VerticalRuledSegments.Num(), ShortVerticalSegments.Num(),
 		ShortSegmentsByEndpoint.Num(), LongSegmentsByEndpoint.Num());
@@ -4717,7 +4718,7 @@ void FAnalyticWorldData::BuildCompactRuntimePatches()
 			ComponentSectionBounds +=
 				VerticalRuledSegments[SegmentIndex].Endpoint[1];
 		}
-		UE_LOG(LogTemp, Display, TEXT(
+		SPEED_NATIVE_LOG(LogTemp, Display, TEXT(
 			"[AnalyticVerticalRuledComponent] Seed=%d Segments=%d Source=%016llX BoundsMin=%s BoundsMax=%s"),
 			SeedSegmentIndex, Component.Num(),
 			VerticalRuledSegments[Component[0]].SourceId,
@@ -4863,7 +4864,7 @@ void FAnalyticWorldData::BuildCompactRuntimePatches()
 			ArcLength += FVector2d::Distance(
 				OrderedSectionPoints[Index], OrderedSectionPoints[Index + 1]);
 		}
-		UE_LOG(LogTemp, Display, TEXT(
+		SPEED_NATIVE_LOG(LogTemp, Display, TEXT(
 			"[AnalyticVerticalRuledCandidate] Segments=%d PathSegments=%d Continuations=%d ArcCm=%.9g Z=[%.9g,%.9g]"),
 			Component.Num(), OrderedSegmentPath.Num(),
 			ContinuationEndpoints.Num(),
@@ -5233,7 +5234,7 @@ void FAnalyticWorldData::BuildCompactRuntimePatches()
 			: MaximumSteepTransitionSourceResidualCm;
 		bImagesCertified &= MaximumImageSourceResidualCm <=
 			MaximumAllowedSourceResidualCm;
-		UE_LOG(LogTemp, Display, TEXT(
+		SPEED_NATIVE_LOG(LogTemp, Display, TEXT(
 			"[AnalyticVerticalRuledSymmetry] Segments=%d AssociationResidualCm=%.9g SourceResidualCm=%.9g Certified=%d"),
 			Component.Num(), MaximumImageAssociationResidualCm,
 			MaximumImageSourceResidualCm, bImagesCertified ? 1 : 0);
@@ -5298,7 +5299,7 @@ void FAnalyticWorldData::BuildCompactRuntimePatches()
 			TransitionPatch.bAuthorityEligible =
 				TransitionPatch.bApproximationCertified &&
 				TransitionPatch.bQueryCollisionEnabled;
-			UE_LOG(LogTemp, Display, TEXT(
+			SPEED_NATIVE_LOG(LogTemp, Display, TEXT(
 				"[AnalyticVerticalRuledTransition] Primitive=%016llX Segments=%d ArcCm=%.9g TurnDeg=%.9g AssociationResidualCm=%.9g SourceResidualCm=%.9g Z=[%.9g,%.9g] BoundsMin=%s BoundsMax=%s Certified=%d"),
 				TransitionPatch.PrimitiveId, OrderedSegmentPath.Num(), ArcLength,
 				TotalTurnDegrees, MaximumImageAssociationResidualCm,
@@ -5487,7 +5488,7 @@ void FAnalyticWorldData::BuildCompactRuntimePatches()
 		Candidate.Patch.bAuthorityEligible =
 			Candidate.Patch.bApproximationCertified &&
 			Candidate.Patch.bQueryCollisionEnabled;
-		UE_LOG(LogTemp, Display, TEXT(
+		SPEED_NATIVE_LOG(LogTemp, Display, TEXT(
 			"[AnalyticVerticalRuledSymmetryCompletion] Primitive=%016llX SourceResidualCm=%.9g BoundsMin=%s BoundsMax=%s Certified=%d"),
 			Candidate.Patch.PrimitiveId, Candidate.MaximumSourceResidualCm,
 			*Candidate.Patch.Bounds.Min.ToString(),
@@ -5558,7 +5559,7 @@ void FAnalyticWorldData::BuildCompactRuntimePatches()
 			Completion.BuildQueryApproximation() &&
 			Completion.MaximumChordErrorCm <=
 				ExtrudedQuinticChordToleranceCm;
-		UE_LOG(LogTemp, Display, TEXT(
+		SPEED_NATIVE_LOG(LogTemp, Display, TEXT(
 			"[AnalyticCentralUpperReturn] Sign=%+.0f Parent=%016llX Primitive=%016llX Domain=[%.9g,%.9g] BoundsMin=%s BoundsMax=%s Certified=%d"),
 			LongitudinalSign, Best->PrimitiveId, Completion.PrimitiveId,
 			Completion.MinimumExtrusionCoordinate,
@@ -5818,7 +5819,7 @@ void FAnalyticWorldData::BuildCompactRuntimePatches()
 		if (!bFoundProfile0 || !bFoundProfile1 ||
 			Profiles[0].Patch == Profiles[1].Patch)
 		{
-			UE_LOG(LogTemp, Display, TEXT(
+			SPEED_NATIVE_LOG(LogTemp, Display, TEXT(
 				"[AnalyticWallCornerReturn] Parent=%016llX Upper=%d Profiles=0 Match0Cm=%.9g Match1Cm=%.9g Same=%d Certified=0"),
 				Transition.PrimitiveId, bUpper ? 1 : 0,
 				Profiles[0].MatchScoreCm, Profiles[1].MatchScoreCm,
@@ -6035,7 +6036,7 @@ void FAnalyticWorldData::BuildCompactRuntimePatches()
 						return Link.bC2ByConstruction;
 					});
 		}
-		UE_LOG(LogTemp, Display, TEXT(
+		SPEED_NATIVE_LOG(LogTemp, Display, TEXT(
 			"[AnalyticWallCornerReturn] Parent=%016llX Upper=%d Cells=%d ProfileDifferenceCm=%.9g BoundsMin=%s BoundsMax=%s Certified=%d"),
 			Transition.PrimitiveId, bUpper ? 1 : 0, Patch.Cells.Num(),
 			MaximumProfileDifferenceCm, *Patch.Bounds.Min.ToString(),
@@ -6192,7 +6193,7 @@ void FAnalyticWorldData::BuildCompactRuntimePatches()
 				});
 			if (RejectedCanonicalSourceCellCount > 0)
 			{
-				UE_LOG(LogTemp, Display, TEXT(
+				SPEED_NATIVE_LOG(LogTemp, Display, TEXT(
 					"[AnalyticCanonicalCellSourceTrim] Candidate=%016llX Side=%+.0f Rejected=%d Remaining=%d MaximumResidualCm=%.9g"),
 					Candidate.CandidateId, TransverseSign,
 					RejectedCanonicalSourceCellCount, PiecewisePatch.Cells.Num(),
@@ -6245,7 +6246,7 @@ void FAnalyticWorldData::BuildCompactRuntimePatches()
 				});
 			if (RejectedContactTangentCellCount > 0)
 			{
-				UE_LOG(LogTemp, Display, TEXT(
+				SPEED_NATIVE_LOG(LogTemp, Display, TEXT(
 					"[AnalyticSymmetricContactTangentPolish] Candidate=%016llX Side=%+.0f Rejected=%d Remaining=%d MaximumErrorDeg=%.9g"),
 					Candidate.CandidateId, TransverseSign,
 					RejectedContactTangentCellCount, PiecewisePatch.Cells.Num(),
@@ -6300,7 +6301,7 @@ void FAnalyticWorldData::BuildCompactRuntimePatches()
 								static_cast<double>(VControl) / 3.0);
 							EdgeCell.Surface.ControlPoints[UControl * 4 + VControl] = Point;
 						}
-					UE_LOG(LogTemp, Display,
+					SPEED_NATIVE_LOG(LogTemp, Display,
 						TEXT("[AnalyticCanonicalTerminalEdge] Candidate=%016llX Side=%+.0f Wall=%.9g T=[%.9g,%.9g] Certified=1"),
 						Candidate.CandidateId, TransverseSign, WallX,
 						EdgeMinimumT, EdgeMaximumT);
@@ -6629,7 +6630,7 @@ void FAnalyticWorldData::BuildCompactRuntimePatches()
 						{
 							return Link.bC2ByConstruction;
 						});
-				UE_LOG(LogTemp, Display, TEXT(
+				SPEED_NATIVE_LOG(LogTemp, Display, TEXT(
 					"[AnalyticSourceOrthogonalFillet] XSign=%d YSign=%d Surface=%016llX Cells=%d Z=[%.9g,%.9g] ParameterSpan=%.9g EndpointResidualCm=[%.9g,%.9g] SourceResidualCm=%.9g HostSeamLinks=%d C2=1 Certified=%d"),
 					XSign, YSign, HostPatch->SurfaceId,
 					NewPrimitiveIds.Num(), MinimumZ, MaximumZ,
@@ -6643,7 +6644,7 @@ void FAnalyticWorldData::BuildCompactRuntimePatches()
 				}
 			}
 		}
-		UE_LOG(LogTemp, Display, TEXT(
+		SPEED_NATIVE_LOG(LogTemp, Display, TEXT(
 			"[AnalyticSourceOrthogonalFilletSummary] Count=%d Cells=%d Symmetry=1 MaximumSourceResidualCm=%.9g"),
 			CreatedFilletCount, CreatedFilletCellCount,
 			MaximumSourceResidualCm);
@@ -6703,7 +6704,7 @@ void FAnalyticWorldData::BuildCompactRuntimePatches()
 			Existing.BuildQueryApproximation();
 			Existing.bAuthorityEligible = Existing.bQueryCollisionEnabled &&
 				Existing.bSourceResidualCertified && Existing.bApproximationCertified;
-			UE_LOG(LogTemp, Display, TEXT(
+			SPEED_NATIVE_LOG(LogTemp, Display, TEXT(
 				"[AnalyticLocalTerminalOwnership] Surface=%016llX Removed=%d BoundsMin=%s BoundsMax=%s"),
 				Existing.SurfaceId, Removed, *OwnershipBounds.Min.ToString(),
 				*OwnershipBounds.Max.ToString());
@@ -6727,7 +6728,7 @@ void FAnalyticWorldData::BuildCompactRuntimePatches()
 			});
 		if (RejectedTerminalCellCount > 0)
 		{
-			UE_LOG(LogTemp, Display, TEXT(
+			SPEED_NATIVE_LOG(LogTemp, Display, TEXT(
 				"[AnalyticTerminalCellSourceTrim] Surface=%016llX Rejected=%d Remaining=%d MaximumResidualCm=%.9g"),
 				Extra.SurfaceId, RejectedTerminalCellCount, Extra.Cells.Num(),
 				MaximumTerminalCellSourceResidualCm);
@@ -6869,13 +6870,13 @@ void FAnalyticWorldData::BuildCompactRuntimePatches()
 		}
 		Group.Bounds += Triangle.Bounds;
 	}
-	UE_LOG(LogTemp, Display, TEXT("[AnalyticTerminalFragmentScan] Count=%d X=[%.9g,%.9g] Z=[%.9g,%.9g] MaximumAbsMeshX=%.9g"), ExtremeTerminalFragmentCount, ExtremeTerminalMinimumX, ExtremeTerminalMaximumX, ExtremeTerminalMinimumZ, ExtremeTerminalMaximumZ, MaximumAbsMeshX);
+	SPEED_NATIVE_LOG(LogTemp, Display, TEXT("[AnalyticTerminalFragmentScan] Count=%d X=[%.9g,%.9g] Z=[%.9g,%.9g] MaximumAbsMeshX=%.9g"), ExtremeTerminalFragmentCount, ExtremeTerminalMinimumX, ExtremeTerminalMaximumX, ExtremeTerminalMinimumZ, ExtremeTerminalMaximumZ, MaximumAbsMeshX);
 	TArray<int32> ExtremeTerminalBinKeys;
 	ExtremeTerminalXBins.GetKeys(ExtremeTerminalBinKeys);
 	ExtremeTerminalBinKeys.Sort();
 	for (const int32 Bin : ExtremeTerminalBinKeys)
 	{
-		UE_LOG(LogTemp, Display, TEXT("[AnalyticTerminalFragmentBin] X=%.9g Count=%d"), 50.0 * Bin, ExtremeTerminalXBins[Bin]);
+		SPEED_NATIVE_LOG(LogTemp, Display, TEXT("[AnalyticTerminalFragmentBin] X=%.9g Count=%d"), 50.0 * Bin, ExtremeTerminalXBins[Bin]);
 	}
 	for (const TPair<int64, FTerminalBandGroup>& Pair : TerminalBands)
 	{
@@ -6895,7 +6896,7 @@ void FAnalyticWorldData::BuildCompactRuntimePatches()
 		{
 			continue;
 		}
-		UE_LOG(LogTemp, Display, TEXT("[AnalyticTerminalGroup] Key=%lld Wall=%.9g Axis=%d T=[%.9g,%.9g] Z=[%.9g,%.9g]"), Pair.Key, Group.WallCoordinate, Group.WallAxis, GroupMinimumT, GroupMaximumT, GroupMinimumZ, GroupMaximumZ);
+		SPEED_NATIVE_LOG(LogTemp, Display, TEXT("[AnalyticTerminalGroup] Key=%lld Wall=%.9g Axis=%d T=[%.9g,%.9g] Z=[%.9g,%.9g]"), Pair.Key, Group.WallCoordinate, Group.WallAxis, GroupMinimumT, GroupMaximumT, GroupMinimumZ, GroupMaximumZ);
 		if (GroupSpanT < 400.0 || GroupMaximumZ <= GroupMinimumZ + 20.0) continue;
 		// A planar terminal group can be fragmented into disjoint source
 		// triangles. Probe the canonical central window as well as the observed
@@ -6997,7 +6998,7 @@ void FAnalyticWorldData::BuildCompactRuntimePatches()
 		if (Patch.BuildQueryApproximation())
 		{
 			Patch.bAuthorityEligible = Patch.bQueryCollisionEnabled && Patch.bApproximationCertified;
-			UE_LOG(LogTemp, Display, TEXT("[AnalyticTerminalBand] Key=%lld Wall=%.9g T=[%.9g,%.9g] Z=[%.9g,%.9g] Edge=%d ResidualCm=%.9g Certified=%d"), Pair.Key, WallCoordinate, MinimumT, MaximumT, EffectiveMinimumZ, GroupMaximumZ, bEdgeBand ? 1 : 0, ResidualCm, Patch.bAuthorityEligible ? 1 : 0);
+			SPEED_NATIVE_LOG(LogTemp, Display, TEXT("[AnalyticTerminalBand] Key=%lld Wall=%.9g T=[%.9g,%.9g] Z=[%.9g,%.9g] Edge=%d ResidualCm=%.9g Certified=%d"), Pair.Key, WallCoordinate, MinimumT, MaximumT, EffectiveMinimumZ, GroupMaximumZ, bEdgeBand ? 1 : 0, ResidualCm, Patch.bAuthorityEligible ? 1 : 0);
 			MergeTerminalClosure(MoveTemp(Patch), false);
 		}
 	}
@@ -7067,7 +7068,7 @@ void FAnalyticWorldData::BuildCompactRuntimePatches()
 		if (Patch.BuildQueryApproximation())
 		{
 			Patch.bAuthorityEligible = Patch.bQueryCollisionEnabled && Patch.bApproximationCertified;
-			UE_LOG(LogTemp, Display, TEXT("[AnalyticHorizontalTerminal] Key=%lld Height=%.9g X=[%.9g,%.9g] Y=[%.9g,%.9g] ResidualCm=%.9g Certified=%d"), Pair.Key, Height, WindowMinimumX, WindowMaximumX, WindowMinimumY, WindowMaximumY, ResidualCm, Patch.bAuthorityEligible ? 1 : 0);
+			SPEED_NATIVE_LOG(LogTemp, Display, TEXT("[AnalyticHorizontalTerminal] Key=%lld Height=%.9g X=[%.9g,%.9g] Y=[%.9g,%.9g] ResidualCm=%.9g Certified=%d"), Pair.Key, Height, WindowMinimumX, WindowMaximumX, WindowMinimumY, WindowMaximumY, ResidualCm, Patch.bAuthorityEligible ? 1 : 0);
 			MergeTerminalClosure(MoveTemp(Patch), false);
 		}
 	}
@@ -7358,7 +7359,7 @@ void FAnalyticWorldData::BuildCompactRuntimePatches()
 				if (Patch.BuildQueryApproximation())
 				{
 					Patch.bAuthorityEligible = Patch.bApproximationCertified;
-					UE_LOG(LogTemp, Display, TEXT("[AnalyticCornerClosure] XSign=%d YSign=%d Band=%llu BoundsMin=%s BoundsMax=%s SourceResidualCm=%.9g ErrorCm=%.9g Certified=%d"),
+					SPEED_NATIVE_LOG(LogTemp, Display, TEXT("[AnalyticCornerClosure] XSign=%d YSign=%d Band=%llu BoundsMin=%s BoundsMax=%s SourceResidualCm=%.9g ErrorCm=%.9g Certified=%d"),
 						XSign, YSign, Band.StableIndex, *Patch.Bounds.Min.ToString(),
 						*Patch.Bounds.Max.ToString(), MaximumSourceResidualCm,
 						Patch.MaximumApproximationErrorCm, Patch.bAuthorityEligible ? 1 : 0);
@@ -7652,7 +7653,7 @@ void FAnalyticWorldData::BuildCompactRuntimePatches()
 		}
 		CapPatch.bSourceResidualCertified = MaximumSourceResidualCm <=
 			1.0 + InteriorCapSupportPolishCm;
-		UE_LOG(LogTemp, Display, TEXT(
+		SPEED_NATIVE_LOG(LogTemp, Display, TEXT(
 			"[AnalyticFiniteInteriorCap] Candidate=%016llX Cells=%d Baseline=%.9g Top=%.9g HalfWidth=%.9g MaximumSourceResidualCm=%.9g Certified=%d"),
 			Candidate.CandidateId, CapPatch.Cells.Num(), InteriorBaseline, InteriorTop,
 			InteriorHalfWidth, MaximumSourceResidualCm,
@@ -7749,7 +7750,7 @@ void FAnalyticWorldData::BuildCompactRuntimePatches()
 						Vertical, Point);
 					if (!bSampledBridgePoint && bBridgeComplete)
 					{
-						UE_LOG(LogTemp, Display, TEXT(
+						SPEED_NATIVE_LOG(LogTemp, Display, TEXT(
 							"[AnalyticGoalEdgeBridgeSampleMiss] Candidate=%016llX Side=%+.0f Transverse=%.9g Vertical=%.9g"),
 							Candidate.CandidateId, TransverseSign, Transverse,
 							Vertical);
@@ -7880,7 +7881,7 @@ void FAnalyticWorldData::BuildCompactRuntimePatches()
 							return Link.bC2ByConstruction;
 						});
 			}
-			UE_LOG(LogTemp, Display, TEXT(
+			SPEED_NATIVE_LOG(LogTemp, Display, TEXT(
 				"[AnalyticGoalEdgeBridge] Candidate=%016llX Side=%+.0f Cells=%d Transverse=[%.9g,%.9g] Vertical=[%.9g,%.9g] Witnesses=%d SourceResidualCm=%.9g Certified=%d"),
 				Candidate.CandidateId, TransverseSign, BridgePatch.Cells.Num(),
 				FMath::Min(BridgeTransverseStart, BridgeTransverseEnd),
@@ -8591,7 +8592,7 @@ void FAnalyticWorldData::BuildCompactRuntimePatches()
 										Existing.bSourceResidualCertified &&
 										Existing.BuildQueryApproximation() &&
 										Existing.bApproximationCertified;
-									UE_LOG(LogTemp, Display, TEXT(
+									SPEED_NATIVE_LOG(LogTemp, Display, TEXT(
 										"[AnalyticRegularProfileOwnership] Surface=%016llX Removed=%d Remaining=%d Side=%+.0f Longitudinal=[%.9g,%.9g] Vertical=[%.9g,%.9g]"),
 										Existing.SurfaceId, Removed, Existing.Cells.Num(),
 										SideSign, RegularMinimumLongitudinal,
@@ -8636,7 +8637,7 @@ void FAnalyticWorldData::BuildCompactRuntimePatches()
 											{
 												return Link.bC2ByConstruction;
 											});
-									UE_LOG(LogTemp, Display, TEXT(
+									SPEED_NATIVE_LOG(LogTemp, Display, TEXT(
 										"[AnalyticFiniteTransverseOwnership] Candidate=%016llX Side=%+.0f RemovedRoundedCells=%d RemainingRoundedCells=%d RearEndpoint=%.9g Certified=%d"),
 										Candidate.CandidateId, SideSign,
 										RoundedCellsRemoved, SidePatch.Cells.Num(),
@@ -8650,7 +8651,7 @@ void FAnalyticWorldData::BuildCompactRuntimePatches()
 								{
 									return A.PrimitiveId < B.PrimitiveId;
 								});
-							UE_LOG(LogTemp, Display, TEXT(
+							SPEED_NATIVE_LOG(LogTemp, Display, TEXT(
 								"[AnalyticFiniteTransverseProfile] Candidate=%016llX Side=%+.0f Longitudinal=[%.9g,%.9g] Vertical=[%.9g,%.9g] Witnesses=%d SourceResidualCm=%.9g MaximumWitness=(%.9g,%.9g,%.9g->%.9g) Certified=%d"),
 								Candidate.CandidateId, SideSign,
 								RegularMinimumLongitudinal,
@@ -8924,7 +8925,7 @@ void FAnalyticWorldData::BuildCompactRuntimePatches()
 											return Link.bC2ByConstruction;
 										});
 							}
-							UE_LOG(LogTemp, Display, TEXT(
+							SPEED_NATIVE_LOG(LogTemp, Display, TEXT(
 								"[AnalyticFiniteTransverseRearSeam] Candidate=%016llX Side=%+.0f Cells=%d Longitudinal=[%.9g,%.9g] Witnesses=%d SourceResidualCm=%.9g MaximumWitness=(%.9g,%.9g,%.9g->%.9g) Certified=%d"),
 								Candidate.CandidateId, SideSign,
 								RearSeamPatch.Cells.Num(), RegularEndLongitudinal,
@@ -8943,7 +8944,7 @@ void FAnalyticWorldData::BuildCompactRuntimePatches()
 						}
 					}
 					}
-					UE_LOG(LogTemp, Display, TEXT(
+					SPEED_NATIVE_LOG(LogTemp, Display, TEXT(
 						"[AnalyticFiniteTransverseBoundary] Candidate=%016llX Side=%+.0f Cells=%d Longitudinal=[%.9g,%.9g] Vertical=[%.9g,%.9g] SourceResidualCm=%.9g Certified=%d"),
 						Candidate.CandidateId, SideSign, SidePatch.Cells.Num(),
 						MinimumLongitudinal, MaximumLongitudinal,
@@ -9033,7 +9034,7 @@ void FAnalyticWorldData::BuildCompactRuntimePatches()
 			FVector3d JoinSourcePoint;
 			if (!SampleReturnSource(0.0, JoinPoint[WallAxis], JoinSourcePoint))
 			{
-				UE_LOG(LogTemp, Display, TEXT(
+				SPEED_NATIVE_LOG(LogTemp, Display, TEXT(
 					"[AnalyticExtrudedReturn] Candidate=%016llX Upper=%d JoinUnavailable=1 Join=%s"),
 					Candidate.CandidateId, bUpperReturn ? 1 : 0,
 					*JoinPoint.ToString());
@@ -9092,7 +9093,7 @@ void FAnalyticWorldData::BuildCompactRuntimePatches()
 				bReturnComplete &= bKnotAvailable;
 				if (!bKnotAvailable)
 				{
-					UE_LOG(LogTemp, Display, TEXT(
+					SPEED_NATIVE_LOG(LogTemp, Display, TEXT(
 						"[AnalyticExtrudedReturn] Candidate=%016llX Upper=%d MissingKnot=%d Longitudinal=%.9g"),
 						Candidate.CandidateId, bUpperReturn ? 1 : 0,
 						KnotIndex, Longitudinal);
@@ -9105,7 +9106,7 @@ void FAnalyticWorldData::BuildCompactRuntimePatches()
 				ReturnKnots, ReturnValues, ReturnSegments);
 			if (!bReturnComplete || ReturnSegments.Num() != ReturnKnotCount - 1)
 			{
-				UE_LOG(LogTemp, Display, TEXT(
+				SPEED_NATIVE_LOG(LogTemp, Display, TEXT(
 					"[AnalyticExtrudedReturn] Candidate=%016llX Upper=%d Incomplete=1"),
 					Candidate.CandidateId, bUpperReturn ? 1 : 0);
 				return;
@@ -9277,7 +9278,7 @@ void FAnalyticWorldData::BuildCompactRuntimePatches()
 				}
 				if (!bCompleteGrid)
 				{
-					UE_LOG(LogTemp, Display, TEXT(
+					SPEED_NATIVE_LOG(LogTemp, Display, TEXT(
 						"[AnalyticExtrudedReturn] Candidate=%016llX Upper=0 WideGridIncomplete=1"),
 						Candidate.CandidateId);
 					return;
@@ -9544,7 +9545,7 @@ void FAnalyticWorldData::BuildCompactRuntimePatches()
 									return Link.bC2ByConstruction;
 								});
 					}
-					UE_LOG(LogTemp, Display, TEXT(
+					SPEED_NATIVE_LOG(LogTemp, Display, TEXT(
 						"[AnalyticUpperReturnSeam] Candidate=%016llX Side=%+.0f Cells=%d Longitudinal=[%.9g,%.9g] ChordDepartureCm=%.9g SourceResidualCm=%.9g Certified=%d"),
 						Candidate.CandidateId, SideSign,
 						UpperSeamPatch.Cells.Num(),
@@ -9702,7 +9703,7 @@ void FAnalyticWorldData::BuildCompactRuntimePatches()
 							++TrimmedPatchCount;
 							RemovedIncompatibleCellCount += RemovedFromPatch;
 						}
-						UE_LOG(LogTemp, Display, TEXT(
+						SPEED_NATIVE_LOG(LogTemp, Display, TEXT(
 							"[AnalyticUpperReturnOwnership] Candidate=%016llX Side=%+.0f TrimmedPatches=%d RemovedIncompatibleCells=%d MaximumNormalMismatchDeg=%.9g MaximumSampleSeparationCm=%.9g SeamEnd=%.9g Certified=1"),
 							Candidate.CandidateId, SideSign, TrimmedPatchCount,
 							RemovedIncompatibleCellCount,
@@ -9714,7 +9715,7 @@ void FAnalyticWorldData::BuildCompactRuntimePatches()
 					}
 				}
 			}
-			UE_LOG(LogTemp, Display, TEXT(
+			SPEED_NATIVE_LOG(LogTemp, Display, TEXT(
 				"[AnalyticExtrudedReturn] Candidate=%016llX Upper=%d Cells=%d First=%.9g Last=%.9g HalfWidth=%.9g SourceResidualCm=%.9g Certified=%d"),
 				Candidate.CandidateId, bUpperReturn ? 1 : 0,
 				ReturnPatch.Cells.Num(), FirstLongitudinal, LastLongitudinal,
@@ -10003,7 +10004,7 @@ void FAnalyticWorldData::BuildCompactRuntimePatches()
 				}
 				if (!bCompleteFieldSideGrid)
 				{
-					UE_LOG(LogTemp, Display, TEXT(
+					SPEED_NATIVE_LOG(LogTemp, Display, TEXT(
 						"[AnalyticLowerFieldCorner] Candidate=%016llX Side=%+.0f Incomplete=1"),
 						Candidate.CandidateId, SideSign);
 					continue;
@@ -10061,7 +10062,7 @@ void FAnalyticWorldData::BuildCompactRuntimePatches()
 								return Link.bC2ByConstruction;
 							});
 				}
-				UE_LOG(LogTemp, Display, TEXT(
+				SPEED_NATIVE_LOG(LogTemp, Display, TEXT(
 					"[AnalyticLowerFieldCorner] Candidate=%016llX Side=%+.0f Cells=%d Longitudinal=[%.9g,%.9g] Transverse=[%.9g,%.9g] SourceResidualCm=%.9g SourceNormalErrorDeg=%.9g Certified=%d"),
 					Candidate.CandidateId, SideSign,
 					FieldSidePatch.Cells.Num(),
@@ -10301,7 +10302,7 @@ void FAnalyticWorldData::BuildCompactRuntimePatches()
 										return Link.bC2ByConstruction;
 									});
 						}
-						UE_LOG(LogTemp, Display, TEXT(
+						SPEED_NATIVE_LOG(LogTemp, Display, TEXT(
 							"[AnalyticLowerReturnSeam] Candidate=%016llX Side=%+.0f Cells=%d Longitudinal=[%.9g,%.9g] Transverse=[%.9g,%.9g] DepartureCm=%.9g Certified=%d"),
 							Candidate.CandidateId, SideSign,
 							BridgePatch.Cells.Num(),
@@ -10521,7 +10522,7 @@ void FAnalyticWorldData::BuildCompactRuntimePatches()
 								return Link.bC2ByConstruction;
 							});
 				}
-				UE_LOG(LogTemp, Display,
+				SPEED_NATIVE_LOG(LogTemp, Display,
 					TEXT("[AnalyticFiniteLowerWallJunction] Candidate=%016llX Side=%+.0f Cells=%d Longitudinal=[%.9g,%.9g] Transverse=[%.9g,%.9g] SourceResidualCm=%.9g Certified=%d"),
 					Candidate.CandidateId, SideSign, JunctionPatch.Cells.Num(),
 					JunctionMinimumLongitudinal, JunctionMaximumLongitudinal,
@@ -10578,7 +10579,7 @@ void FAnalyticWorldData::BuildCompactRuntimePatches()
 				}
 				if (!bBandComplete)
 				{
-					UE_LOG(LogTemp, Display, TEXT("[AnalyticCornerTransition] Candidate=%016llX Side=%+.0f Incomplete=1"), Candidate.CandidateId, BandSign);
+					SPEED_NATIVE_LOG(LogTemp, Display, TEXT("[AnalyticCornerTransition] Candidate=%016llX Side=%+.0f Incomplete=1"), Candidate.CandidateId, BandSign);
 					continue;
 				}
 				TArray<TArray<FCubicBezierSegment>> Columns;
@@ -10627,12 +10628,12 @@ void FAnalyticWorldData::BuildCompactRuntimePatches()
 				if (SidePatch.bSourceResidualCertified && SidePatch.BuildQueryApproximation())
 				{
 					SidePatch.bAuthorityEligible = SidePatch.bQueryCollisionEnabled && SidePatch.bApproximationCertified;
-					UE_LOG(LogTemp, Display, TEXT("[AnalyticCornerTransition] Candidate=%016llX Side=%+.0f ResidualCm=%.9g Certified=%d"), Candidate.CandidateId, BandSign, BandResidualCm, SidePatch.bAuthorityEligible ? 1 : 0);
+					SPEED_NATIVE_LOG(LogTemp, Display, TEXT("[AnalyticCornerTransition] Candidate=%016llX Side=%+.0f ResidualCm=%.9g Certified=%d"), Candidate.CandidateId, BandSign, BandResidualCm, SidePatch.bAuthorityEligible ? 1 : 0);
 					if (SidePatch.bAuthorityEligible) PiecewiseTensorBezierPatches.Add(MoveTemp(SidePatch));
 				}
 				else
 				{
-					UE_LOG(LogTemp, Display, TEXT("[AnalyticCornerTransition] Candidate=%016llX Side=%+.0f ResidualCm=%.9g Certified=0"), Candidate.CandidateId, BandSign, BandResidualCm);
+					SPEED_NATIVE_LOG(LogTemp, Display, TEXT("[AnalyticCornerTransition] Candidate=%016llX Side=%+.0f ResidualCm=%.9g Certified=0"), Candidate.CandidateId, BandSign, BandResidualCm);
 				}
 			}
 		}
@@ -10704,7 +10705,7 @@ void FAnalyticWorldData::BuildCompactRuntimePatches()
 				if (LipPatch.BuildQueryApproximation())
 				{
 					LipPatch.bAuthorityEligible = LipPatch.bQueryCollisionEnabled && LipPatch.bApproximationCertified;
-					UE_LOG(LogTemp, Display, TEXT("[AnalyticTerminalLip] Candidate=%016llX Side=%+.0f Wall=%.9g ResidualCm=%.9g Certified=%d"), Candidate.CandidateId, LipSign, LipWall, LipResidualCm, LipPatch.bAuthorityEligible ? 1 : 0);
+					SPEED_NATIVE_LOG(LogTemp, Display, TEXT("[AnalyticTerminalLip] Candidate=%016llX Side=%+.0f Wall=%.9g ResidualCm=%.9g Certified=%d"), Candidate.CandidateId, LipSign, LipWall, LipResidualCm, LipPatch.bAuthorityEligible ? 1 : 0);
 					if (LipPatch.bAuthorityEligible) PiecewiseTensorBezierPatches.Add(MoveTemp(LipPatch));
 				}
 			}
@@ -10761,7 +10762,7 @@ void FAnalyticWorldData::BuildCompactRuntimePatches()
 		CompactBvh.Reserve(2 * CompactPrimitiveIndices.Num());
 		BuildCompactBvhNode(0, CompactPrimitiveIndices.Num());
 	}
-	UE_LOG(LogTemp, Display,
+	SPEED_NATIVE_LOG(LogTemp, Display,
 		TEXT("[AnalyticCompactRuntimeIndex] Planes=%d Quintics=%d Indexed=%d Nodes=%d"),
 		Planes.Num(), ExtrudedQuinticPatches.Num(),
 		CompactPrimitiveIndices.Num(), CompactBvh.Num());

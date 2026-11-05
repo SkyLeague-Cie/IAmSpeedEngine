@@ -1,4 +1,5 @@
 #include "IBoxSweeper.h"
+#include "IAmSpeed/World/Simulation/Internal/BodyKinematicRead.h"
 #include "IAmSpeed/Base/SpeedConstant.h"
 #include "IAmSpeed/Base/SUtils.h"
 #include "IAmSpeed/SubBodies/Solid/BoxSubBody.h"
@@ -22,7 +23,7 @@ bool IBoxSweeper::SweepVsGround(UWorld* World, SHitResult& OutHit, const float& 
     OutTOI = Delta;
     // GroundHit = SHitResult();
 
-	const SKinematic& KS = GetKinematicState();
+	const SKinematic& KS = Speed::NativeKinematics::FBodyRead::Sweeper(*this);
     const FVector Start = KS.Location;
 
     const FVector End =
@@ -95,7 +96,7 @@ bool IBoxSweeper::SweepVsSpheres(UWorld* World, SHitResult& OutHit, const float&
     OutTOI = OutHit.TOI;
 
     // Debug Log
-	// UE_LOG(LogTemp, Log, TEXT("BoxSweeper with kinematics = (%s) might hit SphereSubBody with kinematics = (%s) at ImpactPoint %s and ImpactNormal %s at time %f"), *GetKinematicState().ToString(),
+	// UE_LOG(LogTemp, Log, TEXT("BoxSweeper with kinematics = (%s) might hit SphereSubBody with kinematics = (%s) at ImpactPoint %s and ImpactNormal %s at time %f"), *Speed::NativeKinematics::FBodyRead::Sweeper(*this).ToString(),
     //    *BestSphere->GetKinematicState().ToString(), *OutHit.ImpactPoint.ToString(), *OutHit.ImpactNormal.ToString(), OutHit.TOI);
 
     return true;
@@ -152,7 +153,7 @@ bool IBoxSweeper::SweepVsWheels(UWorld* World, SHitResult& OutHit, const float& 
 
 SSBox IBoxSweeper::MakeBox() const
 {
-    const auto& CrtKinematics = GetKinematicState();
+    const auto& CrtKinematics = Speed::NativeKinematics::FBodyRead::Sweeper(*this);
     return SSBox(
         CrtKinematics.Location,
         GetBoxExtent(),

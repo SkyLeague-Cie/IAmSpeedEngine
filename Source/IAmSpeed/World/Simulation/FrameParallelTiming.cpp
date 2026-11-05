@@ -1,4 +1,6 @@
 #include "FrameParallelTiming.h"
+#include "IAmSpeed/World/Simulation/RoadSettings/NativeRoadSettingsRead.h"
+#include "IAmSpeed/World/Simulation/NativeEpochDiagnostics.h"
 #if !UE_BUILD_SHIPPING
 #include "HAL/IConsoleManager.h"
 #include "HAL/PlatformTLS.h"
@@ -51,14 +53,14 @@ void FCaseRecorder::ConfigureAfterJoin(uint64 InDriver,int32 InCase,int32 InBatc
     if(bOpen){bInvalid=true;return;}
     bJoinedCaseLogClosed=false;
     JoinedCaseContext = FString::Printf(TEXT("d%llu-c%d-b%d-g%llu"),InDriver,InCase,InBatch,WorldGeneration);
-    Mode=CVarFrameTiming.GetValueOnAnyThread();bConfigured=false;
-    bPhaseTiming=Mode==1 && CVarFrameCostPhases.GetValueOnAnyThread()==1;
+    Mode=Speed::RoadSettings::ReadOriginalOrLegacy<71>([](){ return CVarFrameTiming.GetValueOnAnyThread(); });bConfigured=false;
+    bPhaseTiming=Mode==1 && Speed::RoadSettings::ReadOriginalOrLegacy<70>([](){ return CVarFrameCostPhases.GetValueOnAnyThread(); })==1;
     if(Mode==0)return;
     FString Candidate;
     FParse::Value(FCommandLine::Get(),TEXT("SLParallelTimingRunUUID="),Candidate);
     if((Mode!=1&&Mode!=2)||!ValidRun(Candidate)||InDriver==0||InCase<0||InBatch<0||WorldGeneration==0||NextEpoch==MAX_uint64)
     {
-        UE_LOG(LogTemp,Warning,TEXT("[IAmSpeedParallelTimingUnavailableV1] Case=%d Reason=MissingOwnedIdentity Scope=TimingOnly"),InCase);
+        SPEED_NATIVE_LOG(LogTemp,Warning,TEXT("[IAmSpeedParallelTimingUnavailableV1] Case=%d Reason=MissingOwnedIdentity Scope=TimingOnly"),InCase);
         return;
     }
     Run=MoveTemp(Candidate);Driver=InDriver;Epoch=++NextEpoch;NativeCase=InCase;BatchIndex=InBatch;Generation=WorldGeneration;
@@ -71,7 +73,7 @@ void FCaseRecorder::BeginDriver(bool InFast,uint64 Before,bool bOwnedLane) noexc
     if(bOpen){if(bFast!=InFast||OwnerThread!=FPlatformTLS::GetCurrentThreadId())bInvalid=true;return;}
     if(!bOwnedLane){bInvalid=true;return;}
     bOpen=true;bFast=InFast;OwnerThread=FPlatformTLS::GetCurrentThreadId();CanonicalBefore=Before;
-    UE_LOG(LogTemp,Display,TEXT("[IAmSpeedParallelCaseBeginV1] Run=%s Driver=%llu Epoch=%llu Case=%d Batch=%d WorldGeneration=%llu Thread=%u ExecutionMode=%s Mode=%d CanonicalBefore=%llu QpcFrequency=%llu Clock=WindowsQPC IdentityKnown=1"),
+    SPEED_NATIVE_LOG(LogTemp,Display,TEXT("[IAmSpeedParallelCaseBeginV1] Run=%s Driver=%llu Epoch=%llu Case=%d Batch=%d WorldGeneration=%llu Thread=%u ExecutionMode=%s Mode=%d CanonicalBefore=%llu QpcFrequency=%llu Clock=WindowsQPC IdentityKnown=1"),
         *Run,Driver,Epoch,NativeCase,BatchIndex,Generation,OwnerThread,bFast?TEXT("Fast"):TEXT("RealTime"),Mode,CanonicalBefore,Frequency);
 }
 void FCaseRecorder::Record(const FFrameSample& S) noexcept
@@ -111,7 +113,7 @@ void FCaseRecorder::Close(bool bCompleted,const TCHAR* Reason) noexcept
         {
             if(RawRowsWritten==65536){++Dropped;bInvalid=true;continue;}
             ++RawRowsWritten;
-            UE_LOG(LogTemp,Display,TEXT("[IAmSpeedParallelFrameV1] Run=%s Driver=%llu Epoch=%llu Case=%d Frame=%llu Committed=%d Hz=300 QpcBegin=%llu QpcEnd=%llu QpcFrequency=%llu Requested=%d PolicyLanes=%d LogicalMax=%d NativeMax=%d FallbackMask=%u WorkKnown=%d FacetProviders=%llu ParallelFacetProviders=%llu EvaluatedFacets=%llu ParallelPrepareCalls=%llu ParallelQueryCalls=%llu ParallelCameraCalls=%llu FacetNativeMax=%d PrepareNativeMax=%d QueryNativeMax=%d CameraNativeMax=%d StateHash=%016llX InputHash=%016llX"),
+            SPEED_NATIVE_LOG(LogTemp,Display,TEXT("[IAmSpeedParallelFrameV1] Run=%s Driver=%llu Epoch=%llu Case=%d Frame=%llu Committed=%d Hz=300 QpcBegin=%llu QpcEnd=%llu QpcFrequency=%llu Requested=%d PolicyLanes=%d LogicalMax=%d NativeMax=%d FallbackMask=%u WorkKnown=%d FacetProviders=%llu ParallelFacetProviders=%llu EvaluatedFacets=%llu ParallelPrepareCalls=%llu ParallelQueryCalls=%llu ParallelCameraCalls=%llu FacetNativeMax=%d PrepareNativeMax=%d QueryNativeMax=%d CameraNativeMax=%d StateHash=%016llX InputHash=%016llX"),
                 *Run,Driver,Epoch,NativeCase,S.Frame,S.bCommitted?1:0,S.Begin,S.End,Frequency,
                 S.Work.Requested,S.Work.PolicyLanes,S.Work.LogicalMax,S.Work.NativeMax,S.Work.FallbackMask,S.Work.bKnown?1:0,S.Work.FacetProviders,S.Work.ParallelFacetProviders,S.Work.EvaluatedFacets,S.Work.ParallelPrepareCalls,S.Work.ParallelQueryCalls,S.Work.ParallelCameraCalls,S.Work.FacetNativeMax,S.Work.PrepareNativeMax,S.Work.QueryNativeMax,S.Work.CameraNativeMax,S.StateHash,S.InputHash);
             if (bPhaseTiming)
@@ -120,14 +122,14 @@ void FCaseRecorder::Close(bool bCompleted,const TCHAR* Reason) noexcept
                 for(uint64 Tick:S.Phases.Ticks)
                 {if(Tick>MAX_uint64-PhaseSum)Known=false;else PhaseSum+=Tick;}
                 Known=Known&&S.Phases.SeenMask==((1u<<FrameCostPhaseCount)-1u)&&PhaseSum==Duration;
-                UE_LOG(LogTemp,Display,TEXT("[IAmSpeedParallelPhaseFrameV1] Run=%s Driver=%llu Epoch=%llu Case=%d Frame=%llu ExecutionMode=%s Committed=%d Hz=300 QpcBegin=%llu QpcEnd=%llu QpcFrequency=%llu PhaseKnown=%d SeenMask=%u AdmissionTicks=%llu InputTicks=%llu PrepareTicks=%llu WorldStepTicks=%llu SnapshotTicks=%llu PresentationTicks=%llu PublishTicks=%llu PostCommitTicks=%llu FinalizeTicks=%llu PhaseSumTicks=%llu Scope=CompleteCanonicalFrameBody ExclusiveTopLevel=1 PacingExcluded=1 ObserverOverheadIncluded=1"),
+                SPEED_NATIVE_LOG(LogTemp,Display,TEXT("[IAmSpeedParallelPhaseFrameV1] Run=%s Driver=%llu Epoch=%llu Case=%d Frame=%llu ExecutionMode=%s Committed=%d Hz=300 QpcBegin=%llu QpcEnd=%llu QpcFrequency=%llu PhaseKnown=%d SeenMask=%u AdmissionTicks=%llu InputTicks=%llu PrepareTicks=%llu WorldStepTicks=%llu SnapshotTicks=%llu PresentationTicks=%llu PublishTicks=%llu PostCommitTicks=%llu FinalizeTicks=%llu PhaseSumTicks=%llu Scope=CompleteCanonicalFrameBody ExclusiveTopLevel=1 PacingExcluded=1 ObserverOverheadIncluded=1"),
                     *Run,Driver,Epoch,NativeCase,S.Frame,bFast?TEXT("Fast"):TEXT("RealTime"),S.bCommitted?1:0,S.Begin,S.End,Frequency,Known?1:0,S.Phases.SeenMask,
                     S.Phases.Ticks[0],S.Phases.Ticks[1],S.Phases.Ticks[2],S.Phases.Ticks[3],S.Phases.Ticks[4],S.Phases.Ticks[5],S.Phases.Ticks[6],S.Phases.Ticks[7],S.Phases.Ticks[8],PhaseSum);
             }
         }
     }
     Sorted.Sort();
-    UE_LOG(LogTemp,Display,TEXT("[IAmSpeedParallelCaseEndV1] Run=%s Driver=%llu Epoch=%llu Case=%d Batch=%d WorldGeneration=%llu Thread=%u ExecutionMode=%s Mode=%d Complete=%d Valid=%d Attempts=%llu Committed=%llu Samples=%d Dropped=%llu First=%llu Last=%llu QpcFrequency=%llu SumTicks=%llu P50Ticks=%llu P95Ticks=%llu P99Ticks=%llu MaxTicks=%llu LogicalMax=%d NativeMax=%d FallbackMask=%u UnknownWork=%llu FacetProviders=%llu ParallelFacetProviders=%llu EvaluatedFacets=%llu ParallelPrepareCalls=%llu ParallelQueryCalls=%llu ParallelCameraCalls=%llu FacetNativeMax=%d PrepareNativeMax=%d QueryNativeMax=%d CameraNativeMax=%d EndReason=%s Quantile=NearestRank Scope=CanonicalFrameBody PacingExcluded=1"),
+    SPEED_NATIVE_LOG(LogTemp,Display,TEXT("[IAmSpeedParallelCaseEndV1] Run=%s Driver=%llu Epoch=%llu Case=%d Batch=%d WorldGeneration=%llu Thread=%u ExecutionMode=%s Mode=%d Complete=%d Valid=%d Attempts=%llu Committed=%llu Samples=%d Dropped=%llu First=%llu Last=%llu QpcFrequency=%llu SumTicks=%llu P50Ticks=%llu P95Ticks=%llu P99Ticks=%llu MaxTicks=%llu LogicalMax=%d NativeMax=%d FallbackMask=%u UnknownWork=%llu FacetProviders=%llu ParallelFacetProviders=%llu EvaluatedFacets=%llu ParallelPrepareCalls=%llu ParallelQueryCalls=%llu ParallelCameraCalls=%llu FacetNativeMax=%d PrepareNativeMax=%d QueryNativeMax=%d CameraNativeMax=%d EndReason=%s Quantile=NearestRank Scope=CanonicalFrameBody PacingExcluded=1"),
         *Run,Driver,Epoch,NativeCase,BatchIndex,Generation,OwnerThread,bFast?TEXT("Fast"):TEXT("RealTime"),Mode,bCompleted?1:0,bInvalid?0:1,
         Attempts,Committed,Samples.Num(),Dropped,Samples.IsEmpty()?0:Samples[0].Frame,Samples.IsEmpty()?0:Samples.Last().Frame,Frequency,Sum,
         Quantile(Sorted,50),Quantile(Sorted,95),Quantile(Sorted,99),Sorted.IsEmpty()?0:Sorted.Last(),LogicalMax,NativeMax,FallbackMask,UnknownWork,FacetProviders,ParallelFacetProviders,EvaluatedFacets,ParallelPrepareCalls,ParallelQueryCalls,ParallelCameraCalls,FacetNativeMax,PrepareNativeMax,QueryNativeMax,CameraNativeMax,Reason?Reason:TEXT("Unknown"));

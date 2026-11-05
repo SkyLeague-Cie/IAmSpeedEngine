@@ -1,4 +1,20 @@
 #include "IAmSpeed/Components/SpeedWheeledComponent.h"
+#include "IAmSpeed/Netcode/client-prediction/PrivateNativeStorageMap.h"
+#include "IAmSpeed/Netcode/client-prediction/NativeRetirementStorage.h"
+#include "IAmSpeed/Netcode/client-prediction/PrivateRoadNativeObjects.h"
+#include "IAmSpeed/World/Simulation/Internal/BodyKinematicRead.h"
+#include "IAmSpeed/World/Simulation/Internal/BodyContactWrite.h"
+#include "IAmSpeed/World/Simulation/Internal/ComponentContactWrite.h"
+#include "IAmSpeed/Base/EpisodeShapeFieldsForTesting.h"
+#include "Misc/ScopeExit.h"
+#include "IAmSpeed/World/Simulation/Internal/SolidPropertiesAccess.h"
+#include "IAmSpeed/World/Simulation/Internal/SolidMassAccess.h"
+#include "IAmSpeed/World/Simulation/Internal/WheelBindingAccess.h"
+#include "IAmSpeed/World/Simulation/Internal/ComponentKinematicRead.h"
+#include <stdexcept>
+#include "IAmSpeed/World/Simulation/RoadSettings/NativeRoadSettingsRead.h"
+#include "IAmSpeed/World/Simulation/NativeEpochDiagnostics.h"
+#include "IAmSpeed/World/Simulation/ResolvedNativeObjectRead.h"
 #include "IAmSpeed/Netcode/presentation-client/PresentationClientWorld.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Engine/Engine.h"
@@ -423,8 +439,25 @@ float GetSmishTurnTargetSpeed(
 }
 }
 
-USpeedWheeledComponent::USpeedWheeledComponent(const FObjectInitializer& ObjectInitializer) :
-	Super(ObjectInitializer)
+namespace
+{
+// Same original constructor policy for both fresh native domains. INDEX_NONE
+// means no historical frame exists; no fake state or frame is recorded here.
+template<class TFrames,class TBase,class TWheeled>
+void InitializeRecordedSlotsAtNativeBirth(TFrames& Frames,TBase& Base,TWheeled& Wheeled)
+{
+    Frames.Init(INDEX_NONE,SpeedConstants::RecordedHistorySize);
+    Frames.SetNum(SpeedConstants::RecordedHistorySize);
+    Base.SetNum(SpeedConstants::RecordedHistorySize);
+    Wheeled.SetNum(SpeedConstants::RecordedHistorySize);
+}
+}
+
+USpeedWheeledComponent::USpeedWheeledComponent(const FObjectInitializer& ObjectInitializer)
+    :USpeedWheeledComponent(ObjectInitializer,ESpeedWheeledNetworkConstruction::Legacy) {}
+
+USpeedWheeledComponent::USpeedWheeledComponent(const FObjectInitializer& ObjectInitializer,ESpeedWheeledNetworkConstruction Policy) :
+	Super(ObjectInitializer),NetworkConstruction(Policy)
 {
     // Chaos can construct a THIRD network component in Super when prediction is
     // enabled. Keep that original DSO inert before registration too; no removal
@@ -437,23 +470,26 @@ USpeedWheeledComponent::USpeedWheeledComponent(const FObjectInitializer& ObjectI
 	InitChaosVehicle();
 	InitNetwork();
 
+    // Physical recorded slots are independent of any UE network component.
+    InitializeRecordedSlotsAtNativeBirth(RecordedBaseFramesWheeledDomainStorage(),RecordedBaseStatesWheeledDomainStorage(),RecordedWheeledStatesWheeledDomainStorage());
+
 	SetEngineFPS(Speed::SimUtils::ComputePhysicsFPS(UPhysicsSettings::Get()->AsyncFixedTimeStepSize));
-	GravityZ = GetDefault<UPhysicsSettings>()->DefaultGravityZ;
-	MinNbFramesBeforeCanMove = TimeBeforeCanMove * EngineFPS;
-	WheeledPhysicsState.nbFramesbeforeCanMove = MinNbFramesBeforeCanMove;
-	BasePhysicsState.bIsFrozen = true;
+	GravityZWheeledDomainStorage() = GetDefault<UPhysicsSettings>()->DefaultGravityZ;
+	MinNbFramesBeforeCanMoveWheeledDomainStorage() = TimeBeforeCanMoveWheeledDomainStorage() * EngineFPSWheeledDomainStorage();
+	WheeledPhysicsStateStorage().nbFramesbeforeCanMove = MinNbFramesBeforeCanMoveWheeledDomainStorage();
+	BasePhysicsStateStorage().bIsFrozen = true;
 
 	SetSubBodies(CreateSubBodies());
-	if (SubBodies.Num() > 0)
+	if (SubBodiesWheeledDomainStorage().Num() > 0)
 	{
-		HitboxSubBody = CastChecked<UBoxSubBody>(SubBodies[0]);
+		HitboxSubBodyWheeledDomainStorage() = CastChecked<UBoxSubBody>(SubBodiesWheeledDomainStorage()[0]);
 	}
 
-	for (USSubBody* SubBody : SubBodies)
+	for (USSubBody* SubBody : SubBodiesWheeledDomainStorage())
 	{
 		if (USWheelSubBody* WheelSubBody = Cast<USWheelSubBody>(SubBody))
 		{
-			WheelSubBodies.Add(WheelSubBody);
+			WheelSubBodiesWheeledDomainStorage().Add(WheelSubBody);
 		}
 	}
 }
@@ -467,7 +503,7 @@ void USpeedWheeledComponent::OnRegister()
     // Nested native shapes must participate in the actor's scene/component
     // lifecycle too. Keep all authored geometry. An explicit parent is kept
     // (the shape resolves a template parent on its own registration).
-    for(USSubBody* Shape:SubBodies)
+    for(USSubBody* Shape:SubBodiesWheeledDomainStorage())
     {
         if(!Shape || Shape->IsTemplate() || Shape->GetOwner()!=Actor)continue;
         Actor->AddOwnedComponent(Shape);
@@ -476,104 +512,678 @@ void USpeedWheeledComponent::OnRegister()
     }
 }
 
+class USpeedWheeledComponent::FLegacyOwnerBirthAccess
+{
+    USpeedWheeledComponent& Owner;
+public:
+    explicit FLegacyOwnerBirthAccess(USpeedWheeledComponent& Value):Owner(Value){}
+    virtual void CheckCallbackBoundary() const {}
+    bool SuppressesLocalPhysics() const {return Speed::Netcode::PresentationClient::SuppressesLocalPhysics(Owner.GetWorld());}
+    void AssignOwner(AActor* Actor) const {Owner.SpeedCarOwnerWheeledDomainStorage()=Cast<ASpeedCar>(Actor);}
+    void CheckWorld(UWorld*) const {}
+    void CheckSubsystem(USpeedWorldSubsystem*) const {}
+    decltype(auto) COM() const {return (Owner.CenterOfMassWheeledDomainStorage());}
+    decltype(auto) COMOverride() const {return (Owner.CenterOfMassOverrideWheeledDomainStorage());}
+    decltype(auto) EnableCOMOverride() const {return (Owner.bEnableCenterOfMassOverrideWheeledDomainStorage());}
+    decltype(auto) Bodies() const {return (Owner.SubBodiesWheeledDomainStorage());}
+    decltype(auto) Hitbox() const {return (Owner.HitboxSubBodyWheeledDomainStorage());}
+    decltype(auto) Wheels() const {return (Owner.WheelSubBodiesWheeledDomainStorage());}
+    UBoxSubBody* AsBox(USSubBody* Body) const {return Cast<UBoxSubBody>(Body);}
+    USWheelSubBody* AsWheel(USSubBody* Body) const {return Cast<USWheelSubBody>(Body);}
+    UBoxSubBody* ReadHitbox() const {return Owner.ReadHitboxForPhysics().Get();}
+    auto ReadWheels() const {return Owner.ReadWheelSubBodiesForPhysics();}
+    void BindInitial() const {Owner.BindWheelSimulationPointers();}
+    void Initialize(USSubBody* Body) const
+    {CheckCallbackBoundary();Body->Initialize(&Owner);CheckCallbackBoundary();}
+    void AfterInitializers() const {}
+    FMatrix ChassisTensor() const
+    {CheckCallbackBoundary();auto V=ReadHitbox()->ComputeChassisLocalInvInertiaTensor();CheckCallbackBoundary();return V;}
+    decltype(auto) ChassisInverse() const {return (Owner.CarLocalInvIWheeledDomainStorage());}
+    void UpdateChildren() const {Owner.UpdateSubBodiesKinematics();}
+};
+
+// Reuses the real legacy owner/initializer program. The proof is required at
+// entry and rechecked across its real callbacks; it is not a lifetime lease.
+class USpeedWheeledComponent::FReferenceOwnerBirthAccess final : public FLegacyOwnerBirthAccess
+{
+    using FProof=Speed::Netcode::Prediction::FPrivateReferenceOwnerBirth;
+    USpeedWheeledComponent& Owner;
+    const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation;
+    const FProof& Proof;
+    AActor* const RequestedActor;
+    FReferenceOwnerBirthObservation* const Observation;
+public:
+    FReferenceOwnerBirthAccess(USpeedWheeledComponent& Value,
+        const Speed::Netcode::Prediction::FPrivateNativeOperation& Op,
+        const FProof& ActualProof,AActor* ActualActor,FReferenceOwnerBirthObservation* Out)
+      :FLegacyOwnerBirthAccess(Value),Owner(Value),Operation(Op),Proof(ActualProof),
+       RequestedActor(ActualActor),Observation(Out) {CheckCallbackBoundary();}
+    FReferenceOwnerBirthAccess(const FReferenceOwnerBirthAccess&)=delete;
+    FReferenceOwnerBirthAccess& operator=(const FReferenceOwnerBirthAccess&)=delete;
+    FReferenceOwnerBirthAccess(FReferenceOwnerBirthAccess&&)=delete;
+    FReferenceOwnerBirthAccess& operator=(FReferenceOwnerBirthAccess&&)=delete;
+    void CheckCallbackBoundary() const override
+    {
+        namespace P=Speed::Netcode::Prediction;
+        P::FPrivateNativeStorageAccess::RequireBirthRoot(Operation,Proof.ActualRoot);
+        // Resolve captured serials before dereference. The original table has
+        // component metadata at this phase, but NOT the wheel parts yet.
+        if(Proof.Component.Get()!=&Owner||!Proof.Actor.IsValid()
+            ||RequestedActor!=Proof.Actor.Get()
+            ||!Proof.World.IsValid()||!Proof.Bridge.IsValid()
+            ||Proof.World.Get()->bIsTearingDown
+            ||Proof.World.Get()->HasAnyFlags(RF_BeginDestroyed|RF_FinishDestroyed)
+            ||Proof.Bridge.Get()->HasAnyFlags(RF_BeginDestroyed|RF_FinishDestroyed)
+            ||Owner.GetWorld()!=Proof.World.Get()||Proof.Bridge.Get()->GetWorld()!=Proof.World.Get()
+            ||!Proof.Hitbox.IsValid()
+            ||Proof.Bodies.Num()!=4||Owner.HasAnyFlags(RF_BeginDestroyed|RF_FinishDestroyed)
+            ||RequestedActor->HasAnyFlags(RF_BeginDestroyed|RF_FinishDestroyed)
+            ||RequestedActor->IsActorBeingDestroyed()||Owner.GetOwner()!=RequestedActor
+            ||Owner.GetClass()!=USpeedBranchWheeledComponent::StaticClass()
+            ||Owner.UsesOriginalWheeledDomain()||Owner.SkySimulation||Owner.VehicleSimulationPT
+            ||!Owner.Wheels.IsEmpty()||Owner.SubBodies.Num()!=5
+            ||Owner.SubBodies[0]!=Proof.Hitbox.Get()
+            ||(Owner.HitboxSubBody&&!Speed::NativeObjectRead::MatchesOriginalBirth(Owner.HitboxSubBody,Proof.Hitbox))
+            ||(!Owner.WheelSubBodies.IsEmpty()&&Owner.WheelSubBodies.Num()!=4))
+            throw P::FPrivateNativeStorageUnavailable{};
+        const auto& Original=P::FPrivateNativeStorageAccess::Part<FOriginalWheeledDomain>(Operation,&Owner);
+        const auto& Births=P::FPrivateNativeStorageAccess::Part<P::FPrivateRoadBirthIdentities>(Operation,&Owner);
+        if(Births.Actor!=Proof.Actor||Births.Component!=Proof.Component||Births.Hitbox!=Proof.Hitbox
+            ||Births.WheelBodies!=Proof.Bodies||Original.SkySimulation||Original.VehicleSimulationPT
+            ||Proof.Hitbox.Get()->HasAnyFlags(RF_BeginDestroyed|RF_FinishDestroyed)
+            ||Proof.Hitbox.Get()->GetClass()!=USpeedBranchBoxSubBody::StaticClass()
+            ||Proof.Hitbox.Get()->GetOwner()!=RequestedActor)
+            throw P::FPrivateNativeStorageUnavailable{};
+        for(int32 Index=0;Index<4;++Index)
+        {
+            auto* Body=Proof.Bodies[Index].Get();
+            if(!Body||Body->HasAnyFlags(RF_BeginDestroyed|RF_FinishDestroyed)
+                ||Body->GetClass()!=USpeedBranchWheelSubBody::StaticClass()
+                ||Body->GetOwner()!=RequestedActor||Owner.SubBodies[Index+1]!=Body
+                ||(!Owner.WheelSubBodies.IsEmpty()
+                    &&!Speed::NativeObjectRead::MatchesOriginalBirth(Owner.WheelSubBodies[Index],Proof.Bodies[Index])))
+                throw P::FPrivateNativeStorageUnavailable{};
+        }
+        const auto* Hitbox=Proof.Hitbox.Get();
+        if(Hitbox->GetParentComponent()&&Hitbox->GetParentComponent()!=static_cast<ISpeedComponent*>(&Owner))
+            throw P::FPrivateNativeStorageUnavailable{};
+        for(const auto& Born:Proof.Bodies)
+        {
+            auto* Body=Born.Get();
+            if(!Body||(Body->GetParentComponent()&&Body->GetParentComponent()!=static_cast<ISpeedComponent*>(&Owner)))
+                throw P::FPrivateNativeStorageUnavailable{};
+        }
+        // Re-resolve at the end as well. No FGCScopeGuard spans callbacks.
+        if(Proof.Component.Get()!=&Owner||Proof.Actor.Get()!=RequestedActor||!Proof.Hitbox.IsValid())
+            throw P::FPrivateNativeStorageUnavailable{};
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+        if(Observation)++Observation->BoundaryChecksReturned;
+#endif
+    }
+    void CheckWorld(UWorld* World) const
+    {CheckCallbackBoundary();if(World!=Proof.World.Get())throw Speed::Netcode::Prediction::FPrivateNativeStorageUnavailable{};}
+    void CheckSubsystem(USpeedWorldSubsystem* Bridge) const
+    {CheckCallbackBoundary();if(Bridge!=Proof.Bridge.Get())throw Speed::Netcode::Prediction::FPrivateNativeStorageUnavailable{};}
+    void BindInitial() const
+    {
+        CheckCallbackBoundary();
+        for(const auto& Born:Proof.Bodies)
+        {
+            CheckCallbackBoundary();
+            auto* Body=static_cast<USpeedBranchWheelSubBody*>(Born.Get());
+            const auto* ConfigurationBefore=Body->GetChaosWheelConfiguration();
+            CheckCallbackBoundary();
+            Body->ClearReferenceWheelBindingsAtOwnerBirth(Operation);
+            if(Body->GetChaosWheelConfiguration()!=ConfigurationBefore)
+                throw Speed::Netcode::Prediction::FPrivateNativeStorageUnavailable{};
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+            if(Observation)++Observation->TwoNullEntriesReturned;
+#endif
+            CheckCallbackBoundary();
+        }
+    }
+    void Initialize(USSubBody* Body) const
+    {
+        // Legacy Initialize already checked these two boundaries. Keep that
+        // real observation order while the child now uses its typed route.
+        CheckCallbackBoundary();
+        Body->InitializeReference(Operation,Proof,&Owner);
+        CheckCallbackBoundary();
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+        if(Observation)++Observation->InitializersReturned;
+#endif
+    }
+    void UpdateChildren() const
+    {
+        // The existing children body is shared too: its Origin computation and
+        // virtual child updates keep their original order. Only the boundary
+        // checker differs; no second numerical child program is introduced.
+        class FChildren final
+        {
+            const FReferenceOwnerBirthAccess& Access;
+        public:
+            explicit FChildren(const FReferenceOwnerBirthAccess& Value):Access(Value){}
+            SKinematic Origin() const
+            {Access.CheckCallbackBoundary();auto V=Speed::NativeKinematics::FComponentRead::Origin(Access.Owner);Access.CheckCallbackBoundary();return V;}
+            const TArray<USSubBody*>& SubBodies() const
+            {Access.CheckCallbackBoundary();return Access.Owner.SubBodies;}
+            void Update(USSubBody* Body,const SKinematic& Parent) const
+            {Access.CheckCallbackBoundary();Body->UpdateKinematicsFromOwner(Parent);Access.CheckCallbackBoundary();}
+        } Children(*this);
+        Owner.UpdateSubBodiesKinematicsBody(Children);
+    }
+};
+
+class USpeedWheeledComponent::FNativeOwnerBirthAccess final
+{
+    USpeedWheeledComponent& Owner;
+    const Speed::Netcode::Prediction::FPrivateNativeOperation& Op;
+    FNativeOwnerBirthObservation* const Observation;
+    const Speed::Netcode::Prediction::FPrivateRoadBirthIdentities& Births;
+    decltype(auto) Domain() const
+    {return Speed::Netcode::Prediction::FPrivateNativeStorageAccess::Part<FOriginalWheeledDomain>(Op,&Owner);}
+    void CheckWholeRoster() const
+    {
+        using namespace Speed::Netcode::Prediction;
+        FPrivateNativeStorageAccess::RequireBirth(Op);
+        Speed::NativeKinematics::FComponentRead::ValidateCurrentAndSubBodies(Op,&Owner);
+        auto& D=Domain();
+        if(!Births.Actor.IsValid()||!Births.Component.IsValid()||Births.Component.Get()!=&Owner
+            ||Owner.GetOwner()!=Births.Actor.Get()||!Births.Hitbox.IsValid()||!Births.WheelClass.IsValid()
+            ||Births.WheelBodies.Num()!=4||Births.WheelConfigurations.Num()!=4
+            ||D.SubBodies.Num()!=5||D.SubBodies[0]!=Births.Hitbox.Get()
+            ||D.SkySimulation||D.VehicleSimulationPT||!D.Wheels.IsEmpty()
+            ||(!D.WheelSubBodies.IsEmpty()&&D.WheelSubBodies.Num()!=4)
+            ||(D.HitboxSubBody&&!Speed::NativeObjectRead::MatchesOriginalBirth(D.HitboxSubBody,Births.Hitbox)))
+            throw FPrivateNativeStorageUnavailable{};
+        const auto& BoxBody=FPrivateNativeStorageAccess::Part<const FPrivateRoadSubBodyValues>(Op,Births.Hitbox.Get());
+        (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadSolidValues>(Op,Births.Hitbox.Get());
+        (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadBoxDomain>(Op,Births.Hitbox.Get());
+        if((BoxBody.ParentComponent&&BoxBody.ParentComponent!=static_cast<ISpeedComponent*>(&Owner))
+            ||BoxBody.LocalPose.ContainsNaN()||!BoxBody.LocalPose.GetRotation().IsNormalized()
+            ||D.CenterOfMass.ContainsNaN()||D.CenterOfMassOverride.ContainsNaN())
+            throw FPrivateNativeStorageUnavailable{};
+        for(int32 Index=0;Index<4;++Index)
+        {
+            const auto& BornBody=Births.WheelBodies[Index];const auto& BornConfiguration=Births.WheelConfigurations[Index];
+            if(!BornBody.IsValid()||!BornConfiguration.IsValid()
+                ||D.SubBodies[Index+1]!=BornBody.Get()
+                ||(!D.WheelSubBodies.IsEmpty()&&!Speed::NativeObjectRead::MatchesOriginalBirth(D.WheelSubBodies[Index],BornBody))
+                ||BornConfiguration.Get()->GetOuter()!=&Owner
+                ||BornConfiguration.Get()->GetClass()!=Births.WheelClass.Get())
+                throw FPrivateNativeStorageUnavailable{};
+            const auto& Body=FPrivateNativeStorageAccess::Part<const FPrivateRoadSubBodyValues>(Op,BornBody.Get());
+            (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadSolidValues>(Op,BornBody.Get());
+            (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadSphereDomain>(Op,BornBody.Get());
+            (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadWheelRuntimeValues>(Op,BornBody.Get());
+            const auto& Wheel=FPrivateNativeStorageAccess::Part<const FPrivateRoadWheelDomain>(Op,BornBody.Get());
+            // Initial parents really may be null. Refuse a foreign relationship,
+            // without pretending the later initialized own-parent relation exists.
+            if((Body.ParentComponent&&Body.ParentComponent!=static_cast<ISpeedComponent*>(&Owner))
+                ||Body.LocalPose.ContainsNaN()||!Body.LocalPose.GetRotation().IsNormalized()
+                ||Wheel.PWheel||Wheel.PSuspension
+                ||(Wheel.ChaosWheel&&Wheel.ChaosWheel!=BornConfiguration.Get()))
+                throw FPrivateNativeStorageUnavailable{};
+        }
+    }
+public:
+    FNativeOwnerBirthAccess(USpeedWheeledComponent& Value,
+        const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,
+        AActor* ActualActor,const FQuat& Rotation,const FVector& Location,
+        const TWeakObjectPtr<UBoxSubBody>& HitboxBirth,
+        TConstArrayView<TWeakObjectPtr<USWheelSubBody>> BodyBirths,
+        TConstArrayView<TWeakObjectPtr<UChaosVehicleWheel>> ConfigurationBirths,
+        FNativeOwnerBirthObservation* Witness)
+      :Owner(Value),Op(Operation),Observation(Witness),
+       Births(Speed::Netcode::Prediction::FPrivateNativeStorageAccess::Part<const Speed::Netcode::Prediction::FPrivateRoadBirthIdentities>(Operation,&Value))
+    {
+        using namespace Speed::Netcode::Prediction;
+        FPrivateNativeStorageAccess::RequireBirth(Op);
+        CheckWholeRoster(); // all real subjects/parts BEFORE owner, COM or pose writes
+        if(ActualActor!=Births.Actor.Get()||HitboxBirth!=Births.Hitbox
+            ||BodyBirths.Num()!=4||ConfigurationBirths.Num()!=4
+            ||Rotation.ContainsNaN()||!Rotation.IsNormalized()||Location.ContainsNaN())
+            throw FPrivateNativeStorageUnavailable{};
+        for(int32 Index=0;Index<4;++Index)
+            if(BodyBirths[Index]!=Births.WheelBodies[Index]||ConfigurationBirths[Index]!=Births.WheelConfigurations[Index])
+                throw FPrivateNativeStorageUnavailable{};
+    }
+    FNativeOwnerBirthAccess(const FNativeOwnerBirthAccess&)=delete;
+    FNativeOwnerBirthAccess& operator=(const FNativeOwnerBirthAccess&)=delete;
+    FNativeOwnerBirthAccess(FNativeOwnerBirthAccess&&)=delete;
+    FNativeOwnerBirthAccess& operator=(FNativeOwnerBirthAccess&&)=delete;
+    void CheckCallbackBoundary() const {} // existing explicit original entries validate their own parts
+    void SetActor() const {Domain().SpeedCarOwner=Cast<ASpeedCar>(Births.Actor.Get());}
+    decltype(auto) COM() const {return (Domain().CenterOfMass);}
+    decltype(auto) COMOverride() const {return (Domain().CenterOfMassOverride);}
+    decltype(auto) EnableCOMOverride() const {return (Domain().bEnableCenterOfMassOverride);}
+    decltype(auto) Bodies() const {return (Domain().SubBodies);}
+    decltype(auto) Hitbox() const {return (Domain().HitboxSubBody);}
+    decltype(auto) Wheels() const {return (Domain().WheelSubBodies);}
+    UBoxSubBody* AsBox(USSubBody* Body) const
+    {return static_cast<USSubBody*>(Births.Hitbox.Get())==Body?Births.Hitbox.Get():nullptr;}
+    USWheelSubBody* AsWheel(USSubBody* Body) const
+    {
+        for(const auto& Born:Births.WheelBodies)if(static_cast<USSubBody*>(Born.Get())==Body)return Born.Get();
+        return nullptr;
+    }
+    UBoxSubBody* ReadHitbox() const {return Births.Hitbox.Get();}
+    auto ReadWheels() const {return Speed::NativeObjectRead::TView<USWheelSubBody>{Domain().WheelSubBodies,true};}
+    void BindInitial() const
+    {
+        CheckWholeRoster(); // distinct true initial no-vehicle clear, not116's non-null binder
+        for(const auto& Born:Births.WheelBodies)
+        {
+            Speed::NativeKinematics::FWheelBindingAccess::BindWheel(Op,*Born.Get(),nullptr);
+            Speed::NativeKinematics::FWheelBindingAccess::BindSuspension(Op,*Born.Get(),nullptr);
+        } // Chaos configuration retained exactly, including an empty D.Wheels
+    }
+    void Initialize(USSubBody* Body) const
+    {
+        Speed::NativeKinematics::FBodyWrite::Initialize(Op,Body,&Owner);
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+        if(Observation)++Observation->InitializersReturned; // actual return only
+#endif
+    }
+    void AfterInitializers() const
+    {
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+        if(Observation&&Observation->Mode==FNativeOwnerBirthObservation::EMode::StoredTensorFixtureAndAbort)
+        {
+            // Named constructor fixture on a graph that the factory MUST abort
+            // before vehicle creation/Step. This is not historical restoration.
+            auto& Solid=Speed::Netcode::Prediction::FPrivateNativeStorageAccess::Part<Speed::Netcode::Prediction::FPrivateRoadSolidValues>(Op,ReadHitbox());
+            FMatrix Fixture=FMatrix::Identity;Fixture.M[0][0]=0.11;Fixture.M[1][1]=0.23;Fixture.M[2][2]=0.37;
+            Fixture.M[0][1]=Fixture.M[1][0]=0.015;Solid.InvInertiaLocal=Fixture;
+            Observation->StoredTensorFixtureInstalled=true;
+        }
+#endif
+    }
+    FMatrix ChassisTensor() const
+    {return Speed::NativeKinematics::FBodyRead::ChassisLocalInverseTensor(Op,*ReadHitbox());}
+    decltype(auto) ChassisInverse() const {return (Domain().CarLocalInvI);}
+    void UpdateChildren() const {Speed::NativeKinematics::FComponentWrite::UpdateSubBodies(Op,&Owner);}
+};
+
+template<class TAccess>
+void USpeedWheeledComponent::ResolveFixedCenterOfMassBody(TAccess& Storage)
+{
+    if (!Storage.COMOverride().IsNearlyZero())
+    {
+        Storage.COM() = Storage.COMOverride();
+    }
+    else
+    {
+        Storage.COMOverride() = Storage.COM();
+    }
+    Storage.EnableCOMOverride() = true;
+}
 void USpeedWheeledComponent::ResolveFixedCenterOfMassFromConfiguration()
 {
-	// Keep the same precedence and zero fallback as SetOwner.
-	if (!CenterOfMassOverride.IsNearlyZero())
-	{
-		CenterOfMass = CenterOfMassOverride;
-	}
-	else
-	{
-		CenterOfMassOverride = CenterOfMass;
-	}
-	bEnableCenterOfMassOverride = true;
+    FLegacyOwnerBirthAccess Storage(*this);ResolveFixedCenterOfMassBody(Storage);
 }
 
+
+void USpeedWheeledComponent::RequireReferenceInitializerBirthRoot(
+    const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,
+    const Speed::Netcode::Prediction::FPrivateReferenceOwnerBirth& Proof)
+{
+    Speed::Netcode::Prediction::FPrivateNativeStorageAccess::RequireBirthRoot(Operation,Proof.ActualRoot);
+}
+
+void Speed::Netcode::Prediction::FPrivateReferenceOwnerBirth::RequireInitializerBody(
+    const FPrivateNativeOperation& Operation,const USSubBody& Subject,ISpeedComponent* Parent) const
+{
+    USpeedWheeledComponent::RequireReferenceInitializerBirthRoot(Operation,*this);
+    auto* ActualComponent=Component.Get();
+    if(!ActualComponent||ActualComponent->HasAnyFlags(RF_BeginDestroyed|RF_FinishDestroyed))
+        throw FPrivateNativeStorageUnavailable{};
+    ActualComponent->ValidateReferenceInitializerBody(Operation,*this,Subject,Parent);
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+    ++DiagnosticInitializerSubjectChecks;
+#endif
+}
+void USpeedWheeledComponent::ValidateReferenceInitializerBody(
+    const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,
+    const Speed::Netcode::Prediction::FPrivateReferenceOwnerBirth& Proof,const USSubBody& Subject,ISpeedComponent* Parent)
+{
+    using namespace Speed::Netcode::Prediction;
+    FReferenceOwnerBirthAccess Check(*this,Operation,Proof,Proof.Actor.Get(),nullptr);
+    if(Parent!=static_cast<ISpeedComponent*>(this))throw FPrivateNativeStorageUnavailable{};
+    bool Match=false;
+    if(Proof.Hitbox.Get()==&Subject)
+    {
+        const auto& Body=static_cast<const USpeedBranchBoxSubBody&>(Subject);
+        if(Body.UsesOriginalBodyStorage())throw FPrivateNativeStorageUnavailable{};
+        Match=true;
+    }
+    for(const auto& Born:Proof.Bodies)
+    {
+        if(Born.Get()!=&Subject)continue;
+        const auto& Body=static_cast<const USpeedBranchWheelSubBody&>(Subject);
+        if(Body.UsesOriginalBodyStorage())throw FPrivateNativeStorageUnavailable{};
+        Match=true;
+    }
+    if(!Match)throw FPrivateNativeStorageUnavailable{};
+    Check.CheckCallbackBoundary();
+}
+
+template<class TAccess>
+void USpeedWheeledComponent::SetOwnerBody(TAccess& Storage,AActor* NewOwner)
+{
+    Storage.CheckCallbackBoundary();
+    if (Storage.SuppressesLocalPhysics()) return;
+    Storage.CheckCallbackBoundary();
+    if (NewOwner == nullptr) return;
+    Storage.AssignOwner(NewOwner);
+    ResolveFixedCenterOfMassBody(Storage);
+    Storage.CheckCallbackBoundary();
+    const auto Rotation=NewOwner->GetActorRotation().Quaternion();
+    Storage.CheckCallbackBoundary();
+    SetPhysRotation(Rotation);
+    Storage.CheckCallbackBoundary();
+    const auto Location=NewOwner->GetActorLocation();
+    Storage.CheckCallbackBoundary();
+    SetPhysLocation(Location);
+    Storage.CheckCallbackBoundary();
+    InitializeBoundSubBodiesForPhysicalOwnerBody(Storage);
+    Storage.CheckCallbackBoundary();
+    SetAsyncPhysicsTickEnabled(true);
+    Storage.CheckCallbackBoundary();
+    if (UWorld* World = GetWorld())
+    {
+        Storage.CheckWorld(World);
+        if (USpeedWorldSubsystem* SpeedWorldSubsystem = World->GetSubsystem<USpeedWorldSubsystem>())
+        {
+            Storage.CheckSubsystem(SpeedWorldSubsystem);
+            SpeedWorldSubsystem->RegisterSpeedComponent(this);
+            Storage.CheckCallbackBoundary();
+        }
+    }
+    Storage.CheckCallbackBoundary();
+}
 void USpeedWheeledComponent::SetOwner(AActor* NewOwner)
 {
-	if (Speed::Netcode::PresentationClient::SuppressesLocalPhysics(GetWorld())) return;
-	if (NewOwner == nullptr)
-	{
-		return;
-	}
-	SpeedCarOwner = Cast<ASpeedCar>(NewOwner);
-	ResolveFixedCenterOfMassFromConfiguration();
-	SetPhysRotation(NewOwner->GetActorRotation().Quaternion());
-	SetPhysLocation(NewOwner->GetActorLocation());	// init sub-bodies
-	if (SubBodies.Num() > 0)
-	{
-		HitboxSubBody = Cast<UBoxSubBody>(SubBodies[0]);
-	}
-
-	WheelSubBodies.Empty();
-	for (USSubBody* SubBody : SubBodies)
-	{
-		if (USWheelSubBody* WheelSubBody = Cast<USWheelSubBody>(SubBody))
-		{
-			WheelSubBodies.Add(WheelSubBody);
-		}
-	}
-
-	BindWheelSimulationPointers();
-
-	// init all sub-bodies with the owner
-	HitboxSubBody->Initialize(this);
-	for (auto& WheelSubBody : WheelSubBodies)
-	{
-		WheelSubBody->Initialize(this);
-	}
-	// The hitbox owns the rigid body's inertia convention. Reuse that tensor so
-	// custom hitboxes and the vehicle force solvers cannot disagree.
-	CarLocalInvI = HitboxSubBody->ComputeChassisLocalInvInertiaTensor();
-
-	UpdateSubBodiesKinematics();
-
-	// start physics thread
-	SetAsyncPhysicsTickEnabled(true);
-	// Register in SpeedWorldSubsystem
-	if (UWorld* World = GetWorld())
-	{
-		if (USpeedWorldSubsystem* SpeedWorldSubsystem = World->GetSubsystem<USpeedWorldSubsystem>())
-		{
-			SpeedWorldSubsystem->RegisterSpeedComponent(this);
-		}
-	}
+    CheckOrdinaryOwnerInitializationEntry();
+    FLegacyOwnerBirthAccess Storage(*this);SetOwnerBody(Storage,NewOwner);
 }
+void USpeedWheeledComponent::InitializeReferenceOwnerBirth(
+    const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,
+    const Speed::Netcode::Prediction::FPrivateReferenceOwnerBirth& Proof,
+    AActor* ActualActor,FReferenceOwnerBirthObservation* Observation)
+{
+    FReferenceOwnerBirthAccess Storage(*this,Operation,Proof,ActualActor,Observation);
+    SetOwnerBody(Storage,ActualActor);
+}
+
+
+template<class TAccess>
+void USpeedWheeledComponent::InitializeBoundSubBodiesForPhysicalOwnerBody(TAccess& Storage)
+{
+    Storage.CheckCallbackBoundary();
+    if (Storage.Bodies().Num() > 0)
+    {
+        Storage.Hitbox() = Storage.AsBox(Storage.Bodies()[0]);
+    }
+    Storage.Wheels().Empty();
+    for (USSubBody* SubBody : Storage.Bodies())
+    {
+        if (USWheelSubBody* WheelSubBody = Storage.AsWheel(SubBody))
+        {
+            Storage.Wheels().Add(WheelSubBody);
+        }
+    }
+    Storage.CheckCallbackBoundary();
+    Storage.BindInitial();
+    Storage.CheckCallbackBoundary();
+    Storage.Initialize(Storage.ReadHitbox());
+    for (auto WheelSubBody : Storage.ReadWheels())
+    {
+        Storage.Initialize(WheelSubBody.Get());
+    }
+    Storage.AfterInitializers(); // fixed diagnostic hook only; ordinary/prod no-op
+    Storage.ChassisInverse() = Storage.ChassisTensor();
+    Storage.CheckCallbackBoundary();
+    Storage.UpdateChildren();
+    Storage.CheckCallbackBoundary();
+}
+void USpeedWheeledComponent::InitializeBoundSubBodiesForPhysicalOwner()
+{
+    CheckOrdinaryOwnerInitializationEntry();
+    FLegacyOwnerBirthAccess Storage(*this);InitializeBoundSubBodiesForPhysicalOwnerBody(Storage);
+}
+void USpeedWheeledComponent::InitializeOriginalOwnerFromCapturedPose(
+    const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,AActor* OriginalOwner,
+    const FQuat& OriginalRotation,const FVector& OriginalLocation,
+    const TWeakObjectPtr<UBoxSubBody>& ActualHitboxBirth,
+    TConstArrayView<TWeakObjectPtr<USWheelSubBody>> ActualBodyBirths,
+    TConstArrayView<TWeakObjectPtr<UChaosVehicleWheel>> ActualConfigurationBirths,
+    FNativeOwnerBirthObservation* Observation)
+{
+    FNativeOwnerBirthAccess Storage(*this,Operation,OriginalOwner,OriginalRotation,OriginalLocation,
+        ActualHitboxBirth,ActualBodyBirths,ActualConfigurationBirths,Observation);
+    Storage.SetActor();
+    ResolveFixedCenterOfMassBody(Storage);
+    Speed::NativeKinematics::FComponentWrite::BirthPose(Operation,this,OriginalRotation,OriginalLocation);
+    InitializeBoundSubBodiesForPhysicalOwnerBody(Storage);
+}
+
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+bool USpeedWheeledComponent::ProbeNativeFirstOwnerBirthForDiagnostics(
+    const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,AActor* ActualActor,
+    const FQuat& Rotation,const FVector& Location,
+    const TWeakObjectPtr<UBoxSubBody>& HitboxBirth,
+    TConstArrayView<TWeakObjectPtr<USWheelSubBody>> BodyBirths,
+    TConstArrayView<TWeakObjectPtr<UChaosVehicleWheel>> ConfigurationBirths,
+    TConstArrayView<TWeakObjectPtr<UChaosVehicleWheel>> ActualReferenceBirths,
+    USpeedWheeledComponent* ForeignComponent,AActor* ForeignActor,
+    const TWeakObjectPtr<UBoxSubBody>& ForeignHitbox,
+    TConstArrayView<TWeakObjectPtr<USWheelSubBody>> ForeignBodyBirths,
+    TConstArrayView<TWeakObjectPtr<UChaosVehicleWheel>> ForeignConfigurationBirths,
+    USpeedSimulation* ForeignSimulation,const SKinematic& ForeignOriginalKinematic,FNativeOwnerBirthObservation& Out)
+{
+    namespace P=Speed::Netcode::Prediction;using B=Speed::FEpisodeStateBytesForTesting;
+    P::FPrivateNativeStorageAccess::RequireBirth(Operation);
+    if(!ActualActor||!ForeignComponent||!ForeignActor||!ForeignSimulation||!ForeignHitbox.IsValid()
+        ||BodyBirths.Num()!=4||ConfigurationBirths.Num()!=4||ActualReferenceBirths.Num()!=4
+        ||ForeignBodyBirths.Num()!=4||ForeignConfigurationBirths.Num()!=4)return false;
+    auto& D=P::FPrivateNativeStorageAccess::Part<FOriginalWheeledDomain>(Operation,this);
+    const SKinematic& ActualKinematic=Speed::NativeKinematics::FComponentRead::Current(Operation,*this);
+    if(D.SubBodies.Num()!=5||!HitboxBirth.IsValid()||!ForeignComponent->OriginalWheeledDomain)return false;
+    Out={};Out.Mode=FNativeOwnerBirthObservation::EMode::StoredTensorFixtureAndAbort;
+    D.CenterOfMass=FVector(13,17,-2);D.CenterOfMassOverride=FVector(7,-11,5);
+    D.bEnableCenterOfMassOverride=false;D.CarLocalInvI=FMatrix::Identity;D.CarLocalInvI.M[0][0]=19;
+    SKinematic AuthoredKinematic=ActualKinematic;
+    AuthoredKinematic.Location=FVector(-17,-23,29);AuthoredKinematic.Velocity=FVector(3,5,7);AuthoredKinematic.Acceleration=FVector(11,13,17);
+    AuthoredKinematic.AngularVelocity=FVector(0.1,0.2,0.3);AuthoredKinematic.AngularAcceleration=FVector(0.4,0.5,0.6);
+    Speed::NativeKinematics::FComponentWrite::Kinematic(Operation,*this,AuthoredKinematic); // named fresh-constructor fixture only
+    const SKinematic BeforePose=ActualKinematic;
+    auto& BoxBody=P::FPrivateNativeStorageAccess::Part<P::FPrivateRoadSubBodyValues>(Operation,HitboxBirth.Get());
+    const FRotator HitboxRotation(17,31,-23);BoxBody.LocalEulerRotation=HitboxRotation;
+    BoxBody.LocalPose.SetRotation(HitboxRotation.Quaternion());BoxBody.LocalPose.SetLocation(FVector(5,3,2));
+    if(!BoxBody.ParentComponent)++Out.InitialNullParents;
+    for(int32 Index=0;Index<4;++Index)
+    {
+        if(!BodyBirths[Index].IsValid()||!ConfigurationBirths[Index].IsValid()||!ActualReferenceBirths[Index].IsValid()
+            ||!ForeignBodyBirths[Index].IsValid()||!ForeignConfigurationBirths[Index].IsValid())return false;
+        // These eight real UObjects share Outer/class. Actual weak membership
+        // in the original cohort must distinguish the reference cohort.
+        if(ActualReferenceBirths[Index].Get()==ConfigurationBirths[Index].Get()
+            ||ActualReferenceBirths[Index].Get()->GetOuter()!=this
+            ||ActualReferenceBirths[Index].Get()->GetClass()!=ConfigurationBirths[Index].Get()->GetClass())return false;
+        auto& Body=P::FPrivateNativeStorageAccess::Part<P::FPrivateRoadSubBodyValues>(Operation,BodyBirths[Index].Get());
+        if(!Body.ParentComponent)++Out.InitialNullParents;
+        Body.LocalPose.SetLocation(FVector(21+Index*7,-31+Index*11,-9+Index));
+        auto& Wheel=P::FPrivateNativeStorageAccess::Part<P::FPrivateRoadWheelDomain>(Operation,BodyBirths[Index].Get());
+        Wheel.ChaosWheel=ConfigurationBirths[Index].Get(); // named initial constructor fixture
+    }
+    const auto CaptureComponent=[&](USpeedWheeledComponent& C,const SKinematic& OriginalKinematic,TArray<uint8>& Bytes)
+    {
+        if(!C.OriginalWheeledDomain)throw P::FPrivateNativeStorageUnavailable{};
+        const auto& Domain=*C.OriginalWheeledDomain;
+        B::Add(Bytes,Domain.SpeedCarOwner);B::Add(Bytes,Domain.CenterOfMass);B::Add(Bytes,Domain.CenterOfMassOverride);
+        B::Add(Bytes,bool(Domain.bEnableCenterOfMassOverride));B::Add(Bytes,Domain.CarLocalInvI);
+        B::Add(Bytes,OriginalKinematic);
+        B::Add(Bytes,Domain.HitboxSubBody);B::Add(Bytes,Domain.SkySimulation);B::Add(Bytes,Domain.VehicleSimulationPT.Get());
+        B::Add(Bytes,Domain.SubBodies.Num());for(auto* Body:Domain.SubBodies)B::Add(Bytes,Body);
+        B::Add(Bytes,Domain.WheelSubBodies.Num());for(const auto& Wheel:Domain.WheelSubBodies)B::Add(Bytes,Wheel);
+        B::Add(Bytes,Domain.Wheels.Num());for(const auto& Wheel:Domain.Wheels)B::Add(Bytes,Wheel);
+        // Ordinary facade values are also named witnesses for the foreign
+        // member-call control. Neither snapshot is imported as physical state.
+        B::Add(Bytes,C.SpeedCarOwnerWheeledDomainStorage());B::Add(Bytes,C.CenterOfMassWheeledDomainStorage());
+        B::Add(Bytes,C.BasePhysicsStateStorage().Kinematic);
+    };
+    const auto Capture=[&]()
+    {
+        TArray<uint8> Bytes;CaptureComponent(*this,ActualKinematic,Bytes);
+        // Fixed const borrow of the actual typed foreign root's six-field
+        // kinematic witness, supplied by its retaining factory context only.
+        // No issuer, mutable view, callback, storage or return of this borrow.
+        CaptureComponent(*ForeignComponent,ForeignOriginalKinematic,Bytes);
+        HitboxBirth.Get()->AppendEpisodeStateForTesting(Bytes);
+        for(int32 Index=0;Index<4;++Index)
+        {
+            BodyBirths[Index].Get()->AppendEpisodeStateForTesting(Bytes);
+            B::Add(Bytes,ConfigurationBirths[Index].Get()->SuspensionMaxRaise);B::Add(Bytes,ConfigurationBirths[Index].Get()->SuspensionMaxDrop);
+            B::Add(Bytes,ActualReferenceBirths[Index].Get()->SuspensionMaxRaise);B::Add(Bytes,ActualReferenceBirths[Index].Get()->SuspensionMaxDrop);
+        }
+        return Bytes;
+    };
+    auto& LastBody=P::FPrivateNativeStorageAccess::Part<P::FPrivateRoadSubBodyValues>(Operation,BodyBirths[3].Get());
+    const auto SavedTail=D.SubBodies[4];auto* const SavedParent=LastBody.ParentComponent;
+    auto* const SavedSimulation=D.SkySimulation;
+    for(int32 Case=0;Case<9;++Case)
+    {
+        TArray<TWeakObjectPtr<USWheelSubBody>> CandidateBodies;CandidateBodies.Append(BodyBirths.GetData(),BodyBirths.Num());
+        TArray<TWeakObjectPtr<UChaosVehicleWheel>> CandidateConfigurations;CandidateConfigurations.Append(ConfigurationBirths.GetData(),ConfigurationBirths.Num());
+        if(Case==3)CandidateBodies[3]=ForeignBodyBirths[3];
+        if(Case==4)CandidateConfigurations[3]=ForeignConfigurationBirths[3];
+        if(Case==5)CandidateConfigurations[3]=ActualReferenceBirths[3];
+        if(Case==6)D.SubBodies[4]=ForeignBodyBirths[3].Get();
+        if(Case==7)LastBody.ParentComponent=ForeignComponent;
+        if(Case==8)D.SkySimulation=ForeignSimulation;
+        const auto Before=Capture();bool Refused=false;
+        try
+        {
+            if(Case==1)ForeignComponent->InitializeOriginalOwnerFromCapturedPose(Operation,ActualActor,Rotation,Location,HitboxBirth,CandidateBodies,CandidateConfigurations);
+            else InitializeOriginalOwnerFromCapturedPose(Operation,Case==0?ForeignActor:ActualActor,Rotation,Location,
+                Case==2?ForeignHitbox:HitboxBirth,CandidateBodies,CandidateConfigurations);
+        }
+        catch(const P::FPrivateNativeStorageUnavailable&){Refused=true;}
+        const bool Unchanged=Before==Capture();D.SubBodies[4]=SavedTail;LastBody.ParentComponent=SavedParent;D.SkySimulation=SavedSimulation;
+        if(!Refused||!Unchanged)return false;
+        ++Out.Refusals; // actual refusal and named before/after equality only
+    }
+    Out.AllRefusalsBeforeWrite=true;
+    InitializeOriginalOwnerFromCapturedPose(Operation,ActualActor,Rotation,Location,HitboxBirth,BodyBirths,ConfigurationBirths,&Out);
+    Out.PositiveEntryReturned=true;
+    const auto& K=ActualKinematic;
+    Out.PoseAndCOMMatch=!Location.IsNearlyZero()&&!Rotation.Equals(FQuat::Identity)
+        &&D.SpeedCarOwner==Cast<ASpeedCar>(ActualActor)&&D.CenterOfMass==FVector(7,-11,5)
+        &&D.CenterOfMassOverride==D.CenterOfMass&&D.bEnableCenterOfMassOverride
+        &&K.Location==Location+Rotation.RotateVector(D.CenterOfMass)&&K.Rotation==Rotation
+        &&K.Velocity==BeforePose.Velocity&&K.Acceleration==BeforePose.Acceleration
+        &&K.AngularVelocity==BeforePose.AngularVelocity&&K.AngularAcceleration==BeforePose.AngularAcceleration;
+    const auto& Stored=P::FPrivateNativeStorageAccess::Part<P::FPrivateRoadSolidValues>(Operation,HitboxBirth.Get()).InvInertiaLocal;
+    const FMatrix R=FQuatRotationMatrix(BoxBody.LocalPose.GetRotation());const FMatrix Expected=R.GetTransposed()*Stored*R;
+    Out.StoredChassisTensorMatch=D.CarLocalInvI==Expected;
+    Out.StoredTensorDistinguished=Out.StoredTensorFixtureInstalled&&D.CarLocalInvI!=Stored
+        &&Stored!=Speed::NativeKinematics::FBodyRead::InitialInverseTensor(Operation,HitboxBirth.Get());
+    Out.ClearKeepsCanonicalConfigurations=D.Wheels.IsEmpty()&&!D.SkySimulation&&!D.VehicleSimulationPT;
+    const SKinematic Origin=Speed::NativeKinematics::FComponentRead::Origin(Operation,*this);Out.ChildrenMatch=true;
+    for(int32 Index=0;Index<5;++Index)
+    {
+        const USSubBody* Body=Index?static_cast<USSubBody*>(BodyBirths[Index-1].Get()):static_cast<USSubBody*>(HitboxBirth.Get());
+        const auto& Values=P::FPrivateNativeStorageAccess::Part<P::FPrivateRoadSubBodyValues>(Operation,Body);
+        const FVector Offset=Origin.Rotation.RotateVector(Values.LocalPose.GetLocation());
+        const FVector ExpectedLocation=Origin.Location+Offset;
+        const FVector BaseExpectedVelocity=Origin.Velocity+FVector::CrossProduct(Origin.AngularVelocity,Offset);
+        // The unchanged shared wheel program performs a second velocity write
+        // AFTER its base update, using world location minus parent location.
+        // Preserve that exact FP order in this diagnostic oracle; do not make
+        // the physical program use a mathematically equivalent base shortcut.
+        const FVector ExpectedVelocity=Index?Origin.Velocity+FVector::CrossProduct(
+            Origin.AngularVelocity,ExpectedLocation-Origin.Location):BaseExpectedVelocity;
+        if(Index&&ExpectedVelocity!=BaseExpectedVelocity&&Values.Kinematics.Velocity==ExpectedVelocity)
+            Out.WheelVelocityOrderDistinguished=true; // actual native wheel observation, not a tolerance
+        const FVector ExpectedAcceleration=Origin.Acceleration+FVector::CrossProduct(Origin.AngularAcceleration,Offset)
+            +FVector::CrossProduct(Origin.AngularVelocity,FVector::CrossProduct(Origin.AngularVelocity,Offset));
+        Out.ChildrenMatch=Out.ChildrenMatch&&Values.ParentComponent==static_cast<ISpeedComponent*>(this)
+            &&Values.Kinematics.Location==ExpectedLocation
+            &&Values.Kinematics.Velocity==ExpectedVelocity
+            &&Values.Kinematics.Acceleration==ExpectedAcceleration
+            &&Values.Kinematics.Rotation==Origin.Rotation*Values.LocalEulerRotation.Quaternion()
+            &&Values.Kinematics.AngularVelocity==Origin.AngularVelocity&&Values.Kinematics.AngularAcceleration==Origin.AngularAcceleration;
+        if(Index)
+        {
+            const auto& Wheel=P::FPrivateNativeStorageAccess::Part<P::FPrivateRoadWheelDomain>(Operation,BodyBirths[Index-1].Get());
+            Out.ClearKeepsCanonicalConfigurations=Out.ClearKeepsCanonicalConfigurations
+                &&Wheel.ChaosWheel==ConfigurationBirths[Index-1].Get()&&!Wheel.PWheel&&!Wheel.PSuspension;
+        }
+    }
+    return Out.InitializersReturned==5&&Out.InitialNullParents==5&&Out.PositiveEntryReturned&&Out.PoseAndCOMMatch
+        &&Out.ClearKeepsCanonicalConfigurations&&Out.StoredChassisTensorMatch&&Out.StoredTensorDistinguished&&Out.ChildrenMatch
+        &&Out.WheelVelocityOrderDistinguished;
+}
+
+bool USpeedWheeledComponent::ProbeNativeFirstOwnerStepRefusalForDiagnostics(
+    const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,AActor* ActualActor,
+    const TWeakObjectPtr<UBoxSubBody>& HitboxBirth,TConstArrayView<TWeakObjectPtr<USWheelSubBody>> BodyBirths,
+    TConstArrayView<TWeakObjectPtr<UChaosVehicleWheel>> ConfigurationBirths)
+{
+    namespace P=Speed::Netcode::Prediction;using B=Speed::FEpisodeStateBytesForTesting;
+    auto& D=P::FPrivateNativeStorageAccess::Part<FOriginalWheeledDomain>(Operation,this);
+    const SKinematic& ActualKinematic=Speed::NativeKinematics::FComponentRead::Current(Operation,*this);
+    const auto Capture=[&]()
+    {
+        TArray<uint8> Bytes;B::Add(Bytes,D.SpeedCarOwner);B::Add(Bytes,D.CenterOfMass);B::Add(Bytes,D.CenterOfMassOverride);
+        B::Add(Bytes,bool(D.bEnableCenterOfMassOverride));B::Add(Bytes,D.CarLocalInvI);B::Add(Bytes,ActualKinematic);
+        B::Add(Bytes,D.HitboxSubBody);for(auto* Body:D.SubBodies)B::Add(Bytes,Body);for(const auto& Wheel:D.WheelSubBodies)B::Add(Bytes,Wheel);
+        HitboxBirth.Get()->AppendEpisodeStateForTesting(Bytes);for(const auto& Born:BodyBirths)Born.Get()->AppendEpisodeStateForTesting(Bytes);
+        return Bytes;
+    };
+    const auto Before=Capture();bool Refused=false;
+    try{InitializeOriginalOwnerFromCapturedPose(Operation,ActualActor,FQuat::Identity,FVector(91,37,11),HitboxBirth,BodyBirths,ConfigurationBirths);}
+    catch(const P::FPrivateNativeStorageUnavailable&){Refused=true;}
+    return Refused&&Before==Capture();
+}
+#endif
 
 bool USpeedWheeledComponent::ValidateSimulationBindings(FString& OutReason) const
 {
-	const Chaos::FSimpleWheeledVehicle* Vehicle = SkySimulation ? SkySimulation->PVehicle.Get() : nullptr;
-	const int32 Count = WheelSubBodies.Num();
-	if (!Vehicle || Count <= 0 || Count > int32(UE_ARRAY_COUNT(WheeledPhysicsState.SuspensionLastDisplacement))
-		|| Count != WheelSetups.Num() || Count != Wheels.Num()
+	const Chaos::FSimpleWheeledVehicle* Vehicle = SkySimulationWheeledDomainStorage() ? SkySimulationWheeledDomainStorage()->PVehicle.Get() : nullptr;
+	const int32 Count = ReadWheelSubBodiesForPhysics().Num();
+	if (!Vehicle || Count <= 0 || Count > int32(UE_ARRAY_COUNT(WheeledPhysicsStateStorage().SuspensionLastDisplacement))
+		|| Count != WheelSetupsWheeledDomainStorage().Num() || Count != WheelsWheeledDomainStorage().Num()
 		|| Count != Vehicle->Wheels.Num() || Count != Vehicle->Suspension.Num())
 	{
 		OutReason = FString::Printf(
 			TEXT("component=%s ordinal=-1 idx=-1 vehicle=%p subbodies=%d setups=%d configurations=%d wheel_sims=%d suspension_sims=%d state_capacity=%d"),
-			*GetPathName(), Vehicle, Count, WheelSetups.Num(), Wheels.Num(),
+			*GetPathName(), Vehicle, Count, WheelSetupsWheeledDomainStorage().Num(), WheelsWheeledDomainStorage().Num(),
 			Vehicle ? Vehicle->Wheels.Num() : 0, Vehicle ? Vehicle->Suspension.Num() : 0,
-			int32(UE_ARRAY_COUNT(WheeledPhysicsState.SuspensionLastDisplacement)));
+			int32(UE_ARRAY_COUNT(WheeledPhysicsStateStorage().SuspensionLastDisplacement)));
 		return false;
 	}
 	for (int32 Ordinal = 0; Ordinal < Count; ++Ordinal)
 	{
-		const USWheelSubBody* Wheel = WheelSubBodies[Ordinal].Get();
+		const USWheelSubBody* Wheel = ReadWheelSubBodiesForPhysics()[Ordinal].Get();
 		const auto* ExpectedWheel = &Vehicle->Wheels[Ordinal];
 		const auto* ExpectedSuspension = &Vehicle->Suspension[Ordinal];
-		const UChaosVehicleWheel* ExpectedConfiguration = Wheels[Ordinal].Get();
-		if (!Wheel || Wheel->Idx() != Ordinal || Wheel->GetParentComponent() != this
-			|| !ExpectedConfiguration || !WheelSetups[Ordinal].WheelClass
-			|| Wheel->GetChaosWheelConfiguration() != ExpectedConfiguration
-			|| Wheel->GetWheelSim() != ExpectedWheel || Wheel->GetSuspensionSim() != ExpectedSuspension)
+		const UChaosVehicleWheel* ExpectedConfiguration = ReadWheelConfigurationForPhysics(Ordinal).Get();
+		if (!Wheel || Speed::NativeKinematics::FSolidPropertiesAccess::Idx(*Wheel) != Ordinal || Wheel->GetParentComponent() != this
+			|| !ExpectedConfiguration || !(UsesOriginalWheeledDomain()
+                ? Speed::NativeObjectRead::ResolvedOriginalClass(WheelSetupsWheeledDomainStorage()[Ordinal].WheelClass)==UChaosVehicleWheel::StaticClass()
+                : bool(WheelSetupsWheeledDomainStorage()[Ordinal].WheelClass))
+			|| Speed::NativeKinematics::FWheelBindingAccess::Configuration(*Wheel) != ExpectedConfiguration
+			|| Speed::NativeKinematics::FWheelBindingAccess::Wheel(*Wheel) != ExpectedWheel || Speed::NativeKinematics::FWheelBindingAccess::Suspension(*Wheel) != ExpectedSuspension)
 		{
 			OutReason = FString::Printf(
 				TEXT("component=%s ordinal=%d idx=%d body=%p parent=%p expected_parent=%p wheel=%p expected_wheel=%p suspension=%p expected_suspension=%p configuration=%p expected_configuration=%p"),
-				*GetPathName(), Ordinal, Wheel ? Wheel->Idx() : INDEX_NONE, Wheel,
+				*GetPathName(), Ordinal, Wheel ? Speed::NativeKinematics::FSolidPropertiesAccess::Idx(*Wheel) : INDEX_NONE, Wheel,
 				Wheel ? Wheel->GetParentComponent() : nullptr, static_cast<const ISpeedComponent*>(this),
-				Wheel ? Wheel->GetWheelSim() : nullptr, ExpectedWheel,
-				Wheel ? Wheel->GetSuspensionSim() : nullptr, ExpectedSuspension,
-				Wheel ? Wheel->GetChaosWheelConfiguration() : nullptr, ExpectedConfiguration);
+				Wheel ? Speed::NativeKinematics::FWheelBindingAccess::Wheel(*Wheel) : nullptr, ExpectedWheel,
+				Wheel ? Speed::NativeKinematics::FWheelBindingAccess::Suspension(*Wheel) : nullptr, ExpectedSuspension,
+				Wheel ? Speed::NativeKinematics::FWheelBindingAccess::Configuration(*Wheel) : nullptr, ExpectedConfiguration);
 			return false;
 		}
 	}
@@ -582,6 +1192,7 @@ bool USpeedWheeledComponent::ValidateSimulationBindings(FString& OutReason) cons
 
 void USpeedWheeledComponent::SetupVehicle(TUniquePtr<Chaos::FSimpleWheeledVehicle>& PVehicle)
 {
+    CheckOrdinaryComponentBindingEntry();
 	Super::SetupVehicle(PVehicle);
 	SetupSpeedSuspension(PVehicle);
 	// This is the first lifecycle point where the newly constructed vehicle
@@ -593,88 +1204,704 @@ void USpeedWheeledComponent::SetupVehicle(TUniquePtr<Chaos::FSimpleWheeledVehicl
 
 void USpeedWheeledComponent::BindWheelSimulationPointers()
 {
+    CheckOrdinaryComponentBindingEntry();
 	BindWheelSimulationPointers(
-		SkySimulation && SkySimulation->PVehicle
-			? SkySimulation->PVehicle.Get()
+		SkySimulationWheeledDomainStorage() && SkySimulationWheeledDomainStorage()->PVehicle
+			? SkySimulationWheeledDomainStorage()->PVehicle.Get()
 			: nullptr);
 }
 
-void USpeedWheeledComponent::BindWheelSimulationPointers(
-	Chaos::FSimpleWheeledVehicle* PVehicle)
+class USpeedWheeledComponent::FLegacyWheelBindingAccess final
+{
+    USpeedWheeledComponent& Owner;
+public:
+    explicit FLegacyWheelBindingAccess(USpeedWheeledComponent& Value):Owner(Value) {}
+    auto Bodies() const {return Owner.ReadWheelSubBodiesForPhysics();}
+    auto Configuration(int32 Index) const {return Owner.ReadWheelConfigurationForPhysics(Index);}
+    decltype(auto) Configurations() const {return (Owner.WheelsWheeledDomainStorage());}
+    void Clear() const {Owner.ClearWheelSimulationPointers();}
+    void SetIndex(USWheelSubBody& Body,int32 Index) const {Speed::NativeKinematics::FSolidPropertiesAccess::SetIdx(Body,Index);}
+    void BindConfiguration(USWheelSubBody& Body,UChaosVehicleWheel* Value) const {Speed::NativeKinematics::FWheelBindingAccess::BindChaosWheel(Body,Value);}
+    void BindWheel(USWheelSubBody& Body,Chaos::FSimpleWheelSim* Value) const {Speed::NativeKinematics::FWheelBindingAccess::BindWheel(Body,Value);}
+    void BindSuspension(USWheelSubBody& Body,Chaos::FSimpleSuspensionSim* Value) const {Speed::NativeKinematics::FWheelBindingAccess::BindSuspension(Body,Value);}
+};
+// Specific original factory binding entry; ordinary and Retirement routes remain separate.
+// These borrowed views are supplied only by the actual factory's existing birth
+// weak identities, under its genuine retained operation. No permission boolean,
+// synthetic root or source/lifetime/complete-state claim is supplied.
+class USpeedWheeledComponent::FNativeWheelBindingAccess final
+{
+    USpeedWheeledComponent& Owner;
+    const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation;
+    Chaos::FSimpleWheeledVehicle* const OriginalAllocation;
+    const TConstArrayView<TWeakObjectPtr<USWheelSubBody>> BodyBirths;
+    const TConstArrayView<TWeakObjectPtr<UChaosVehicleWheel>> ConfigurationBirths;
+    FOriginalWheeledDomain& Actual() const
+    {return Speed::Netcode::Prediction::FPrivateNativeStorageAccess::Part<FOriginalWheeledDomain>(Operation,&Owner);}
+    void CheckRoster() const
+    {
+        const auto& D=Actual();
+        if(!D.SkySimulation||!D.VehicleSimulationPT
+            ||D.VehicleSimulationPT.Get()!=D.SkySimulation
+            ||!OriginalAllocation||D.SkySimulation->PVehicle.Get()!=OriginalAllocation)
+            throw Speed::Netcode::Prediction::FPrivateNativeStorageUnavailable{};
+        // Compare the incoming vehicle with the actual owner's unique allocation
+        // BEFORE dereferencing it. The private factory authors a complete roster;
+        // legacy partial/null/tail behavior stays in the unchanged shared body.
+        if(BodyBirths.Num()<=0||D.WheelSubBodies.Num()!=BodyBirths.Num()
+            ||D.Wheels.Num()!=ConfigurationBirths.Num()||ConfigurationBirths.Num()!=BodyBirths.Num()
+            ||OriginalAllocation->Wheels.Num()!=BodyBirths.Num()
+            ||OriginalAllocation->Suspension.Num()!=BodyBirths.Num())
+            throw Speed::Netcode::Prediction::FPrivateNativeStorageUnavailable{};
+        const auto& Configuration=Speed::Netcode::Prediction::FPrivateNativeStorageAccess::Part<
+            Speed::Netcode::Prediction::RetirementDraft::FVehicleConfiguration>(Operation,&Owner);
+        for(int32 Index=0;Index<BodyBirths.Num();++Index)
+        {
+            if(!BodyBirths[Index].IsValid()||!ConfigurationBirths[Index].IsValid()
+                ||!Speed::NativeObjectRead::MatchesOriginalBirth(D.WheelSubBodies[Index],BodyBirths[Index])
+                ||!Speed::NativeObjectRead::MatchesOriginalBirth(D.Wheels[Index],ConfigurationBirths[Index])
+                ||OriginalAllocation->Wheels[Index].SetupPtr!=&Configuration.Wheel
+                ||OriginalAllocation->Suspension[Index].SetupPtr!=&Configuration.Suspension)
+                throw Speed::Netcode::Prediction::FPrivateNativeStorageUnavailable{};
+            const auto& Body=*BodyBirths[Index].Get();
+            if(Speed::NativeKinematics::FBodyRead::Parent(Operation,Body)!=static_cast<ISpeedComponent*>(&Owner))
+                throw Speed::Netcode::Prediction::FPrivateNativeStorageUnavailable{};
+            // Acquire/check every actual backing part for every wheel before the
+            // first index, pointed configuration, simulator or pointer write.
+            (void)Speed::NativeKinematics::FSolidPropertiesAccess::Idx(Operation,Body);
+            (void)Speed::NativeKinematics::FSolidMassAccess::Read(Operation,Body);
+            (void)Speed::NativeKinematics::FWheelBindingAccess::Configuration(Operation,Body);
+            (void)Speed::NativeKinematics::FWheelBindingAccess::Wheel(Operation,Body);
+            (void)Speed::NativeKinematics::FWheelBindingAccess::Suspension(Operation,Body);
+        }
+    }
+    int32 OwnIndex(const USWheelSubBody& Body) const
+    {
+        CheckRoster();
+        for(int32 Index=0;Index<BodyBirths.Num();++Index)
+            if(BodyBirths[Index].Get()==&Body)return Index;
+        throw Speed::Netcode::Prediction::FPrivateNativeStorageUnavailable{};
+    }
+public:
+    FNativeWheelBindingAccess(USpeedWheeledComponent& Value,
+        const Speed::Netcode::Prediction::FPrivateNativeOperation& ActualOperation,
+        Chaos::FSimpleWheeledVehicle* ActualAllocation,
+        TConstArrayView<TWeakObjectPtr<USWheelSubBody>> ActualBodyBirths,
+        TConstArrayView<TWeakObjectPtr<UChaosVehicleWheel>> ActualConfigurationBirths)
+      :Owner(Value),Operation(ActualOperation),OriginalAllocation(ActualAllocation),
+       BodyBirths(ActualBodyBirths),ConfigurationBirths(ActualConfigurationBirths)
+    {
+        Speed::Netcode::Prediction::FPrivateNativeStorageAccess::RequireBirth(Operation);
+        CheckRoster(); // ALL subjects before shared body's first log or write
+    }
+    FNativeWheelBindingAccess(const FNativeWheelBindingAccess&)=delete;
+    FNativeWheelBindingAccess& operator=(const FNativeWheelBindingAccess&)=delete;
+    FNativeWheelBindingAccess(FNativeWheelBindingAccess&&)=delete;
+    FNativeWheelBindingAccess& operator=(FNativeWheelBindingAccess&&)=delete;
+    auto Bodies() const
+    {return Speed::NativeObjectRead::TView<USWheelSubBody>{Actual().WheelSubBodies,true};}
+    auto Configuration(int32 Index) const
+    {return Speed::NativeObjectRead::TRead<UChaosVehicleWheel>{Actual().Wheels[Index],true};}
+    decltype(auto) Configurations() const {return (Actual().Wheels);}
+    void Clear() const
+    {
+        // The specific private Birth entry accepts its non-null actual owned
+        // allocation only. It cannot select shared body's null-vehicle route.
+        // Ordinary Clear and real Retirement unbinding stay unchanged.
+        throw Speed::Netcode::Prediction::FPrivateNativeStorageUnavailable{};
+    }
+    void SetIndex(USWheelSubBody& Body,int32 Index) const
+    {
+        if(OwnIndex(Body)!=Index)throw Speed::Netcode::Prediction::FPrivateNativeStorageUnavailable{};
+        Speed::NativeKinematics::FSolidPropertiesAccess::SetIdx(Operation,Body,Index);
+    }
+    void BindConfiguration(USWheelSubBody& Body,UChaosVehicleWheel* Value) const
+    {
+        const auto Index=OwnIndex(Body);
+        if(ConfigurationBirths[Index].Get()!=Value)throw Speed::Netcode::Prediction::FPrivateNativeStorageUnavailable{};
+        Speed::NativeKinematics::FWheelBindingAccess::BindChaosWheel(Operation,Body,Value);
+    }
+    void BindWheel(USWheelSubBody& Body,Chaos::FSimpleWheelSim* Value) const
+    {
+        const auto Index=OwnIndex(Body);
+        if(&OriginalAllocation->Wheels[Index]!=Value)throw Speed::Netcode::Prediction::FPrivateNativeStorageUnavailable{};
+        Speed::NativeKinematics::FWheelBindingAccess::BindWheel(Operation,Body,Value);
+    }
+    void BindSuspension(USWheelSubBody& Body,Chaos::FSimpleSuspensionSim* Value) const
+    {
+        const auto Index=OwnIndex(Body);
+        if(&OriginalAllocation->Suspension[Index]!=Value)throw Speed::Netcode::Prediction::FPrivateNativeStorageUnavailable{};
+        Speed::NativeKinematics::FWheelBindingAccess::BindSuspension(Operation,Body,Value);
+    }
+};
+
+// Actual reference Birth uses the existing shared binding program, with a
+// separately retained, immutable allocation witness and explicit facade writes.
+// Same component address/type is NOT sufficient to select this backend.
+class USpeedWheeledComponent::FReferenceWheelBindingAccess final
+{
+    using FProof=Speed::Netcode::Prediction::FPrivateReferenceWheelBindingBirth;
+    USpeedWheeledComponent& Owner;
+    const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation;
+    const FProof& Proof;
+    Chaos::FSimpleWheeledVehicle* const RequestedVehicle;
+    const TConstArrayView<TWeakObjectPtr<USWheelSubBody>> RequestedBodies;
+    const TConstArrayView<TWeakObjectPtr<UChaosVehicleWheel>> RequestedConfigurations;
+    void CheckRoster() const
+    {
+        namespace P=Speed::Netcode::Prediction;
+        P::FPrivateNativeStorageAccess::RequireBirthRoot(Operation,Proof.ActualRoot);
+        // Weak/serial read BEFORE dereferencing the owner from the caller.
+        if(Proof.Component.Get()!=&Owner||!Proof.Actor.IsValid()
+            ||Owner.HasAnyFlags(RF_BeginDestroyed|RF_FinishDestroyed)
+            ||Owner.GetOwner()!=Proof.Actor.Get()
+            ||Owner.GetClass()!=USpeedBranchWheeledComponent::StaticClass())
+            throw P::FPrivateNativeStorageUnavailable{};
+        const auto& Original=P::FPrivateNativeStorageAccess::Part<FOriginalWheeledDomain>(Operation,&Owner);
+        const auto& Births=P::FPrivateNativeStorageAccess::Part<P::FPrivateRoadBirthIdentities>(Operation,&Owner);
+        const auto& NativeConfiguration=P::FPrivateNativeStorageAccess::Part<P::RetirementDraft::FVehicleConfiguration>(Operation,&Owner);
+        // These are actual legacy/reference cells, NOT the ambient selectors.
+        if(!Proof.Vehicle||!Proof.Simulation||!Owner.SkySimulation||!Owner.VehicleSimulationPT
+            ||static_cast<const void*>(Owner.SkySimulation)!=Proof.Simulation
+            ||Owner.VehicleSimulationPT.Get()!=Owner.SkySimulation
+            ||Owner.SkySimulation->PVehicle.Get()!=Proof.Vehicle
+            ||RequestedVehicle!=Proof.Vehicle||!Proof.Configuration
+            ||Proof.Configuration.get()==&NativeConfiguration
+            ||Original.SkySimulation==Owner.SkySimulation
+            ||(Original.SkySimulation&&Original.SkySimulation->PVehicle.Get()==Proof.Vehicle)
+            ||Births.Actor!=Proof.Actor||Births.Component!=Proof.Component)
+            throw P::FPrivateNativeStorageUnavailable{};
+        if(Original.SkySimulation&&Original.SkySimulation->PVehicle)
+        {
+            const auto* OriginalVehicle=Original.SkySimulation->PVehicle.Get();
+            if(OriginalVehicle==Proof.Vehicle||OriginalVehicle->Wheels.GetData()==Proof.WheelBase
+                ||OriginalVehicle->Suspension.GetData()==Proof.SuspensionBase)
+                throw P::FPrivateNativeStorageUnavailable{};
+        }
+        // Capture was before Init; now attest the actual transferred allocation
+        // AND unchanged element allocations/counts. No supplied pointer admits itself.
+        if(Proof.WheelCount!=4||Proof.SuspensionCount!=4||Proof.Bodies.Num()!=4||Proof.Configurations.Num()!=4
+            ||RequestedBodies.Num()!=4||RequestedConfigurations.Num()!=4
+            ||Owner.WheelSubBodies.Num()!=4||Owner.Wheels.Num()!=4
+            ||Births.WheelBodies.Num()!=4||Births.WheelConfigurations.Num()!=4
+            ||Proof.Vehicle->Wheels.Num()!=Proof.WheelCount||Proof.Vehicle->Suspension.Num()!=Proof.SuspensionCount
+            ||Proof.Vehicle->Wheels.GetData()!=Proof.WheelBase||Proof.Vehicle->Suspension.GetData()!=Proof.SuspensionBase)
+            throw P::FPrivateNativeStorageUnavailable{};
+        for(int32 Index=0;Index<4;++Index)
+        {
+            if(!Proof.Bodies[Index].IsValid()||!Proof.Configurations[Index].IsValid()
+                ||RequestedBodies[Index]!=Proof.Bodies[Index]||RequestedConfigurations[Index]!=Proof.Configurations[Index]
+                ||Births.WheelBodies[Index]!=Proof.Bodies[Index]
+                ||Births.WheelConfigurations[Index]==Proof.Configurations[Index]
+                ||!Speed::NativeObjectRead::MatchesOriginalBirth(Owner.WheelSubBodies[Index],Proof.Bodies[Index])
+                ||!Speed::NativeObjectRead::MatchesOriginalBirth(Owner.Wheels[Index],Proof.Configurations[Index])
+                ||Proof.Configurations[Index]->GetOuter()!=&Owner
+                ||Proof.Configurations[Index]->HasAnyFlags(RF_BeginDestroyed|RF_FinishDestroyed)
+                ||Proof.Vehicle->Wheels[Index].SetupPtr!=&Proof.Configuration->Wheel
+                ||Proof.Vehicle->Suspension[Index].SetupPtr!=&Proof.Configuration->Suspension)
+                throw P::FPrivateNativeStorageUnavailable{};
+            auto* Body=Cast<USpeedBranchWheelSubBody>(Proof.Bodies[Index].Get());
+            if(!Body)throw P::FPrivateNativeStorageUnavailable{};
+            Body->ValidateReferenceWheelBindingBirth(Operation,static_cast<ISpeedComponent*>(&Owner),
+                static_cast<ISpeedWheeledComponent*>(&Owner));
+        }
+    }
+    int32 OwnIndex(const USWheelSubBody& Body) const
+    {
+        CheckRoster(); // includes last element before EVERY effect
+        for(int32 Index=0;Index<4;++Index)if(Proof.Bodies[Index].Get()==&Body)return Index;
+        throw Speed::Netcode::Prediction::FPrivateNativeStorageUnavailable{};
+    }
+public:
+    FReferenceWheelBindingAccess(USpeedWheeledComponent& Value,
+        const Speed::Netcode::Prediction::FPrivateNativeOperation& ActualOperation,const FProof& ActualProof,
+        Chaos::FSimpleWheeledVehicle* Candidate,
+        TConstArrayView<TWeakObjectPtr<USWheelSubBody>> CandidateBodies,
+        TConstArrayView<TWeakObjectPtr<UChaosVehicleWheel>> CandidateConfigurations)
+      :Owner(Value),Operation(ActualOperation),Proof(ActualProof),RequestedVehicle(Candidate),
+       RequestedBodies(CandidateBodies),RequestedConfigurations(CandidateConfigurations) {CheckRoster();}
+    FReferenceWheelBindingAccess(const FReferenceWheelBindingAccess&)=delete;
+    FReferenceWheelBindingAccess& operator=(const FReferenceWheelBindingAccess&)=delete;
+    auto Bodies() const {return RequestedBodies;}
+    auto Configurations() const {return RequestedConfigurations;}
+    auto Configuration(int32 Index) const {return RequestedConfigurations[Index];}
+    void Clear() const {throw Speed::Netcode::Prediction::FPrivateNativeStorageUnavailable{};}
+    void SetIndex(USWheelSubBody& Body,int32 Index) const
+    {
+        if(OwnIndex(Body)!=Index)throw Speed::Netcode::Prediction::FPrivateNativeStorageUnavailable{};
+        Body.SetIdx(Index); // final native subtype's explicit facade index
+    }
+    void BindConfiguration(USWheelSubBody& Body,UChaosVehicleWheel* Value) const
+    {
+        const auto Index=OwnIndex(Body);
+        if(Proof.Configurations[Index].Get()!=Value)throw Speed::Netcode::Prediction::FPrivateNativeStorageUnavailable{};
+        Body.SetChaosWheel(Value); // final explicit facade hook; target already attested
+    }
+    void BindWheel(USWheelSubBody& Body,Chaos::FSimpleWheelSim* Value) const
+    {
+        const auto Index=OwnIndex(Body);
+        if(&Proof.Vehicle->Wheels[Index]!=Value)throw Speed::Netcode::Prediction::FPrivateNativeStorageUnavailable{};
+        Body.SetWheelSim(Value);
+    }
+    void BindSuspension(USWheelSubBody& Body,Chaos::FSimpleSuspensionSim* Value) const
+    {
+        const auto Index=OwnIndex(Body);
+        if(&Proof.Vehicle->Suspension[Index]!=Value)throw Speed::Netcode::Prediction::FPrivateNativeStorageUnavailable{};
+        Body.SetSuspensionSim(Value);
+    }
+};
+
+void USpeedWheeledComponent::BindReferenceWheelSimulationPointersBirth(
+ const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,
+ const Speed::Netcode::Prediction::FPrivateReferenceWheelBindingBirth& Proof,
+ Chaos::FSimpleWheeledVehicle* RequestedVehicle,
+ TConstArrayView<TWeakObjectPtr<USWheelSubBody>> RequestedBodies,
+ TConstArrayView<TWeakObjectPtr<UChaosVehicleWheel>> RequestedConfigurations)
+{
+    FReferenceWheelBindingAccess Storage(*this,Operation,Proof,RequestedVehicle,RequestedBodies,RequestedConfigurations);
+    BindWheelSimulationPointersBody(Storage,RequestedVehicle);
+}
+
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+bool USpeedWheeledComponent::ProbeReferenceWheelBindingsBirthForDiagnostics(
+ const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,
+ const Speed::Netcode::Prediction::FPrivateReferenceWheelBindingBirth& Proof,
+ USpeedWheeledComponent& ForeignComponent,USWheelSubBody* ForeignBody,
+ Chaos::FSimpleWheeledVehicle* ForeignVehicle,Chaos::FSimpleWheelSim* ForeignWheel,
+ Chaos::FSimpleSuspensionSim* ForeignSuspension,UChaosVehicleWheel* ForeignConfiguration,
+ FNativeWheelBindingDiagnostics& Out)
+{
+    namespace P=Speed::Netcode::Prediction;Out={};
+    P::FPrivateNativeStorageAccess::RequireBirthRoot(Operation,Proof.ActualRoot);
+    if(!ForeignBody||!ForeignVehicle||!ForeignWheel||!ForeignSuspension||!ForeignConfiguration)return false;
+    FReferenceWheelBindingAccess Initial(*this,Operation,Proof,Proof.Vehicle,Proof.Bodies,Proof.Configurations);
+    const auto& Original=P::FPrivateNativeStorageAccess::Part<FOriginalWheeledDomain>(Operation,this);
+    const auto& Births=P::FPrivateNativeStorageAccess::Part<P::FPrivateRoadBirthIdentities>(Operation,this);
+    if(!Original.SkySimulation||!Original.SkySimulation->PVehicle||Original.SkySimulation->PVehicle->Wheels.Num()!=4)return false;
+    auto* const OriginalVehicle=Original.SkySimulation->PVehicle.Get();
+    struct FCell
+    {
+        USpeedBranchWheelSubBody* Body;
+        USpeedBranchWheelSubBody::FReferenceBindingFixtureValues Authored;
+        int32 FacadeIndex,NativeIndex;
+        float FacadeMass,NativeMass,ReferenceSimMass,OriginalSimMass,Raise,Drop;
+        const UChaosVehicleWheel* Configuration;
+        const Chaos::FSimpleWheelSim* Wheel;
+        const Chaos::FSimpleSuspensionSim* Suspension;
+    };
+    TArray<FCell,TInlineAllocator<4>> Saved;
+    for(int32 Index=0;Index<4;++Index)
+    {
+        auto* Body=Cast<USpeedBranchWheelSubBody>(Proof.Bodies[Index].Get());if(!Body)return false;
+        const auto& Solid=P::FPrivateNativeStorageAccess::Part<P::FPrivateRoadSolidValues>(Operation,Body);
+        const auto* Config=Proof.Configurations[Index].Get();
+        Saved.Add({Body,Body->ReadReferenceBindingFixtureForDiagnostics(Operation),Body->Idx(),Solid.idx,
+            Body->GetMass(),Solid.Mass,Proof.Vehicle->Wheels[Index].MassPerWheel,OriginalVehicle->Wheels[Index].MassPerWheel,
+            Config->SuspensionMaxRaise,Config->SuspensionMaxDrop,Body->GetChaosWheelConfiguration(),Body->GetWheelSim(),Body->GetSuspensionSim()});
+    }
+    // Restore named temporary fixture fields only. This is not an authoritative
+    // checkpoint, complete rollback provider or a claim about hidden state.
+    ON_SCOPE_EXIT
+    {
+        for(int32 Index=0;Index<4;++Index)
+        {
+            const auto& S=Saved[Index];
+            S.Body->WriteReferenceBindingFixtureForDiagnostics(Operation,S.Authored);
+            S.Body->SetIdx(S.FacadeIndex);
+            S.Body->SetChaosWheel(const_cast<UChaosVehicleWheel*>(S.Configuration));
+            S.Body->SetWheelSim(const_cast<Chaos::FSimpleWheelSim*>(S.Wheel));
+            S.Body->SetSuspensionSim(const_cast<Chaos::FSimpleSuspensionSim*>(S.Suspension));
+            S.Body->SetMass(S.FacadeMass);
+            auto* Config=Proof.Configurations[Index].Get();Config->SuspensionMaxRaise=S.Raise;Config->SuspensionMaxDrop=S.Drop;
+            Proof.Vehicle->Wheels[Index].MassPerWheel=S.ReferenceSimMass;OriginalVehicle->Wheels[Index].MassPerWheel=S.OriginalSimMass;
+            auto& Solid=P::FPrivateNativeStorageAccess::Part<P::FPrivateRoadSolidValues>(Operation,S.Body);
+            Solid.idx=S.NativeIndex;Solid.Mass=S.NativeMass;
+        }
+    };
+    const float Masses[]={3.f,7.f,11.f,13.f},Raises[]={14.f,-1.f,25.f,-1.f},Drops[]={26.f,27.f,-1.f,-1.f};
+    const auto Prime=[&]()
+    {
+        for(int32 Index=0;Index<4;++Index)
+        {
+            const auto& S=Saved[Index];auto Values=S.Authored;
+            Values.Mass=Masses[Index];Values.Raise=Raises[Index];Values.Drop=Drops[Index];
+            S.Body->WriteReferenceBindingFixtureForDiagnostics(Operation,Values);
+            S.Body->SetIdx(60+Index);S.Body->SetChaosWheel(nullptr);S.Body->SetWheelSim(nullptr);S.Body->SetSuspensionSim(nullptr);S.Body->SetMass(90.f+Index);
+            Proof.Vehicle->Wheels[Index].MassPerWheel=1000.f+Index;OriginalVehicle->Wheels[Index].MassPerWheel=600.f+Index;
+            auto* Config=Proof.Configurations[Index].Get();Config->SuspensionMaxRaise=111.f+Index;Config->SuspensionMaxDrop=211.f+Index;
+            auto& Solid=P::FPrivateNativeStorageAccess::Part<P::FPrivateRoadSolidValues>(Operation,S.Body);Solid.idx=80+Index;Solid.Mass=110.f+Index;
+        }
+    };
+    const auto Capture=[&]()
+    {
+        TArray<uint8> Bytes;using B=Speed::FEpisodeStateBytesForTesting;
+        for(int32 Index=0;Index<4;++Index)
+        {
+            const auto* Body=Saved[Index].Body;const auto V=Body->ReadReferenceBindingFixtureForDiagnostics(Operation);
+            B::Add(Bytes,Body->Idx());B::Add(Bytes,Body->GetMass());B::Add(Bytes,Body->GetChaosWheelConfiguration());B::Add(Bytes,Body->GetWheelSim());B::Add(Bytes,Body->GetSuspensionSim());
+            B::Add(Bytes,V.Mass);B::Add(Bytes,V.Raise);B::Add(Bytes,V.Drop);B::Add(Bytes,V.Parent);B::Add(Bytes,V.WheelParent);
+            const auto& Solid=P::FPrivateNativeStorageAccess::Part<P::FPrivateRoadSolidValues>(Operation,Body);
+            const auto& Wheel=P::FPrivateNativeStorageAccess::Part<P::FPrivateRoadWheelDomain>(Operation,Body);
+            B::Add(Bytes,Solid.idx);B::Add(Bytes,Solid.Mass);B::Add(Bytes,Wheel.PWheel);B::Add(Bytes,Wheel.PSuspension);B::Add(Bytes,Wheel.ChaosWheel);
+            B::Add(Bytes,Proof.Vehicle->Wheels[Index].MassPerWheel);B::Add(Bytes,OriginalVehicle->Wheels[Index].MassPerWheel);
+            const auto* Config=Proof.Configurations[Index].Get();const auto* NativeConfig=Births.WheelConfigurations[Index].Get();
+            B::Add(Bytes,Config->SuspensionMaxRaise);B::Add(Bytes,Config->SuspensionMaxDrop);B::Add(Bytes,NativeConfig->SuspensionMaxRaise);B::Add(Bytes,NativeConfig->SuspensionMaxDrop);
+        }
+        B::Add(Bytes,ForeignWheel->MassPerWheel);B::Add(Bytes,ForeignConfiguration->SuspensionMaxRaise);B::Add(Bytes,ForeignConfiguration->SuspensionMaxDrop);
+        return Bytes;
+    };
+    Out.AllRefusalsBeforeWrite=true;
+    for(int32 Case=0;Case<16;++Case)
+    {
+        Prime();auto Bodies=Proof.Bodies;auto Configurations=Proof.Configurations;
+        if(Case==2)Bodies[0]=ForeignBody;
+        if(Case==3)Bodies[3]=ForeignBody;
+        if(Case==4)Configurations[0]=ForeignConfiguration;
+        if(Case==5)Configurations[3]=Births.WheelConfigurations[3];
+        if(Case==6)Bodies.SetNum(3);
+        if(Case==7)Configurations.SetNum(3);
+        if(Case==13||Case==14)
+        {
+            auto V=Saved[0].Body->ReadReferenceBindingFixtureForDiagnostics(Operation);
+            if(Case==13)V.Parent=static_cast<ISpeedComponent*>(&ForeignComponent);
+            else V.WheelParent=static_cast<ISpeedWheeledComponent*>(&ForeignComponent);
+            Saved[0].Body->WriteReferenceBindingFixtureForDiagnostics(Operation,V);
+        }
+        const auto Before=Capture();bool Refused=false;
+        try
+        {
+            if(Case==0)BindReferenceWheelSimulationPointersBirth(Operation,Proof,ForeignVehicle,Bodies,Configurations);
+            else if(Case==1)BindReferenceWheelSimulationPointersBirth(Operation,Proof,OriginalVehicle,Bodies,Configurations);
+            else if((Case>=2&&Case<=7)||Case==13||Case==14)BindReferenceWheelSimulationPointersBirth(Operation,Proof,Proof.Vehicle,Bodies,Configurations);
+            else if(Case==15)ForeignComponent.BindReferenceWheelSimulationPointersBirth(Operation,Proof,Proof.Vehicle,Bodies,Configurations);
+            else
+            {
+                FReferenceWheelBindingAccess Access(*this,Operation,Proof,Proof.Vehicle,Proof.Bodies,Proof.Configurations);
+                if(Case==8)Access.BindWheel(*Saved[0].Body,ForeignWheel);
+                if(Case==9)Access.BindWheel(*Saved[0].Body,&OriginalVehicle->Wheels[0]);
+                if(Case==10)Access.BindSuspension(*Saved[0].Body,&OriginalVehicle->Suspension[0]);
+                if(Case==11)Access.BindConfiguration(*Saved[0].Body,ForeignConfiguration);
+                if(Case==12)Access.SetIndex(*Saved[0].Body,3);
+            }
+        }
+        catch(const P::FPrivateNativeStorageUnavailable&) {Refused=true;++Out.Refusals;}
+        Out.AllRefusalsBeforeWrite=Out.AllRefusalsBeforeWrite&&Before==Capture();
+        if(!Refused||!Out.AllRefusalsBeforeWrite)return false;
+    }
+    const auto CaptureNamedOriginalAndForeignFootprint=[&]()
+    {
+        TArray<uint8> Bytes;using B=Speed::FEpisodeStateBytesForTesting;
+        for(int32 Index=0;Index<4;++Index)
+        {
+            const auto* Body=Saved[Index].Body;
+            const auto& Solid=P::FPrivateNativeStorageAccess::Part<P::FPrivateRoadSolidValues>(Operation,Body);
+            const auto& Wheel=P::FPrivateNativeStorageAccess::Part<P::FPrivateRoadWheelDomain>(Operation,Body);
+            const auto* Config=Births.WheelConfigurations[Index].Get();
+            B::Add(Bytes,Solid.idx);B::Add(Bytes,Solid.Mass);
+            B::Add(Bytes,Wheel.PWheel);B::Add(Bytes,Wheel.PSuspension);B::Add(Bytes,Wheel.ChaosWheel);
+            B::Add(Bytes,OriginalVehicle->Wheels[Index].MassPerWheel);
+            B::Add(Bytes,Config->SuspensionMaxRaise);B::Add(Bytes,Config->SuspensionMaxDrop);
+        }
+        B::Add(Bytes,ForeignWheel->MassPerWheel);B::Add(Bytes,ForeignConfiguration->SuspensionMaxRaise);B::Add(Bytes,ForeignConfiguration->SuspensionMaxDrop);
+        return Bytes; // named footprint ONLY, not all original/hidden state
+    };
+    Prime();const auto NamedOriginalBeforePositive=CaptureNamedOriginalAndForeignFootprint();
+    BindReferenceWheelSimulationPointersBirth(Operation,Proof,Proof.Vehicle,Proof.Bodies,Proof.Configurations);++Out.PositiveEntryReturns;
+    Out.PositiveValuesMatch=NamedOriginalBeforePositive==CaptureNamedOriginalAndForeignFootprint();Out.OverridePredicatesMatch=true;
+    for(int32 Index=0;Index<4;++Index)
+    {
+        const auto* Body=Saved[Index].Body;const auto& Solid=P::FPrivateNativeStorageAccess::Part<P::FPrivateRoadSolidValues>(Operation,Body);
+        const auto* Config=Proof.Configurations[Index].Get();
+        Out.PositiveValuesMatch=Out.PositiveValuesMatch&&Body->Idx()==Index&&Body->GetMass()==Masses[Index]
+            &&Body->GetWheelSim()==&Proof.Vehicle->Wheels[Index]&&Body->GetSuspensionSim()==&Proof.Vehicle->Suspension[Index]
+            &&Body->GetChaosWheelConfiguration()==Config&&Proof.Vehicle->Wheels[Index].MassPerWheel==Masses[Index]
+            &&Solid.idx==80+Index&&Solid.Mass==110.f+Index&&OriginalVehicle->Wheels[Index].MassPerWheel==600.f+Index;
+        const bool Override=Raises[Index]>=0.f&&Drops[Index]>=0.f;
+        Out.OverridePredicatesMatch=Out.OverridePredicatesMatch&&Config->SuspensionMaxRaise==(Override?Raises[Index]:111.f+Index)
+            &&Config->SuspensionMaxDrop==(Override?Drops[Index]:211.f+Index);
+    }
+    return Out.Refusals==16&&Out.AllRefusalsBeforeWrite&&Out.PositiveEntryReturns==1&&Out.PositiveValuesMatch&&Out.OverridePredicatesMatch;
+}
+#endif
+
+template<class TAccess>
+void USpeedWheeledComponent::BindWheelSimulationPointersBody(TAccess& Storage,Chaos::FSimpleWheeledVehicle* PVehicle)
 {
 	if (!PVehicle)
 	{
-		ClearWheelSimulationPointers();
+		Storage.Clear();
 		return;
 	}
 
 	const int32 NumBindings = FMath::Min3(
-		WheelSubBodies.Num(),
+		Storage.Bodies().Num(),
 		PVehicle->Wheels.Num(),
 		PVehicle->Suspension.Num());
-	UE_LOG(LogTemp, Display, TEXT("[WheelSuspensionBinding] subbodies=%d vehicle_wheels=%d vehicle_suspensions=%d bindings=%d component_wheels=%d"),
-		WheelSubBodies.Num(), PVehicle->Wheels.Num(),
-		PVehicle->Suspension.Num(), NumBindings, Wheels.Num());
+	SPEED_NATIVE_LOG(LogTemp, Display, TEXT("[WheelSuspensionBinding] subbodies=%d vehicle_wheels=%d vehicle_suspensions=%d bindings=%d component_wheels=%d"),
+		Storage.Bodies().Num(), PVehicle->Wheels.Num(),
+		PVehicle->Suspension.Num(), NumBindings, Storage.Configurations().Num());
 	// This message describes ordinary setup, including the earlier stage where
 	// Chaos storage exists before component wheel configurations. Only an actual
 	// storage-count mismatch is a warning; canonical admission still validates
 	// every final index/pointer/configuration without relaxation.
-	if (WheelSubBodies.Num() <= 0 || PVehicle->Wheels.Num() != WheelSubBodies.Num()
-		|| PVehicle->Suspension.Num() != WheelSubBodies.Num())
+	if (Storage.Bodies().Num() <= 0 || PVehicle->Wheels.Num() != Storage.Bodies().Num()
+		|| PVehicle->Suspension.Num() != Storage.Bodies().Num())
 	{
-		UE_LOG(LogTemp, Warning, TEXT("[WheelSuspensionBindingIncomplete] subbodies=%d vehicle_wheels=%d vehicle_suspensions=%d"),
-			WheelSubBodies.Num(), PVehicle->Wheels.Num(), PVehicle->Suspension.Num());
+		SPEED_NATIVE_LOG(LogTemp, Warning, TEXT("[WheelSuspensionBindingIncomplete] subbodies=%d vehicle_wheels=%d vehicle_suspensions=%d"),
+			Storage.Bodies().Num(), PVehicle->Wheels.Num(), PVehicle->Suspension.Num());
 	}
-	for (int32 WheelIdx = 0; WheelIdx < WheelSubBodies.Num(); ++WheelIdx)
+	for (int32 WheelIdx = 0; WheelIdx < Storage.Bodies().Num(); ++WheelIdx)
 	{
-		USWheelSubBody* WheelSubBody = WheelSubBodies[WheelIdx].Get();
+		USWheelSubBody* WheelSubBody = Storage.Bodies()[WheelIdx].Get();
 		if (!WheelSubBody)
 		{
 			continue;
 		}
 
-		WheelSubBody->SetIdx(WheelIdx);
+		Storage.SetIndex(*WheelSubBody,WheelIdx);
 		if (WheelIdx < NumBindings)
 		{
-			if (Wheels.IsValidIndex(WheelIdx))
+			if (Storage.Configurations().IsValidIndex(WheelIdx))
 			{
-				WheelSubBody->SetChaosWheel(Wheels[WheelIdx].Get());
+				Storage.BindConfiguration(*WheelSubBody,Storage.Configuration(WheelIdx).Get());
 			}
-			WheelSubBody->SetWheelSim(&PVehicle->Wheels[WheelIdx]);
-			WheelSubBody->SetSuspensionSim(&PVehicle->Suspension[WheelIdx]);
+			Storage.BindWheel(*WheelSubBody,&PVehicle->Wheels[WheelIdx]);
+			Storage.BindSuspension(*WheelSubBody,&PVehicle->Suspension[WheelIdx]);
 		}
 		else
 		{
-			WheelSubBody->SetChaosWheel(nullptr);
-			WheelSubBody->SetWheelSim(nullptr);
-			WheelSubBody->SetSuspensionSim(nullptr);
+			Storage.BindConfiguration(*WheelSubBody,nullptr);
+			Storage.BindWheel(*WheelSubBody,nullptr);
+			Storage.BindSuspension(*WheelSubBody,nullptr);
 		}
 	}
 }
+void USpeedWheeledComponent::BindWheelSimulationPointers(
+	Chaos::FSimpleWheeledVehicle* PVehicle)
+{
+    CheckOrdinaryComponentBindingEntry();
+    FLegacyWheelBindingAccess Storage(*this);
+    BindWheelSimulationPointersBody(Storage,PVehicle);
+}
+
+void USpeedWheeledComponent::BindNativeWheelSimulationPointersBirth(
+ const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,
+ Chaos::FSimpleWheeledVehicle* OriginalAllocation,
+ TConstArrayView<TWeakObjectPtr<USWheelSubBody>> ActualBodyBirths,
+ TConstArrayView<TWeakObjectPtr<UChaosVehicleWheel>> ActualConfigurationBirths)
+{
+    FNativeWheelBindingAccess Storage(*this,Operation,OriginalAllocation,
+        ActualBodyBirths,ActualConfigurationBirths);
+    BindWheelSimulationPointersBody(Storage,OriginalAllocation);
+}
+
+
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+bool USpeedWheeledComponent::ProbeNativeWheelBindingsBirthForDiagnostics(
+ const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,
+ Chaos::FSimpleWheeledVehicle* OriginalAllocation,
+ TConstArrayView<TWeakObjectPtr<USWheelSubBody>> BodyBirths,
+ TConstArrayView<TWeakObjectPtr<UChaosVehicleWheel>> ConfigurationBirths,
+ USWheelSubBody* ForeignBody,ISpeedComponent* ForeignParent,
+ Chaos::FSimpleWheeledVehicle* ForeignVehicle,Chaos::FSimpleWheelSim* ForeignWheel,
+ Chaos::FSimpleSuspensionSim* ForeignSuspension,UChaosVehicleWheel* ForeignConfiguration,
+ FNativeWheelBindingDiagnostics& Out)
+{
+    namespace P=Speed::Netcode::Prediction;
+    P::FPrivateNativeStorageAccess::RequireBirth(Operation);
+    Out={};
+    if(!ForeignBody||!ForeignParent||!ForeignVehicle||!ForeignWheel||!ForeignSuspension
+        ||!ForeignConfiguration||BodyBirths.Num()!=4||ConfigurationBirths.Num()!=4)return false;
+    FNativeWheelBindingAccess Initial(*this,Operation,OriginalAllocation,BodyBirths,ConfigurationBirths);
+    auto& D=P::FPrivateNativeStorageAccess::Part<FOriginalWheeledDomain>(Operation,this);
+    struct FCell
+    {
+        USWheelSubBody* Body;UChaosVehicleWheel* Configuration;
+        int32 Index;float Mass,AuthoredMass,Raise,Drop,NativeMass,ConfigurationRaise,ConfigurationDrop;
+        UChaosVehicleWheel* BindingConfiguration;Chaos::FSimpleWheelSim* Wheel;Chaos::FSimpleSuspensionSim* Suspension;
+        ISpeedComponent* Parent;
+    };
+    TArray<FCell,TInlineAllocator<4>> Saved;
+    for(int32 Index=0;Index<4;++Index)
+    {
+        auto* Body=BodyBirths[Index].Get();auto* Configuration=ConfigurationBirths[Index].Get();
+        auto& V=P::FPrivateNativeStorageAccess::Part<P::FPrivateRoadWheelDomain>(Operation,Body);
+        auto& Solid=P::FPrivateNativeStorageAccess::Part<P::FPrivateRoadSolidValues>(Operation,Body);
+        auto& Base=P::FPrivateNativeStorageAccess::Part<P::FPrivateRoadSubBodyValues>(Operation,static_cast<USSubBody*>(Body));
+        Saved.Add({Body,Configuration,Solid.idx,Solid.Mass,V.WheelMass,V.SuspensionMaxRaiseOverride,V.SuspensionMaxDropOverride,
+            OriginalAllocation->Wheels[Index].MassPerWheel,Configuration->SuspensionMaxRaise,Configuration->SuspensionMaxDrop,
+            V.ChaosWheel,V.PWheel,V.PSuspension,Base.ParentComponent});
+    }
+    const auto SavedRoster=D.WheelSubBodies;const auto SavedConfigurations=D.Wheels;
+    const float ForeignMass=ForeignWheel->MassPerWheel;
+    const float ForeignRaise=ForeignConfiguration->SuspensionMaxRaise,ForeignDrop=ForeignConfiguration->SuspensionMaxDrop;
+    const auto CleanupFixture=[&]()
+    {
+        D.WheelSubBodies=SavedRoster;D.Wheels=SavedConfigurations;
+        for(int32 Index=0;Index<4;++Index)
+        {
+            const auto& S=Saved[Index];
+            auto& V=P::FPrivateNativeStorageAccess::Part<P::FPrivateRoadWheelDomain>(Operation,S.Body);
+            auto& Solid=P::FPrivateNativeStorageAccess::Part<P::FPrivateRoadSolidValues>(Operation,S.Body);
+            auto& Base=P::FPrivateNativeStorageAccess::Part<P::FPrivateRoadSubBodyValues>(Operation,static_cast<USSubBody*>(S.Body));
+            Solid.idx=S.Index;Solid.Mass=S.Mass;V.WheelMass=S.AuthoredMass;
+            V.SuspensionMaxRaiseOverride=S.Raise;V.SuspensionMaxDropOverride=S.Drop;
+            V.ChaosWheel=S.BindingConfiguration;V.PWheel=S.Wheel;V.PSuspension=S.Suspension;Base.ParentComponent=S.Parent;
+            OriginalAllocation->Wheels[Index].MassPerWheel=S.NativeMass;
+            S.Configuration->SuspensionMaxRaise=S.ConfigurationRaise;S.Configuration->SuspensionMaxDrop=S.ConfigurationDrop;
+        }
+        ForeignWheel->MassPerWheel=ForeignMass;
+        ForeignConfiguration->SuspensionMaxRaise=ForeignRaise;ForeignConfiguration->SuspensionMaxDrop=ForeignDrop;
+    };
+    // Explicit named fixture cleanup only. It is neither a physical restore
+    // provider nor a state/source/lifetime exclusion certificate.
+    ON_SCOPE_EXIT{CleanupFixture();};
+    const float Masses[]={27.f,31.f,39.f,43.f};
+    const float Raises[]={7.f,-1.f,13.f,-1.f},Drops[]={11.f,19.f,-1.f,-1.f};
+    const auto Prime=[&]()
+    {
+        CleanupFixture();
+        for(int32 Index=0;Index<4;++Index)
+        {
+            const auto& S=Saved[Index];
+            auto& V=P::FPrivateNativeStorageAccess::Part<P::FPrivateRoadWheelDomain>(Operation,S.Body);
+            auto& Solid=P::FPrivateNativeStorageAccess::Part<P::FPrivateRoadSolidValues>(Operation,S.Body);
+            V.WheelMass=Masses[Index];V.SuspensionMaxRaiseOverride=Raises[Index];V.SuspensionMaxDropOverride=Drops[Index];
+            Solid.idx=50+Index;Solid.Mass=90.f+Index;OriginalAllocation->Wheels[Index].MassPerWheel=1000.f+Index;
+            S.Configuration->SuspensionMaxRaise=101.f+Index;S.Configuration->SuspensionMaxDrop=201.f+Index;
+        }
+    };
+    const auto Capture=[&]()
+    {
+        TArray<uint8> Bytes;using B=Speed::FEpisodeStateBytesForTesting;
+        for(int32 Index=0;Index<4;++Index)
+        {
+            const auto& S=Saved[Index];S.Body->AppendEpisodeStateForTesting(Bytes);
+            B::Add(Bytes,D.WheelSubBodies[Index].Get());B::Add(Bytes,D.Wheels[Index].Get());
+            B::Add(Bytes,OriginalAllocation->Wheels[Index].MassPerWheel);
+            B::Add(Bytes,S.Configuration->SuspensionMaxRaise);B::Add(Bytes,S.Configuration->SuspensionMaxDrop);
+        }
+        B::Add(Bytes,ForeignWheel->MassPerWheel);B::Add(Bytes,ForeignConfiguration->SuspensionMaxRaise);B::Add(Bytes,ForeignConfiguration->SuspensionMaxDrop);
+        return Bytes;
+    };
+    Out.AllRefusalsBeforeWrite=true;
+    for(int32 Case=0;Case<8;++Case)
+    {
+        Prime();
+        if(Case==2)P::FPrivateNativeStorageAccess::Part<P::FPrivateRoadSubBodyValues>(Operation,static_cast<USSubBody*>(Saved[0].Body)).ParentComponent=ForeignParent;
+        if(Case==6)D.Wheels[3]=ForeignConfiguration;
+        if(Case==7)D.WheelSubBodies[3]=ForeignBody;
+        const auto Before=Capture();bool Refused=false;
+        try
+        {
+            if(Case==0)BindNativeWheelSimulationPointersBirth(Operation,ForeignVehicle,BodyBirths,ConfigurationBirths);
+            else if(Case==2||Case>=6)BindNativeWheelSimulationPointersBirth(Operation,OriginalAllocation,BodyBirths,ConfigurationBirths);
+            else
+            {
+                FNativeWheelBindingAccess Access(*this,Operation,OriginalAllocation,BodyBirths,ConfigurationBirths);
+                if(Case==1)Access.SetIndex(*ForeignBody,0);
+                if(Case==3)Access.BindWheel(*Saved[0].Body,ForeignWheel);
+                if(Case==4)Access.BindSuspension(*Saved[0].Body,ForeignSuspension);
+                if(Case==5)Access.BindConfiguration(*Saved[0].Body,ForeignConfiguration);
+            }
+        }
+        catch(const P::FPrivateNativeStorageUnavailable&){Refused=true;}
+        if(Refused)++Out.Refusals;
+        Out.AllRefusalsBeforeWrite=Out.AllRefusalsBeforeWrite&&Before==Capture();
+        if(!Refused||!Out.AllRefusalsBeforeWrite)return false;
+    }
+    Prime();
+    BindNativeWheelSimulationPointersBirth(Operation,OriginalAllocation,BodyBirths,ConfigurationBirths);
+    ++Out.PositiveEntryReturns;
+    Out.PositiveValuesMatch=true;Out.OverridePredicatesMatch=true;
+    for(int32 Index=0;Index<4;++Index)
+    {
+        const auto& S=Saved[Index];const auto& V=P::FPrivateNativeStorageAccess::Part<P::FPrivateRoadWheelDomain>(Operation,S.Body);
+        const auto& Solid=P::FPrivateNativeStorageAccess::Part<P::FPrivateRoadSolidValues>(Operation,S.Body);
+        Out.PositiveValuesMatch=Out.PositiveValuesMatch&&Solid.idx==Index&&Solid.Mass==Masses[Index]
+            &&OriginalAllocation->Wheels[Index].MassPerWheel==Masses[Index]&&V.PWheel==&OriginalAllocation->Wheels[Index]
+            &&V.PSuspension==&OriginalAllocation->Suspension[Index]&&V.ChaosWheel==S.Configuration;
+        const bool Override=Raises[Index]>=0.f&&Drops[Index]>=0.f;
+        Out.OverridePredicatesMatch=Out.OverridePredicatesMatch
+            &&S.Configuration->SuspensionMaxRaise==(Override?Raises[Index]:101.f+Index)
+            &&S.Configuration->SuspensionMaxDrop==(Override?Drops[Index]:201.f+Index);
+    }
+    return Out.Refusals==8&&Out.AllRefusalsBeforeWrite&&Out.PositiveEntryReturns==1&&Out.PositiveValuesMatch&&Out.OverridePredicatesMatch;
+}
+#endif
+
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+bool USpeedWheeledComponent::ProbeNativeWheelBindingStepRefusalForDiagnostics(
+ const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,
+ Chaos::FSimpleWheeledVehicle* OriginalAllocation,
+ TConstArrayView<TWeakObjectPtr<USWheelSubBody>> BodyBirths,
+ TConstArrayView<TWeakObjectPtr<UChaosVehicleWheel>> ConfigurationBirths,
+ TArray<Speed::NativeKinematics::FCanonicalMassAppendDiagnostics>& Observations)
+{
+    namespace P=Speed::Netcode::Prediction;
+    P::FPrivateNativeStorageAccess::RequireStep(Operation);
+    if(!Observations.IsEmpty())return false; // require a fresh diagnostic destination, never clear caller data
+    if(!OriginalAllocation||BodyBirths.Num()!=4||ConfigurationBirths.Num()!=4
+        ||!BodyBirths[0].IsValid()||!ConfigurationBirths[0].IsValid())return false;
+    auto& D=P::FPrivateNativeStorageAccess::Part<FOriginalWheeledDomain>(Operation,this);
+    if(!D.SkySimulation||D.SkySimulation->PVehicle.Get()!=OriginalAllocation||OriginalAllocation->Wheels.Num()!=4)return false;
+    auto* First=BodyBirths[0].Get();auto* Configuration=ConfigurationBirths[0].Get();
+    auto& Solid=P::FPrivateNativeStorageAccess::Part<P::FPrivateRoadSolidValues>(Operation,First);
+    const int32 Index=Solid.idx;const float SavedSolidMass=Solid.Mass,NativeMass=OriginalAllocation->Wheels[0].MassPerWheel;
+    const float Raise=Configuration->SuspensionMaxRaise,Drop=Configuration->SuspensionMaxDrop;
+    ON_SCOPE_EXIT{
+        Solid.idx=Index;Solid.Mass=SavedSolidMass;OriginalAllocation->Wheels[0].MassPerWheel=NativeMass;
+        Configuration->SuspensionMaxRaise=Raise;Configuration->SuspensionMaxDrop=Drop;
+    };
+    // Named temporary fixture sentinels make accidental entry writes visible.
+    // Cleanup before the real Step continues is not authoritative restoration.
+    Solid.idx=91;Solid.Mass=73.f;OriginalAllocation->Wheels[0].MassPerWheel=77.f;
+    Configuration->SuspensionMaxRaise=37.f;Configuration->SuspensionMaxDrop=38.f;
+    const auto Capture=[&]()
+    {
+        TArray<uint8> Bytes;using B=Speed::FEpisodeStateBytesForTesting;
+        for(int32 I=0;I<4;++I)
+        {
+            if(!BodyBirths[I].IsValid()||!ConfigurationBirths[I].IsValid())throw P::FPrivateNativeStorageUnavailable{};
+            const auto Captured=Speed::NativeKinematics::FSolidMassAccess::AppendCanonicalEpisodeForTesting(
+                Operation,*BodyBirths[I].Get(),Bytes);
+            Observations.Add(Captured); // only after the actual complete capture returned
+            B::Add(Bytes,OriginalAllocation->Wheels[I].MassPerWheel);
+            B::Add(Bytes,ConfigurationBirths[I].Get()->SuspensionMaxRaise);B::Add(Bytes,ConfigurationBirths[I].Get()->SuspensionMaxDrop);
+        }
+        return Bytes;
+    };
+    const auto Before=Capture();bool Refused=false;
+    try{BindNativeWheelSimulationPointersBirth(Operation,OriginalAllocation,BodyBirths,ConfigurationBirths);}
+    catch(const P::FPrivateNativeStorageUnavailable&){Refused=true;}
+    return Refused&&Before==Capture();
+}
+#endif
 
 void USpeedWheeledComponent::ClearWheelSimulationPointers()
 {
-	for (USWheelSubBody* WheelSubBody : WheelSubBodies)
+    CheckOrdinaryComponentBindingEntry();
+	for (USWheelSubBody* WheelSubBody : ReadWheelSubBodiesForPhysics())
 	{
 		if (!WheelSubBody)
 		{
 			continue;
 		}
-		WheelSubBody->SetWheelSim(nullptr);
-		WheelSubBody->SetSuspensionSim(nullptr);
+		Speed::NativeKinematics::FWheelBindingAccess::BindWheel(*WheelSubBody,nullptr);
+		Speed::NativeKinematics::FWheelBindingAccess::BindSuspension(*WheelSubBody,nullptr);
 	}
 }
 
 void USpeedWheeledComponent::SetupSpeedSuspension(TUniquePtr<Chaos::FSimpleWheeledVehicle>& PVehicle)
 {
-	if (!PVehicle.IsValid() || PVehicle->Suspension.Num() == 0 || WheelSubBodies.Num() == 0)
+	if (!PVehicle.IsValid() || PVehicle->Suspension.Num() == 0 || ReadWheelSubBodiesForPhysics().Num() == 0)
 	{
 		return;
 	}
 
-	const int32 NumSuspensions = FMath::Min(PVehicle->Suspension.Num(), WheelSubBodies.Num());
+	const int32 NumSuspensions = FMath::Min(PVehicle->Suspension.Num(), ReadWheelSubBodiesForPhysics().Num());
 	TArray<float> SprungMasses;
-	SprungMasses.Init(PhysMass / FMath::Max(1, NumSuspensions), NumSuspensions);
+	SprungMasses.Init(PhysMassWheeledDomainStorage() / FMath::Max(1, NumSuspensions), NumSuspensions);
 
 	if (NumSuspensions == 4)
 	{
@@ -685,7 +1912,7 @@ void USpeedWheeledComponent::SetupSpeedSuspension(TUniquePtr<Chaos::FSimpleWheel
 
 		for (int32 WheelIdx = 0; WheelIdx < NumSuspensions; ++WheelIdx)
 		{
-			const USWheelSubBody* WheelSubBody = WheelSubBodies[WheelIdx].Get();
+			const USWheelSubBody* WheelSubBody = ReadWheelSubBodiesForPhysics()[WheelIdx].Get();
 			if (!WheelSubBody)
 			{
 				continue;
@@ -704,7 +1931,7 @@ void USpeedWheeledComponent::SetupSpeedSuspension(TUniquePtr<Chaos::FSimpleWheel
 
 			for (int32 WheelIdx = 0; WheelIdx < NumSuspensions; ++WheelIdx)
 			{
-				const USWheelSubBody* WheelSubBody = WheelSubBodies[WheelIdx].Get();
+				const USWheelSubBody* WheelSubBody = ReadWheelSubBodiesForPhysics()[WheelIdx].Get();
 				if (!WheelSubBody)
 				{
 					continue;
@@ -728,8 +1955,8 @@ void USpeedWheeledComponent::SetupSpeedSuspension(TUniquePtr<Chaos::FSimpleWheel
 				FrontX /= FrontWheelIndices.Num();
 				RearX /= RearWheelIndices.Num();
 
-				const double TotalMass = static_cast<double>(PhysMass);
-				const double CenterX = static_cast<double>(CenterOfMass.X);
+				const double TotalMass = static_cast<double>(PhysMassWheeledDomainStorage());
+				const double CenterX = static_cast<double>(CenterOfMassWheeledDomainStorage().X);
 				const double FrontMass = FMath::Clamp(TotalMass * (CenterX - RearX) / (FrontX - RearX), 0.0, TotalMass);
 				const double RearMass = TotalMass - FrontMass;
 
@@ -752,9 +1979,9 @@ void USpeedWheeledComponent::SetupSpeedSuspension(TUniquePtr<Chaos::FSimpleWheel
 
 					const int32 WheelIdxA = AxleWheelIndices[0];
 					const int32 WheelIdxB = AxleWheelIndices[1];
-					const double YA = static_cast<double>(WheelSubBodies[WheelIdxA]->GetLocalOffset().Y);
-					const double YB = static_cast<double>(WheelSubBodies[WheelIdxB]->GetLocalOffset().Y);
-					const double CenterY = static_cast<double>(CenterOfMass.Y);
+					const double YA = static_cast<double>(ReadWheelSubBodiesForPhysics()[WheelIdxA]->GetLocalOffset().Y);
+					const double YB = static_cast<double>(ReadWheelSubBodiesForPhysics()[WheelIdxB]->GetLocalOffset().Y);
+					const double CenterY = static_cast<double>(CenterOfMassWheeledDomainStorage().Y);
 
 					if (FMath::Abs(YA - YB) <= KINDA_SMALL_NUMBER)
 					{
@@ -776,7 +2003,7 @@ void USpeedWheeledComponent::SetupSpeedSuspension(TUniquePtr<Chaos::FSimpleWheel
 
 	for (int32 WheelIdx = 0; WheelIdx < NumSuspensions; ++WheelIdx)
 	{
-		USWheelSubBody* WheelSubBody = WheelSubBodies[WheelIdx].Get();
+		USWheelSubBody* WheelSubBody = ReadWheelSubBodiesForPhysics()[WheelIdx].Get();
 		if (!WheelSubBody)
 		{
 			continue;
@@ -816,7 +2043,7 @@ void USpeedWheeledComponent::SetupSpeedSuspension(TUniquePtr<Chaos::FSimpleWheel
 
 		if (PVehicle->Wheels.IsValidIndex(WheelIdx))
 		{
-			PVehicle->Wheels[WheelIdx].SetMassPerWheel(WheelSubBody->GetMass());
+			PVehicle->Wheels[WheelIdx].SetMassPerWheel(Speed::NativeKinematics::FSolidMassAccess::Read(*WheelSubBody));
 		}
 
 #if !(UE_BUILD_SHIPPING)
@@ -827,7 +2054,7 @@ void USpeedWheeledComponent::SetupSpeedSuspension(TUniquePtr<Chaos::FSimpleWheel
 }
 ASpeedCar* USpeedWheeledComponent::GetSpeedCarOwner() const
 {
-	return SpeedCarOwner;
+	return SpeedCarOwnerWheeledDomainStorage();
 }
 
 bool USpeedWheeledComponent::ShouldCreatePhysicsState() const
@@ -859,9 +2086,9 @@ void USpeedWheeledComponent::OnCreatePhysicsState()
 			CreateVehicle();
 			BindWheelSimulationPointers();
 			FixupSkeletalMesh();
-				VehicleSimulationPT->PVehicle->bSuspensionEnabled = bSuspensionEnabled;
-				VehicleSimulationPT->PVehicle->bWheelFrictionEnabled = bWheelFrictionEnabled;
-				VehicleSimulationPT->PVehicle->bMechanicalSimEnabled = bMechanicalSimEnabled;
+				VehicleSimulationPTWheeledDomainStorage()->PVehicle->bSuspensionEnabled = bSuspensionEnabledWheeledDomainStorage();
+				VehicleSimulationPTWheeledDomainStorage()->PVehicle->bWheelFrictionEnabled = bWheelFrictionEnabledWheeledDomainStorage();
+				VehicleSimulationPTWheeledDomainStorage()->PVehicle->bMechanicalSimEnabled = bMechanicalSimEnabledWheeledDomainStorage();
 
 				if (PVehicleOutput)
 				{
@@ -887,62 +2114,62 @@ void USpeedWheeledComponent::OnCreatePhysicsState()
     const bool bExactDedicatedHost = World->IsGameWorld()
         && RemotePolicy == Speed::Netcode::EExactRemoteHostPolicy::IsolatedDedicated;
     if (World->IsGameWorld() && RemotePolicy == Speed::Netcode::EExactRemoteHostPolicy::Invalid)
-    { UE_LOG(SpeedInputLog, Fatal, TEXT("Invalid ExactRemote dedicated host policy; legacy fallback forbidden")); return; }
-    bLegacyNetworkHistoryExcluded = false;
+    { SPEED_NATIVE_LOG(SpeedInputLog, Fatal, TEXT("Invalid ExactRemote dedicated host policy; legacy fallback forbidden")); return; }
+    bLegacyNetworkHistoryExcludedWheeledDomainStorage() = false;
     if (bExactDedicatedHost)
     {
-        if ((SNetworkSettings && SNetworkSettings->IsRegistered())
-            || !SNetworkPhysicsComponent || !WheeledNetworkPhysicsComponent
-            || SNetworkPhysicsComponent->IsRegistered() || WheeledNetworkPhysicsComponent->IsRegistered()
-            || SNetworkPhysicsComponent->GetStateHistory_External() || SNetworkPhysicsComponent->GetInputHistory_External()
-            || WheeledNetworkPhysicsComponent->GetStateHistory_External() || WheeledNetworkPhysicsComponent->GetInputHistory_External())
-            { UE_LOG(SpeedInputLog, Fatal, TEXT("ExactRemote refuses an already active or missing legacy history component")); return; }
-        SNetworkPhysicsComponent->SetIsReplicated(false);
-        WheeledNetworkPhysicsComponent->SetIsReplicated(false);
-        bLegacyNetworkHistoryExcluded = true;
-        UE_LOG(SpeedInputLog, Display, TEXT("[ExactRemoteLegacyHistoryExcluded] Speed=1 Wheeled=1 BeforeRegistration=1"));
+        if ((SNetworkSettingsWheeledDomainStorage() && SNetworkSettingsWheeledDomainStorage()->IsRegistered())
+            || !SNetworkPhysicsComponentWheeledDomainStorage() || !WheeledNetworkPhysicsComponentWheeledDomainStorage()
+            || SNetworkPhysicsComponentWheeledDomainStorage()->IsRegistered() || WheeledNetworkPhysicsComponentWheeledDomainStorage()->IsRegistered()
+            || SNetworkPhysicsComponentWheeledDomainStorage()->GetStateHistory_External() || SNetworkPhysicsComponentWheeledDomainStorage()->GetInputHistory_External()
+            || WheeledNetworkPhysicsComponentWheeledDomainStorage()->GetStateHistory_External() || WheeledNetworkPhysicsComponentWheeledDomainStorage()->GetInputHistory_External())
+            { SPEED_NATIVE_LOG(SpeedInputLog, Fatal, TEXT("ExactRemote refuses an already active or missing legacy history component")); return; }
+        SNetworkPhysicsComponentWheeledDomainStorage()->SetIsReplicated(false);
+        WheeledNetworkPhysicsComponentWheeledDomainStorage()->SetIsReplicated(false);
+        bLegacyNetworkHistoryExcludedWheeledDomainStorage() = true;
+        SPEED_NATIVE_LOG(SpeedInputLog, Display, TEXT("[ExactRemoteLegacyHistoryExcluded] Speed=1 Wheeled=1 BeforeRegistration=1"));
     }
     // Default standalone and SL behavior remains the existing legacy route.
 	if (World->IsGameWorld() && !bExactDedicatedHost)
 	{
-		if (SNetworkSettings && !SNetworkSettings->IsRegistered())
+		if (SNetworkSettingsWheeledDomainStorage() && !SNetworkSettingsWheeledDomainStorage()->IsRegistered())
 		{
-			SNetworkSettings->RegisterComponent();
+			SNetworkSettingsWheeledDomainStorage()->RegisterComponent();
 		}
-		if (SNetworkPhysicsComponent)
+		if (SNetworkPhysicsComponentWheeledDomainStorage())
 		{
-			if (!SNetworkPhysicsComponent->IsRegistered())
+			if (!SNetworkPhysicsComponentWheeledDomainStorage()->IsRegistered())
 			{
-				SNetworkPhysicsComponent->RegisterComponent();
+				SNetworkPhysicsComponentWheeledDomainStorage()->RegisterComponent();
 			}
-			SNetworkPhysicsComponent->CreateDataHistory<FPhysicsSpeedTraits>(this);
+			SNetworkPhysicsComponentWheeledDomainStorage()->CreateDataHistory<FPhysicsSpeedTraits>(this);
 		}
-		if (WheeledNetworkPhysicsComponent)
+		if (WheeledNetworkPhysicsComponentWheeledDomainStorage())
 		{
-			if (!WheeledNetworkPhysicsComponent->IsRegistered())
+			if (!WheeledNetworkPhysicsComponentWheeledDomainStorage()->IsRegistered())
 			{
-				WheeledNetworkPhysicsComponent->RegisterComponent();
+				WheeledNetworkPhysicsComponentWheeledDomainStorage()->RegisterComponent();
 			}
-			WheeledNetworkPhysicsComponent->CreateDataHistory<FPhysicsWheeledTraits>(this);
+			WheeledNetworkPhysicsComponentWheeledDomainStorage()->CreateDataHistory<FPhysicsWheeledTraits>(this);
 		}
 	}
-	if (bOwnedRecreationBoundary)
+	if (bOwnedRecreationBoundaryWheeledDomainStorage())
 	{
 		// A live RecreatePhysicsState keeps the same adapter identity and input
 		// binding. The worker has been parked across the whole storage gap.
-		ASpeedPhysicsSimulation* Driver = RecreationDriver.Get();
+		ASpeedPhysicsSimulation* Driver = RecreationDriverWheeledDomainStorage().Get();
 		if (!Driver || !Driver->IsOwnedBoundaryServiceSuspended())
-			UE_LOG(SpeedInputLog, Fatal, TEXT("Physics recreation lost its exclusive worker boundary"));
+			SPEED_NATIVE_LOG(SpeedInputLog, Fatal, TEXT("Physics recreation lost its exclusive worker boundary"));
 		FString Reason;
 		if (!ValidateSimulationBindings(Reason))
-			UE_LOG(SpeedInputLog, Fatal, TEXT("Recreated physics state rejected before worker resume: %s"), *Reason);
-		bOwnedRecreationBoundary = false;
-		RecreationDriver.Reset();
+			SPEED_NATIVE_LOG(SpeedInputLog, Fatal, TEXT("Recreated physics state rejected before worker resume: %s"), *Reason);
+		bOwnedRecreationBoundaryWheeledDomainStorage() = false;
+		RecreationDriverWheeledDomainStorage().Reset();
 		Driver->ResumeOwnedBoundaryService();
-		if (bResumeAfterPhysicsRecreation) Driver->ResumeOwnedSimulation();
-		bResumeAfterPhysicsRecreation = false;
+		if (bResumeAfterPhysicsRecreationWheeledDomainStorage()) Driver->ResumeOwnedSimulation();
+		bResumeAfterPhysicsRecreationWheeledDomainStorage() = false;
 	}
-	else if (HasBegunPlay() && !bWheeledEndPlayTeardown && bSpeedWorldAdapterRetiredForTeardown)
+	else if (HasBegunPlay() && !bWheeledEndPlayTeardownWheeledDomainStorage() && bSpeedWorldAdapterRetiredForTeardownWheeledDomainStorage())
 	{
 		// RecreatePhysicsState is also used on a live component. Admit its new
 		// wheel storage only after the replacement physics state is complete.
@@ -952,29 +2179,29 @@ void USpeedWheeledComponent::OnCreatePhysicsState()
 				Subsystem->RegisterSpeedComponent(this);
 				Subsystem->ApplyPendingOps();
 				if (!Subsystem->GetSimulationStableId(*this))
-					UE_LOG(SpeedInputLog, Fatal, TEXT("Recreated wheeled adapter was not admitted"));
-				bSpeedWorldAdapterRetiredForTeardown = false;
+					SPEED_NATIVE_LOG(SpeedInputLog, Fatal, TEXT("Recreated wheeled adapter was not admitted"));
+				bSpeedWorldAdapterRetiredForTeardownWheeledDomainStorage() = false;
 			}
-		if (bResumeAfterPhysicsRecreation)
+		if (bResumeAfterPhysicsRecreationWheeledDomainStorage())
 			if (UWorld* CurrentWorld = GetWorld())
 				for (TActorIterator<ASpeedPhysicsSimulation> It(CurrentWorld); It; ++It)
 				{ It->ResumeOwnedSimulation(); break; }
-		bResumeAfterPhysicsRecreation = false;
+		bResumeAfterPhysicsRecreationWheeledDomainStorage() = false;
 	}
 }
 
 void USpeedWheeledComponent::BeginPlay()
 {
 	if (Speed::Netcode::PresentationClient::SuppressesLocalPhysics(GetWorld())) { UActorComponent::BeginPlay(); return; }
-	bWheeledEndPlayTeardown = false;
-	bSpeedWorldAdapterRetiredForTeardown = false;
+	bWheeledEndPlayTeardownWheeledDomainStorage() = false;
+	bSpeedWorldAdapterRetiredForTeardownWheeledDomainStorage() = false;
 	Super::BeginPlay();
 }
 
 bool USpeedWheeledComponent::RetireSpeedWorldAdapterBeforeTeardown()
 {
 	check(IsInGameThread());
-	if (bSpeedWorldAdapterRetiredForTeardown) return true;
+	if (bSpeedWorldAdapterRetiredForTeardownWheeledDomainStorage()) return true;
 	if (UWorld* World = GetWorld())
 		if (USpeedWorldSubsystem* Subsystem = World->GetSubsystem<USpeedWorldSubsystem>())
 		{
@@ -982,13 +2209,13 @@ bool USpeedWheeledComponent::RetireSpeedWorldAdapterBeforeTeardown()
 			Subsystem->ApplyPendingOps();
 			if (Subsystem->GetSimulationStableId(*this) != 0) return false;
 		}
-	bSpeedWorldAdapterRetiredForTeardown = true;
+	bSpeedWorldAdapterRetiredForTeardownWheeledDomainStorage() = true;
 	return true;
 }
 
 void USpeedWheeledComponent::JoinInputWorkerBeforeStorageDestruction()
 {
-	if (bSpeedWorldAdapterRetiredForTeardown) return;
+	if (bSpeedWorldAdapterRetiredForTeardownWheeledDomainStorage()) return;
 	if (!HasProducedInputAuthority() && !HasLegacyRemoteInputAuthority()) return;
 	check(IsInGameThread());
 	if (UWorld* World = GetWorld())
@@ -1001,7 +2228,7 @@ void USpeedWheeledComponent::JoinInputWorkerBeforeStorageDestruction()
 				&& !It->IsOwnedWorkerExecutionMode())
 			{
 				if (!RetireSpeedWorldAdapterBeforeTeardown())
-					UE_LOG(SpeedInputLog, Fatal, TEXT("Unstarted adapter removal was not acknowledged before storage teardown"));
+					SPEED_NATIVE_LOG(SpeedInputLog, Fatal, TEXT("Unstarted adapter removal was not acknowledged before storage teardown"));
 				return;
 			}
 			const auto View = It->ReadInputRegistryView();
@@ -1021,9 +2248,9 @@ void USpeedWheeledComponent::JoinInputWorkerBeforeStorageDestruction()
 				// component under the exclusive service ACK before EndPlay frees
 				// wheel/sub-body storage or the replacement car is admitted.
 				if (!Subsystem || It->TrySuspendOwnedBoundaryService() != ESimulationQuiescence::BoundaryAcknowledged)
-					UE_LOG(SpeedInputLog, Fatal, TEXT("Cannot retire produced adapter without an exclusive worker boundary"));
+					SPEED_NATIVE_LOG(SpeedInputLog, Fatal, TEXT("Cannot retire produced adapter without an exclusive worker boundary"));
 				if (!RetireSpeedWorldAdapterBeforeTeardown())
-					UE_LOG(SpeedInputLog, Fatal, TEXT("Produced adapter removal was not acknowledged before storage teardown"));
+					SPEED_NATIVE_LOG(SpeedInputLog, Fatal, TEXT("Produced adapter removal was not acknowledged before storage teardown"));
 				It->ResumeOwnedBoundaryService();
 				// Resume survivors only after removal ACK; preserve an existing world pause.
 				if (!bWasPausedBeforeRemoval && !World->bIsTearingDown)
@@ -1037,43 +2264,43 @@ void USpeedWheeledComponent::JoinInputWorkerBeforeStorageDestruction()
 				It->GetUniqueID(), GetUniqueID(), GetOwner() ? GetOwner()->GetUniqueID() : 0,
 				double(World->GetTimeSeconds()), It->GetInputWorkerGeneration(), uint32(Boundary),
 				int32(HasProducedInputAuthority()), int32(HasLegacyRemoteInputAuthority()),
-				int32(bWheeledEndPlayTeardown), int32(HasBegunPlay()),
+				int32(bWheeledEndPlayTeardownWheeledDomainStorage()), int32(HasBegunPlay()),
 				int32(GetOwner() && GetOwner()->IsActorBeingDestroyed()), int32(bool(View)), Actor, int32(bStillBound)));
 			if (!It->JoinOwnedSimulationForInputTeardown())
-				UE_LOG(SpeedInputLog, Fatal, TEXT("Input worker could not join before actor storage destruction"));
+				SPEED_NATIVE_LOG(SpeedInputLog, Fatal, TEXT("Input worker could not join before actor storage destruction"));
 			if (!RetireSpeedWorldAdapterBeforeTeardown())
-				UE_LOG(SpeedInputLog, Fatal, TEXT("Joined input owner did not retire its adapter before storage teardown"));
+				SPEED_NATIVE_LOG(SpeedInputLog, Fatal, TEXT("Joined input owner did not retire its adapter before storage teardown"));
 			break;
 		}
 }
 
 void USpeedWheeledComponent::OnDestroyPhysicsState()
 {
-	bResumeAfterPhysicsRecreation = false;
-	if (!bWheeledEndPlayTeardown && HasBegunPlay()
+	bResumeAfterPhysicsRecreationWheeledDomainStorage() = false;
+	if (!bWheeledEndPlayTeardownWheeledDomainStorage() && HasBegunPlay()
 		&& (!GetOwner() || !GetOwner()->IsActorBeingDestroyed()))
 		if (UWorld* World = GetWorld())
 			for (TActorIterator<ASpeedPhysicsSimulation> It(World); It; ++It)
 			{
-				bResumeAfterPhysicsRecreation = !It->IsOwnedSimulationPaused();
+				bResumeAfterPhysicsRecreationWheeledDomainStorage() = !It->IsOwnedSimulationPaused();
 				if (It->IsOwnedWorkerExecutionMode())
 				{
 					const auto Barrier = It->TrySuspendOwnedBoundaryService();
 					if (Barrier == ESimulationQuiescence::BoundaryAcknowledged)
 					{
-						bOwnedRecreationBoundary = true;
-						RecreationDriver = *It;
+						bOwnedRecreationBoundaryWheeledDomainStorage() = true;
+						RecreationDriverWheeledDomainStorage() = *It;
 					}
 					else if (Barrier != ESimulationQuiescence::AlreadyStopped)
-						UE_LOG(SpeedInputLog, Fatal, TEXT("Live physics recreation could not park the worker"));
+						SPEED_NATIVE_LOG(SpeedInputLog, Fatal, TEXT("Live physics recreation could not park the worker"));
 				}
 				break;
 			}
-	if (!bOwnedRecreationBoundary)
+	if (!bOwnedRecreationBoundaryWheeledDomainStorage())
 	{
 		JoinInputWorkerBeforeStorageDestruction();
 		if (!RetireSpeedWorldAdapterBeforeTeardown())
-			UE_LOG(SpeedInputLog, Fatal, TEXT("Wheeled adapter removal was not acknowledged before physics-state teardown"));
+			SPEED_NATIVE_LOG(SpeedInputLog, Fatal, TEXT("Wheeled adapter removal was not acknowledged before physics-state teardown"));
 	}
 	// PVehicle owns the suspension storage; invalidate every sub-body alias
 	// before any physics-state teardown, even when the output handle was already
@@ -1091,13 +2318,13 @@ void USpeedWheeledComponent::OnDestroyPhysicsState()
 		}
 	}
 
-	if (SNetworkPhysicsComponent)
+	if (SNetworkPhysicsComponentWheeledDomainStorage())
 	{
-		SNetworkPhysicsComponent->RemoveDataHistory();
+		SNetworkPhysicsComponentWheeledDomainStorage()->RemoveDataHistory();
 	}
-	if (WheeledNetworkPhysicsComponent)
+	if (WheeledNetworkPhysicsComponentWheeledDomainStorage())
 	{
-		WheeledNetworkPhysicsComponent->RemoveDataHistory();
+		WheeledNetworkPhysicsComponentWheeledDomainStorage()->RemoveDataHistory();
 	}
 	UPawnMovementComponent::OnDestroyPhysicsState();
 	bUsingNetworkPhysicsPrediction = false; // stop prediction to prevent game crash
@@ -1114,7 +2341,7 @@ TArray<USSubBody*> USpeedWheeledComponent::CreateSubBodies()
 TArray<USWheelSubBody*> USpeedWheeledComponent::CreateWheelSubBodies()
 {
 	TArray<USWheelSubBody*> ret;
-	for (int WheelIdx = 0; WheelIdx < WheelSetups.Num(); WheelIdx++)
+	for (int WheelIdx = 0; WheelIdx < WheelSetupsWheeledDomainStorage().Num(); WheelIdx++)
 	{
 		ret.Add(CreateWheelSubBody(WheelIdx));
 	}
@@ -1133,51 +2360,51 @@ USWheelSubBody* USpeedWheeledComponent::CreateWheelSubBody(const int& WheelIndex
 
 void USpeedWheeledComponent::SetSubBodies(const TArray<USSubBody*>& NewSubBodies)
 {
-	SubBodies = NewSubBodies;
+	SubBodiesWheeledDomainStorage() = NewSubBodies;
 }
 
 unsigned int USpeedWheeledComponent::NumFrame() const
 {
-	return BaseGameState.NumFrame;
+	return BaseGameStateStorage().NumFrame;
 }
 
 uint16 USpeedWheeledComponent::GetMinNbFramesBeforeCanMove() const
 {
-	return MinNbFramesBeforeCanMove;
+	return MinNbFramesBeforeCanMoveWheeledDomainStorage();
 }
 
 void USpeedWheeledComponent::SetImmediateMovementForTesting()
 {
-	TimeBeforeCanMove = 0.0f;
-	MinNbFramesBeforeCanMove = 0;
-	WheeledPhysicsState.nbFramesbeforeCanMove = 0;
-	WheeledPhysicsState.bStartCountdown = false;
-	SinceCanMoveFrame = NumFrame();
+	TimeBeforeCanMoveWheeledDomainStorage() = 0.0f;
+	MinNbFramesBeforeCanMoveWheeledDomainStorage() = 0;
+	WheeledPhysicsStateStorage().nbFramesbeforeCanMove = 0;
+	WheeledPhysicsStateStorage().bStartCountdown = false;
+	SinceCanMoveFrameWheeledDomainStorage() = NumFrame();
 	UnFreezeMovement();
 }
 
 float USpeedWheeledComponent::GetPhysMass() const
 {
-	return PhysMass;
+	return PhysMassWheeledDomainStorage();
 }
 
 const FVector& USpeedWheeledComponent::GetPhysCOM() const
 {
-	return BasePhysicsState.Kinematic.Location;
+	return PublicPhysCOMView();
 }
 
 const FVector& USpeedWheeledComponent::GetPhysCenterOfMassLocal() const
 {
-	return CenterOfMass;
+	return PublicPhysLocalCOMView();
 }
 const TArray<USSubBody*>& USpeedWheeledComponent::GetSubBodies() const
 {
-	return SubBodies;
+	return SubBodiesWheeledDomainStorage();
 }
 
 SubBodyConfig USpeedWheeledComponent::GetSubBodyConfig(const USSubBody& SubBody) const
 {
-	if (HitboxSubBody && &SubBody == HitboxSubBody)
+	if (ReadHitboxForPhysics() && &SubBody == ReadHitboxForPhysics())
 	{
 		SubBodyConfig Config;
 		return Config;
@@ -1193,25 +2420,68 @@ WheelSubBodyConfig USpeedWheeledComponent::GetWheelSubBodyConfig(const USWheelSu
 
 SKinematic USpeedWheeledComponent::GetKinematicsOfSubBody(const USSubBody& SubBody, const unsigned int& LocalFrame) const
 {
-	return GetOriginKinematicStateForFrame(LocalFrame);
+	return Speed::NativeKinematics::FComponentRead::Of(*this).OriginForFrame(LocalFrame);
 }
-FMatrix USpeedWheeledComponent::ComputeWorldInvInertiaTensor() const
+class USpeedWheeledComponent::FLegacyInertiaAccess final
+{
+    friend class USpeedWheeledComponent;
+    const USpeedWheeledComponent& Owner;
+    explicit FLegacyInertiaAccess(const USpeedWheeledComponent& Value):Owner(Value){}
+    FLegacyInertiaAccess(const FLegacyInertiaAccess&)=delete;
+    FLegacyInertiaAccess& operator=(const FLegacyInertiaAccess&)=delete;
+    FLegacyInertiaAccess(FLegacyInertiaAccess&&)=delete;
+    FLegacyInertiaAccess& operator=(FLegacyInertiaAccess&&)=delete;
+public:
+    const FQuat& Rotation() const {return Speed::NativeKinematics::FComponentRead::Rotation(Owner);}
+    const FMatrix& LocalInv() const {return Owner.CarLocalInvIWheeledDomainStorage();}
+};
+class USpeedWheeledComponent::FNativeInertiaAccess final
+{
+    friend class USpeedWheeledComponent;
+    const ISpeedComponent& Owner;
+    const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation;
+    explicit FNativeInertiaAccess(const ISpeedComponent& Value,const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation):Owner(Value),Operation(Operation)
+    {
+        (void)Speed::NativeKinematics::FComponentRead::Current(Operation,Owner);
+        (void)Speed::Netcode::Prediction::FPrivateNativeStorageAccess::Part<const FOriginalWheeledDomain>(Operation,&Owner);
+    }
+    FNativeInertiaAccess(const FNativeInertiaAccess&)=delete;
+    FNativeInertiaAccess& operator=(const FNativeInertiaAccess&)=delete;
+    FNativeInertiaAccess(FNativeInertiaAccess&&)=delete;
+    FNativeInertiaAccess& operator=(FNativeInertiaAccess&&)=delete;
+public:
+    const FQuat& Rotation() const {return Speed::NativeKinematics::FComponentRead::Rotation(Operation,Owner);}
+    const FMatrix& LocalInv() const {return Speed::Netcode::Prediction::FPrivateNativeStorageAccess::Part<const FOriginalWheeledDomain>(Operation,&Owner).CarLocalInvI;}
+};
+template<class TAccess>
+FMatrix USpeedWheeledComponent::ComputeWorldInvInertiaBody(TAccess& Storage)
 {
 	// The covariant correction is not yet qualified against the host's existing
 	// steering/contact contracts. Preserve the published response by default.
 #if !UE_BUILD_SHIPPING
-	if (CVarIAmSpeedCovariantVehicleInertia.GetValueOnAnyThread() != 0)
+	if (Speed::RoadSettings::ReadOriginalOrLegacy<95>([](){ return CVarIAmSpeedCovariantVehicleInertia.GetValueOnAnyThread(); }) != 0)
 	{
 		// TransformVector uses row vectors: unrotate the world torque, apply the
 		// chassis tensor, then rotate back. Match the box accessor without Euler
 		// pole loss; wheel impulses must not depend on the vehicle's world heading.
-		const FMatrix ChassisToWorld = FQuatRotationMatrix(GetPhysRotation());
-		return ChassisToWorld.GetTransposed() * CarLocalInvI * ChassisToWorld;
+		const FMatrix ChassisToWorld = FQuatRotationMatrix(Storage.Rotation());
+		return ChassisToWorld.GetTransposed() * Storage.LocalInv() * ChassisToWorld;
 	}
 #endif
-	const FMatrix ChassisToWorld = FRotationMatrix::Make(GetPhysRotation().Rotator());
-	return ChassisToWorld * CarLocalInvI * ChassisToWorld.GetTransposed();
+	const FMatrix ChassisToWorld = FRotationMatrix::Make(Storage.Rotation().Rotator());
+	return ChassisToWorld * Storage.LocalInv() * ChassisToWorld.GetTransposed();
 }
+FMatrix USpeedWheeledComponent::ComputeWorldInvInertiaTensor() const
+{
+    FLegacyInertiaAccess Storage(*this);
+    return ComputeWorldInvInertiaBody(Storage);
+}
+FMatrix USpeedWheeledComponent::ComputeNativeComponentInvInertia(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const ISpeedComponent& Component)
+{
+    FNativeInertiaAccess Storage(Component,Operation);
+    return ComputeWorldInvInertiaBody(Storage);
+}
+
 
 FMatrix USpeedWheeledComponent::ComputeWorldInvInertiaTensorOfSubBody(const USSubBody& SubBody) const
 {
@@ -1221,27 +2491,27 @@ FMatrix USpeedWheeledComponent::ComputeWorldInvInertiaTensorOfSubBody(const USSu
 
 const SKinematic& USpeedWheeledComponent::GetKinematicState() const
 {
-	return BasePhysicsState.Kinematic;
+    return BasePhysicsState.Kinematic;
 }
 
 const SKinematic& USpeedWheeledComponent::GetKinematicStateForFrame(const unsigned int& LocalFrame) const
 {
-	const int32 Idx = LocalFrame % SpeedConstants::RecordedHistorySize;
-	if (RecordedBaseFrames[Idx] == LocalFrame)
-	{
-		return RecordedBaseStates[Idx].Kinematic;
-	}
-	return BasePhysicsState.Kinematic;
+    const int32 Idx = LocalFrame % SpeedConstants::RecordedHistorySize;
+    if (RecordedBaseFrames[Idx] == LocalFrame)
+    {
+        return RecordedBaseStates[Idx].Kinematic;
+    }
+    return BasePhysicsState.Kinematic;
 }
 
 float USpeedWheeledComponent::GetPhysMaxSpeed() const
 {
-	return PhysMaxSpeed;
+	return PhysMaxSpeedWheeledDomainStorage();
 }
 
 float USpeedWheeledComponent::GetPhysMaxAngularSpeed() const
 {
-	return PhysMaxAngularSpeed;
+	return PhysMaxAngularSpeedWheeledDomainStorage();
 }
 
 void USpeedWheeledComponent::PostPhysicsUpdatePrv(const float& delta)
@@ -1263,12 +2533,12 @@ void USpeedWheeledComponent::PostPhysicsUpdatePrv(const float& delta)
 
 void USpeedWheeledComponent::SetIsUpsideDown(bool bUpsideDown)
 {
-	WheeledGameState.bIsUpsideDown = bUpsideDown;
+	WheeledGameStateStorage().bIsUpsideDown = bUpsideDown;
 }
 
 bool USpeedWheeledComponent::IsUpsideDown() const
 {
-	return WheeledGameState.bIsUpsideDown;
+	return WheeledGameStateStorage().bIsUpsideDown;
 }
 
 bool USpeedWheeledComponent::IsInAutoRecover() const
@@ -1288,16 +2558,16 @@ bool USpeedWheeledComponent::IsInWheelAutoRecover() const
 
 void USpeedWheeledComponent::RcvImpactOnSubBody(const USSubBody& SubBody, const FVector& Location)
 {
-	if (HitboxSubBody && &SubBody == HitboxSubBody)
+	if (ReadHitboxForPhysics() && &SubBody == ReadHitboxForPhysics())
 	{
-		SpeedCarOwner->SetPhysSparkleLocation(Location);
+		SpeedCarOwnerWheeledDomainStorage()->SetPhysSparkleLocation(Location);
 	}
-	WheeledPhysicsState.FramesSinceLastImpact = 0;
+	WheeledPhysicsStateStorage().FramesSinceLastImpact = 0;
 }
 
 void USpeedWheeledComponent::SetKinematicState(const SKinematic& NewKinematicState)
 {
-	BasePhysicsState.Kinematic = NewKinematicState;
+	BasePhysicsStateStorage().Kinematic = NewKinematicState;
 }
 
 void USpeedWheeledComponent::RegisterTestVelocity(const FVector& InitialVelocity)
@@ -1307,24 +2577,24 @@ void USpeedWheeledComponent::RegisterTestVelocity(const FVector& InitialVelocity
 
 void USpeedWheeledComponent::RegisterTestVelocity(const FVector& InitialVelocity, const FVector& InitialAngularVelocity)
 {
-	BaseGameState.TestVelocity = InitialVelocity;
-	BaseGameState.TestAngularVelocity = InitialAngularVelocity;
-	BaseGameState.bHasTestVelocity = !InitialVelocity.IsZero() || !InitialAngularVelocity.IsZero();
+	BaseGameStateStorage().TestVelocity = InitialVelocity;
+	BaseGameStateStorage().TestAngularVelocity = InitialAngularVelocity;
+	BaseGameStateStorage().bHasTestVelocity = !InitialVelocity.IsZero() || !InitialAngularVelocity.IsZero();
 }
 
 void USpeedWheeledComponent::ApplyTestVelocity()
 {
-	if (!BaseGameState.bHasTestVelocity || !CanMove())
+	if (!BaseGameStateStorage().bHasTestVelocity || !CanMove())
 	{
 		return;
 	}
-	SetPhysCOMVelocity(BaseGameState.TestVelocity);
-	SetPhysAngularVelocity(BaseGameState.TestAngularVelocity);
-	UE_LOG(SpeedPhysicsLog, Log, TEXT("[%s(%s)][TestInitialKinematics] At Frame = %d, Kinematics: %s"),
-		*GetOwner()->GetName(), *GetRole(), NumFrame(), *BasePhysicsState.Kinematic.ToString());
-	BaseGameState.TestVelocity = FVector::ZeroVector;
-	BaseGameState.TestAngularVelocity = FVector::ZeroVector;
-	BaseGameState.bHasTestVelocity = false;
+	SetPhysCOMVelocity(BaseGameStateStorage().TestVelocity);
+	SetPhysAngularVelocity(BaseGameStateStorage().TestAngularVelocity);
+	SPEED_NATIVE_LOG(SpeedPhysicsLog, Log, TEXT("[%s(%s)][TestInitialKinematics] At Frame = %d, Kinematics: %s"),
+		*GetOwner()->GetName(), *GetRole(), NumFrame(), *BasePhysicsStateStorage().Kinematic.ToString());
+	BaseGameStateStorage().TestVelocity = FVector::ZeroVector;
+	BaseGameStateStorage().TestAngularVelocity = FVector::ZeroVector;
+	BaseGameStateStorage().bHasTestVelocity = false;
 }
 
 void USpeedWheeledComponent::AsyncPhysicsTickComponent(float DeltaTime, float SimTime)
@@ -1340,20 +2610,20 @@ void USpeedWheeledComponent::DemoedBy(ASpeedCar* otherCar)
 {
 	if (HasAuthority())
 	{
-		SpeedCarOwner->DemoedBy(otherCar);
+		SpeedCarOwnerWheeledDomainStorage()->DemoedBy(otherCar);
 	}
 }
 
 void USpeedWheeledComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
-	bWheeledEndPlayTeardown = true;
+	bWheeledEndPlayTeardownWheeledDomainStorage() = true;
 	JoinInputWorkerBeforeStorageDestruction();
 	ASpeedPhysicsSimulation* RetirementDriver = nullptr;
 	bool bResumeAfterRemoval = false;
-	if (HasLegacyRemoteInputAuthority() && !bInputRetirementCompleted.load(std::memory_order_acquire))
+	if (HasLegacyRemoteInputAuthority() && !bInputRetirementCompletedWheeledDomainStorage().load(std::memory_order_acquire))
 	{
 		check(IsInGameThread());
-		bInputRetirementRequested.store(true, std::memory_order_release);
+		bInputRetirementRequestedWheeledDomainStorage().store(true, std::memory_order_release);
 		if (UWorld* World = GetWorld())
 			for (TActorIterator<ASpeedPhysicsSimulation> It(World); It; ++It) { RetirementDriver = *It; break; }
 		if (RetirementDriver)
@@ -1367,43 +2637,43 @@ void USpeedWheeledComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 					RetirementDriver->GetUniqueID(), GetUniqueID(), GetOwner() ? GetOwner()->GetUniqueID() : 0,
 					GetWorld() ? double(GetWorld()->GetTimeSeconds()) : -1., RetirementDriver->GetInputWorkerGeneration(),
 					uint32(Boundary), int32(HasProducedInputAuthority()), int32(HasLegacyRemoteInputAuthority()),
-					int32(bWheeledEndPlayTeardown), int32(bInputRetirementCompleted.load(std::memory_order_acquire))));
+					int32(bWheeledEndPlayTeardownWheeledDomainStorage()), int32(bInputRetirementCompletedWheeledDomainStorage().load(std::memory_order_acquire))));
 				RetirementDriver->JoinOwnedSimulationForInputTeardown();
 				bResumeAfterRemoval = false;
 			}
 		}
 		// If no source was ever polled, retirement has no affine object to free.
-		if (!bInputRetirementCompleted.load(std::memory_order_acquire) && !RetireInputProcessingOnWorker())
-			UE_LOG(SpeedInputLog, Fatal, TEXT("Remote input owner was not retired before component destruction"));
+		if (!bInputRetirementCompletedWheeledDomainStorage().load(std::memory_order_acquire) && !RetireInputProcessingOnWorker())
+			SPEED_NATIVE_LOG(SpeedInputLog, Fatal, TEXT("Remote input owner was not retired before component destruction"));
 	}
 	if (!RetireSpeedWorldAdapterBeforeTeardown())
-		UE_LOG(SpeedInputLog, Fatal, TEXT("Wheeled adapter removal was not acknowledged before EndPlay teardown"));
-	if (bOwnedRecreationBoundary)
+		SPEED_NATIVE_LOG(SpeedInputLog, Fatal, TEXT("Wheeled adapter removal was not acknowledged before EndPlay teardown"));
+	if (bOwnedRecreationBoundaryWheeledDomainStorage())
 	{
-		if (ASpeedPhysicsSimulation* Driver = RecreationDriver.Get()) Driver->ResumeOwnedBoundaryService();
-		bOwnedRecreationBoundary = false;
-		RecreationDriver.Reset();
-		bResumeAfterPhysicsRecreation = false;
+		if (ASpeedPhysicsSimulation* Driver = RecreationDriverWheeledDomainStorage().Get()) Driver->ResumeOwnedBoundaryService();
+		bOwnedRecreationBoundaryWheeledDomainStorage() = false;
+		RecreationDriverWheeledDomainStorage().Reset();
+		bResumeAfterPhysicsRecreationWheeledDomainStorage() = false;
 	}
 	// Make car sleeps else suspension will crash the game
-	if (VehicleSimulationPT)
+	if (VehicleSimulationPTWheeledDomainStorage())
 	{
-		VehicleSimulationPT->VehicleState.bSleeping = true;
+		VehicleSimulationPTWheeledDomainStorage()->VehicleState.bSleeping = true;
 	}
 
-	if (IsValid(SNetworkPhysicsComponent) && SNetworkPhysicsComponent->IsRegistered())
+	if (IsValid(SNetworkPhysicsComponentWheeledDomainStorage()) && SNetworkPhysicsComponentWheeledDomainStorage()->IsRegistered())
 	{
-		SNetworkPhysicsComponent->UnregisterComponent();
+		SNetworkPhysicsComponentWheeledDomainStorage()->UnregisterComponent();
 	}
 
-	if (IsValid(WheeledNetworkPhysicsComponent) && WheeledNetworkPhysicsComponent->IsRegistered())
+	if (IsValid(WheeledNetworkPhysicsComponentWheeledDomainStorage()) && WheeledNetworkPhysicsComponentWheeledDomainStorage()->IsRegistered())
 	{
-		WheeledNetworkPhysicsComponent->UnregisterComponent();
+		WheeledNetworkPhysicsComponentWheeledDomainStorage()->UnregisterComponent();
 	}
 
-	if (IsValid(SNetworkSettings) && SNetworkSettings->IsRegistered())
+	if (IsValid(SNetworkSettingsWheeledDomainStorage()) && SNetworkSettingsWheeledDomainStorage()->IsRegistered())
 	{
-		SNetworkSettings->UnregisterComponent();
+		SNetworkSettingsWheeledDomainStorage()->UnregisterComponent();
 	}
 
 	Super::EndPlay(EndPlayReason);
@@ -1413,27 +2683,27 @@ void USpeedWheeledComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 
 bool USpeedWheeledComponent::IsFrozen() const
 {
-	return BasePhysicsState.bIsFrozen;
+	return BasePhysicsStateStorage().bIsFrozen;
 }
 
 void USpeedWheeledComponent::SetIsFrozen(bool bFrozen)
 {
-	BasePhysicsState.bIsFrozen = bFrozen;
+	BasePhysicsStateStorage().bIsFrozen = bFrozen;
 }
 
 void USpeedWheeledComponent::SetEngineFPS(const unsigned int& FPS)
 {
-	EngineFPS = FPS;
+	EngineFPSWheeledDomainStorage() = FPS;
 }
 
 float USpeedWheeledComponent::GetEngineFPS() const
 {
-	return EngineFPS;
+	return EngineFPSWheeledDomainStorage();
 }
 
 int32 USpeedWheeledComponent::GetSinceCanMoveFrame() const
 {
-	return SinceCanMoveFrame;
+	return SinceCanMoveFrameWheeledDomainStorage();
 }
 
 bool USpeedWheeledComponent::CanBypassCanonicalSupportContactWarmup() const
@@ -1442,7 +2712,7 @@ bool USpeedWheeledComponent::CanBypassCanonicalSupportContactWarmup() const
 	// confirmation to take over. The first movable frame must already have
 	// proven a stationary four-wheel pose; airborne and impact starts retain the
 	// full warm-up requirement even if they contact during this interval.
-	return bCanonicalSupportStartupPoseConfirmed
+	return bCanonicalSupportStartupPoseConfirmedWheeledDomainStorage()
 		&& CanMove() && NbFramesSinceCanMove() < 5;
 }
 
@@ -1452,14 +2722,14 @@ bool USpeedWheeledComponent::CanPreserveCanonicalSupportNormalRotation() const
 	// complete five unfrozen movable frames before yaw can be preserved by the
 	// ordinary canonical-support projection. Countdown contacts alone do not
 	// establish this history; independent freezes must also interrupt it.
-	if (bCanonicalSupportStartupPoseConfirmed)
+	if (bCanonicalSupportStartupPoseConfirmedWheeledDomainStorage())
 	{
 		return true;
 	}
 	const uint32 CurrentFrame = NumFrame();
-	if (!CanMove() || IsFrozen() || SinceCanMoveFrame < 0
+	if (!CanMove() || IsFrozen() || SinceCanMoveFrameWheeledDomainStorage() < 0
 		|| CurrentFrame > uint32(MAX_int32)
-		|| uint64(CurrentFrame) < uint64(SinceCanMoveFrame) + 5u)
+		|| uint64(CurrentFrame) < uint64(SinceCanMoveFrameWheeledDomainStorage()) + 5u)
 	{
 		return false;
 	}
@@ -1467,12 +2737,12 @@ bool USpeedWheeledComponent::CanPreserveCanonicalSupportNormalRotation() const
 	{
 		const int32 Frame = int32(CurrentFrame) - Offset;
 		const int32 Idx = Frame % SpeedConstants::RecordedHistorySize;
-		if (!RecordedBaseFrames.IsValidIndex(Idx)
-			|| !RecordedBaseStates.IsValidIndex(Idx)
-			|| !RecordedWheeledStates.IsValidIndex(Idx)
-			|| RecordedBaseFrames[Idx] != Frame
-			|| RecordedBaseStates[Idx].bIsFrozen
-			|| RecordedWheeledStates[Idx].nbFramesbeforeCanMove != 0)
+		if (!RecordedBaseFramesWheeledDomainStorage().IsValidIndex(Idx)
+			|| !RecordedBaseStatesWheeledDomainStorage().IsValidIndex(Idx)
+			|| !RecordedWheeledStatesWheeledDomainStorage().IsValidIndex(Idx)
+			|| RecordedBaseFramesWheeledDomainStorage()[Idx] != Frame
+			|| RecordedBaseStatesWheeledDomainStorage()[Idx].bIsFrozen
+			|| RecordedWheeledStatesWheeledDomainStorage()[Idx].nbFramesbeforeCanMove != 0)
 		{
 			return false;
 		}
@@ -1506,16 +2776,16 @@ void USpeedWheeledComponent::PhysicsTick(const float& DeltaTime, const float& Si
 {
 	// Update NumFrame at the beginning of the tick so that it can be used in the rest of the tick functions
 	UpdateNumFrame(SimTime);
-	PreparedCanonicalInputFrame.Reset();
+	PreparedCanonicalInputFrameWheeledDomainStorage().Reset();
 	PreparePhysicsFrame(DeltaTime, SimTime);
 }
 
 bool USpeedWheeledComponent::NeutralizeCanonicalInputAtBoundary()
 {
-	if (bCanonicalInputPending || InputReservationV2 || !CanNeutralizeProducedInputStateAtBoundary()) return false;
-	CanonicalInputSnapshot.reset(); PreparedCanonicalInputFrame.Reset();
-	PublishedWheeledNetworkInput.store(std::shared_ptr<const FCompletedWheeledInput>{}, std::memory_order_seq_cst);
-	WheeledPhysicalInput.Throttle = 0; WheeledPhysicalInput.Brake = 0; WheeledPhysicalInput.Steer = 0;
+	if (bCanonicalInputPendingWheeledDomainStorage() || InputReservationV2WheeledDomainStorage() || !CanNeutralizeProducedInputStateAtBoundary()) return false;
+	CanonicalInputSnapshotWheeledDomainStorage().reset(); PreparedCanonicalInputFrameWheeledDomainStorage().Reset();
+	PublishedWheeledNetworkInputWheeledDomainStorage().store(std::shared_ptr<const FCompletedWheeledInput>{}, std::memory_order_seq_cst);
+	WheeledPhysicalInputStorage().Throttle = 0; WheeledPhysicalInputStorage().Brake = 0; WheeledPhysicalInputStorage().Steer = 0;
 	SyncWheeledPhysicalInputToState(); ResetProducedInputState();
 	return PublishInputCancellationAtBoundary();
 }
@@ -1523,25 +2793,25 @@ bool USpeedWheeledComponent::NeutralizeCanonicalInputAtBoundary()
 bool USpeedWheeledComponent::InstallCanonicalInput(uint64 Frame,
 	std::shared_ptr<const Speed::Input::V2::FOwnerInputSnapshot> Snapshot)
 {
-	if (!Snapshot || bCanonicalInputPending || InputReservationV2 || FrameInputStream || FrameInputStreamV2
+	if (!Snapshot || bCanonicalInputPendingWheeledDomainStorage() || InputReservationV2WheeledDomainStorage() || FrameInputStreamWheeledDomainStorage() || FrameInputStreamV2WheeledDomainStorage()
 		|| !HasProducedInputAuthority() || IsTestInputOverrideEnabled()
 		|| Snapshot->Input.GetData().ConsumptionFrame != Frame) return false;
-	CanonicalInputSnapshot = std::move(Snapshot);
-	bCanonicalInputPending = true;
-	bInputFrameRejectedV2 = false;
+	CanonicalInputSnapshotWheeledDomainStorage() = std::move(Snapshot);
+	bCanonicalInputPendingWheeledDomainStorage() = true;
+	bInputFrameRejectedV2WheeledDomainStorage() = false;
 	return true;
 }
 
 bool USpeedWheeledComponent::PrepareCanonicalInputs(const FCanonicalFrameContext& Context)
 {
-	PreparedCanonicalInputFrame.Reset();
+	PreparedCanonicalInputFrameWheeledDomainStorage().Reset();
 	if (Context.NumFrame >= TNumericLimits<uint32>::Max()) return false;
-	BaseGameState.NumFrame = static_cast<uint32>(Context.NumFrame) + 1u;
+	BaseGameStateStorage().NumFrame = static_cast<uint32>(Context.NumFrame) + 1u;
 	// Preserve countdown eligibility at this N before evaluating input edges.
 	HandleCountdownTimer();
 	UpdateInputs();
-	if (bInputFrameRejectedV2) return false;
-	PreparedCanonicalInputFrame = Context.NumFrame;
+	if (bInputFrameRejectedV2WheeledDomainStorage()) return false;
+	PreparedCanonicalInputFrameWheeledDomainStorage() = Context.NumFrame;
 	return true;
 }
 
@@ -1552,9 +2822,9 @@ void USpeedWheeledComponent::PrepareCanonicalFrame(
 		TEXT("Canonical frame exceeds the legacy local-frame range."));
 	// Network Physics local frames remain one-based during migration; the
 	// canonical simulation frame is zero-based and authoritative.
-	checkf(PreparedCanonicalInputFrame.IsSet() && PreparedCanonicalInputFrame.GetValue() == Context.NumFrame,
+	checkf(PreparedCanonicalInputFrameWheeledDomainStorage().IsSet() && PreparedCanonicalInputFrameWheeledDomainStorage().GetValue() == Context.NumFrame,
 		TEXT("Canonical gameplay requires successful input admission for this frame."));
-	BaseGameState.NumFrame = static_cast<uint32>(Context.NumFrame) + 1u;
+	BaseGameStateStorage().NumFrame = static_cast<uint32>(Context.NumFrame) + 1u;
 	PreparePhysicsFrame(Context.PhysicalDeltaTime, Context.SimTime);
 }
 
@@ -1564,9 +2834,9 @@ void USpeedWheeledComponent::PreparePhysicsFrame(
 	UpdateFrameState();
     // RecoverWheelState in UpdateFrameState may restore a predicted frame.
     // Advance the restored cooldown once, rather than decrementing stale state.
-    if (!WheeledPhysicsState.LastCarBumpVictim.IsValid()) ResetCarBumpCooldown();
+    if (!WheeledPhysicsStateStorage().LastCarBumpVictim.IsValid()) ResetCarBumpCooldown();
     Speed::Collision::AdvanceCarBumpCooldown(
-        WheeledPhysicsState.LastCarBumpVictim, WheeledPhysicsState.CarBumpCooldownFrames);
+        WheeledPhysicsStateStorage().LastCarBumpVictim, WheeledPhysicsStateStorage().CarBumpCooldownFrames);
 	// A test's initial state must be visible from the first movable frame, before any gameplay force can modify it.
 	ApplyTestVelocity();
 #if !UE_BUILD_SHIPPING
@@ -1600,7 +2870,7 @@ void USpeedWheeledComponent::PreparePhysicsFrame(
 
 void USpeedWheeledComponent::UpdateFrameState()
 {
-	if (!PreparedCanonicalInputFrame.IsSet())
+	if (!PreparedCanonicalInputFrameWheeledDomainStorage().IsSet())
 	{
 		HandleCountdownTimer();
 		UpdateInputs();
@@ -1609,85 +2879,87 @@ void USpeedWheeledComponent::UpdateFrameState()
 	RecoverWheelState();
 	if (CanMove() && !IsOnTheGround())
 	{
-		bCanonicalSupportStartupPoseConfirmed = false;
+		bCanonicalSupportStartupPoseConfirmedWheeledDomainStorage() = false;
 	}
-	if (CanMove() && int32(NumFrame()) == SinceCanMoveFrame
-		&& bCanonicalSupportStartupInitializationRequested)
+	if (CanMove() && int32(NumFrame()) == SinceCanMoveFrameWheeledDomainStorage()
+		&& bCanonicalSupportStartupInitializationRequestedWheeledDomainStorage())
 	{
-		bCanonicalSupportStartupInitializationRequested = false;
-		bCanonicalSupportStartupPoseConfirmed = false;
+		bCanonicalSupportStartupInitializationRequestedWheeledDomainStorage() = false;
+		bCanonicalSupportStartupPoseConfirmedWheeledDomainStorage() = false;
 		// Only an already stationary support is a startup point-fix candidate.
 		// Callers opt in only when they authored an exact support pose. Full speed
 		// checks still reject stale requests applied to a moving body.
-		if (GetPhysCOMVelocity().Size() <= 0.01f
-			&& GetPhysAngularVelocity().Size() <= 0.01f)
+		if (Speed::NativeKinematics::FComponentRead::Of(*this).COMVelocity().Size() <= 0.01f
+			&& Speed::NativeKinematics::FComponentRead::Of(*this).AngularVelocity().Size() <= 0.01f)
 		{
 			// RecoverWheelState runs after the countdown transition. Initialize the
 			// support and its transient length here, after recovery but before gravity
 			// and suspension consume the first movable frame.
 			UpdateSubBodiesKinematics();
-			for (auto& Wheel : WheelSubBodies)
+			for (auto Wheel : ReadWheelSubBodiesForPhysics())
 			{
 				if (Wheel)
 				{
 					Wheel->SweepSuspension(0.0f);
 				}
 			}
-			bSimTimelineWasGrounded = IsOnTheGround();
-			bCanonicalSupportStartupPoseConfirmed = bSimTimelineWasGrounded;
-			if (bCanonicalSupportStartupPoseConfirmed)
+			bSimTimelineWasGroundedWheeledDomainStorage() = IsOnTheGround();
+			bCanonicalSupportStartupPoseConfirmedWheeledDomainStorage() = bSimTimelineWasGroundedWheeledDomainStorage();
+			if (bCanonicalSupportStartupPoseConfirmedWheeledDomainStorage())
 			{
 				ResetWheelTransientStateForCurrentPose(true);
 			}
 		}
 	}
-	if (CanMove() && CVarIAmSpeedDebugKinematics.GetValueOnAnyThread() != 0 && NumFrame() % 1 == 0)
+	if (CanMove() && Speed::RoadSettings::ReadOriginalOrLegacy<43>([](){ return CVarIAmSpeedDebugKinematics.GetValueOnAnyThread(); }) != 0 && NumFrame() % 1 == 0)
 	{
-		const FVector Forward = GetPhysForwardVector();
-		const FVector Right = GetPhysRightVector();
-		const FVector Up = GetPhysUpVector();
+		const FVector Forward = Speed::NativeKinematics::FComponentRead::Of(*this).Forward();
+		const FVector Right = Speed::NativeKinematics::FComponentRead::Of(*this).Right();
+		const FVector Up = Speed::NativeKinematics::FComponentRead::Of(*this).Up();
 		uint32 WheelMask = 0;
-		for (const TObjectPtr<USWheelSubBody>& Wheel : WheelSubBodies)
+		for (const auto Wheel : ReadWheelSubBodiesForPhysics())
 		{
-			if (Wheel && Wheel->IsOnGround() && Wheel->Idx() >= 0
-				&& Wheel->Idx() < 32)
+			if (Wheel && Wheel->IsOnGround() && Speed::NativeKinematics::FSolidPropertiesAccess::Idx(*Wheel) >= 0
+				&& Speed::NativeKinematics::FSolidPropertiesAccess::Idx(*Wheel) < 32)
 			{
-				WheelMask |= 1u << Wheel->Idx();
+				WheelMask |= 1u << Speed::NativeKinematics::FSolidPropertiesAccess::Idx(*Wheel);
 			}
 		}
-		const FVector AngularVelocity = GetPhysAngularVelocity();
+		const FVector AngularVelocity = Speed::NativeKinematics::FComponentRead::Of(*this).AngularVelocity();
 		const FVector LocalAngularVelocity(
 			FVector::DotProduct(AngularVelocity, Forward),
 			FVector::DotProduct(AngularVelocity, Right),
 			FVector::DotProduct(AngularVelocity, Up));
-		UE_LOG(SpeedPhysicsLog, Log,
+		const FString PhysicalDebugMessage=FString::Printf(
 			TEXT("[%s(%s)][UpdateFrameState] SinceCanMove=%d Wheels=%d Mask=0x%X COM=%s COMV=%s COMA=%s W=%s LocalW=%s Alpha=%s Forward=%s Right=%s Up=%s"),
 			*GetOwner()->GetName(),
 			*GetRole(),
 			NbFramesSinceCanMove(),
 			NumWheelsOnGround(),
 			WheelMask,
-			*GetPhysCOM().ToString(),
-			*GetPhysCOMVelocity().ToString(),
-			*GetPhysAccelerationAtPoint(GetPhysCOM()).ToString(),
+			*Speed::NativeKinematics::FComponentRead::Of(*this).COM().ToString(),
+			*Speed::NativeKinematics::FComponentRead::Of(*this).COMVelocity().ToString(),
+			*Speed::NativeKinematics::FComponentRead::Of(*this).AccelerationAtPoint(Speed::NativeKinematics::FComponentRead::Of(*this).COM()).ToString(),
 			*AngularVelocity.ToString(),
 			*LocalAngularVelocity.ToString(),
-			*GetPhysAngularAcceleration().ToString(),
+			*Speed::NativeKinematics::FComponentRead::Of(*this).AngularAcceleration().ToString(),
 			*Forward.ToString(),
 			*Right.ToString(),
 			*Up.ToString());
+        FScopedExternalObservationRouting ExternalObservers(*this);
+        SPEED_NATIVE_LOG(SpeedPhysicsLog,Log,TEXT("%s"),*PhysicalDebugMessage);
 	}
 }
 void USpeedWheeledComponent::UpdateNumFrame(const float& SimTime)
 {
 	const int32 CandidateFrame =
-		FMath::RoundToInt32(double(SimTime) * double(EngineFPS)) + 1;
+		FMath::RoundToInt32(double(SimTime) * double(EngineFPSWheeledDomainStorage())) + 1;
 
-	const int32 PreviousFrame = int32(BaseGameState.NumFrame);
+	const int32 PreviousFrame = int32(BaseGameStateStorage().NumFrame);
 
 	if (PreviousFrame <= 0)
 	{
-		BaseGameState.NumFrame = CandidateFrame;
+		BaseGameStateStorage().NumFrame = CandidateFrame;
 		return;
 	}
 
@@ -1697,27 +2969,27 @@ void USpeedWheeledComponent::UpdateNumFrame(const float& SimTime)
 		const int32 RollbackFrames = PreviousFrame - CandidateFrame;
 		if (!HasAuthority() && RollbackFrames >= MinRollbackFramesForResim)
 		{
-			BaseGameState.NumFrame = CandidateFrame;
+			BaseGameStateStorage().NumFrame = CandidateFrame;
 			return;
 		}
 
-		BaseGameState.NumFrame = PreviousFrame + 1;
+		BaseGameStateStorage().NumFrame = PreviousFrame + 1;
 		return;
 	}
 
 	if (CandidateFrame == PreviousFrame)
 	{
-		BaseGameState.NumFrame = PreviousFrame + 1;
+		BaseGameStateStorage().NumFrame = PreviousFrame + 1;
 		return;
 	}
 
 	if (CandidateFrame > PreviousFrame + 1)
 	{
-		BaseGameState.NumFrame = PreviousFrame + 1;
+		BaseGameStateStorage().NumFrame = PreviousFrame + 1;
 		return;
 	}
 
-	BaseGameState.NumFrame = CandidateFrame;
+	BaseGameStateStorage().NumFrame = CandidateFrame;
 }
 
 
@@ -1725,25 +2997,25 @@ void USpeedWheeledComponent::UpdateNumFrame(const float& SimTime)
 void USpeedWheeledComponent::UpdateInputs()
 {
 	const int32 CurrentFrame = NumFrame();
-	if (CanonicalInputSnapshot)
+	if (CanonicalInputSnapshotWheeledDomainStorage())
 	{
 		using namespace Speed::Input;
-		bProducedInputFrameOwned = true;
+		bProducedInputFrameOwnedWheeledDomainStorage() = true;
 		const auto N = FromLegacyLocalFrame(NumFrame());
-		const auto& S = *CanonicalInputSnapshot;
-		if (!bCanonicalInputPending || !N || S.Input.GetData().ConsumptionFrame != *N
+		const auto& S = *CanonicalInputSnapshotWheeledDomainStorage();
+		if (!bCanonicalInputPendingWheeledDomainStorage() || !N || S.Input.GetData().ConsumptionFrame != *N
 			|| !ValidateProducedInputFrameV2(S.Input))
-		{ bInputFrameRejectedV2 = true; return; }
+		{ bInputFrameRejectedV2WheeledDomainStorage() = true; return; }
 		if (S.Input.GetData().Reset) ResetProducedInputState();
-		WheeledPhysicalInput.Throttle = static_cast<uint8>(S.Applied[Throttle]);
-		WheeledPhysicalInput.Brake = static_cast<uint8>(S.Applied[Brake]);
-		WheeledPhysicalInput.Steer = static_cast<int8>(S.Applied[Steering]);
+		WheeledPhysicalInputStorage().Throttle = static_cast<uint8>(S.Applied[Throttle]);
+		WheeledPhysicalInputStorage().Brake = static_cast<uint8>(S.Applied[Brake]);
+		WheeledPhysicalInputStorage().Steer = static_cast<int8>(S.Applied[Steering]);
 		SyncWheeledPhysicalInputToState();
-		bInputFrameRejectedV2 = !ApplyProducedInputFrameV2(S.Input);
+		bInputFrameRejectedV2WheeledDomainStorage() = !ApplyProducedInputFrameV2(S.Input);
 		// Camera has its own already-stamped IAmSpeed queue. Consume it at this
 		// same owner input point, without polling the GT mailbox or redoing slew.
 		// Disabled generic camera keeps the old no-lock default path.
-		if (!bInputFrameRejectedV2 && bGenericCameraInputEnabled.load(std::memory_order_acquire))
+		if (!bInputFrameRejectedV2WheeledDomainStorage() && bGenericCameraInputEnabledWheeledDomainStorage().load(std::memory_order_acquire))
 			ConsumeQueuedCameraInputsForFrame(CurrentFrame);
 		return; // Registry still polls and processes the driving input once.
 	}
@@ -1751,26 +3023,26 @@ void USpeedWheeledComponent::UpdateInputs()
 	const auto CanonicalFrame = Speed::Input::FromLegacyLocalFrame(NumFrame());
 	if (HasLegacyRemoteInputAuthority())
 	{
-		bProducedInputFrameOwned = true;
-		bInputFrameRejectedV2 = !CanonicalFrame || !PrepareLegacyWheeledInput(*CanonicalFrame);
+		bProducedInputFrameOwnedWheeledDomainStorage() = true;
+		bInputFrameRejectedV2WheeledDomainStorage() = !CanonicalFrame || !PrepareLegacyWheeledInput(*CanonicalFrame);
 		return;
 	}
 	const bool bProduced = CanonicalFrame && ConsumeProducedWheeledInputs(*CanonicalFrame);
-	bProducedInputFrameOwned = bProduced || (!CanonicalFrame && HasProducedInputAuthority());
-	if (!CanonicalFrame && bProducedInputFrameOwned)
+	bProducedInputFrameOwnedWheeledDomainStorage() = bProduced || (!CanonicalFrame && HasProducedInputAuthority());
+	if (!CanonicalFrame && bProducedInputFrameOwnedWheeledDomainStorage())
 	{
-		ConsumedFrameInputStream.reset();
-		WheeledPhysicalInput.Throttle = 0;
-		WheeledPhysicalInput.Brake = 0;
-		WheeledPhysicalInput.Steer = 0;
+		ConsumedFrameInputStreamWheeledDomainStorage().reset();
+		WheeledPhysicalInputStorage().Throttle = 0;
+		WheeledPhysicalInputStorage().Brake = 0;
+		WheeledPhysicalInputStorage().Steer = 0;
 		ResetProducedInputState();
 	}
-	if (!bProducedInputFrameOwned)
+	if (!bProducedInputFrameOwnedWheeledDomainStorage())
 	{
 		// No GameThread driving-input mailbox remains.
 	}
 
-	WheeledPhysicalInput.bCanMove = CanMove();
+	WheeledPhysicalInputStorage().bCanMove = CanMove();
 	SyncWheeledPhysicalInputToState();
 	ConsumeQueuedCameraInputsForFrame(CurrentFrame);
 }
@@ -1780,35 +3052,35 @@ void USpeedWheeledComponent::SetFrameInputStream(std::shared_ptr<Speed::Input::F
 	check(IsInGameThread());
 	// Null is mandatory lifecycle teardown, including UnPossess during dispatch.
 	if (Stream && Speed::Input::FPresentationInputScope::IsActive()) return;
-	FScopeLock Lock(&FrameInputProducerMutex);
-	if (Stream && (FrameInputStreamV2 || HasLegacyRemoteInputAuthority())) return; // Never install a second authority.
-	if (FrameInputStream && FrameInputStream != Stream) FrameInputStream->Deactivate();
-	FrameInputStream = MoveTemp(Stream);
-	if (FrameInputStream) bProducedInputAuthority.store(true, std::memory_order_release);
-	bResetProducedWheeledInputs = true;
+	FScopeLock Lock(&FrameInputProducerMutexWheeledDomainStorage());
+	if (Stream && (FrameInputStreamV2WheeledDomainStorage() || HasLegacyRemoteInputAuthority())) return; // Never install a second authority.
+	if (FrameInputStreamWheeledDomainStorage() && FrameInputStreamWheeledDomainStorage() != Stream) FrameInputStreamWheeledDomainStorage()->Deactivate();
+	FrameInputStreamWheeledDomainStorage() = MoveTemp(Stream);
+	if (FrameInputStreamWheeledDomainStorage()) bProducedInputAuthorityWheeledDomainStorage().store(true, std::memory_order_release);
+	bResetProducedWheeledInputsWheeledDomainStorage() = true;
 }
 
 bool USpeedWheeledComponent::ConsumeProducedWheeledInputs(uint64 CanonicalFrame)
 {
-	ConsumedFrameInputStream.reset();
+	ConsumedFrameInputStreamWheeledDomainStorage().reset();
 	std::shared_ptr<Speed::Input::FInputStream> Stream;
 	std::shared_ptr<Speed::Input::V2::FInputStream> StreamV2;
 	bool bReset = false;
 	{
-		FScopeLock Lock(&FrameInputProducerMutex);
-		Stream = FrameInputStream;
-		StreamV2 = FrameInputStreamV2;
-		bReset = bResetProducedWheeledInputs;
-		bResetProducedWheeledInputs = false;
+		FScopeLock Lock(&FrameInputProducerMutexWheeledDomainStorage());
+		Stream = FrameInputStreamWheeledDomainStorage();
+		StreamV2 = FrameInputStreamV2WheeledDomainStorage();
+		bReset = bResetProducedWheeledInputsWheeledDomainStorage();
+		bResetProducedWheeledInputsWheeledDomainStorage() = false;
 	}
 	if (bReset)
 	{
 		ResetProducedInputState();
 		if (!IsTestInputOverrideEnabled())
 		{
-			WheeledPhysicalInput.Throttle = 0;
-			WheeledPhysicalInput.Brake = 0;
-			WheeledPhysicalInput.Steer = 0;
+			WheeledPhysicalInputStorage().Throttle = 0;
+			WheeledPhysicalInputStorage().Brake = 0;
+			WheeledPhysicalInputStorage().Steer = 0;
 		}
 
 	}
@@ -1829,38 +3101,38 @@ bool USpeedWheeledComponent::ConsumeProducedWheeledInputs(uint64 CanonicalFrame)
 	// Fail closed instead of falling back to an unrelated live action/clock.
 	if (bValid)
 	{
-		WheeledPhysicalInput.Throttle = Targets.ThrottleValue;
-		WheeledPhysicalInput.Brake = Targets.BrakeValue;
-		WheeledPhysicalInput.Steer = Targets.SteeringValue;
+		WheeledPhysicalInputStorage().Throttle = Targets.ThrottleValue;
+		WheeledPhysicalInputStorage().Brake = Targets.BrakeValue;
+		WheeledPhysicalInputStorage().Steer = Targets.SteeringValue;
 		bValid = ApplyProducedInputFrame(*Frame);
 	}
 	if (!bValid)
 	{
-		WheeledPhysicalInput.Throttle = 0;
-		WheeledPhysicalInput.Brake = 0;
-		WheeledPhysicalInput.Steer = 0;
+		WheeledPhysicalInputStorage().Throttle = 0;
+		WheeledPhysicalInputStorage().Brake = 0;
+		WheeledPhysicalInputStorage().Steer = 0;
 		ResetProducedInputState();
 		Stream->Deactivate();
 	}
-	if (bValid) ConsumedFrameInputStream = MoveTemp(Stream);
+	if (bValid) ConsumedFrameInputStreamWheeledDomainStorage() = MoveTemp(Stream);
 	return true;
 }
 
 void USpeedWheeledComponent::OnCanonicalFramePublished(uint64 Frame)
 {
-	if (ConsumedFrameInputStream) ConsumedFrameInputStream->PublishCompleted(Frame);
+	if (ConsumedFrameInputStreamWheeledDomainStorage()) ConsumedFrameInputStreamWheeledDomainStorage()->PublishCompleted(Frame);
 }
 
 bool USpeedWheeledComponent::SetFrameInputStreamV2(std::shared_ptr<Speed::Input::V2::FInputStream> Stream)
 {
 	check(IsInGameThread());
 	if (Stream && Speed::Input::FPresentationInputScope::IsActive()) return false;
-	FScopeLock Lock(&FrameInputProducerMutex);
-	if (HasLegacyRemoteInputAuthority() || InputReservationV2 || (Stream && (FrameInputStream || IsTestInputOverrideEnabled()))) return false;
-	if (FrameInputStreamV2 && FrameInputStreamV2 != Stream) FrameInputStreamV2->RequestStop();
-	FrameInputStreamV2 = MoveTemp(Stream);
-	bProducedInputAuthority.store(true, std::memory_order_release);
-	bInputFrameRejectedV2 = false; bResetProducedWheeledInputs = true;
+	FScopeLock Lock(&FrameInputProducerMutexWheeledDomainStorage());
+	if (HasLegacyRemoteInputAuthority() || InputReservationV2WheeledDomainStorage() || (Stream && (FrameInputStreamWheeledDomainStorage() || IsTestInputOverrideEnabled()))) return false;
+	if (FrameInputStreamV2WheeledDomainStorage() && FrameInputStreamV2WheeledDomainStorage() != Stream) FrameInputStreamV2WheeledDomainStorage()->RequestStop();
+	FrameInputStreamV2WheeledDomainStorage() = MoveTemp(Stream);
+	bProducedInputAuthorityWheeledDomainStorage().store(true, std::memory_order_release);
+	bInputFrameRejectedV2WheeledDomainStorage() = false; bResetProducedWheeledInputsWheeledDomainStorage() = true;
 	return true;
 }
 
@@ -1869,11 +3141,11 @@ bool USpeedWheeledComponent::NeutralizeProducedInputAtBoundary()
 	check(IsInGameThread());
 	// This method requires an acknowledged live worker boundary, not merely a
 	// stopped or missing worker. The controller owns that distinction.
-	if (Speed::Input::FPresentationInputScope::IsActive() || InputReservationV2
-		|| ReservedInputFrameV2 || ConsumedFrameInputStreamV2 || !CanNeutralizeProducedInputStateAtBoundary()) return false;
-	WheeledPhysicalInput.Throttle = 0; WheeledPhysicalInput.Brake = 0; WheeledPhysicalInput.Steer = 0;
+	if (Speed::Input::FPresentationInputScope::IsActive() || InputReservationV2WheeledDomainStorage()
+		|| ReservedInputFrameV2WheeledDomainStorage() || ConsumedFrameInputStreamV2WheeledDomainStorage() || !CanNeutralizeProducedInputStateAtBoundary()) return false;
+	WheeledPhysicalInputStorage().Throttle = 0; WheeledPhysicalInputStorage().Brake = 0; WheeledPhysicalInputStorage().Steer = 0;
 
-	PublishedWheeledNetworkInput.store(std::shared_ptr<const FCompletedWheeledInput>{}, std::memory_order_seq_cst);
+	PublishedWheeledNetworkInputWheeledDomainStorage().store(std::shared_ptr<const FCompletedWheeledInput>{}, std::memory_order_seq_cst);
 	SyncWheeledPhysicalInputToState(); ResetProducedInputState();
 	return PublishInputCancellationAtBoundary();
 }
@@ -1891,24 +3163,24 @@ bool USpeedWheeledComponent::ConsumeProducedWheeledInputsV2(uint64 Frame,
 {
 	using namespace Speed::Input::V2;
 	// A forgotten token is an invariant failure, never silently overwritten.
-	if (InputReservationV2) { bInputFrameRejectedV2 = true; return true; }
-	bInputFrameRejectedV2 = false;
+	if (InputReservationV2WheeledDomainStorage()) { bInputFrameRejectedV2WheeledDomainStorage() = true; return true; }
+	bInputFrameRejectedV2WheeledDomainStorage() = false;
 	auto Input = Stream->Consume(Frame);
 	// Retain the capability before calling any game hook. If a hook throws,
 	// the world's abort path must still be able to close this reservation.
 	if (Input.Reservation)
 	{
-		ConsumedFrameInputStreamV2 = Stream;
-		InputReservationV2 = Input.Reservation; ReservedInputFrameV2 = Frame;
+		ConsumedFrameInputStreamV2WheeledDomainStorage() = Stream;
+		InputReservationV2WheeledDomainStorage() = Input.Reservation; ReservedInputFrameV2WheeledDomainStorage() = Frame;
 	}
 	bool Valid = !IsTestInputOverrideEnabled() && Input.Status == EConsumeStatus::Ready
 		&& Input.Frame && Input.Reservation && Input.Targets.Valid && ValidateProducedInputFrameV2(*Input.Frame);
 	if (Valid)
 	{
 		if (Input.Frame->GetData().Reset) ResetProducedInputState();
-		WheeledPhysicalInput.Throttle = Input.Targets.ThrottleValue;
-		WheeledPhysicalInput.Brake = Input.Targets.BrakeValue;
-		WheeledPhysicalInput.Steer = Input.Targets.SteeringValue;
+		WheeledPhysicalInputStorage().Throttle = Input.Targets.ThrottleValue;
+		WheeledPhysicalInputStorage().Brake = Input.Targets.BrakeValue;
+		WheeledPhysicalInputStorage().Steer = Input.Targets.SteeringValue;
 		Valid = ApplyProducedInputFrameV2(*Input.Frame);
 	}
 	if (Valid) Valid = Stream->ConfirmPhysicalCommit(*Input.Reservation, true)
@@ -1916,9 +3188,9 @@ bool USpeedWheeledComponent::ConsumeProducedWheeledInputsV2(uint64 Frame,
 	if (!Valid)
 	{
 		if (Input.Reservation) Stream->Abort(*Input.Reservation, EAbortReason::ApplicationFailed);
-		InputReservationV2.reset(); ReservedInputFrameV2.reset(); ConsumedFrameInputStreamV2.reset();
-		Stream->RequestStop(); bInputFrameRejectedV2 = true;
-		WheeledPhysicalInput.Throttle = 0; WheeledPhysicalInput.Brake = 0; WheeledPhysicalInput.Steer = 0;
+		InputReservationV2WheeledDomainStorage().reset(); ReservedInputFrameV2WheeledDomainStorage().reset(); ConsumedFrameInputStreamV2WheeledDomainStorage().reset();
+		Stream->RequestStop(); bInputFrameRejectedV2WheeledDomainStorage() = true;
+		WheeledPhysicalInputStorage().Throttle = 0; WheeledPhysicalInputStorage().Brake = 0; WheeledPhysicalInputStorage().Steer = 0;
 		ResetProducedInputState(); return true;
 	}
 	return true;
@@ -1926,51 +3198,51 @@ bool USpeedWheeledComponent::ConsumeProducedWheeledInputsV2(uint64 Frame,
 
 bool USpeedWheeledComponent::ValidateCanonicalFrameCommit(uint64 Frame) const
 {
-	if (bInputFrameRejectedV2 || (LegacyWheeledOwner && !LegacyWheeledOwner->CanComplete(Frame))
+	if (bInputFrameRejectedV2WheeledDomainStorage() || (LegacyWheeledOwnerWheeledDomainStorage() && !LegacyWheeledOwnerWheeledDomainStorage()->CanComplete(Frame))
 		|| !PrepareWheeledNetworkInput(Frame)) return false;
-	if (CanonicalInputSnapshot) return bCanonicalInputPending && CanonicalInputSnapshot->Input.GetData().ConsumptionFrame == Frame;
-	if (!InputReservationV2) return !ConsumedFrameInputStreamV2;
-	return ReservedInputFrameV2 && *ReservedInputFrameV2 == Frame && ConsumedFrameInputStreamV2
-		&& ConsumedFrameInputStreamV2->PrepareFinalization(*InputReservationV2);
+	if (CanonicalInputSnapshotWheeledDomainStorage()) return bCanonicalInputPendingWheeledDomainStorage() && CanonicalInputSnapshotWheeledDomainStorage()->Input.GetData().ConsumptionFrame == Frame;
+	if (!InputReservationV2WheeledDomainStorage()) return !ConsumedFrameInputStreamV2WheeledDomainStorage();
+	return ReservedInputFrameV2WheeledDomainStorage() && *ReservedInputFrameV2WheeledDomainStorage() == Frame && ConsumedFrameInputStreamV2WheeledDomainStorage()
+		&& ConsumedFrameInputStreamV2WheeledDomainStorage()->PrepareFinalization(*InputReservationV2WheeledDomainStorage());
 }
 
 bool USpeedWheeledComponent::CommitCanonicalFrame(uint64 Frame) noexcept
 {
-	if (LegacyWheeledOwner && !LegacyWheeledOwner->Complete(Frame)) return false;
-	PublishedWheeledNetworkInput.store(PreparedWheeledNetworkInput, std::memory_order_seq_cst);
-	PreparedWheeledNetworkInput.reset();
-	if (CanonicalInputSnapshot)
+	if (LegacyWheeledOwnerWheeledDomainStorage() && !LegacyWheeledOwnerWheeledDomainStorage()->Complete(Frame)) return false;
+	PublishedWheeledNetworkInputWheeledDomainStorage().store(PreparedWheeledNetworkInputWheeledDomainStorage(), std::memory_order_seq_cst);
+	PreparedWheeledNetworkInputWheeledDomainStorage().reset();
+	if (CanonicalInputSnapshotWheeledDomainStorage())
 	{
-		if (bInputFrameRejectedV2 || !bCanonicalInputPending || CanonicalInputSnapshot->Input.GetData().ConsumptionFrame != Frame) return false;
-		bCanonicalInputPending = false;
+		if (bInputFrameRejectedV2WheeledDomainStorage() || !bCanonicalInputPendingWheeledDomainStorage() || CanonicalInputSnapshotWheeledDomainStorage()->Input.GetData().ConsumptionFrame != Frame) return false;
+		bCanonicalInputPendingWheeledDomainStorage() = false;
 		return true;
 	}
-	if (!InputReservationV2) return !bInputFrameRejectedV2 && !ConsumedFrameInputStreamV2;
+	if (!InputReservationV2WheeledDomainStorage()) return !bInputFrameRejectedV2WheeledDomainStorage() && !ConsumedFrameInputStreamV2WheeledDomainStorage();
 	(void)Frame; // Validated and locked before the irreversible world publication.
-	ConsumedFrameInputStreamV2->FinalizePreparedPublication();
-	InputReservationV2.reset(); ReservedInputFrameV2.reset(); ConsumedFrameInputStreamV2.reset();
+	ConsumedFrameInputStreamV2WheeledDomainStorage()->FinalizePreparedPublication();
+	InputReservationV2WheeledDomainStorage().reset(); ReservedInputFrameV2WheeledDomainStorage().reset(); ConsumedFrameInputStreamV2WheeledDomainStorage().reset();
 	return true;
 }
 
 void USpeedWheeledComponent::AbortCanonicalFrame(uint64, ECanonicalFrameAbortReason) noexcept
 {
-	PreparedCanonicalInputFrame.Reset();
-	if (LegacyWheeledOwner) LegacyWheeledOwner->Abort();
-	PreparedWheeledNetworkInput.reset();
-	PublishedWheeledNetworkInput.store(std::shared_ptr<const FCompletedWheeledInput>{}, std::memory_order_seq_cst);
-	if (CanonicalInputSnapshot)
+	PreparedCanonicalInputFrameWheeledDomainStorage().Reset();
+	if (LegacyWheeledOwnerWheeledDomainStorage()) LegacyWheeledOwnerWheeledDomainStorage()->Abort();
+	PreparedWheeledNetworkInputWheeledDomainStorage().reset();
+	PublishedWheeledNetworkInputWheeledDomainStorage().store(std::shared_ptr<const FCompletedWheeledInput>{}, std::memory_order_seq_cst);
+	if (CanonicalInputSnapshotWheeledDomainStorage())
 	{
-		CanonicalInputSnapshot.reset(); bCanonicalInputPending = false; bInputFrameRejectedV2 = true;
+		CanonicalInputSnapshotWheeledDomainStorage().reset(); bCanonicalInputPendingWheeledDomainStorage() = false; bInputFrameRejectedV2WheeledDomainStorage() = true;
 	}
-	if (!InputReservationV2) return;
+	if (!InputReservationV2WheeledDomainStorage()) return;
 	try
 	{
-		if (ConsumedFrameInputStreamV2)
-			ConsumedFrameInputStreamV2->Abort(*InputReservationV2, Speed::Input::V2::EAbortReason::SnapshotPublicationFailed);
+		if (ConsumedFrameInputStreamV2WheeledDomainStorage())
+			ConsumedFrameInputStreamV2WheeledDomainStorage()->Abort(*InputReservationV2WheeledDomainStorage(), Speed::Input::V2::EAbortReason::SnapshotPublicationFailed);
 	}
 	catch (...) {} // Terminal owner failure; never publish this reservation.
-	InputReservationV2.reset(); ReservedInputFrameV2.reset(); ConsumedFrameInputStreamV2.reset();
-	bInputFrameRejectedV2 = true;
+	InputReservationV2WheeledDomainStorage().reset(); ReservedInputFrameV2WheeledDomainStorage().reset(); ConsumedFrameInputStreamV2WheeledDomainStorage().reset();
+	bInputFrameRejectedV2WheeledDomainStorage() = true;
 }
 
 
@@ -1993,19 +3265,19 @@ FSpeedCarCameraPhysicalInput Unpack(uint32 Bits)
 void USpeedWheeledComponent::EnableGenericCameraInput(bool bEnabled)
 {
 	check(IsInGameThread());
-	FScopeLock CameraLock(&PendingCameraInputMutex);
+	FScopeLock CameraLock(&PendingCameraInputMutexWheeledDomainStorage());
 	ClearHeldCameraInput();
-	PendingCameraInputCommands.Reset();
-	LastCameraCaptureHistoryFrame = INDEX_NONE;
-	LastCameraCaptureActivationFrame = INDEX_NONE;
-	LastCapturedCameraInput = FSpeedCarCameraPhysicalInput();
-	bGenericCameraInputEnabled.store(bEnabled, std::memory_order_release);
+	PendingCameraInputCommandsWheeledDomainStorage().Reset();
+	LastCameraCaptureHistoryFrameWheeledDomainStorage() = INDEX_NONE;
+	LastCameraCaptureActivationFrameWheeledDomainStorage() = INDEX_NONE;
+	LastCapturedCameraInputWheeledDomainStorage() = FSpeedCarCameraPhysicalInput();
+	bGenericCameraInputEnabledWheeledDomainStorage().store(bEnabled, std::memory_order_release);
 }
 bool USpeedWheeledComponent::PublishHeldCameraInput(const FSpeedCarCameraPhysicalInput& Input)
 {
 	check(IsInGameThread());
 	if (!Input.IsValid()) return false;
-	PendingCameraInput.store(SpeedCameraInputPacking::Pack(Input), std::memory_order_release);
+	PendingCameraInputWheeledDomainStorage().store(SpeedCameraInputPacking::Pack(Input), std::memory_order_release);
 	return true;
 }
 void USpeedWheeledComponent::ClearHeldCameraInput()
@@ -2015,7 +3287,7 @@ void USpeedWheeledComponent::ClearHeldCameraInput()
 bool USpeedWheeledComponent::SetHeldCameraBack(bool bBack)
 {
 	check(IsInGameThread());
-	auto I = SpeedCameraInputPacking::Unpack(PendingCameraInput.load(std::memory_order_acquire));
+	auto I = SpeedCameraInputPacking::Unpack(PendingCameraInputWheeledDomainStorage().load(std::memory_order_acquire));
 	I.Flags = 1 | (bBack ? 2 : 0);
 	return PublishHeldCameraInput(I);
 }
@@ -2023,7 +3295,7 @@ bool USpeedWheeledComponent::SetHeldCameraYaw(float Value)
 {
 	check(IsInGameThread());
 	if (!FMath::IsFinite(Value)) return false;
-	auto I = SpeedCameraInputPacking::Unpack(PendingCameraInput.load(std::memory_order_acquire));
+	auto I = SpeedCameraInputPacking::Unpack(PendingCameraInputWheeledDomainStorage().load(std::memory_order_acquire));
 	I.Flags |= 1;
 	I.Yaw = FMath::RoundToInt(FMath::Clamp(Value, -1.0f, 1.0f) * 127.0f);
 	return PublishHeldCameraInput(I);
@@ -2032,7 +3304,7 @@ bool USpeedWheeledComponent::SetHeldCameraPitch(float Value)
 {
 	check(IsInGameThread());
 	if (!FMath::IsFinite(Value)) return false;
-	auto I = SpeedCameraInputPacking::Unpack(PendingCameraInput.load(std::memory_order_acquire));
+	auto I = SpeedCameraInputPacking::Unpack(PendingCameraInputWheeledDomainStorage().load(std::memory_order_acquire));
 	I.Flags |= 1;
 	I.Pitch = FMath::RoundToInt(FMath::Clamp(Value, -1.0f, 1.0f) * 127.0f);
 	return PublishHeldCameraInput(I);
@@ -2040,20 +3312,20 @@ bool USpeedWheeledComponent::SetHeldCameraPitch(float Value)
 FSpeedCarCameraPhysicalInput USpeedWheeledComponent::CaptureNetworkCameraInput(
 	int32 HistoryFrame, int32 ActivationFrame) const
 {
-	if(CanonicalCameraYawAction>=0 || CanonicalCameraPitchAction>=0)return FSpeedCarCameraPhysicalInput();
-	FScopeLock CameraLock(&PendingCameraInputMutex);
-	if (!bGenericCameraInputEnabled.load(std::memory_order_acquire) || IsTestInputOverrideEnabled() ||
+	if(CanonicalCameraYawActionWheeledDomainStorage()>=0 || CanonicalCameraPitchActionWheeledDomainStorage()>=0)return FSpeedCarCameraPhysicalInput();
+	FScopeLock CameraLock(&PendingCameraInputMutexWheeledDomainStorage());
+	if (!bGenericCameraInputEnabledWheeledDomainStorage().load(std::memory_order_acquire) || IsTestInputOverrideEnabled() ||
 		HistoryFrame == INDEX_NONE || ActivationFrame == INDEX_NONE) return FSpeedCarCameraPhysicalInput();
-	if (HistoryFrame == LastCameraCaptureHistoryFrame && ActivationFrame == LastCameraCaptureActivationFrame)
-		return LastCapturedCameraInput;
-	const auto Input = SpeedCameraInputPacking::Unpack(PendingCameraInput.load(std::memory_order_acquire));
+	if (HistoryFrame == LastCameraCaptureHistoryFrameWheeledDomainStorage() && ActivationFrame == LastCameraCaptureActivationFrameWheeledDomainStorage())
+		return LastCapturedCameraInputWheeledDomainStorage();
+	const auto Input = SpeedCameraInputPacking::Unpack(PendingCameraInputWheeledDomainStorage().load(std::memory_order_acquire));
 #if WITH_DEV_AUTOMATION_TESTS
-	++CameraMailboxReadCount;
+	++CameraMailboxReadCountWheeledDomainStorage();
 #endif
 	if (!Input.IsValid()) return FSpeedCarCameraPhysicalInput();
-	LastCameraCaptureHistoryFrame = HistoryFrame;
-	LastCameraCaptureActivationFrame = ActivationFrame;
-	LastCapturedCameraInput = Input;
+	LastCameraCaptureHistoryFrameWheeledDomainStorage() = HistoryFrame;
+	LastCameraCaptureActivationFrameWheeledDomainStorage() = ActivationFrame;
+	LastCapturedCameraInputWheeledDomainStorage() = Input;
 	QueueCameraInputLocked(ActivationFrame, Input);
 	return Input;
 }
@@ -2061,55 +3333,55 @@ FSpeedCarCameraPhysicalInput USpeedWheeledComponent::CaptureNetworkCameraInput(
 void USpeedWheeledComponent::QueueCameraInputForFrame(int32 ActivationFrame,
 	const FSpeedCarCameraPhysicalInput& Input) const
 {
-	if(CanonicalCameraYawAction>=0 || CanonicalCameraPitchAction>=0)return;
+	if(CanonicalCameraYawActionWheeledDomainStorage()>=0 || CanonicalCameraPitchActionWheeledDomainStorage()>=0)return;
 	if (ActivationFrame == INDEX_NONE || !Input.IsValid()) return;
-	FScopeLock CameraLock(&PendingCameraInputMutex);
-	if (!bGenericCameraInputEnabled.load(std::memory_order_acquire) || IsTestInputOverrideEnabled()) return;
+	FScopeLock CameraLock(&PendingCameraInputMutexWheeledDomainStorage());
+	if (!bGenericCameraInputEnabledWheeledDomainStorage().load(std::memory_order_acquire) || IsTestInputOverrideEnabled()) return;
 	QueueCameraInputLocked(ActivationFrame, Input);
 }
 
 void USpeedWheeledComponent::QueueCameraInputLocked(int32 ActivationFrame,
 	const FSpeedCarCameraPhysicalInput& Input) const
 {
-	for (auto& Command : PendingCameraInputCommands)
+	for (auto& Command : PendingCameraInputCommandsWheeledDomainStorage())
 	{
 		if (Command.ActivationFrame == ActivationFrame) { Command.Input = Input; return; }
 	}
 	FPendingCameraInputCommand Command;
 	Command.ActivationFrame = ActivationFrame;
 	Command.Input = Input;
-	PendingCameraInputCommands.Add(Command);
-	PendingCameraInputCommands.Sort([](const FPendingCameraInputCommand& A, const FPendingCameraInputCommand& B)
+	PendingCameraInputCommandsWheeledDomainStorage().Add(Command);
+	PendingCameraInputCommandsWheeledDomainStorage().Sort([](const FPendingCameraInputCommand& A, const FPendingCameraInputCommand& B)
 		{ return A.ActivationFrame < B.ActivationFrame; });
-	while (PendingCameraInputCommands.Num() > MaxPendingCameraInputs) PendingCameraInputCommands.RemoveAt(0);
+	while (PendingCameraInputCommandsWheeledDomainStorage().Num() > MaxPendingCameraInputs) PendingCameraInputCommandsWheeledDomainStorage().RemoveAt(0);
 }
 
 void USpeedWheeledComponent::ConsumeQueuedCameraInputsForFrame(int32 CurrentFrame)
 {
-	if(CanonicalCameraYawAction>=0 || CanonicalCameraPitchAction>=0)return;
-	FScopeLock CameraLock(&PendingCameraInputMutex);
-	if (!bGenericCameraInputEnabled.load(std::memory_order_acquire) || IsTestInputOverrideEnabled()) return;
+	if(CanonicalCameraYawActionWheeledDomainStorage()>=0 || CanonicalCameraPitchActionWheeledDomainStorage()>=0)return;
+	FScopeLock CameraLock(&PendingCameraInputMutexWheeledDomainStorage());
+	if (!bGenericCameraInputEnabledWheeledDomainStorage().load(std::memory_order_acquire) || IsTestInputOverrideEnabled()) return;
 	int32 LastDue = INDEX_NONE;
-	for (int32 Index = 0; Index < PendingCameraInputCommands.Num(); ++Index)
+	for (int32 Index = 0; Index < PendingCameraInputCommandsWheeledDomainStorage().Num(); ++Index)
 	{
-		if (PendingCameraInputCommands[Index].ActivationFrame > CurrentFrame) break;
+		if (PendingCameraInputCommandsWheeledDomainStorage()[Index].ActivationFrame > CurrentFrame) break;
 		LastDue = Index;
 	}
 	if (LastDue == INDEX_NONE) return;
 	// Whole held value, once, after wheel processing. Multiple overdue captures
 	// select the latest frame; no second GT read and no camera slew/state hash.
-	const auto Input = PendingCameraInputCommands[LastDue].Input;
-	WheeledPhysicalInput.Camera = Input;
-	PendingCameraInputCommands.RemoveAt(0, LastDue + 1);
+	const auto Input = PendingCameraInputCommandsWheeledDomainStorage()[LastDue].Input;
+	WheeledPhysicalInputStorage().Camera = Input;
+	PendingCameraInputCommandsWheeledDomainStorage().RemoveAt(0, LastDue + 1);
 #if WITH_DEV_AUTOMATION_TESTS
-	++CameraInputApplyCount;
+	++CameraInputApplyCountWheeledDomainStorage();
 #endif
 }
 bool USpeedWheeledComponent::ApplyProducedInputFrameV2(const Speed::Input::V2::FInputFrame& Frame)
 {
     // Disabled by default: existing game adapters and the old explicit queue
     // retain their exact behavior. Enabled slots are immutable car setup.
-    if(CanonicalCameraYawAction<0 && CanonicalCameraPitchAction<0)return true;
+    if(CanonicalCameraYawActionWheeledDomainStorage()<0 && CanonicalCameraPitchActionWheeledDomainStorage()<0)return true;
     FSpeedCarCameraPhysicalInput Camera;
     const auto Contract=Frame.GetContract();if(!Contract)return false;
     const auto ReadAxis=[&](int32 Slot,int8& Value)
@@ -2121,42 +3393,42 @@ bool USpeedWheeledComponent::ApplyProducedInputFrameV2(const Speed::Input::V2::F
         const auto V=Frame.GetData().Values[Slot];if(V < -127 || V>127)return false;
         Value=int8(V);return true;
     };
-    if(!ReadAxis(CanonicalCameraYawAction,Camera.Yaw) || !ReadAxis(CanonicalCameraPitchAction,Camera.Pitch))return false;
-    if(bGenericCameraInputEnabled.load(std::memory_order_acquire))Camera.Flags=1;
+    if(!ReadAxis(CanonicalCameraYawActionWheeledDomainStorage(),Camera.Yaw) || !ReadAxis(CanonicalCameraPitchActionWheeledDomainStorage(),Camera.Pitch))return false;
+    if(bGenericCameraInputEnabledWheeledDomainStorage().load(std::memory_order_acquire))Camera.Flags=1;
     else {Camera.Yaw=0;Camera.Pitch=0;}
     if(!Camera.IsValid())return false;
-    WheeledPhysicalInput.Camera=Camera;
+    WheeledPhysicalInputStorage().Camera=Camera;
     return true;
 }
 
 void USpeedWheeledComponent::AppendWheelPresentationSnapshot(TArray<FSimulationWheelVisual>& Out) const
 {
     Out.Reset();
-    if(!bPublishWheelPresentation)return;
-    Out.Reserve(WheelSubBodies.Num());
-    for(const auto& Wheel:WheelSubBodies)
+    if(!bPublishWheelPresentationWheeledDomainStorage())return;
+    Out.Reserve(ReadWheelSubBodiesForPhysics().Num());
+    for(const auto Wheel:ReadWheelSubBodiesForPhysics())
     {
         if(!Wheel) {Out.Reset();return;}
         const auto& R=Wheel->GetRenderData();
         FSimulationWheelVisual& V=Out.AddDefaulted_GetRef();
-        V.Ordinal=uint32(Wheel->Idx());V.SuspensionOffset=Wheel->SpringDisplacement();
+        V.Ordinal=uint32(Speed::NativeKinematics::FSolidPropertiesAccess::Idx(*Wheel));V.SuspensionOffset=Wheel->SpringDisplacement();
         V.SteeringRotation=R.SteerRotation;V.RollingRotation=R.RollRotation;
         V.bGrounded=Wheel->IsOnGround();
         V.bLandedThisFrame=V.bGrounded && !Wheel->WasOnGroundPreviousFrame();
-        V.Throttle=float(WheeledPhysicalInput.Throttle)/255.f;
-        V.Brake=float(WheeledPhysicalInput.Brake)/255.f;
+        V.Throttle=float(WheeledPhysicalInputStorage().Throttle)/255.f;
+        V.Brake=float(WheeledPhysicalInputStorage().Brake)/255.f;
     }
 }
 
 void USpeedWheeledComponent::AppendPresentationSnapshot(TArray<uint8>& OutPayload) const
 {
 	OutPayload.Reset();
-	if (!bGenericCameraInputEnabled.load(std::memory_order_acquire) || !WheeledPhysicalInput.Camera.IsValid()) return;
+	if (!bGenericCameraInputEnabledWheeledDomainStorage().load(std::memory_order_acquire) || !WheeledPhysicalInputStorage().Camera.IsValid()) return;
 	FSpeedCarCameraInputSnapshot Snapshot;
 	Snapshot.bOnGround = IsOnTheGround();
-	Snapshot.bBackCamera = WheeledPhysicalInput.Camera.IsBack();
-	Snapshot.CameraYaw = static_cast<float>(WheeledPhysicalInput.Camera.Yaw) / 127.0f;
-	Snapshot.CameraPitch = static_cast<float>(WheeledPhysicalInput.Camera.Pitch) / 127.0f;
+	Snapshot.bBackCamera = WheeledPhysicalInputStorage().Camera.IsBack();
+	Snapshot.CameraYaw = static_cast<float>(WheeledPhysicalInputStorage().Camera.Yaw) / 127.0f;
+	Snapshot.CameraPitch = static_cast<float>(WheeledPhysicalInputStorage().Camera.Pitch) / 127.0f;
 	Snapshot.Write(OutPayload);
 }
 
@@ -2164,17 +3436,17 @@ void USpeedWheeledComponent::AppendPresentationSnapshot(TArray<uint8>& OutPayloa
 
 void USpeedWheeledComponent::RestoreWheeledPhysicalInputFromState()
 {
-	WheeledPhysicalInput.bCanMove = CanMove();
-	WheeledPhysicalInput.Throttle = WheeledPhysicsState.PhysicalThrottleInput;
-	WheeledPhysicalInput.Brake = WheeledPhysicsState.PhysicalBrakeInput;
-	WheeledPhysicalInput.Steer = WheeledPhysicsState.PhysicalSteerInput;
+	WheeledPhysicalInputStorage().bCanMove = CanMove();
+	WheeledPhysicalInputStorage().Throttle = WheeledPhysicsStateStorage().PhysicalThrottleInput;
+	WheeledPhysicalInputStorage().Brake = WheeledPhysicsStateStorage().PhysicalBrakeInput;
+	WheeledPhysicalInputStorage().Steer = WheeledPhysicsStateStorage().PhysicalSteerInput;
 }
 
 void USpeedWheeledComponent::SyncWheeledPhysicalInputToState()
 {
-	WheeledPhysicsState.PhysicalThrottleInput = WheeledPhysicalInput.Throttle;
-	WheeledPhysicsState.PhysicalBrakeInput = WheeledPhysicalInput.Brake;
-	WheeledPhysicsState.PhysicalSteerInput = WheeledPhysicalInput.Steer;
+	WheeledPhysicsStateStorage().PhysicalThrottleInput = WheeledPhysicalInputStorage().Throttle;
+	WheeledPhysicsStateStorage().PhysicalBrakeInput = WheeledPhysicalInputStorage().Brake;
+	WheeledPhysicsStateStorage().PhysicalSteerInput = WheeledPhysicalInputStorage().Steer;
 }
 
 
@@ -2184,11 +3456,11 @@ void USpeedWheeledComponent::SyncWheeledPhysicalInputToState()
 void USpeedWheeledComponent::SetTestInputOverrideEnabled(const bool bEnabled)
 {
 	if (Speed::Input::FPresentationInputScope::IsActive()) return;
-	bTestInputOverrideEnabled.store(bEnabled, std::memory_order_release);
-	FScopeLock CameraLock(&PendingCameraInputMutex);
-	PendingCameraInputCommands.Reset();
-	LastCameraCaptureHistoryFrame = INDEX_NONE;
-	LastCameraCaptureActivationFrame = INDEX_NONE;
+	bTestInputOverrideEnabledWheeledDomainStorage().store(bEnabled, std::memory_order_release);
+	FScopeLock CameraLock(&PendingCameraInputMutexWheeledDomainStorage());
+	PendingCameraInputCommandsWheeledDomainStorage().Reset();
+	LastCameraCaptureHistoryFrameWheeledDomainStorage() = INDEX_NONE;
+	LastCameraCaptureActivationFrameWheeledDomainStorage() = INDEX_NONE;
 }
 
 
@@ -2207,24 +3479,24 @@ void USpeedWheeledComponent::RecordPhysicsState()
 
 	SyncWheeledPhysicalInputToState();
 
-	RecordedBaseFrames[Idx] = LF;
-	RecordedBaseStates[Idx] = BasePhysicsState;
-	RecordedWheeledStates[Idx] = WheeledPhysicsState;
+	RecordedBaseFramesWheeledDomainStorage()[Idx] = LF;
+	RecordedBaseStatesWheeledDomainStorage()[Idx] = BasePhysicsStateStorage();
+	RecordedWheeledStatesWheeledDomainStorage()[Idx] = WheeledPhysicsStateStorage();
 
 	// Print Kinematic state for debugging for the first 3 frames after can move
 	/*if (CanMove() && NumFrame() - SinceCanMoveFrame < 3)
 	{
 		// Print kinematic state here
-		UE_LOG(LogTemp, Log, TEXT("[%s(%s)] Recorded Kinematic State at frame %d: %s"), *GetOwner()->GetName(), *GetRole(), LF, *BasePhysicsState.Kinematic.ToString());
+		UE_LOG(LogTemp, Log, TEXT("[%s(%s)] Recorded Kinematic State at frame %d: %s"), *GetOwner()->GetName(), *GetRole(), LF, *BasePhysicsStateStorage().Kinematic.ToString());
 	}*/
 }
 
 bool USpeedWheeledComponent::GetBaseState(const int32& LocalFrame, FBasePhysicsState& OutState) const
 {
 	const int32 Idx = LocalFrame % SpeedConstants::RecordedHistorySize;
-	if (RecordedBaseFrames[Idx] == LocalFrame)
+	if (RecordedBaseFramesWheeledDomainStorage()[Idx] == LocalFrame)
 	{
-		OutState = RecordedBaseStates[Idx];
+		OutState = RecordedBaseStatesWheeledDomainStorage()[Idx];
 		return true;
 	}
 	return false;
@@ -2233,9 +3505,9 @@ bool USpeedWheeledComponent::GetBaseState(const int32& LocalFrame, FBasePhysicsS
 bool USpeedWheeledComponent::GetWheeledState(const int32& LocalFrame, FWheeledPhysicsState& OutState) const
 {
 	const int32 Idx = LocalFrame % SpeedConstants::RecordedHistorySize;
-	if (RecordedBaseFrames[Idx] == LocalFrame)
+	if (RecordedBaseFramesWheeledDomainStorage()[Idx] == LocalFrame)
 	{
-		OutState = RecordedWheeledStates[Idx];
+		OutState = RecordedWheeledStatesWheeledDomainStorage()[Idx];
 		return true;
 	}
 	return false;
@@ -2243,9 +3515,9 @@ bool USpeedWheeledComponent::GetWheeledState(const int32& LocalFrame, FWheeledPh
 
 void USpeedWheeledComponent::HandleGravity()
 {
-	if (bEnableGravity)
+	if (bEnableGravityWheeledDomainStorage())
 	{
-		AddPhysAcceleration(FVector(0.0f, 0.0f, GravityZ));
+		AddPhysAcceleration(FVector(0.0f, 0.0f, GravityZWheeledDomainStorage()));
 	}
 }
 
@@ -2273,13 +3545,13 @@ void USpeedWheeledComponent::PreGameplayTick(const float& DeltaTime, const float
 }
 void USpeedWheeledComponent::HandleDamping(const float& delta)
 {
-	if (PhysDamping <= 0.0)
+	if (PhysDampingWheeledDomainStorage() <= 0.0)
 	{
 		return;
 	}
 
-	const FVector COMVelocity = GetPhysCOMVelocity();
-	FVector NewCOMVelocity = (1 - PhysDamping) * COMVelocity;
+	const FVector COMVelocity = Speed::NativeKinematics::FComponentRead::Of(*this).COMVelocity();
+	FVector NewCOMVelocity = (1 - PhysDampingWheeledDomainStorage()) * COMVelocity;
 	const float Speed = COMVelocity.Size();
 	if (Speed <= 1.0f)
 	{
@@ -2290,26 +3562,26 @@ void USpeedWheeledComponent::HandleDamping(const float& delta)
 }
 void USpeedWheeledComponent::HandleRestForce()
 {
-	if (!HitboxSubBody)
+	if (!ReadHitboxForPhysics())
 		return;
 
-	if (!HitboxSubBody->HasPersistentGroundContact())
+	if (!ReadHitboxForPhysics()->HasPersistentGroundContact())
 		return;
 
-	const TArray<FVector>& Contacts = HitboxSubBody->GetGroundContacts();
+	const TArray<FVector>& Contacts = ReadHitboxForPhysics()->GetGroundContacts();
 	if (Contacts.Num() == 0)
 		return;
 
 	const bool bEdgeSupport = (Contacts.Num() == 2);
 
 	// IMPORTANT: use persistent ground plane normal
-	const FVector N = HitboxSubBody->GetGroundPlaneNormal().GetSafeNormal();
+	const FVector N = ReadHitboxForPhysics()->GetGroundPlaneNormal().GetSafeNormal();
 
 	// Total acceleration (world-space)
-	const FVector Accel = GetPhysAcceleration();
+	const FVector Accel = Speed::NativeKinematics::FComponentRead::Of(*this).Acceleration();
 
 	// --- HARD STOP: never apply rest force if we are separating from the plane ---
-	const FVector Vcm = GetPhysCOMVelocity();
+	const FVector Vcm = Speed::NativeKinematics::FComponentRead::Of(*this).COMVelocity();
 	const float vN = FVector::DotProduct(Vcm, N);
 
 	// If separating or stationary relative to plane, DO NOT apply rest force
@@ -2335,13 +3607,13 @@ void USpeedWheeledComponent::HandleRestForce()
 		const FVector ForcePerContact = RestForce / float(Contacts.Num());
 		for (const FVector& P : Contacts)
 		{
-			AddPhysForceAtPoint(ForcePerContact, P, HitboxSubBody);
+			AddPhysForceAtPoint(ForcePerContact, P, ReadHitboxForPhysics());
 		}
 	}
 	else
 	{
 		// Apply at COM: same net force, near-zero artificial torque
-		const FVector COM = HitboxSubBody->GetKinematicsFromOwner(NumFrame() + 1).Location;
+		const FVector COM = ReadHitboxForPhysics()->GetKinematicsFromOwner(NumFrame() + 1).Location;
 		// AddForceOnHitboxAtLocation(RestForce, COM, Delta);
 		AddPhysAcceleration(-aN * N);
 	}
@@ -2353,13 +3625,13 @@ void USpeedWheeledComponent::HandleRestForce()
 	if (!bEdgeSupport)
 	{
 		FVector LockAxisWorld = FVector::ZeroVector;
-		if (HitboxSubBody->ComputeEdgeLockAxis(
-			HitboxSubBody->GetGroundPlaneNormal(),
+		if (ReadHitboxForPhysics()->ComputeEdgeLockAxis(
+			ReadHitboxForPhysics()->GetGroundPlaneNormal(),
 			Contacts,
 			LockAxisWorld))
 		{
 			// remove forbidden component in WORLD space directly
-			const float a = FVector::DotProduct(GetPhysAngularAcceleration(), LockAxisWorld);
+			const float a = FVector::DotProduct(Speed::NativeKinematics::FComponentRead::Of(*this).AngularAcceleration(), LockAxisWorld);
 			constexpr float A_EPS = 0.02f;
 			if (FMath::Abs(a) > A_EPS)
 			{
@@ -2391,13 +3663,13 @@ FVector USpeedWheeledComponent::GetWheelFrictionApplicationPoint(
 	const FVector& ContactPoint,
 	const FVector& SurfaceNormal) const
 {
-	FVector ChassisUp = GetPhysUpVector().GetSafeNormal();
+	FVector ChassisUp = Speed::NativeKinematics::FComponentRead::Of(*this).Up().GetSafeNormal();
 	if (ChassisUp.IsNearlyZero())
 	{
 		ChassisUp = SurfaceNormal;
 	}
 
-	const FVector PhysCOM = GetPhysCOM();
+	const FVector PhysCOM = Speed::NativeKinematics::FComponentRead::Of(*this).COM();
 	const FVector ContactArm = ContactPoint - PhysCOM;
 	return PhysCOM + ContactArm - FVector::DotProduct(ContactArm, ChassisUp) * ChassisUp;
 }
@@ -2414,29 +3686,29 @@ void USpeedWheeledComponent::ApplyWheelFrameLateralFriction(const float& delta)
 	if (GetLocalSideFriction() <= KINDA_SMALL_NUMBER)
 		return;
 
-	const float ForwardSpeed = GetPhysForwardSpeed();
+	const float ForwardSpeed = Speed::NativeKinematics::FComponentRead::Of(*this).ForwardSpeed();
 	const float AbsForwardSpeed = FMath::Abs(ForwardSpeed);
-	const float SteeringRearReverseScaleOverride = CVarIAmSpeedWheelFrameSteeringRearLateralFrictionReverseScale.GetValueOnAnyThread();
+	const float SteeringRearReverseScaleOverride = Speed::RoadSettings::ReadOriginalOrLegacy<127>([](){ return CVarIAmSpeedWheelFrameSteeringRearLateralFrictionReverseScale.GetValueOnAnyThread(); });
 	const bool bUseSteeringRearReverseScale = ForwardSpeed < -KINDA_SMALL_NUMBER && SteeringRearReverseScaleOverride >= 0.0f;
 	float DebugNormalRearAppliedScale = 1.0f;
 
-	const float PlanarGroundSpeed = GetPhysCOMVelocity().Size2D();
+	const float PlanarGroundSpeed = Speed::NativeKinematics::FComponentRead::Of(*this).COMVelocity().Size2D();
 	const float AbsSteeringInput = FMath::Abs(FMath::Clamp(GetPhysSteeringInput(), -1.0f, 1.0f));
 	const float TargetRadius = ComputeSteeringRadius(ForwardSpeed, AbsSteeringInput);
 	float Wheelbase = 0.0f;
 	{
 		const FVector SurfaceNormal = GetNormalFromWheels().GetSafeNormal();
-		FVector ForwardDir = GetPhysForwardVector() - FVector::DotProduct(GetPhysForwardVector(), SurfaceNormal) * SurfaceNormal;
+		FVector ForwardDir = Speed::NativeKinematics::FComponentRead::Of(*this).Forward() - FVector::DotProduct(Speed::NativeKinematics::FComponentRead::Of(*this).Forward(), SurfaceNormal) * SurfaceNormal;
 		if (ForwardDir.Normalize())
 		{
 			float MinForwardOffset = BIG_NUMBER;
 			float MaxForwardOffset = -BIG_NUMBER;
-			for (const TObjectPtr<USWheelSubBody>& Wheel : WheelSubBodies)
+			for (const auto Wheel : ReadWheelSubBodiesForPhysics())
 			{
 				if (!Wheel)
 					continue;
 
-				const float ForwardOffset = FVector::DotProduct(Wheel->SteeringPos() - GetPhysCOM(), ForwardDir);
+				const float ForwardOffset = FVector::DotProduct(Wheel->SteeringPos() - Speed::NativeKinematics::FComponentRead::Of(*this).COM(), ForwardDir);
 				MinForwardOffset = FMath::Min(MinForwardOffset, ForwardOffset);
 				MaxForwardOffset = FMath::Max(MaxForwardOffset, ForwardOffset);
 			}
@@ -2451,16 +3723,16 @@ void USpeedWheeledComponent::ApplyWheelFrameLateralFriction(const float& delta)
 		: FMath::Clamp(GetPhysSteeringInput(), -1.0f, 1.0f)
 			* SteeringInputCalibrationScale(GetPhysSteeringInput()) * MaxSteerAngle;
 	const float SteerAngle = AdaptWheelFrameSteerAngleToReferenceGeometry(ReferenceSteerAngle);
-	const float SlipThreshold = FMath::Max(0.0f, LateralFrictionSlipThreshold);
+	const float SlipThreshold = FMath::Max(0.0f, LateralFrictionSlipThresholdWheeledDomainStorage());
 	const bool bIsAccelerating = IsAcceleratingForWheelFriction();
 	const float GroundedWheelCountForFriction = FMath::Max(1.0f, static_cast<float>(NumWheelsOnGround()));
 	const float MaxTotalLateralAccel = FMath::Max(0.0f, GetLocalSideFriction()) * (GroundedWheelCountForFriction / 4.0f);
 	const float MaxLateralAccelPerWheel = MaxTotalLateralAccel / GroundedWheelCountForFriction;
-	const int32 ClampLateralImpulseOverride = CVarIAmSpeedWheelFrameClampLateralImpulse.GetValueOnAnyThread();
-	const bool bClampLateralImpulse = ClampLateralImpulseOverride >= 0 ? ClampLateralImpulseOverride != 0 : bClampWheelFrameLateralImpulse;
-	const bool bDebugWheelFriction = CVarIAmSpeedDebugWheelFriction.GetValueOnAnyThread() != 0;
-	const bool bDebugWheelFrictionDetailed = CVarIAmSpeedDebugWheelFrictionDetailed.GetValueOnAnyThread() != 0;
-	const uint32 DetailedDebugIntervalFrames = static_cast<uint32>(FMath::Max(1, CVarIAmSpeedWheelFrameDebugIntervalFrames.GetValueOnAnyThread()));
+	const int32 ClampLateralImpulseOverride = Speed::RoadSettings::ReadOriginalOrLegacy<111>([](){ return CVarIAmSpeedWheelFrameClampLateralImpulse.GetValueOnAnyThread(); });
+	const bool bClampLateralImpulse = ClampLateralImpulseOverride >= 0 ? ClampLateralImpulseOverride != 0 : bClampWheelFrameLateralImpulseWheeledDomainStorage();
+	const bool bDebugWheelFriction = Speed::RoadSettings::ReadOriginalOrLegacy<45>([](){ return CVarIAmSpeedDebugWheelFriction.GetValueOnAnyThread(); }) != 0;
+	const bool bDebugWheelFrictionDetailed = Speed::RoadSettings::ReadOriginalOrLegacy<46>([](){ return CVarIAmSpeedDebugWheelFrictionDetailed.GetValueOnAnyThread(); }) != 0;
+	const uint32 DetailedDebugIntervalFrames = static_cast<uint32>(FMath::Max(1, Speed::RoadSettings::ReadOriginalOrLegacy<112>([](){ return CVarIAmSpeedWheelFrameDebugIntervalFrames.GetValueOnAnyThread(); })));
 	int32 DebugGroundedWheels = 0;
 	float DebugAbsLatSpeedSum = 0.0f;
 	float DebugAbsLongSpeedSum = 0.0f;
@@ -2480,12 +3752,12 @@ void USpeedWheeledComponent::ApplyWheelFrameLateralFriction(const float& delta)
 	float DebugRearAbsLatSpeedSum = 0.0f;
 	int32 DebugFrontWheelCount = 0;
 	int32 DebugRearWheelCount = 0;
-	const float HandbrakeFrictionValue = WheelFrameHandbrakeValue;
+	const float HandbrakeFrictionValue = WheelFrameHandbrakeValueWheeledDomainStorage();
 	float DebugSteeringRearReleaseScale = 1.0f;
 
-	for (int32 WheelIndex = 0; WheelIndex < WheelSubBodies.Num(); ++WheelIndex)
+	for (int32 WheelIndex = 0; WheelIndex < ReadWheelSubBodiesForPhysics().Num(); ++WheelIndex)
 	{
-		const TObjectPtr<USWheelSubBody>& Wheel = WheelSubBodies[WheelIndex];
+		const auto Wheel = ReadWheelSubBodiesForPhysics()[WheelIndex];
 		if (!Wheel || !Wheel->IsOnGround())
 			continue;
 
@@ -2494,9 +3766,9 @@ void USpeedWheeledComponent::ApplyWheelFrameLateralFriction(const float& delta)
 			continue;
 
 		const float FrictionStateScale = bIsAccelerating ? 1.0f :
-			FMath::Max(0.0f, EvaluateLinearFloatCurve(NonAcceleratingFrictionScaleCurve, SurfaceNormal.Z, 1.0f));
+			FMath::Max(0.0f, EvaluateLinearFloatCurve(NonAcceleratingFrictionScaleCurveWheeledDomainStorage(), SurfaceNormal.Z, 1.0f));
 
-		FVector ForwardDir = GetPhysForwardVector() - FVector::DotProduct(GetPhysForwardVector(), SurfaceNormal) * SurfaceNormal;
+		FVector ForwardDir = Speed::NativeKinematics::FComponentRead::Of(*this).Forward() - FVector::DotProduct(Speed::NativeKinematics::FComponentRead::Of(*this).Forward(), SurfaceNormal) * SurfaceNormal;
 		if (!ForwardDir.Normalize())
 			continue;
 
@@ -2513,22 +3785,22 @@ void USpeedWheeledComponent::ApplyWheelFrameLateralFriction(const float& delta)
 
 		// RocketSim evaluates its tire friction curve from the projected hard point,
 		// then resolves the bilateral lateral impulse at the actual wheel contact.
-		FVector HardPointVelocity = GetPhysVelocityAtPoint(HardPoint);
+		FVector HardPointVelocity = Speed::NativeKinematics::FComponentRead::Of(*this).VelocityAtPoint(HardPoint);
         FVector PrescribedSurfaceVelocity;
         if(Wheel->TryGetPrescribedSupportVelocity(HardPoint,PrescribedSurfaceVelocity))HardPointVelocity-=PrescribedSurfaceVelocity;
 		const float CurveLateralSpeed = FVector::DotProduct(HardPointVelocity, LateralDir);
 		const float CurveLongitudinalSpeed = FVector::DotProduct(HardPointVelocity, LongitudinalDir);
 		const float AbsCurveLateralSpeed = FMath::Abs(CurveLateralSpeed);
 		const float AbsLongitudinalSpeed = FMath::Abs(CurveLongitudinalSpeed);
-		FVector ContactVelocity = GetPhysVelocityAtPoint(ContactPoint);
+		FVector ContactVelocity = Speed::NativeKinematics::FComponentRead::Of(*this).VelocityAtPoint(ContactPoint);
         if(Wheel->TryGetPrescribedSupportVelocity(ContactPoint,PrescribedSurfaceVelocity))ContactVelocity-=PrescribedSurfaceVelocity;
 		const float LateralSpeed = FVector::DotProduct(ContactVelocity, LateralDir);
-		FVector ChassisUp = GetPhysUpVector().GetSafeNormal();
+		FVector ChassisUp = Speed::NativeKinematics::FComponentRead::Of(*this).Up().GetSafeNormal();
 		if (ChassisUp.IsNearlyZero())
 		{
 			ChassisUp = SurfaceNormal;
 		}
-		const FVector PhysCOM = GetPhysCOM();
+		const FVector PhysCOM = Speed::NativeKinematics::FComponentRead::Of(*this).COM();
 		const FVector ContactArm = ContactPoint - PhysCOM;
 		const FVector ProjectedContactArm = ContactArm - FVector::DotProduct(ContactArm, ChassisUp) * ChassisUp;
 		const FVector ForceApplicationPoint = GetWheelFrictionApplicationPoint(*Wheel, ContactPoint, SurfaceNormal);
@@ -2559,61 +3831,61 @@ void USpeedWheeledComponent::ApplyWheelFrameLateralFriction(const float& delta)
 				FrictionCurveInput = FMath::Abs(CurveLateralSpeed) / FMath::Max(KINDA_SMALL_NUMBER, AbsLongitudinalSpeed + FMath::Abs(CurveLateralSpeed));
 			}
 
-			float FrictionScale = FMath::Max(0.0f, EvaluateLinearFloatCurve(LateralFrictionScaleCurve, FrictionCurveInput, 1.0f));
+			float FrictionScale = FMath::Max(0.0f, EvaluateLinearFloatCurve(LateralFrictionScaleCurveWheeledDomainStorage(), FrictionCurveInput, 1.0f));
 			if (HandbrakeFrictionValue > KINDA_SMALL_NUMBER)
 			{
 				const bool bIsFrontWheel = WheelIndex <= 1;
 				const float DirectionBlend = IsHandbrakingForwardForWheelFriction() ? 1.0f : 0.0f;
 
-				const float FrontFactorOverride = CVarIAmSpeedWheelFrameHandbrakeFrontLateralFrictionFactor.GetValueOnAnyThread();
+				const float FrontFactorOverride = Speed::RoadSettings::ReadOriginalOrLegacy<116>([](){ return CVarIAmSpeedWheelFrameHandbrakeFrontLateralFrictionFactor.GetValueOnAnyThread(); });
 				const float FrontCurveFactor = FMath::Max(
 					0.0f,
 					FrontFactorOverride >= 0.0f
 						? FrontFactorOverride
-						: EvaluateLinearFloatCurve(HandbrakeFrontLateralFrictionFactorCurve, FrictionCurveInput, 1.0f)
+						: EvaluateLinearFloatCurve(HandbrakeFrontLateralFrictionFactorCurveWheeledDomainStorage(), FrictionCurveInput, 1.0f)
 				);
-				const float RearFactorOverride = CVarIAmSpeedWheelFrameHandbrakeRearLateralFrictionFactor.GetValueOnAnyThread();
+				const float RearFactorOverride = Speed::RoadSettings::ReadOriginalOrLegacy<119>([](){ return CVarIAmSpeedWheelFrameHandbrakeRearLateralFrictionFactor.GetValueOnAnyThread(); });
 				const float RearCurveFactor = FMath::Max(
 					0.0f,
 					RearFactorOverride >= 0.0f
 						? RearFactorOverride
-						: EvaluateLinearFloatCurve(HandbrakeRearLateralFrictionFactorCurve, FrictionCurveInput, 1.0f)
+						: EvaluateLinearFloatCurve(HandbrakeRearLateralFrictionFactorCurveWheeledDomainStorage(), FrictionCurveInput, 1.0f)
 				);
 				const float FrontSpeedScale = FMath::Max(
 					0.0f,
-					EvaluateLinearFloatCurve(HandbrakeFrontLateralFrictionSpeedScaleCurve, AbsForwardSpeed, 1.0f)
+					EvaluateLinearFloatCurve(HandbrakeFrontLateralFrictionSpeedScaleCurveWheeledDomainStorage(), AbsForwardSpeed, 1.0f)
 				);
 				const float RearSpeedScale = FMath::Max(
 					0.0f,
-					EvaluateLinearFloatCurve(HandbrakeRearLateralFrictionSpeedScaleCurve, AbsForwardSpeed, 1.0f)
+					EvaluateLinearFloatCurve(HandbrakeRearLateralFrictionSpeedScaleCurveWheeledDomainStorage(), AbsForwardSpeed, 1.0f)
 				);
 
 				float EntryAssist = 0.0f;
-				const float EntryDuration = FMath::Max(0.0f, WheelFrameHandbrakeEntryDuration);
+				const float EntryDuration = FMath::Max(0.0f, WheelFrameHandbrakeEntryDurationWheeledDomainStorage());
 				if (EntryDuration > KINDA_SMALL_NUMBER)
 				{
-					const float EntryTimeAlpha = 1.0f - FMath::SmoothStep(0.0f, EntryDuration, WheelFrameHandbrakeActiveTime);
+					const float EntryTimeAlpha = 1.0f - FMath::SmoothStep(0.0f, EntryDuration, WheelFrameHandbrakeActiveTimeWheeledDomainStorage());
 					const float EntrySpeedAlpha = FMath::SmoothStep(
-						FMath::Max(0.0f, WheelFrameHandbrakeEntryMinSpeed),
-						FMath::Max(WheelFrameHandbrakeEntryMinSpeed + 1.0f, WheelFrameHandbrakeEntryFullSpeed),
+						FMath::Max(0.0f, WheelFrameHandbrakeEntryMinSpeedWheeledDomainStorage()),
+						FMath::Max(WheelFrameHandbrakeEntryMinSpeedWheeledDomainStorage() + 1.0f, WheelFrameHandbrakeEntryFullSpeedWheeledDomainStorage()),
 						AbsForwardSpeed);
 					const float EntrySteeringAlpha = FMath::Clamp(
-						(FMath::Abs(GetPhysSteeringInput()) - FMath::Clamp(WheelFrameHandbrakeEntryMinSteering, 0.0f, 1.0f)) /
-						FMath::Max(KINDA_SMALL_NUMBER, 1.0f - FMath::Clamp(WheelFrameHandbrakeEntryMinSteering, 0.0f, 1.0f)),
+						(FMath::Abs(GetPhysSteeringInput()) - FMath::Clamp(WheelFrameHandbrakeEntryMinSteeringWheeledDomainStorage(), 0.0f, 1.0f)) /
+						FMath::Max(KINDA_SMALL_NUMBER, 1.0f - FMath::Clamp(WheelFrameHandbrakeEntryMinSteeringWheeledDomainStorage(), 0.0f, 1.0f)),
 						0.0f,
 						1.0f);
 					EntryAssist = EntryTimeAlpha * EntrySpeedAlpha * EntrySteeringAlpha;
 				}
 
 				const float FrontFactor = FrontCurveFactor * FrontSpeedScale;
-				const float EntryRearReleaseScale = FMath::Lerp(1.0f, FMath::Max(0.0f, WheelFrameHandbrakeEntryRearReleaseScale), EntryAssist);
+				const float EntryRearReleaseScale = FMath::Lerp(1.0f, FMath::Max(0.0f, WheelFrameHandbrakeEntryRearReleaseScaleWheeledDomainStorage()), EntryAssist);
 				const float FullSteeringRearReleaseScale = FMath::Max(
 					0.0f,
-					EvaluateLinearFloatCurve(HandbrakeSteeringRearLateralFrictionScaleCurve, PlanarGroundSpeed, 1.0f)
+					EvaluateLinearFloatCurve(HandbrakeSteeringRearLateralFrictionScaleCurveWheeledDomainStorage(), PlanarGroundSpeed, 1.0f)
 				);
 				const float SteeringRearReleaseSlipAlpha = FMath::Max(
 					0.0f,
-					EvaluateLinearFloatCurve(HandbrakeSteeringRearLateralFrictionSlipScaleCurve, FrictionCurveInput, 1.0f)
+					EvaluateLinearFloatCurve(HandbrakeSteeringRearLateralFrictionSlipScaleCurveWheeledDomainStorage(), FrictionCurveInput, 1.0f)
 				);
 				const float FullSteeringRearReleaseWithSlipScale = FMath::Lerp(
 					1.0f,
@@ -2640,9 +3912,9 @@ void USpeedWheeledComponent::ApplyWheelFrameLateralFriction(const float& delta)
 
 				const float RawHandbrakeFactor = FMath::Lerp(ReverseModeFactor, ForwardModeFactor, DirectionBlend);
 				const float PrimaryAxleResponse = bIsFrontWheel
-					? WheelFrameHandbrakeFrontLateralResponseScale : WheelFrameHandbrakeRearLateralResponseScale;
+					? WheelFrameHandbrakeFrontLateralResponseScaleWheeledDomainStorage() : WheelFrameHandbrakeRearLateralResponseScaleWheeledDomainStorage();
 				const float ReverseAxleResponse = bIsFrontWheel
-					? WheelFrameHandbrakeReverseFrontLateralResponseScale : WheelFrameHandbrakeReverseRearLateralResponseScale;
+					? WheelFrameHandbrakeReverseFrontLateralResponseScaleWheeledDomainStorage() : WheelFrameHandbrakeReverseRearLateralResponseScaleWheeledDomainStorage();
 				const float PhysicalAxleResponse = DirectionBlend == 0.0f && ReverseAxleResponse > 0.0f
 					? ReverseAxleResponse : PrimaryAxleResponse;
 				// Keep the identity branch's arithmetic unchanged. Allocation follows the
@@ -2651,35 +3923,35 @@ void USpeedWheeledComponent::ApplyWheelFrameLateralFriction(const float& delta)
 					? RawHandbrakeFactor : RawHandbrakeFactor * FMath::Max(0.0f, PhysicalAxleResponse);
 				const float LowSlipYawCorrectionScale = FMath::Max(
 					0.0f,
-					EvaluateLinearFloatCurve(HandbrakeLowSlipYawCorrectionScaleCurve, FrictionCurveInput, 1.0f)
+					EvaluateLinearFloatCurve(HandbrakeLowSlipYawCorrectionScaleCurveWheeledDomainStorage(), FrictionCurveInput, 1.0f)
 				);
 				const float HandbrakeFactor = 1.0f + (AllocatedHandbrakeFactor - 1.0f) * LowSlipYawCorrectionScale;
 
 				FrictionScale *= FMath::Lerp(1.0f, HandbrakeFactor, HandbrakeFrictionValue);
 			}
 
-			const float LateralImpulseRelaxation = 1.0f - FMath::Exp(-delta / FMath::Max(KINDA_SMALL_NUMBER, WheelFrameLateralImpulseTimeConstant));
-			const float LateralScaleOverride = CVarIAmSpeedWheelFrameLateralFrictionScale.GetValueOnAnyThread();
-			const float AxleResponseScale = bFrontWheel ? WheelFrameFrontLateralResponseScale : WheelFrameRearLateralResponseScale;
-			const float LateralScale = (LateralScaleOverride >= 0.0f ? LateralScaleOverride : WheelFrameLateralFrictionScale)
-				* FMath::Max(0.0f, WheelFrameLateralResponseScale) * FMath::Max(0.0f, AxleResponseScale);
-			const float ZeroSteerLateralScaleOverride = CVarIAmSpeedWheelFrameZeroSteerLateralFrictionScale.GetValueOnAnyThread();
+			const float LateralImpulseRelaxation = 1.0f - FMath::Exp(-delta / FMath::Max(KINDA_SMALL_NUMBER, WheelFrameLateralImpulseTimeConstantWheeledDomainStorage()));
+			const float LateralScaleOverride = Speed::RoadSettings::ReadOriginalOrLegacy<123>([](){ return CVarIAmSpeedWheelFrameLateralFrictionScale.GetValueOnAnyThread(); });
+			const float AxleResponseScale = bFrontWheel ? WheelFrameFrontLateralResponseScaleWheeledDomainStorage() : WheelFrameRearLateralResponseScaleWheeledDomainStorage();
+			const float LateralScale = (LateralScaleOverride >= 0.0f ? LateralScaleOverride : WheelFrameLateralFrictionScaleWheeledDomainStorage())
+				* FMath::Max(0.0f, WheelFrameLateralResponseScaleWheeledDomainStorage()) * FMath::Max(0.0f, AxleResponseScale);
+			const float ZeroSteerLateralScaleOverride = Speed::RoadSettings::ReadOriginalOrLegacy<135>([](){ return CVarIAmSpeedWheelFrameZeroSteerLateralFrictionScale.GetValueOnAnyThread(); });
 			const float ZeroSteerLateralScale = FMath::Clamp(
-				ZeroSteerLateralScaleOverride >= 0.0f ? ZeroSteerLateralScaleOverride : WheelFrameZeroSteerLateralFrictionScale,
+				ZeroSteerLateralScaleOverride >= 0.0f ? ZeroSteerLateralScaleOverride : WheelFrameZeroSteerLateralFrictionScaleWheeledDomainStorage(),
 				0.0f,
 				1.0f
 			);
 			const float SteeringLateralScale = HandbrakeFrictionValue > KINDA_SMALL_NUMBER
 				? 1.0f
 				: FMath::Lerp(ZeroSteerLateralScale, 1.0f, AbsSteeringInput);
-			const float SteeringRearLateralScaleOverride = CVarIAmSpeedWheelFrameSteeringRearLateralFrictionScale.GetValueOnAnyThread();
+			const float SteeringRearLateralScaleOverride = Speed::RoadSettings::ReadOriginalOrLegacy<128>([](){ return CVarIAmSpeedWheelFrameSteeringRearLateralFrictionScale.GetValueOnAnyThread(); });
 			const float SteeringRearLateralFullScale = FMath::Max(
 				0.0f,
 				bUseSteeringRearReverseScale
 					? SteeringRearReverseScaleOverride
 					: (SteeringRearLateralScaleOverride >= 0.0f
 						? SteeringRearLateralScaleOverride
-						: WheelFrameSteeringRearLateralFrictionScale)
+						: WheelFrameSteeringRearLateralFrictionScaleWheeledDomainStorage())
 			);
 			const float SteeringRearLateralScale = HandbrakeFrictionValue > KINDA_SMALL_NUMBER || bFrontWheel
 				? 1.0f
@@ -2689,16 +3961,16 @@ void USpeedWheeledComponent::ApplyWheelFrameLateralFriction(const float& delta)
 				DebugNormalRearAppliedScale = SteeringRearLateralScale;
 			}
 
-			const float ScrubScaleOverride = CVarIAmSpeedWheelFrameLongitudinalScrubScale.GetValueOnAnyThread();
-			const float ScrubScale = ScrubScaleOverride >= 0.0f ? ScrubScaleOverride : WheelFrameLongitudinalScrubScale;
-			const float HandbrakeImpulseScaleOverride = CVarIAmSpeedWheelFrameHandbrakeLateralImpulseScale.GetValueOnAnyThread();
+			const float ScrubScaleOverride = Speed::RoadSettings::ReadOriginalOrLegacy<124>([](){ return CVarIAmSpeedWheelFrameLongitudinalScrubScale.GetValueOnAnyThread(); });
+			const float ScrubScale = ScrubScaleOverride >= 0.0f ? ScrubScaleOverride : WheelFrameLongitudinalScrubScaleWheeledDomainStorage();
+			const float HandbrakeImpulseScaleOverride = Speed::RoadSettings::ReadOriginalOrLegacy<118>([](){ return CVarIAmSpeedWheelFrameHandbrakeLateralImpulseScale.GetValueOnAnyThread(); });
 			const float HandbrakeScalarImpulseScale = HandbrakeImpulseScaleOverride >= 0.0f
 				? HandbrakeImpulseScaleOverride
-				: WheelFrameHandbrakeLateralImpulseScale;
+				: WheelFrameHandbrakeLateralImpulseScaleWheeledDomainStorage();
 			const float HandbrakeImpulseScale = HandbrakeImpulseScaleOverride >= 0.0f
 				? HandbrakeScalarImpulseScale
 				: EvaluateLinearFloatCurve(
-					HandbrakeLateralImpulseScaleCurve,
+					HandbrakeLateralImpulseScaleCurveWheeledDomainStorage(),
 					FrictionCurveInput,
 					HandbrakeScalarImpulseScale);
 			const float HandbrakeRelaxationScale = FMath::Lerp(1.0f, FMath::Max(0.0f, HandbrakeImpulseScale), HandbrakeFrictionValue);
@@ -2723,22 +3995,22 @@ void USpeedWheeledComponent::ApplyWheelFrameLateralFriction(const float& delta)
 				const float ContactArmLateral = FVector::DotProduct(ContactArm, LateralDir);
 				const float ProjectedArmForward = FVector::DotProduct(ProjectedContactArm, LongitudinalDir);
 				const float ProjectedArmLateral = FVector::DotProduct(ProjectedContactArm, LateralDir);
-				UE_LOG(SpeedPhysicsLog, Log,
+				SPEED_NATIVE_LOG(SpeedPhysicsLog, Log,
 					TEXT("[%s(%s)][WheelFrameBilateral] COMLocal=%s COMWorld=%s Frame=%d Wheel=%d ContactArm(Long=%.2f,Lat=%.2f) ProjectedArm(Long=%.2f,Lat=%.2f) Denom=%.8f EffectiveMass=%.2f RawImpulse=%.2f AppliedImpulse=%.2f"),
-					*GetOwner()->GetName(), *GetRole(), *CenterOfMass.ToString(), *PhysCOM.ToString(), NumFrame(), WheelIndex,
+					*GetOwner()->GetName(), *GetRole(), *CenterOfMassWheeledDomainStorage().ToString(), *PhysCOM.ToString(), NumFrame(), WheelIndex,
 					ContactArmForward, ContactArmLateral, ProjectedArmForward, ProjectedArmLateral,
 					InvEffectiveMass, 1.0f / InvEffectiveMass, UnclampedLateralImpulse, LateralImpulse);
 			}
 			const float UnclampedAccelToApply = UnclampedLateralImpulse / (Mass * delta);
 			const float AccelToApply = LateralImpulse / (Mass * delta);
 			const FVector RawLateralForce = -FMath::Sign(LateralSpeed) * LateralDir * (LateralImpulse / delta);
-			const float ForwardLossScaleOverride = CVarIAmSpeedWheelFrameLateralForwardLossScale.GetValueOnAnyThread();
-			const float ForwardLossScaleMultiplier = FMath::Max(0.0f, ForwardLossScaleOverride >= 0.0f ? ForwardLossScaleOverride : WheelFrameLateralForwardLossScale);
-			const float ForwardLossCurveScale = FMath::Max(0.0f, EvaluateLinearFloatCurve(LateralForwardLossScaleCurve, AbsForwardSpeed, 1.0f));
-			const float ForwardLossSlipScale = FMath::Max(0.0f, EvaluateLinearFloatCurve(LateralForwardLossSlipScaleCurve, FrictionCurveInput, 1.0f));
+			const float ForwardLossScaleOverride = Speed::RoadSettings::ReadOriginalOrLegacy<122>([](){ return CVarIAmSpeedWheelFrameLateralForwardLossScale.GetValueOnAnyThread(); });
+			const float ForwardLossScaleMultiplier = FMath::Max(0.0f, ForwardLossScaleOverride >= 0.0f ? ForwardLossScaleOverride : WheelFrameLateralForwardLossScaleWheeledDomainStorage());
+			const float ForwardLossCurveScale = FMath::Max(0.0f, EvaluateLinearFloatCurve(LateralForwardLossScaleCurveWheeledDomainStorage(), AbsForwardSpeed, 1.0f));
+			const float ForwardLossSlipScale = FMath::Max(0.0f, EvaluateLinearFloatCurve(LateralForwardLossSlipScaleCurveWheeledDomainStorage(), FrictionCurveInput, 1.0f));
 			const float SteeringForwardLossSpeedScale = HandbrakeFrictionValue > KINDA_SMALL_NUMBER
 				? 1.0f
-				: FMath::Max(0.0f, EvaluateLinearFloatCurve(SteeringForwardLossSpeedScaleCurve, AbsForwardSpeed, 1.0f));
+				: FMath::Max(0.0f, EvaluateLinearFloatCurve(SteeringForwardLossSpeedScaleCurveWheeledDomainStorage(), AbsForwardSpeed, 1.0f));
 			// RocketSim applies the lateral wheel impulse directly along the steered axle.
 			// Its natural forward component is enough during a handbrake; scaling it again
 			// adds artificial longitudinal drag and changes the yaw moment balance.
@@ -2784,7 +4056,7 @@ void USpeedWheeledComponent::ApplyWheelFrameLateralFriction(const float& delta)
 				const float ArmUp = FVector::DotProduct(ContactArm, ChassisUp);
 				const float ForceForward = FVector::DotProduct(Force, LongitudinalDir);
 				const float ForceRight = FVector::DotProduct(Force, LateralDir);
-				UE_LOG(SpeedPhysicsLog, Log,
+				SPEED_NATIVE_LOG(SpeedPhysicsLog, Log,
 					TEXT("[%s(%s)][WheelFrameWheel] Frame=%d Wheel=%d Front=%d Handbrake=%.3f Clamp=%d Clamped=%d Arm(Long=%.2f,Lat=%.2f,U=%.2f) HardPoint=%s ContactPoint=%s CurveV(Lat=%.2f,Long=%.2f) ContactLat=%.2f FrictionInput=%.3f FrictionScale=%.3f CombinedScale=%.4f ForwardLoss(Speed=%.3f,Slip=%.3f,Steering=%.3f) UnclampedAccel=%.1f AppliedAccel=%.1f Force(Long=%.1f,Lat=%.1f) YawTorque=%.1f"),
 					*GetOwner()->GetName(), *GetRole(), NumFrame(), WheelIndex, bFrontWheel ? 1 : 0, HandbrakeFrictionValue,
 					bClampLateralImpulse ? 1 : 0, bLateralImpulseClamped ? 1 : 0,
@@ -2792,7 +4064,7 @@ void USpeedWheeledComponent::ApplyWheelFrameLateralFriction(const float& delta)
 					FrictionCurveInput, FrictionScale, CombinedFrictionScale, ForwardLossCurveScale, ForwardLossSlipScale, SteeringForwardLossSpeedScale, UnclampedAccelToApply, AccelToApply,
 					ForceForward, ForceRight, WheelYawTorque);
 			}
-			const FVector AccelBefore = GetPhysAcceleration();
+			const FVector AccelBefore = Speed::NativeKinematics::FComponentRead::Of(*this).Acceleration();
 			AddPhysForceAtPoint(Force, ForceApplicationPoint);
 			if (bDebugWheelFriction)
 			{
@@ -2801,7 +4073,7 @@ void USpeedWheeledComponent::ApplyWheelFrameLateralFriction(const float& delta)
 				DebugLatAccelSum += AccelToApply;
 				DebugScrubAccelSum += ScrubAccel;
 				DebugTotalForce += Force;
-				DebugAppliedAccel += GetPhysAcceleration() - AccelBefore;
+				DebugAppliedAccel += Speed::NativeKinematics::FComponentRead::Of(*this).Acceleration() - AccelBefore;
 				DebugApplicationPointSum += ForceApplicationPoint;
 				++DebugApplicationPointCount;
 
@@ -2820,28 +4092,28 @@ void USpeedWheeledComponent::ApplyWheelFrameLateralFriction(const float& delta)
 	}
 
 	const float AligningMaxRateOverride =
-		CVarIAmSpeedWheelFrameUnsteeredAligningYawMaxRate.GetValueOnAnyThread();
+		Speed::RoadSettings::ReadOriginalOrLegacy<131>([](){ return CVarIAmSpeedWheelFrameUnsteeredAligningYawMaxRate.GetValueOnAnyThread(); });
 	const float AligningMaxRate = FMath::Max(0.0f, AligningMaxRateOverride >= 0.0f
-		? AligningMaxRateOverride : WheelFrameUnsteeredAligningYawMaxRate);
+		? AligningMaxRateOverride : WheelFrameUnsteeredAligningYawMaxRateWheeledDomainStorage());
 	if (AligningMaxRate > KINDA_SMALL_NUMBER && NumWheelsOnGround() == 4
 		&& AbsSteeringInput <= KINDA_SMALL_NUMBER
 		&& HandbrakeFrictionValue <= KINDA_SMALL_NUMBER)
 	{
 		const FVector SurfaceNormal = GetNormalFromWheels().GetSafeNormal();
 		FVector SurfaceRight = FVector::CrossProduct(
-			SurfaceNormal, GetPhysForwardVector()).GetSafeNormal();
+			SurfaceNormal, Speed::NativeKinematics::FComponentRead::Of(*this).Forward()).GetSafeNormal();
 		if (!SurfaceNormal.IsNearlyZero() && !SurfaceRight.IsNearlyZero())
 		{
 			const float SideSpeed = FVector::DotProduct(
-				GetPhysCOMVelocity(), SurfaceRight);
+				Speed::NativeKinematics::FComponentRead::Of(*this).COMVelocity(), SurfaceRight);
 			const float FullSlipOverride =
-				CVarIAmSpeedWheelFrameUnsteeredAligningYawFullSlipSpeed.GetValueOnAnyThread();
+				Speed::RoadSettings::ReadOriginalOrLegacy<130>([](){ return CVarIAmSpeedWheelFrameUnsteeredAligningYawFullSlipSpeed.GetValueOnAnyThread(); });
 			const float FullSlipSpeed = FMath::Max(1.0f, FullSlipOverride >= 0.0f
-				? FullSlipOverride : WheelFrameUnsteeredAligningYawFullSlipSpeed);
+				? FullSlipOverride : WheelFrameUnsteeredAligningYawFullSlipSpeedWheeledDomainStorage());
 			const float MinSlipOverride =
-				CVarIAmSpeedWheelFrameUnsteeredAligningYawMinSlipSpeed.GetValueOnAnyThread();
+				Speed::RoadSettings::ReadOriginalOrLegacy<132>([](){ return CVarIAmSpeedWheelFrameUnsteeredAligningYawMinSlipSpeed.GetValueOnAnyThread(); });
 			const float MinSlipSpeed = FMath::Clamp(MinSlipOverride >= 0.0f
-				? MinSlipOverride : WheelFrameUnsteeredAligningYawMinSlipSpeed,
+				? MinSlipOverride : WheelFrameUnsteeredAligningYawMinSlipSpeedWheeledDomainStorage(),
 				0.0f, FullSlipSpeed - KINDA_SMALL_NUMBER);
 			const float SlipAuthority = FMath::Clamp(
 				(FMath::Abs(SideSpeed) - MinSlipSpeed)
@@ -2850,18 +4122,18 @@ void USpeedWheeledComponent::ApplyWheelFrameLateralFriction(const float& delta)
 			const float TargetYawRate = -FMath::Sign(SideSpeed) * AligningMaxRate
 				* SlipAuthority;
 			const float TimeConstantOverride =
-				CVarIAmSpeedWheelFrameUnsteeredAligningYawTimeConstant.GetValueOnAnyThread();
+				Speed::RoadSettings::ReadOriginalOrLegacy<134>([](){ return CVarIAmSpeedWheelFrameUnsteeredAligningYawTimeConstant.GetValueOnAnyThread(); });
 			const float TimeConstant = FMath::Max(delta, TimeConstantOverride >= 0.0f
-				? TimeConstantOverride : WheelFrameUnsteeredAligningYawTimeConstant);
+				? TimeConstantOverride : WheelFrameUnsteeredAligningYawTimeConstantWheeledDomainStorage());
 			const float CurrentYawRate = FVector::DotProduct(
-				GetPhysAngularVelocity(), SurfaceNormal);
+				Speed::NativeKinematics::FComponentRead::Of(*this).AngularVelocity(), SurfaceNormal);
 			// Default mode scales the whole correction by slip authority.
 			// The diagnostic candidate preserves residual damping while the
 			// target remains slip-scaled; full authority agrees in both modes.
 			const float AligningYawAcceleration =
 				IAmSpeedSteering::ComputeUnsteeredAligningYawAcceleration(
 					TargetYawRate, CurrentYawRate, TimeConstant, SlipAuthority,
-					CVarIAmSpeedWheelFrameUnsteeredAligningYawResidualDamping.GetValueOnAnyThread() == 1);
+					Speed::RoadSettings::ReadOriginalOrLegacy<133>([](){ return CVarIAmSpeedWheelFrameUnsteeredAligningYawResidualDamping.GetValueOnAnyThread(); }) == 1);
 			AddPhysAngularAcceleration(SurfaceNormal * AligningYawAcceleration);
 		}
 	}
@@ -2871,59 +4143,59 @@ void USpeedWheeledComponent::ApplyWheelFrameLateralFriction(const float& delta)
 			FMath::Abs(GetPhysThrottleInput()) > 0.3f ||
 			FMath::Abs(GetPhysBrakeInput()) > 0.3f;
 		const bool bTurnTimingActive = bHasDriveInput && FMath::Abs(GetPhysSteeringInput()) > 0.3f;
-		if (bTurnTimingActive && TurnStartFrame == INDEX_NONE)
+		if (bTurnTimingActive && TurnStartFrameWheeledDomainStorage() == INDEX_NONE)
 		{
-			TurnStartFrame = NumFrame();
-			LastTurnSummaryFrame = INDEX_NONE;
+			TurnStartFrameWheeledDomainStorage() = NumFrame();
+			LastTurnSummaryFrameWheeledDomainStorage() = INDEX_NONE;
 		}
 		else if (!bTurnTimingActive)
 		{
-			TurnStartFrame = INDEX_NONE;
-			LastTurnSummaryFrame = INDEX_NONE;
+			TurnStartFrameWheeledDomainStorage() = INDEX_NONE;
+			LastTurnSummaryFrameWheeledDomainStorage() = INDEX_NONE;
 		}
 		const FVector UpVector = GetNormalFromWheels();
-		const float YawRate = FVector::DotProduct(GetPhysAngularVelocity(), UpVector);
-		const float AllowedYawRate = FVector::DotProduct(WheeledPhysicsState.AllowedAngularVelocity, UpVector);
+		const float YawRate = FVector::DotProduct(Speed::NativeKinematics::FComponentRead::Of(*this).AngularVelocity(), UpVector);
+		const float AllowedYawRate = FVector::DotProduct(WheeledPhysicsStateStorage().AllowedAngularVelocity, UpVector);
 		const float Radius = FMath::Abs(YawRate) > KINDA_SMALL_NUMBER ? AbsForwardSpeed / FMath::Abs(YawRate) : 0.0f;
-		FVector ForwardDir = GetPhysForwardVector() - FVector::DotProduct(GetPhysForwardVector(), UpVector) * UpVector;
+		FVector ForwardDir = Speed::NativeKinematics::FComponentRead::Of(*this).Forward() - FVector::DotProduct(Speed::NativeKinematics::FComponentRead::Of(*this).Forward(), UpVector) * UpVector;
 		ForwardDir.Normalize();
 		const FVector RightDir = FVector::CrossProduct(UpVector, ForwardDir).GetSafeNormal();
 		const float ForwardAccel = FVector::DotProduct(DebugTotalForce, ForwardDir) / Mass;
 		const float SideAccel = FVector::DotProduct(DebugTotalForce, RightDir) / Mass;
 		const float AppliedForwardAccel = FVector::DotProduct(DebugAppliedAccel, ForwardDir);
 		const float AppliedSideAccel = FVector::DotProduct(DebugAppliedAccel, RightDir);
-		const float SideSpeed = FVector::DotProduct(GetPhysCOMVelocity(), RightDir);
+		const float SideSpeed = FVector::DotProduct(Speed::NativeKinematics::FComponentRead::Of(*this).COMVelocity(), RightDir);
 		const FVector DebugAverageApplicationPoint = DebugApplicationPointCount > 0 ? DebugApplicationPointSum / static_cast<float>(DebugApplicationPointCount) : FVector::ZeroVector;
-		const FVector COMVelocity = GetPhysCOMVelocity();
+		const FVector COMVelocity = Speed::NativeKinematics::FComponentRead::Of(*this).COMVelocity();
 		const float GroundSpeed = (COMVelocity - FVector::DotProduct(COMVelocity, UpVector) * UpVector).Size();
 		const float DebugAvgFrontAbsLatSpeed = DebugFrontWheelCount > 0 ? DebugFrontAbsLatSpeedSum / DebugFrontWheelCount : 0.0f;
 		const float DebugAvgRearAbsLatSpeed = DebugRearWheelCount > 0 ? DebugRearAbsLatSpeedSum / DebugRearWheelCount : 0.0f;
-		const float BasisForwardRate = FVector::DotProduct(GetPhysCOMVelocity(), FVector::CrossProduct(GetPhysAngularVelocity(), ForwardDir));
-		const float TotalForwardRateNow = FVector::DotProduct(GetPhysAcceleration(), ForwardDir) + BasisForwardRate;
-		const float TurnTime = (NumFrame() - TurnStartFrame) / 300.f;
-		const float SmishTargetSpeed = GetSmishTurnTargetSpeed(TurnTime, GetPhysForwardSpeed());
-		const uint32 SummaryIntervalFrames = static_cast<uint32>(FMath::Max(1, CVarIAmSpeedWheelFrameTurnSummaryIntervalFrames.GetValueOnAnyThread()));
-		if (TurnStartFrame != INDEX_NONE && (LastTurnSummaryFrame == INDEX_NONE || NumFrame() - LastTurnSummaryFrame >= SummaryIntervalFrames))
+		const float BasisForwardRate = FVector::DotProduct(Speed::NativeKinematics::FComponentRead::Of(*this).COMVelocity(), FVector::CrossProduct(Speed::NativeKinematics::FComponentRead::Of(*this).AngularVelocity(), ForwardDir));
+		const float TotalForwardRateNow = FVector::DotProduct(Speed::NativeKinematics::FComponentRead::Of(*this).Acceleration(), ForwardDir) + BasisForwardRate;
+		const float TurnTime = (NumFrame() - TurnStartFrameWheeledDomainStorage()) / 300.f;
+		const float SmishTargetSpeed = GetSmishTurnTargetSpeed(TurnTime, Speed::NativeKinematics::FComponentRead::Of(*this).ForwardSpeed());
+		const uint32 SummaryIntervalFrames = static_cast<uint32>(FMath::Max(1, Speed::RoadSettings::ReadOriginalOrLegacy<129>([](){ return CVarIAmSpeedWheelFrameTurnSummaryIntervalFrames.GetValueOnAnyThread(); })));
+		if (TurnStartFrameWheeledDomainStorage() != INDEX_NONE && (LastTurnSummaryFrameWheeledDomainStorage() == INDEX_NONE || NumFrame() - LastTurnSummaryFrameWheeledDomainStorage() >= SummaryIntervalFrames))
 		{
-			LastTurnSummaryFrame = NumFrame();
-			const float SpeedError = GetPhysForwardSpeed() - SmishTargetSpeed;
+			LastTurnSummaryFrameWheeledDomainStorage() = NumFrame();
+			const float SpeedError = Speed::NativeKinematics::FComponentRead::Of(*this).ForwardSpeed() - SmishTargetSpeed;
 			const float RadiusRatio = TargetRadius > KINDA_SMALL_NUMBER ? Radius / TargetRadius : 0.0f;
 			const float SlipAngleDeg = FMath::RadiansToDegrees(FMath::Atan2(SideSpeed, ForwardSpeed));
 			const float DebugAverageFrictionInput = DebugFrictionInputSum / DebugGroundedWheels;
-			const float DebugForwardLossSlipScale = FMath::Max(0.0f, EvaluateLinearFloatCurve(LateralForwardLossSlipScaleCurve, DebugAverageFrictionInput, 1.0f));
-			const float DebugSteeringForwardLossSpeedScale = HandbrakeFrictionValue > KINDA_SMALL_NUMBER ? 1.0f : FMath::Max(0.0f, EvaluateLinearFloatCurve(SteeringForwardLossSpeedScaleCurve, AbsForwardSpeed, 1.0f));
-			UE_LOG(SpeedPhysicsLog, Warning,
+			const float DebugForwardLossSlipScale = FMath::Max(0.0f, EvaluateLinearFloatCurve(LateralForwardLossSlipScaleCurveWheeledDomainStorage(), DebugAverageFrictionInput, 1.0f));
+			const float DebugSteeringForwardLossSpeedScale = HandbrakeFrictionValue > KINDA_SMALL_NUMBER ? 1.0f : FMath::Max(0.0f, EvaluateLinearFloatCurve(SteeringForwardLossSpeedScaleCurveWheeledDomainStorage(), AbsForwardSpeed, 1.0f));
+			SPEED_NATIVE_LOG(SpeedPhysicsLog, Warning,
 				TEXT("[%s(%s)][WheelTurnSummary] Frame=%d TurnTime=%.3f Speed=%.1f SmishTargetSpeed=%.1f SpeedError=%.1f Radius=%.1f TargetRadius=%.1f RadiusRatio=%.3f YawRate=%.3f Steering=%.2f SteerAngle=%.4f Handbrake=%.3f RearRelease=%.3f WheelFrame=%d LegacySteering=%d AllowedYaw=%.3f SideSpeed=%.1f SlipAngleDeg=%.2fdeg ForwardLossCurveScale=%.3f ForwardLossSlipScale=%.3f SteeringForwardLossSpeedScale=%.3f ForwardLossMultiplier=%.3f EffectiveForwardLossScale=%.3f AvgLatAccel=%.1f AvgScrubAccel=%.1f FrictionForwardAccel=%.1f FrictionSideAccel=%.1f BasisForwardRate=%.1f TotalForwardRateNow=%.1f"),
-				*GetOwner()->GetName(), *GetRole(), NumFrame(), TurnTime, GetPhysForwardSpeed(), SmishTargetSpeed, SpeedError, Radius, TargetRadius, RadiusRatio,
-				YawRate, GetPhysSteeringInput(), SteerAngle, HandbrakeFrictionValue, DebugSteeringRearReleaseScale, bUseWheelFrameLateralFriction ? 1 : 0, bUseLegacySteeringVelocityState ? 1 : 0, AllowedYawRate, SideSpeed, SlipAngleDeg, FMath::Max(0.0f, EvaluateLinearFloatCurve(LateralForwardLossScaleCurve, AbsForwardSpeed, 1.0f)), DebugForwardLossSlipScale, DebugSteeringForwardLossSpeedScale, FMath::Max(0.0f, CVarIAmSpeedWheelFrameLateralForwardLossScale.GetValueOnAnyThread() >= 0.0f ? CVarIAmSpeedWheelFrameLateralForwardLossScale.GetValueOnAnyThread() : WheelFrameLateralForwardLossScale), FMath::Max(0.0f, EvaluateLinearFloatCurve(LateralForwardLossScaleCurve, AbsForwardSpeed, 1.0f)) * DebugForwardLossSlipScale * DebugSteeringForwardLossSpeedScale * FMath::Max(0.0f, CVarIAmSpeedWheelFrameLateralForwardLossScale.GetValueOnAnyThread() >= 0.0f ? CVarIAmSpeedWheelFrameLateralForwardLossScale.GetValueOnAnyThread() : WheelFrameLateralForwardLossScale), DebugLatAccelSum / DebugGroundedWheels, DebugScrubAccelSum / DebugGroundedWheels,
+				*GetOwner()->GetName(), *GetRole(), NumFrame(), TurnTime, Speed::NativeKinematics::FComponentRead::Of(*this).ForwardSpeed(), SmishTargetSpeed, SpeedError, Radius, TargetRadius, RadiusRatio,
+				YawRate, GetPhysSteeringInput(), SteerAngle, HandbrakeFrictionValue, DebugSteeringRearReleaseScale, bUseWheelFrameLateralFrictionWheeledDomainStorage() ? 1 : 0, bUseLegacySteeringVelocityStateWheeledDomainStorage() ? 1 : 0, AllowedYawRate, SideSpeed, SlipAngleDeg, FMath::Max(0.0f, EvaluateLinearFloatCurve(LateralForwardLossScaleCurveWheeledDomainStorage(), AbsForwardSpeed, 1.0f)), DebugForwardLossSlipScale, DebugSteeringForwardLossSpeedScale, FMath::Max(0.0f, Speed::RoadSettings::ReadOriginalOrLegacy<122>([](){ return CVarIAmSpeedWheelFrameLateralForwardLossScale.GetValueOnAnyThread(); }) >= 0.0f ? Speed::RoadSettings::ReadOriginalOrLegacy<122>([](){ return CVarIAmSpeedWheelFrameLateralForwardLossScale.GetValueOnAnyThread(); }) : WheelFrameLateralForwardLossScaleWheeledDomainStorage()), FMath::Max(0.0f, EvaluateLinearFloatCurve(LateralForwardLossScaleCurveWheeledDomainStorage(), AbsForwardSpeed, 1.0f)) * DebugForwardLossSlipScale * DebugSteeringForwardLossSpeedScale * FMath::Max(0.0f, Speed::RoadSettings::ReadOriginalOrLegacy<122>([](){ return CVarIAmSpeedWheelFrameLateralForwardLossScale.GetValueOnAnyThread(); }) >= 0.0f ? Speed::RoadSettings::ReadOriginalOrLegacy<122>([](){ return CVarIAmSpeedWheelFrameLateralForwardLossScale.GetValueOnAnyThread(); }) : WheelFrameLateralForwardLossScaleWheeledDomainStorage()), DebugLatAccelSum / DebugGroundedWheels, DebugScrubAccelSum / DebugGroundedWheels,
 				ForwardAccel, SideAccel, BasisForwardRate, TotalForwardRateNow);
 		}
-		const uint32 DebugIntervalFrames = static_cast<uint32>(FMath::Max(1, CVarIAmSpeedWheelFrameDebugIntervalFrames.GetValueOnAnyThread()));
+		const uint32 DebugIntervalFrames = static_cast<uint32>(FMath::Max(1, Speed::RoadSettings::ReadOriginalOrLegacy<112>([](){ return CVarIAmSpeedWheelFrameDebugIntervalFrames.GetValueOnAnyThread(); })));
 		if (NumFrame() % DebugIntervalFrames == 0)
-			UE_LOG(SpeedPhysicsLog, Log,
+			SPEED_NATIVE_LOG(SpeedPhysicsLog, Log,
 			TEXT("[%s(%s)][WheelFrameFriction] Frame=%d Speed=%.1f GroundSpeed=%.1f SideSpeed=%.1f Steering=%.2f SteerAngle=%.4f Handbrake=%.3f RearRelease=%.3f TargetRadius=%.1f Wheelbase=%.1f Grounded=%d AvgAbsLat=%.2f MaxAbsLat=%.2f AvgAbsLong=%.2f AvgFrictionInput=%.3f AvgFrictionScale=%.3f AvgLatAccel=%.1f AvgScrubAccel=%.1f FrontAbsLat=%.1f RearAbsLat=%.1f FrontYawTorque=%.1f RearYawTorque=%.1f ForwardAccel=%.1f SideAccel=%.1f AppliedForwardAccel=%.1f AppliedSideAccel=%.1f"
 				"BasisForwardRate=%.1f TotalForwardRateNow=%.1f TotalForce=%s AvgApplicationPoint=%s YawTorque=%.1f YawRate=%.3f Radius=%.1f TurnTime=%.3f SmishTargetSpeed=%.1f SignedForwardSpeed=%.6f NormalRearScale=%.6f NormalRearReverseActive=%d"),
-			*GetOwner()->GetName(), *GetRole(), NumFrame(), GetPhysForwardSpeed(), GroundSpeed, SideSpeed, GetPhysSteeringInput(), SteerAngle, HandbrakeFrictionValue, DebugSteeringRearReleaseScale, TargetRadius, Wheelbase, DebugGroundedWheels,
+			*GetOwner()->GetName(), *GetRole(), NumFrame(), Speed::NativeKinematics::FComponentRead::Of(*this).ForwardSpeed(), GroundSpeed, SideSpeed, GetPhysSteeringInput(), SteerAngle, HandbrakeFrictionValue, DebugSteeringRearReleaseScale, TargetRadius, Wheelbase, DebugGroundedWheels,
 			DebugAbsLatSpeedSum / DebugGroundedWheels, DebugMaxAbsLatSpeed, DebugAbsLongSpeedSum / DebugGroundedWheels,
 			DebugFrictionInputSum / DebugGroundedWheels, DebugFrictionScaleSum / DebugGroundedWheels, DebugLatAccelSum / DebugGroundedWheels, DebugScrubAccelSum / DebugGroundedWheels, DebugAvgFrontAbsLatSpeed, DebugAvgRearAbsLatSpeed, DebugFrontYawTorque, DebugRearYawTorque,
 			ForwardAccel, SideAccel, AppliedForwardAccel, AppliedSideAccel, BasisForwardRate, TotalForwardRateNow, *DebugTotalForce.ToString(), *DebugAverageApplicationPoint.ToString(), DebugYawTorque, YawRate, Radius, TurnTime, SmishTargetSpeed, ForwardSpeed, DebugNormalRearAppliedScale, bUseSteeringRearReverseScale ? 1 : 0);
@@ -2939,17 +4211,17 @@ void USpeedWheeledComponent::HandleGroundFriction(const float& delta)
 	}
 
 	FVector UpVector = GetNormalFromWheels(); // surface normal
-	const FVector COMVelocity = GetPhysCOMVelocity();
+	const FVector COMVelocity = Speed::NativeKinematics::FComponentRead::Of(*this).COMVelocity();
 	FVector GroundVelocity = COMVelocity - (COMVelocity.Dot(UpVector)) * UpVector;
 	float GroundSpeed = GroundVelocity.Size();
 
 	// compute right vector
-	FVector PhysRightVector = GetPhysRightVector();
+	FVector PhysRightVector = Speed::NativeKinematics::FComponentRead::Of(*this).Right();
 	FVector RightVector = PhysRightVector - (PhysRightVector.Dot(UpVector)) * UpVector;
 	RightVector.Normalize();
 
 	// compute forward vector
-	FVector PhysForwardVector = GetPhysForwardVector();
+	FVector PhysForwardVector = Speed::NativeKinematics::FComponentRead::Of(*this).Forward();
 	FVector ForwardVector = PhysForwardVector - (PhysForwardVector.Dot(UpVector)) * UpVector;
 	ForwardVector.Normalize();
 
@@ -2963,16 +4235,16 @@ void USpeedWheeledComponent::HandleGroundFriction(const float& delta)
 	}*/
 
 	const bool bNoDriveInput = !HasDriveInputForGroundFriction();
-	const bool bNoSteeringInput = FMath::Abs(GetPhysSteeringInput()) < ThrottleDeadzone;
-	const bool bWheelFrameHandbrakeActive = bUseWheelFrameLateralFriction &&
-		(IsHandbrakingForWheelFriction() || WheelFrameHandbrakeValue > KINDA_SMALL_NUMBER);
+	const bool bNoSteeringInput = FMath::Abs(GetPhysSteeringInput()) < ThrottleDeadzoneWheeledDomainStorage();
+	const bool bWheelFrameHandbrakeActive = bUseWheelFrameLateralFrictionWheeledDomainStorage() &&
+		(IsHandbrakingForWheelFriction() || WheelFrameHandbrakeValueWheeledDomainStorage() > KINDA_SMALL_NUMBER);
 
 	//linearDamping = 600;
 	if (GroundSpeed != 0.0)
 	{
 
 // Dampen forward velocity
-		if (!bWheelFrameHandbrakeActive && !bUseDriveModelLongitudinalFriction && ForwardSpeed != 0.0f)
+		if (!bWheelFrameHandbrakeActive && !bUseDriveModelLongitudinalFrictionWheeledDomainStorage() && ForwardSpeed != 0.0f)
 		{
 			if (FMath::Abs(ForwardSpeed) < LocalForwardFriction * delta)
 			{
@@ -2987,7 +4259,7 @@ void USpeedWheeledComponent::HandleGroundFriction(const float& delta)
 				//	LocalForwardFriction));
 			}
 		}
-		if (!bWheelFrameHandbrakeActive && bUseDriveModelLongitudinalFriction && bNoDriveInput)
+		if (!bWheelFrameHandbrakeActive && bUseDriveModelLongitudinalFrictionWheeledDomainStorage() && bNoDriveInput)
 		{
 			if (TryApplyWheelFramePassiveLongitudinalFriction(delta, LocalForwardFriction))
 			{
@@ -3004,9 +4276,9 @@ void USpeedWheeledComponent::HandleGroundFriction(const float& delta)
 		}
 
 		// Dampen side velocity
-		if (!bUseWheelFrameLateralFriction && SideSpeed != 0.0f)
+		if (!bUseWheelFrameLateralFrictionWheeledDomainStorage() && SideSpeed != 0.0f)
 		{
-			float allowedSideSpeed = WheeledPhysicsState.AllowedSideVelocity.Dot(RightVector);
+			float allowedSideSpeed = WheeledPhysicsStateStorage().AllowedSideVelocity.Dot(RightVector);
 			float overSpeed = FMath::Sign(SideSpeed) * (SideSpeed - allowedSideSpeed);
 			if (overSpeed <= 0.0f)
 			{
@@ -3030,10 +4302,10 @@ void USpeedWheeledComponent::HandleGroundFriction(const float& delta)
 		}
 	}
 
-	if (bUseWheelFrameLateralFriction)
+	if (bUseWheelFrameLateralFrictionWheeledDomainStorage())
 	{
 		if (!bWheelFrameHandbrakeActive && (bNoDriveInput || bNoSteeringInput) &&
-			FMath::Abs(SideSpeed) <= LateralFrictionSlipThreshold)
+			FMath::Abs(SideSpeed) <= LateralFrictionSlipThresholdWheeledDomainStorage())
 		{
 			// Wheel-frame friction owns lateral deceleration. Only remove quantization-scale residue here.
 			AddPhysVelocity(-SideSpeed * RightVector);
@@ -3044,7 +4316,7 @@ void USpeedWheeledComponent::HandleGroundFriction(const float& delta)
 		/*if (CanMove() && CVarIAmSpeedDebugKinematics.GetValueOnAnyThread() != 0 && NumFrame() % 30 == 0)
 		{
 			UE_LOG(SpeedPhysicsLog, Log, TEXT("[%s(%s)][End HandleGroundFriction] SinceCanMove=%d Wheels=%d COMKinematic=(%s)"),
-				*GetOwner()->GetName(), *GetRole(), NbFramesSinceCanMove(), NbWheelsOnGround, *GetKinematicState().ToString());
+				*GetOwner()->GetName(), *GetRole(), NbFramesSinceCanMove(), NbWheelsOnGround, *Speed::NativeKinematics::FComponentRead::Current(*this).ToString());
 		}*/
 	}
 }
@@ -3056,7 +4328,7 @@ void USpeedWheeledComponent::HandleSuspension(const float& delta)
 	BeforeSuspensionUpdate(delta);
 
 	// 1) Update suspension for each wheel
-	for (auto& Wheel : WheelSubBodies)
+	for (auto Wheel : ReadWheelSubBodiesForPhysics())
 	{
 		Wheel->UpdatePhysicsState(delta);
 		Wheel->UpdateSuspension(delta);
@@ -3066,7 +4338,7 @@ void USpeedWheeledComponent::HandleSuspension(const float& delta)
 		return;
 
 	// 2) Apply suspension force + wall force
-	for (auto& Axle : SkySimulation->PVehicle->GetAxles())
+	for (auto& Axle : SkySimulationWheeledDomainStorage()->PVehicle->GetAxles())
 	{
 		if (Axle.Setup.WheelIndex.Num() != 2)
 			continue;
@@ -3074,8 +4346,8 @@ void USpeedWheeledComponent::HandleSuspension(const float& delta)
 		uint16 WheelIdxA = Axle.Setup.WheelIndex[0];
 		uint16 WheelIdxB = Axle.Setup.WheelIndex[1];
 
-		auto& WheelA = WheelSubBodies[WheelIdxA];
-		auto& WheelB = WheelSubBodies[WheelIdxB];
+		auto WheelA = ReadWheelSubBodiesForPhysics()[WheelIdxA];
+		auto WheelB = ReadWheelSubBodiesForPhysics()[WheelIdxB];
 
 		// --- Base spring and damping forces ---
 		auto ApplyWheelSuspension = [this, delta](USWheelSubBody& W)
@@ -3084,7 +4356,7 @@ void USpeedWheeledComponent::HandleSuspension(const float& delta)
 					return;
 
                 if (TryApplyWheelSuspensionForce(W, W.GetSuspensionForce())) return;
-				const FVector SuspensionDir = GetPhysUpVector().GetSafeNormal();
+				const FVector SuspensionDir = Speed::NativeKinematics::FComponentRead::Of(*this).Up().GetSafeNormal();
 				const FVector ContactNormal = W.GetHitContactNormal().GetSafeNormal();
 				const float Load = W.GetSuspensionForce();
 				const float Dot = FVector::DotProduct(SuspensionDir, ContactNormal);
@@ -3092,10 +4364,10 @@ void USpeedWheeledComponent::HandleSuspension(const float& delta)
 
 				const float Denominator = FMath::Max(Dot, 0.1f);
 				const float InvDotScale = FMath::Clamp(1.0f / Denominator, 0.0f, 10.0f);
-				const float InvDotBlend = FMath::Clamp(CVarSkyLeagueSuspensionInvDotBlend.GetValueOnAnyThread(), 0.0f, 1.0f);
+				const float InvDotBlend = FMath::Clamp(Speed::RoadSettings::ReadOriginalOrLegacy<162>([](){ return CVarSkyLeagueSuspensionInvDotBlend.GetValueOnAnyThread(); }), 0.0f, 1.0f);
 				const float Scale = FMath::Lerp(LegacyScale, InvDotScale, InvDotBlend);
 
-				const float NormalBlend = FMath::Clamp(CVarSkyLeagueSuspensionNormalBlend.GetValueOnAnyThread(), 0.0f, 1.0f);
+				const float NormalBlend = FMath::Clamp(Speed::RoadSettings::ReadOriginalOrLegacy<166>([](){ return CVarSkyLeagueSuspensionNormalBlend.GetValueOnAnyThread(); }), 0.0f, 1.0f);
 				const FVector ForceDirection = FMath::Lerp(SuspensionDir, ContactNormal, NormalBlend).GetSafeNormal();
 				FVector Force = ForceDirection * Load * Scale;
 				// const FVector ApplicationPoint = W.WorldPos();
@@ -3112,7 +4384,7 @@ void USpeedWheeledComponent::HandleSuspension(const float& delta)
 					SpeedPhysicsLog,
 					Warning,
 					TEXT("[ApplyWheelSuspension] For Frame=%d on wheel=%d. Force=%s, ApplicationPoint=%s, Kinematic=%s"), NumFrame(), W.Idx(),
-					*Force.ToString(), *ApplicationPoint.ToString(), *BasePhysicsState.Kinematic.ToString());
+					*Force.ToString(), *ApplicationPoint.ToString(), *BasePhysicsStateStorage().Kinematic.ToString());
 					if (W.Idx() == 0)
 					{
 						UE_LOG(
@@ -3124,11 +4396,11 @@ void USpeedWheeledComponent::HandleSuspension(const float& delta)
 				AddPhysForceAtPoint(Force, ApplicationPoint);
 
 #if !(UE_BUILD_SHIPPING)
-				if (CVarSkyLeagueSuspensionDebug.GetValueOnAnyThread() != 0)
+				if (Speed::RoadSettings::ReadOriginalOrLegacy<160>([](){ return CVarSkyLeagueSuspensionDebug.GetValueOnAnyThread(); }) != 0)
 				{
-					UE_LOG(SpeedPhysicsLog, Log,
+					SPEED_NATIVE_LOG(SpeedPhysicsLog, Log,
 						TEXT("[Suspension] Frame=%d Wheel=%d Load=%.2f Dot=%.3f Scale=%.3f NormalBlend=%.2f InvDotBlend=%.2f Force=%s Point=%s"),
-						NumFrame(), W.Idx(), Load, Dot, Scale, NormalBlend, InvDotBlend, *Force.ToString(), *ApplicationPoint.ToString());
+						NumFrame(), Speed::NativeKinematics::FSolidPropertiesAccess::Idx(W), Load, Dot, Scale, NormalBlend, InvDotBlend, *Force.ToString(), *ApplicationPoint.ToString());
 				}
 #endif
 			};
@@ -3141,7 +4413,7 @@ void USpeedWheeledComponent::HandleSuspension(const float& delta)
 
 void USpeedWheeledComponent::HandleAngularDamping(const float& delta)
 {
-	const auto AngularVelocityToDampen = GetPhysAngularVelocity() - WheeledPhysicsState.AllowedAngularVelocity;
+	const auto AngularVelocityToDampen = Speed::NativeKinematics::FComponentRead::Of(*this).AngularVelocity() - WheeledPhysicsStateStorage().AllowedAngularVelocity;
 	if (!OneWheelOnGround())
 	{
 		DampenAirAngularVelocity(AngularVelocityToDampen, delta);
@@ -3150,11 +4422,11 @@ void USpeedWheeledComponent::HandleAngularDamping(const float& delta)
 
 	// The wheel-frame model owns ground yaw through tire forces. Neither the
 	// aerial drag nor the legacy ground damping may counteract that response.
-	if (!bUseWheelFrameLateralFriction || bUseLegacySteeringVelocityState)
+	if (!bUseWheelFrameLateralFrictionWheeledDomainStorage() || bUseLegacySteeringVelocityStateWheeledDomainStorage())
 	{
 		const auto GroundNormal = GetNormalFromWheels();
 		const auto GroundAngularVelocity = FVector::DotProduct(AngularVelocityToDampen, GroundNormal) * GroundNormal;
-		DampenAngularVelocity(GroundAngularDamping, GroundAngularVelocity, delta);
+		DampenAngularVelocity(GroundAngularDampingWheeledDomainStorage(), GroundAngularVelocity, delta);
 	}
 }
 
@@ -3186,22 +4458,22 @@ void USpeedWheeledComponent::DampenAngularVelocity(const float& DampingFactor, c
 void USpeedWheeledComponent::DampenAirAngularVelocity(const FVector& VelocityToDampen, const float& delta)
 {
 	// get axes
-	const FVector RollAxis = GetPhysForwardVector();
-	const FVector PitchAxis = GetPhysRightVector();
-	const FVector YawAxis = GetPhysUpVector();
+	const FVector RollAxis = Speed::NativeKinematics::FComponentRead::Of(*this).Forward();
+	const FVector PitchAxis = Speed::NativeKinematics::FComponentRead::Of(*this).Right();
+	const FVector YawAxis = Speed::NativeKinematics::FComponentRead::Of(*this).Up();
 	const float RollVelocity = FVector::DotProduct(VelocityToDampen, RollAxis);
 	const float PitchVelocity = FVector::DotProduct(VelocityToDampen, PitchAxis);
 	const float YawVelocity = FVector::DotProduct(VelocityToDampen, YawAxis);
 
 	// get drag coefficients
-	const float roll_drag = RollDragCoeff;
-	const float pitch_drag = PitchDragCoeff;
-	const float yaw_drag = YawDragCoeff;
+	const float roll_drag = RollDragCoeffWheeledDomainStorage();
+	const float pitch_drag = PitchDragCoeffWheeledDomainStorage();
+	const float yaw_drag = YawDragCoeffWheeledDomainStorage();
 
 	const UBoxSubBody* ContactHitbox = GetHitboxSubBodyForConfiguration();
 	const int32 ContactFrame = ContactHitbox ? ContactHitbox->GetLastResolvedGroundHitFrame() : INDEX_NONE;
 	const int32 CurrentFrame = static_cast<int32>(NumFrame());
-	const bool bContactDragRequested = CVarIAmSpeedHullContactContinuousAngularDrag.GetValueOnAnyThread() != 0;
+	const bool bContactDragRequested = Speed::RoadSettings::ReadOriginalOrLegacy<94>([](){ return CVarIAmSpeedHullContactContinuousAngularDrag.GetValueOnAnyThread(); }) != 0;
 	const bool bFreshContactFrame = ContactFrame >= 0 && ContactFrame >= CurrentFrame - 1 && ContactFrame <= CurrentFrame;
 	const bool bContinuousContactDrag = bContactDragRequested && bFreshContactFrame &&
 		ContactHitbox && ContactHitbox->HasCurrentExactPlanarContact();
@@ -3209,7 +4481,7 @@ void USpeedWheeledComponent::DampenAirAngularVelocity(const FVector& VelocityToD
 	// Observe the evaluated decision, never replay the native contact query.
 	static const auto* ContactDebug = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("p.IAmSpeed.AutoRecoverContactDebug"));
 	if (bContactDragRequested && bFreshContactFrame && ContactDebug && ContactDebug->GetValueOnAnyThread() != 0)
-		UE_LOG(SpeedPhysicsLog, Display, TEXT("[HullContactAngularDrag] frame=%d resolved=%d admitted=%d cached=%d roll=%.17g pitch=%.17g yaw=%.17g dt=%.17g"),
+		SPEED_NATIVE_LOG(SpeedPhysicsLog, Display, TEXT("[HullContactAngularDrag] frame=%d resolved=%d admitted=%d cached=%d roll=%.17g pitch=%.17g yaw=%.17g dt=%.17g"),
 			CurrentFrame, ContactFrame, bContinuousContactDrag ? 1 : 0,
 			ContactHitbox && ContactHitbox->HasPhysicsTickGroundContact() ? 1 : 0,
 			double(RollVelocity), double(PitchVelocity), double(YawVelocity), double(delta));
@@ -3242,7 +4514,7 @@ void USpeedWheeledComponent::DampenAirAngularVelocity(const FVector& VelocityToD
 
 void USpeedWheeledComponent::SetDampenedAirAngularVelocity(const FVector& TargetAngularVelocity, const FVector& AngVelocityToSetNow, const float& delta)
 {
-	const FVector VelocityToSet = AngVelocityToSetNow + WheeledPhysicsState.AllowedAngularVelocity;
+	const FVector VelocityToSet = AngVelocityToSetNow + WheeledPhysicsStateStorage().AllowedAngularVelocity;
 	SetPhysAngularVelocity(VelocityToSet);
 	const FVector TorqueToApply = (TargetAngularVelocity - AngVelocityToSetNow) / delta;
 	AddPhysAngularAcceleration(TorqueToApply);
@@ -3280,23 +4552,23 @@ void USpeedWheeledComponent::ApplyAccelKinematicsConstraint(const float& delta)
 void USpeedWheeledComponent::applyAccelerationConstraint(const float& delta)
 {
 	if (IsSpeedLimitPreservedByExactSupport(delta)) return;
-	const FVector COMVelocity = GetPhysCOMVelocity();
-	const FVector NewCOMVelocity = SSBox::AdvanceVelocity(COMVelocity, GetPhysAcceleration(), delta);
+	const FVector COMVelocity = Speed::NativeKinematics::FComponentRead::Of(*this).COMVelocity();
+	const FVector NewCOMVelocity = SSBox::AdvanceVelocity(COMVelocity, Speed::NativeKinematics::FComponentRead::Of(*this).Acceleration(), delta);
 	const FVector ClampedCOMVelocity = NewCOMVelocity.GetClampedToMaxSize(GetPhysMaxSpeed());
 	const FVector ActualAcceleration = (ClampedCOMVelocity - COMVelocity) / delta;
 	SetPhysAcceleration(ActualAcceleration);
 }
 void USpeedWheeledComponent::applyAngularAccelerationConstraint(const float& delta)
 {
-	const FVector AngularAccel = GetPhysAngularAcceleration();
-	const FVector AngularVelocity = GetPhysAngularVelocity();
+	const FVector AngularAccel = Speed::NativeKinematics::FComponentRead::Of(*this).AngularAcceleration();
+	const FVector AngularVelocity = Speed::NativeKinematics::FComponentRead::Of(*this).AngularVelocity();
 	FVector NewAngularVelocity = SSBox::AdvanceAngularVelocity(AngularVelocity, AngularAccel, delta);
 	NewAngularVelocity = NewAngularVelocity.GetClampedToMaxSize(GetPhysMaxAngularSpeed());
 	const FVector ActualAngularAccel = (NewAngularVelocity - AngularVelocity) / delta;
 
-	if (CVarIAmSpeedDebugSteering.GetValueOnAnyThread() != 0 && NumFrame() % 30 == 0)
+	if (Speed::RoadSettings::ReadOriginalOrLegacy<44>([](){ return CVarIAmSpeedDebugSteering.GetValueOnAnyThread(); }) != 0 && NumFrame() % 30 == 0)
 	{
-		UE_LOG(SpeedPhysicsLog, Log,
+		SPEED_NATIVE_LOG(SpeedPhysicsLog, Log,
 			TEXT("[%s(%s)][AngularConstraint] Frame=%d W=%s RequestedA=%s ActualA=%s CapDelta=%s MaxW=%.3f"),
 			*GetOwner()->GetName(), *GetRole(), NumFrame(),
 			*AngularVelocity.ToString(), *AngularAccel.ToString(), *ActualAngularAccel.ToString(),
@@ -3307,12 +4579,12 @@ void USpeedWheeledComponent::applyAngularAccelerationConstraint(const float& del
 }
 void USpeedWheeledComponent::PostGameplayTick(const float& DeltaTime, const float& SimTime)
 {
-	WheeledPhysicalInput.bCanMove = CanMove();
+	WheeledPhysicalInputStorage().bCanMove = CanMove();
 	/*// Print Kinematic state for debugging for the first 3 frames after can move
 	if (CanMove() && NumFrame() - GetSinceCanMoveFrame() < 3)
 	{
 		// Print kinematic state here
-		UE_LOG(LogTemp, Log, TEXT("[%s(%s)] PostGameplayTick Kinematic State at frame %d: %s"), *GetOwner()->GetName(), *GetRole(), NumFrame(), *BasePhysicsState.Kinematic.ToString());
+		UE_LOG(LogTemp, Log, TEXT("[%s(%s)] PostGameplayTick Kinematic State at frame %d: %s"), *GetOwner()->GetName(), *GetRole(), NumFrame(), *BasePhysicsStateStorage().Kinematic.ToString());
 	}*/
 }
 
@@ -3322,32 +4594,37 @@ float USpeedWheeledComponent::GetSteeringSpeedCap() const
 	const float steeringAbs = FMath::Abs(GetPhysSteeringInput());
 	constexpr float MaxSteeringLoss = 0.11857f;
 
-	return MaxThrottleSpeed * (1.f - MaxSteeringLoss * steeringAbs);
+	return MaxThrottleSpeedWheeledDomainStorage() * (1.f - MaxSteeringLoss * steeringAbs);
 }
 
 float USpeedWheeledComponent::GetMaxThrottleSpeed() const
 {
-	return MaxThrottleSpeed;
+	return MaxThrottleSpeedWheeledDomainStorage();
 }
 
 bool USpeedWheeledComponent::IsAffectedByGravity() const
 {
-	return bEnableGravity;
+	return bEnableGravityWheeledDomainStorage();
 }
 
 void USpeedWheeledComponent::SetIsAffectedByGravity(bool value)
 {
-	bEnableGravity = value;
+	bEnableGravityWheeledDomainStorage() = value;
 }
 
 void USpeedWheeledComponent::EnableGravity()
 {
-	bEnableGravity = true;
+	bEnableGravityWheeledDomainStorage() = true;
 }
 
 
+bool USpeedWheeledComponent::ReadOriginalLegacyGameModePresence() const
+{
+    throw Speed::NativeObjectRead::FUnresolvedOriginal(); // no guessed original authority
+}
 bool USpeedWheeledComponent::HasAuthority() const
 {
+    if(UsesOriginalWheeledDomain())return ReadOriginalLegacyGameModePresence();
 	return GetWorld()->GetAuthGameMode() != nullptr;
 }
 
@@ -3380,61 +4657,61 @@ FString USpeedWheeledComponent::GetRole() const
 
 unsigned char USpeedWheeledComponent::NumWheelsOnGround() const
 {
-	return static_cast<unsigned char>(WheeledGameState.NbWheelsOnGround);
+	return static_cast<unsigned char>(WheeledGameStateStorage().NbWheelsOnGround);
 }
 
 const TArray<TObjectPtr<USWheelSubBody>>& USpeedWheeledComponent::GetWheelSubBodies() const
 {
-	return WheelSubBodies;
+	return WheelSubBodiesWheeledDomainStorage();
 }
 
 void USpeedWheeledComponent::UpdateWheelVisuals()
 {
-	for (auto& W : WheelSubBodies)
+	for (auto W : ReadWheelSubBodiesForPhysics())
 	{
 		const SWheelRenderData& R = W->GetRenderData();
 
 		FRotator steerRot(R.SteerRotation);
 		FRotator rollRot(R.RollRotation);
-		PVehicleOutput->Wheels[W->Idx()].SteeringAngle = steerRot.Yaw;
-		PVehicleOutput->Wheels[W->Idx()].AngularPosition = W->GetRollAngle();
+		PVehicleOutput->Wheels[Speed::NativeKinematics::FSolidPropertiesAccess::Idx(*W)].SteeringAngle = steerRot.Yaw;
+		PVehicleOutput->Wheels[Speed::NativeKinematics::FSolidPropertiesAccess::Idx(*W)].AngularPosition = W->GetRollAngle();
 	}
 }
 
 void USpeedWheeledComponent::RecoverWheelState()
 {
-	for (auto& W : WheelSubBodies)
+	for (auto W : ReadWheelSubBodiesForPhysics())
 	{
-		if (!W->HasSuspensionSim())
+		if (!Speed::NativeKinematics::FWheelBindingAccess::HasSuspension(*W))
 		{
-			UE_LOG(LogTemp, Error, TEXT("[WheelSuspensionBinding] missing suspension sim for wheel %d during RecoverWheelState"), W->Idx());
+			SPEED_NATIVE_LOG(LogTemp, Error, TEXT("[WheelSuspensionBinding] missing suspension sim for wheel %d during RecoverWheelState"), Speed::NativeKinematics::FSolidPropertiesAccess::Idx(*W));
 			continue;
 		}
-		// float rollAngle = WheeledPhysicsState.WheelsAngularPosition[W->Idx()];
+		// float rollAngle = WheeledPhysicsStateStorage().WheelsAngularPosition[W->Idx()];
 		// W->SetRollAngle(rollAngle);
-		// float omega = WheeledPhysicsState.WheelsOmega[W->Idx()];
+		// float omega = WheeledPhysicsStateStorage().WheelsOmega[W->Idx()];
 		// W->SetAngularVelocity(omega);
-		float lastDisplacement = WheeledPhysicsState.SuspensionLastDisplacement[W->Idx()];
+		float lastDisplacement = WheeledPhysicsStateStorage().SuspensionLastDisplacement[Speed::NativeKinematics::FSolidPropertiesAccess::Idx(*W)];
 		W->SetLastDisplacement(lastDisplacement);
 	}
 }
 
 void USpeedWheeledComponent::RegisterWheelState()
 {
-	for (auto& W : WheelSubBodies)
+	for (auto W : ReadWheelSubBodiesForPhysics())
 	{
-		WheeledPhysicsState.SuspensionLastDisplacement[W->Idx()] = W->GetLastDisplacement();
+		WheeledPhysicsStateStorage().SuspensionLastDisplacement[Speed::NativeKinematics::FSolidPropertiesAccess::Idx(*W)] = W->GetLastDisplacement();
 	}
 }
 
 void USpeedWheeledComponent::ResetWheelTransientStateForCurrentPose(
 	const bool bUseGroundContactGeometry)
 {
-	WheeledPhysicsState.AllowedSideVelocity = FVector::ZeroVector;
-	WheeledPhysicsState.AllowedAngularVelocity = FVector::ZeroVector;
-	WheeledPhysicsState.FramesSinceLastImpact = 0;
+	WheeledPhysicsStateStorage().AllowedSideVelocity = FVector::ZeroVector;
+	WheeledPhysicsStateStorage().AllowedAngularVelocity = FVector::ZeroVector;
+	WheeledPhysicsStateStorage().FramesSinceLastImpact = 0;
 
-	for (auto& W : WheelSubBodies)
+	for (auto W : ReadWheelSubBodiesForPhysics())
 	{
 		// A support sweep can be published after the suspension simulator last ran
 		// in its airborne state. At a countdown release or authoritative reset,
@@ -3446,13 +4723,13 @@ void USpeedWheeledComponent::ResetWheelTransientStateForCurrentPose(
 			: W->SpringDisplacement();
 		W->SetLastDisplacement(CurrentDisplacement);
 		W->SetAngularVelocity(0.0f);
-		WheeledPhysicsState.SuspensionLastDisplacement[W->Idx()] = CurrentDisplacement;
+		WheeledPhysicsStateStorage().SuspensionLastDisplacement[Speed::NativeKinematics::FSolidPropertiesAccess::Idx(*W)] = CurrentDisplacement;
 	}
 }
 
 float USpeedWheeledComponent::GetSuspensionOffset(int WheelIndex)
 {
-	if (WheelIndex < 0 || WheelIndex >= WheelSubBodies.Num())
+	if (WheelIndex < 0 || WheelIndex >= ReadWheelSubBodiesForPhysics().Num())
 	{
 		return 0.0f;
 	}
@@ -3460,17 +4737,17 @@ float USpeedWheeledComponent::GetSuspensionOffset(int WheelIndex)
 	{
 		return 0.0f;
 	}
-	return WheelSubBodies[WheelIndex]->GetSuspensionOffset();
+	return ReadWheelSubBodiesForPhysics()[WheelIndex]->GetSuspensionOffset();
 }
 
 bool USpeedWheeledComponent::CanMove() const
 {
-	return WheeledPhysicsState.nbFramesbeforeCanMove == 0;
+	return IsInitialSynchronizationComplete() && WheeledPhysicsStateStorage().nbFramesbeforeCanMove == 0;
 }
 
 bool USpeedWheeledComponent::CountdownHasStarted() const
 {
-	return WheeledPhysicsState.bStartCountdown;
+	return WheeledPhysicsStateStorage().bStartCountdown;
 }
 
 void USpeedWheeledComponent::StartConfrontationInSec(const float& Time)
@@ -3486,13 +4763,13 @@ void USpeedWheeledComponent::StartConfrontationLocal(const float& TimeSec)
 	}*/
 	FreezeMovement();
 	const uint32 Now = NumFrame();
-	uint16 BaseNbFrame = FMath::RoundToInt(TimeSec * EngineFPS);
-	WheeledPhysicsState.nbFramesbeforeCanMove = FMath::Max(BaseNbFrame, MinNbFramesBeforeCanMove);
-	WheeledPhysicsState.bStartCountdown = WheeledPhysicsState.nbFramesbeforeCanMove > 0;
-	SinceCanMoveFrame = INDEX_NONE;
-	if (!WheeledPhysicsState.bStartCountdown)
+	uint16 BaseNbFrame = FMath::RoundToInt(TimeSec * EngineFPSWheeledDomainStorage());
+	WheeledPhysicsStateStorage().nbFramesbeforeCanMove = FMath::Max(BaseNbFrame, MinNbFramesBeforeCanMoveWheeledDomainStorage());
+	WheeledPhysicsStateStorage().bStartCountdown = WheeledPhysicsStateStorage().nbFramesbeforeCanMove > 0;
+	SinceCanMoveFrameWheeledDomainStorage() = INDEX_NONE;
+	if (!WheeledPhysicsStateStorage().bStartCountdown)
 	{
-		SinceCanMoveFrame = NumFrame();
+		SinceCanMoveFrameWheeledDomainStorage() = NumFrame();
 		UnFreezeMovement();
 	}
 }
@@ -3524,9 +4801,9 @@ void USpeedWheeledComponent::StartTestWithVelocityLocal(const FVector& InitialVe
 
 void USpeedWheeledComponent::InitializeWheelFrameHandbrakeState(const float InitialValue, const float InitialActiveTime)
 {
-	WheelFrameHandbrakeValue = FMath::Clamp(InitialValue, 0.0f, 1.0f);
-	WheelFrameHandbrakeActiveTime = FMath::Max(0.0f, InitialActiveTime);
-	LastWheelFrameHandbrakeUpdateFrame = INDEX_NONE;
+	WheelFrameHandbrakeValueWheeledDomainStorage() = FMath::Clamp(InitialValue, 0.0f, 1.0f);
+	WheelFrameHandbrakeActiveTimeWheeledDomainStorage() = FMath::Max(0.0f, InitialActiveTime);
+	LastWheelFrameHandbrakeUpdateFrameWheeledDomainStorage() = INDEX_NONE;
 }
 
 void USpeedWheeledComponent::StartTestWithVelocityMulti_Implementation(const FVector& InitialVelocity)
@@ -3548,10 +4825,10 @@ void USpeedWheeledComponent::SetCannotMove()
 void USpeedWheeledComponent::SetCannotMoveLocal()
 {
 	FreezeMovement();
-	WheeledPhysicsState.bStartCountdown = false;
-	WheeledPhysicsState.nbFramesbeforeCanMove = 1;
-	SinceCanMoveFrame = INDEX_NONE;
-	bSimTimelineWasCanMove = false;
+	WheeledPhysicsStateStorage().bStartCountdown = false;
+	WheeledPhysicsStateStorage().nbFramesbeforeCanMove = 1;
+	SinceCanMoveFrameWheeledDomainStorage() = INDEX_NONE;
+	bSimTimelineWasCanMoveWheeledDomainStorage() = false;
 }
 
 void USpeedWheeledComponent::SetCannotMoveMulti_Implementation()
@@ -3562,29 +4839,29 @@ void USpeedWheeledComponent::SetCannotMoveMulti_Implementation()
 
 void USpeedWheeledComponent::UpdateWheelOnGroundStates()
 {
-	WheeledGameState.NbWheelsOnGround = 0;
-	for (const auto& W : WheelSubBodies)
+	WheeledGameStateStorage().NbWheelsOnGround = 0;
+	for (const auto W : ReadWheelSubBodiesForPhysics())
 	{
 		if (W->IsOnGround())
 		{
-			WheeledGameState.NbWheelsOnGround++;
+			WheeledGameStateStorage().NbWheelsOnGround++;
 		}
 	}
 }
 
 float USpeedWheeledComponent::GetPhysThrottleInput() const
 {
-	return static_cast<float>(WheeledPhysicalInput.Throttle) / 255.0f;
+	return static_cast<float>(WheeledPhysicalInputStorage().Throttle) / 255.0f;
 }
 
 float USpeedWheeledComponent::GetPhysBrakeInput() const
 {
-	return static_cast<float>(WheeledPhysicalInput.Brake) / 255.0f;
+	return static_cast<float>(WheeledPhysicalInputStorage().Brake) / 255.0f;
 }
 
 float USpeedWheeledComponent::GetPhysSteeringInput() const
 {
-	return static_cast<float>(WheeledPhysicalInput.Steer) / 127.0f;
+	return static_cast<float>(WheeledPhysicalInputStorage().Steer) / 127.0f;
 }
 
 void USpeedWheeledComponent::SetPhysThrottleInput(const float& Throttle)
@@ -3610,27 +4887,27 @@ void USpeedWheeledComponent::SetPhysSteeringInput(const float& Steering)
 
 TArray<SWheelGroundContact>& USpeedWheeledComponent::GetPendingWheelContacts()
 {
-	return PendingWheelContacts;
+	return PendingWheelContactsWheeledDomainStorage();
 }
 
 const TArray<SWheelGroundContact>& USpeedWheeledComponent::GetPendingWheelContacts() const
 {
-	return PendingWheelContacts;
+	return PendingWheelContactsWheeledDomainStorage();
 }
 
 void USpeedWheeledComponent::RegisterWheelGroundContact(const SWheelGroundContact& Contact)
 {
-	PendingWheelContacts.Add(Contact);
+	PendingWheelContactsWheeledDomainStorage().Add(Contact);
 }
 
 float USpeedWheeledComponent::GetForwardFriction() const
 {
-	return GroundFriction.X;
+	return GroundFrictionWheeledDomainStorage().X;
 }
 
 float USpeedWheeledComponent::GetSideFriction() const
 {
-	return GroundFriction.Y;
+	return GroundFrictionWheeledDomainStorage().Y;
 }
 
 float USpeedWheeledComponent::GetLocalForwardFriction() const
@@ -3698,22 +4975,34 @@ void USpeedWheeledComponent::HandleGroundAirState()
 
 void USpeedWheeledComponent::SetGroundState()
 {
-	bool WasInAir = !WheeledGameState.bGroundState;
+	bool WasInAir = !WheeledGameStateStorage().bGroundState;
 	if (WasInAir)
 	{
+        if(UsesOriginalWheeledDomain())
+        {
+            // Exactly one owned value record per native landing. No Engine
+            // display service, role getter, lambda or physical view escapes.
+            if(!Speed::NativeEpoch::HasOriginalDiagnosticOutbox())throw Speed::NativeObjectRead::FUnresolvedOriginal();
+            Speed::NativeEpoch::QueueOriginalDiagnostic(__FILE__,__LINE__,SpeedPhysicsLog.GetCategoryName(),ELogVerbosity::Log,
+                FString::Printf(TEXT("[OriginalLanding] frame=%u timeInAirSeconds=%f"),NumFrame(),
+                    WheeledGameStateStorage().NbFrameSinceInAir*(1.0/EngineFPSWheeledDomainStorage())));
+        }
+        else
+        {
 		GEngine->AddOnScreenDebugMessage(-1, 5.0f, FColor::Blue, FString::Printf(TEXT("[%s] Time in air: %fs"), *GetRole(),
-			WheeledGameState.NbFrameSinceInAir * (1.0 / EngineFPS)));
+			WheeledGameStateStorage().NbFrameSinceInAir * (1.0 / EngineFPSWheeledDomainStorage())));
+        }
 #if !(UE_BUILD_SHIPPING)
 		// UE_LOG(SpeedPhysicsLog, Log, TEXT("[%s(%s)][GROUND LANDING] At Frame = %d, Time in air: %fs"),
-		//	*GetOwner()->GetName(), *GetRole(), NumFrame(), WheeledGameState.NbFrameSinceInAir * (1.0 / EngineFPS));
+		//	*GetOwner()->GetName(), *GetRole(), NumFrame(), WheeledGameStateStorage().NbFrameSinceInAir * (1.0 / EngineFPS));
 #endif
 		// PrintKinematics();
 	}
 
 	// update ground state
-	WheeledGameState.bGroundState = true;
-	WheeledPhysicsState.NbFramesSinceGroundContact = 0;
-	WheeledGameState.NbFrameSinceInAir = 0;
+	WheeledGameStateStorage().bGroundState = true;
+	WheeledPhysicsStateStorage().NbFramesSinceGroundContact = 0;
+	WheeledGameStateStorage().NbFrameSinceInAir = 0;
 
 	SetGroundStatePrv(WasInAir);
 }
@@ -3721,18 +5010,18 @@ void USpeedWheeledComponent::SetGroundState()
 void USpeedWheeledComponent::SetAirState()
 {
 	// if car was on ground, store current date
-	bool WasOnGround = WheeledGameState.bGroundState;
+	bool WasOnGround = WheeledGameStateStorage().bGroundState;
 	if (WasOnGround)
 	{
 #if !(UE_BUILD_SHIPPING)
 		// UE_LOG(SpeedPhysicsLog, Log, TEXT("[%s(%s)][AIR TAKEOFF] At Frame = %d, Kinematics: %s"),
-		//	*GetOwner()->GetName(), *GetRole(), NumFrame(), *BasePhysicsState.Kinematic.ToString());
+		//	*GetOwner()->GetName(), *GetRole(), NumFrame(), *BasePhysicsStateStorage().Kinematic.ToString());
 #endif
 	}
 	// update ground state
-	WheeledGameState.bGroundState = false;
-	WheeledPhysicsState.NbFramesSinceGroundContact++;
-	WheeledGameState.NbFrameSinceInAir++;
+	WheeledGameStateStorage().bGroundState = false;
+	WheeledPhysicsStateStorage().NbFramesSinceGroundContact++;
+	WheeledGameStateStorage().NbFrameSinceInAir++;
 
 	SetAirStatePrv();
 }
@@ -3758,12 +5047,12 @@ void USpeedWheeledComponent::HandleAcceleration()
 
 bool USpeedWheeledComponent::IsAcceleratingForWheelFriction() const
 {
-	return FMath::Abs(GetPhysThrottleInput() - GetPhysBrakeInput()) >= ThrottleDeadzone;
+	return FMath::Abs(GetPhysThrottleInput() - GetPhysBrakeInput()) >= ThrottleDeadzoneWheeledDomainStorage();
 }
 
 bool USpeedWheeledComponent::HasDriveInputForGroundFriction() const
 {
-	return FMath::Abs(GetPhysThrottleInput()) >= ThrottleDeadzone || FMath::Abs(GetPhysBrakeInput()) >= ThrottleDeadzone;
+	return FMath::Abs(GetPhysThrottleInput()) >= ThrottleDeadzoneWheeledDomainStorage() || FMath::Abs(GetPhysBrakeInput()) >= ThrottleDeadzoneWheeledDomainStorage();
 }
 
 bool USpeedWheeledComponent::IsHandbrakingForWheelFriction() const
@@ -3773,46 +5062,46 @@ bool USpeedWheeledComponent::IsHandbrakingForWheelFriction() const
 
 bool USpeedWheeledComponent::IsHandbrakingForwardForWheelFriction() const
 {
-	return GetPhysForwardSpeed() >= 0.0f;
+	return Speed::NativeKinematics::FComponentRead::Of(*this).ForwardSpeed() >= 0.0f;
 }
 
 void USpeedWheeledComponent::UpdateWheelFrameHandbrakeValue(const float& Delta)
 {
-	if (LastWheelFrameHandbrakeUpdateFrame == NumFrame())
+	if (LastWheelFrameHandbrakeUpdateFrameWheeledDomainStorage() == NumFrame())
 	{
 		return;
 	}
 
-	LastWheelFrameHandbrakeUpdateFrame = NumFrame();
+	LastWheelFrameHandbrakeUpdateFrameWheeledDomainStorage() = NumFrame();
 	const float Target = IsHandbrakingForWheelFriction() ? 1.0f : 0.0f;
-	const float Rate = Target > WheelFrameHandbrakeValue ? WheelFrameHandbrakeRiseRate : WheelFrameHandbrakeFallRate;
+	const float Rate = Target > WheelFrameHandbrakeValueWheeledDomainStorage() ? WheelFrameHandbrakeRiseRateWheeledDomainStorage() : WheelFrameHandbrakeFallRateWheeledDomainStorage();
 	if (Target > KINDA_SMALL_NUMBER)
 	{
-		WheelFrameHandbrakeActiveTime += Delta;
+		WheelFrameHandbrakeActiveTimeWheeledDomainStorage() += Delta;
 	}
 	else
 	{
-		WheelFrameHandbrakeActiveTime = 0.0f;
+		WheelFrameHandbrakeActiveTimeWheeledDomainStorage() = 0.0f;
 	}
-	WheelFrameHandbrakeValue = FMath::Clamp(
-		FMath::FInterpConstantTo(WheelFrameHandbrakeValue, Target, Delta, FMath::Max(0.0f, Rate)),
+	WheelFrameHandbrakeValueWheeledDomainStorage() = FMath::Clamp(
+		FMath::FInterpConstantTo(WheelFrameHandbrakeValueWheeledDomainStorage(), Target, Delta, FMath::Max(0.0f, Rate)),
 		0.0f,
 		1.0f);
 }
 
 float USpeedWheeledComponent::ComputeWheelFrameSteerAngle(const float& AbsForwardSpeed, const float& TargetRadius, const float& Wheelbase) const
 {
-	const float NormalSteerAngle = EvaluateLinearFloatCurve(SteerAngleFromSpeedCurve, AbsForwardSpeed, 0.0f);
+	const float NormalSteerAngle = EvaluateLinearFloatCurve(SteerAngleFromSpeedCurveWheeledDomainStorage(), AbsForwardSpeed, 0.0f);
 
-	if (CVarIAmSpeedWheelFrameHandbrakeSteeringBlendModel.GetValueOnAnyThread() != 0
-		&& !bUseLegacySteeringVelocityState
-		&& (IsHandbrakingForWheelFriction() || WheelFrameHandbrakeValue > KINDA_SMALL_NUMBER)
-		&& HandbrakeSteerAngleFromSpeedCurve.Num() > 0)
+	if (Speed::RoadSettings::ReadOriginalOrLegacy<120>([](){ return CVarIAmSpeedWheelFrameHandbrakeSteeringBlendModel.GetValueOnAnyThread(); }) != 0
+		&& !bUseLegacySteeringVelocityStateWheeledDomainStorage()
+		&& (IsHandbrakingForWheelFriction() || WheelFrameHandbrakeValueWheeledDomainStorage() > KINDA_SMALL_NUMBER)
+		&& HandbrakeSteerAngleFromSpeedCurveWheeledDomainStorage().Num() > 0)
 	{
 		const float Input = FMath::Clamp(GetPhysSteeringInput(), -1.0f, 1.0f);
 		const float RawFraction = Input * SteeringInputCalibrationScale(GetPhysSteeringInput());
 		float NormalFraction = RawFraction;
-		const float FullFractionOverride = CVarIAmSpeedWheelFrameNormalInputFullFraction.GetValueOnAnyThread();
+		const float FullFractionOverride = Speed::RoadSettings::ReadOriginalOrLegacy<125>([](){ return CVarIAmSpeedWheelFrameNormalInputFullFraction.GetValueOnAnyThread(); });
 		if (FMath::IsFinite(FullFractionOverride) && FullFractionOverride >= 0.0f && FMath::Abs(Input) > 0.75f)
 		{
 			// Use the accepted normal input endpoints at either end of the blend.
@@ -3824,14 +5113,14 @@ float USpeedWheeledComponent::ComputeWheelFrameSteerAngle(const float& AbsForwar
 		}
 		const float NormalInputScale = FMath::Abs(RawFraction) > KINDA_SMALL_NUMBER
 			? NormalFraction / RawFraction : 1.0f;
-		const float HandbrakeAngle = EvaluateLinearFloatCurve(HandbrakeSteerAngleFromSpeedCurve, AbsForwardSpeed, NormalSteerAngle);
+		const float HandbrakeAngle = EvaluateLinearFloatCurve(HandbrakeSteerAngleFromSpeedCurveWheeledDomainStorage(), AbsForwardSpeed, NormalSteerAngle);
 		// Optional compensatory ablation, not a claim that the inherited speed
 		// basis is wrong: RocketSim also evaluates steering at forward speed.
 		// Keep the inherited return below literal for default0 and low inputs.
-		if (CVarIAmSpeedWheelFrameHandbrakeFullInputCOMSpeedModel.GetValueOnAnyThread() == 1
+		if (Speed::RoadSettings::ReadOriginalOrLegacy<117>([](){ return CVarIAmSpeedWheelFrameHandbrakeFullInputCOMSpeedModel.GetValueOnAnyThread(); }) == 1
 			&& FMath::Abs(Input) > 0.75f)
 		{
-			const float PlanarCOMSpeed = GetPhysCOMVelocity().Size2D();
+			const float PlanarCOMSpeed = Speed::NativeKinematics::FComponentRead::Of(*this).COMVelocity().Size2D();
 			const float AbsRawFraction = FMath::Abs(RawFraction);
 			const float AnchorFraction = 0.75f * SteeringInputCalibrationScale(0.75f);
 			const float FullRawFraction = SteeringInputCalibrationScale(1.0f);
@@ -3841,7 +5130,7 @@ float USpeedWheeledComponent::ComputeWheelFrameSteerAngle(const float& AbsForwar
 				&& AnchorFraction >= 0.0f && FullRawFraction >= AnchorFraction)
 			{
 				const float COMEndpointAngle = EvaluateLinearFloatCurve(
-					HandbrakeSteerAngleFromSpeedCurve, PlanarCOMSpeed, HandbrakeAngle);
+					HandbrakeSteerAngleFromSpeedCurveWheeledDomainStorage(), PlanarCOMSpeed, HandbrakeAngle);
 				if (FMath::IsFinite(COMEndpointAngle) && COMEndpointAngle >= 0.0f)
 				{
 					const float AnchorCommandAngle = AnchorFraction * HandbrakeAngle;
@@ -3853,35 +5142,35 @@ float USpeedWheeledComponent::ComputeWheelFrameSteerAngle(const float& AbsForwar
 					// Both tire and wheel-drive consumers apply RawFraction later.
 					// Divide only to preserve that common existing call contract.
 					const float BoundedHandbrakeAngle = CommandAngle / AbsRawFraction;
-					return FMath::Lerp(NormalSteerAngle * NormalInputScale, BoundedHandbrakeAngle, WheelFrameHandbrakeValue);
+					return FMath::Lerp(NormalSteerAngle * NormalInputScale, BoundedHandbrakeAngle, WheelFrameHandbrakeValueWheeledDomainStorage());
 				}
 			}
 		}
 		// Callers apply RawFraction during handbrake. Interpolate commanded
 		// wheel angles using the existing tire-friction state, without a timer.
-		return FMath::Lerp(NormalSteerAngle * NormalInputScale, HandbrakeAngle, WheelFrameHandbrakeValue);
+		return FMath::Lerp(NormalSteerAngle * NormalInputScale, HandbrakeAngle, WheelFrameHandbrakeValueWheeledDomainStorage());
 	}
 
 	// Normal steering follows the explicit vehicle curve, matching RocketSim's
 	// wheel model. TargetRadius remains a diagnostic target, not an input that
 	// silently replaces the configured steering curve.
-	if (WheelFrameHandbrakeValue <= KINDA_SMALL_NUMBER)
+	if (WheelFrameHandbrakeValueWheeledDomainStorage() <= KINDA_SMALL_NUMBER)
 	{
 		return NormalSteerAngle;
 	}
 
 	float MaxSteerAngle = NormalSteerAngle;
-	const float CurvatureScaleOverride = CVarIAmSpeedWheelFrameSteeringCurvatureScale.GetValueOnAnyThread();
-	const float CurvatureScale = FMath::Max(KINDA_SMALL_NUMBER, CurvatureScaleOverride >= 0.0f ? CurvatureScaleOverride : WheelFrameSteeringCurvatureScale);
+	const float CurvatureScaleOverride = Speed::RoadSettings::ReadOriginalOrLegacy<126>([](){ return CVarIAmSpeedWheelFrameSteeringCurvatureScale.GetValueOnAnyThread(); });
+	const float CurvatureScale = FMath::Max(KINDA_SMALL_NUMBER, CurvatureScaleOverride >= 0.0f ? CurvatureScaleOverride : WheelFrameSteeringCurvatureScaleWheeledDomainStorage());
 	if (Wheelbase > KINDA_SMALL_NUMBER && FMath::IsFinite(TargetRadius) && TargetRadius > KINDA_SMALL_NUMBER)
 	{
 		MaxSteerAngle = FMath::Atan((Wheelbase * CurvatureScale) / FMath::Max(10.0f, TargetRadius));
 	}
 
-	if (HandbrakeSteerAngleFromSpeedCurve.Num() > 0)
+	if (HandbrakeSteerAngleFromSpeedCurveWheeledDomainStorage().Num() > 0)
 	{
-		const float HandbrakeSteerAngle = EvaluateLinearFloatCurve(HandbrakeSteerAngleFromSpeedCurve, AbsForwardSpeed, MaxSteerAngle);
-		MaxSteerAngle = FMath::Lerp(MaxSteerAngle, HandbrakeSteerAngle, WheelFrameHandbrakeValue);
+		const float HandbrakeSteerAngle = EvaluateLinearFloatCurve(HandbrakeSteerAngleFromSpeedCurveWheeledDomainStorage(), AbsForwardSpeed, MaxSteerAngle);
+		MaxSteerAngle = FMath::Lerp(MaxSteerAngle, HandbrakeSteerAngle, WheelFrameHandbrakeValueWheeledDomainStorage());
 	}
 
 	return MaxSteerAngle;
@@ -3891,7 +5180,7 @@ float USpeedWheeledComponent::GetConfiguredWheelbaseCm() const
     double MinX = TNumericLimits<double>::Max();
     double MaxX = -TNumericLimits<double>::Max();
     int32 Count = 0;
-    for (const TObjectPtr<USWheelSubBody>& Wheel : WheelSubBodies)
+    for (const auto Wheel : ReadWheelSubBodiesForPhysics())
     {
         if (!Wheel) continue;
         const double X = Wheel->GetLocalOffset().X;
@@ -3903,7 +5192,7 @@ float USpeedWheeledComponent::GetConfiguredWheelbaseCm() const
 
 float USpeedWheeledComponent::AdaptWheelFrameSteerAngleToReferenceGeometry(float ReferenceSteerAngle) const
 {
-    const float Reference = WheelFrameSteeringReferenceWheelbaseCm;
+    const float Reference = WheelFrameSteeringReferenceWheelbaseCmWheeledDomainStorage();
     if (!FMath::IsFinite(Reference) || Reference <= KINDA_SMALL_NUMBER)
         return ReferenceSteerAngle;
     const float Configured = GetConfiguredWheelbaseCm();
@@ -3922,10 +5211,10 @@ void USpeedWheeledComponent::ApplyDriveAcceleration(float Accel)
 		return;
 
 	const uint8 GroundedWheelCount = NumWheelsOnGround();
-	if (!bUseWheelFrameLateralFriction || GroundedWheelCount == 0)
+	if (!bUseWheelFrameLateralFrictionWheeledDomainStorage() || GroundedWheelCount == 0)
 	{
 		auto GroundNormal = GetNormalFromWheels();
-		auto AccelVector = GetPhysForwardVector() - GetPhysForwardVector().Dot(GroundNormal) * GroundNormal;
+		auto AccelVector = Speed::NativeKinematics::FComponentRead::Of(*this).Forward() - Speed::NativeKinematics::FComponentRead::Of(*this).Forward().Dot(GroundNormal) * GroundNormal;
 		if (AccelVector.Normalize())
 		{
 			AddPhysAcceleration(AccelVector * Accel);
@@ -3933,25 +5222,25 @@ void USpeedWheeledComponent::ApplyDriveAcceleration(float Accel)
 		return;
 	}
 
-	const float ForwardSpeed = GetPhysForwardSpeed();
+	const float ForwardSpeed = Speed::NativeKinematics::FComponentRead::Of(*this).ForwardSpeed();
 	const float AbsForwardSpeed = FMath::Abs(ForwardSpeed);
-	const float PlanarGroundSpeed = GetPhysCOMVelocity().Size2D();
+	const float PlanarGroundSpeed = Speed::NativeKinematics::FComponentRead::Of(*this).COMVelocity().Size2D();
 	const float AbsSteeringInput = FMath::Abs(FMath::Clamp(GetPhysSteeringInput(), -1.0f, 1.0f));
 	const float TargetRadius = ComputeSteeringRadius(ForwardSpeed, AbsSteeringInput);
 	float Wheelbase = 0.0f;
 	{
 		const FVector SurfaceNormal = GetNormalFromWheels().GetSafeNormal();
-		FVector ForwardDir = GetPhysForwardVector() - FVector::DotProduct(GetPhysForwardVector(), SurfaceNormal) * SurfaceNormal;
+		FVector ForwardDir = Speed::NativeKinematics::FComponentRead::Of(*this).Forward() - FVector::DotProduct(Speed::NativeKinematics::FComponentRead::Of(*this).Forward(), SurfaceNormal) * SurfaceNormal;
 		if (ForwardDir.Normalize())
 		{
 			float MinForwardOffset = BIG_NUMBER;
 			float MaxForwardOffset = -BIG_NUMBER;
-			for (const TObjectPtr<USWheelSubBody>& Wheel : WheelSubBodies)
+			for (const auto Wheel : ReadWheelSubBodiesForPhysics())
 			{
 				if (!Wheel)
 					continue;
 
-				const float ForwardOffset = FVector::DotProduct(Wheel->SteeringPos() - GetPhysCOM(), ForwardDir);
+				const float ForwardOffset = FVector::DotProduct(Wheel->SteeringPos() - Speed::NativeKinematics::FComponentRead::Of(*this).COM(), ForwardDir);
 				MinForwardOffset = FMath::Min(MinForwardOffset, ForwardOffset);
 				MaxForwardOffset = FMath::Max(MaxForwardOffset, ForwardOffset);
 			}
@@ -3966,12 +5255,12 @@ void USpeedWheeledComponent::ApplyDriveAcceleration(float Accel)
 		: FMath::Clamp(GetPhysSteeringInput(), -1.0f, 1.0f)
 			* SteeringInputCalibrationScale(GetPhysSteeringInput()) * MaxSteerAngle;
 	const float SteerAngle = AdaptWheelFrameSteerAngleToReferenceGeometry(ReferenceSteerAngle);
-	const float SlipThreshold = FMath::Max(0.0f, LateralFrictionSlipThreshold);
+	const float SlipThreshold = FMath::Max(0.0f, LateralFrictionSlipThresholdWheeledDomainStorage());
 	const float AccelPerWheel = Accel / static_cast<float>(GroundedWheelCount);
 	const bool bIsAccelerating = IsAcceleratingForWheelFriction();
-	const float HandbrakeFrictionValue = WheelFrameHandbrakeValue;
+	const float HandbrakeFrictionValue = WheelFrameHandbrakeValueWheeledDomainStorage();
 	float DebugSteeringRearReleaseScale = 1.0f;
-	const bool bDebugWheelFriction = CVarIAmSpeedDebugWheelFriction.GetValueOnAnyThread() != 0;
+	const bool bDebugWheelFriction = Speed::RoadSettings::ReadOriginalOrLegacy<45>([](){ return CVarIAmSpeedDebugWheelFriction.GetValueOnAnyThread(); }) != 0;
 	int32 DebugDriveWheelCount = 0;
 	float DebugDriveAbsLatSpeedSum = 0.0f;
 	float DebugDriveAbsLongSpeedSum = 0.0f;
@@ -3981,9 +5270,9 @@ void USpeedWheeledComponent::ApplyDriveAcceleration(float Accel)
 	FVector DebugDriveAppliedAccel = FVector::ZeroVector;
 	float DebugDriveYawTorque = 0.0f;
 
-	for (int32 WheelIndex = 0; WheelIndex < WheelSubBodies.Num(); ++WheelIndex)
+	for (int32 WheelIndex = 0; WheelIndex < ReadWheelSubBodiesForPhysics().Num(); ++WheelIndex)
 	{
-		const TObjectPtr<USWheelSubBody>& Wheel = WheelSubBodies[WheelIndex];
+		const auto Wheel = ReadWheelSubBodiesForPhysics()[WheelIndex];
 		if (!Wheel || !Wheel->IsOnGround())
 			continue;
 
@@ -3992,9 +5281,9 @@ void USpeedWheeledComponent::ApplyDriveAcceleration(float Accel)
 			continue;
 
 		const float FrictionStateScale = bIsAccelerating ? 1.0f :
-			FMath::Max(0.0f, EvaluateLinearFloatCurve(NonAcceleratingFrictionScaleCurve, SurfaceNormal.Z, 1.0f));
+			FMath::Max(0.0f, EvaluateLinearFloatCurve(NonAcceleratingFrictionScaleCurveWheeledDomainStorage(), SurfaceNormal.Z, 1.0f));
 
-		FVector ForwardDir = GetPhysForwardVector() - FVector::DotProduct(GetPhysForwardVector(), SurfaceNormal) * SurfaceNormal;
+		FVector ForwardDir = Speed::NativeKinematics::FComponentRead::Of(*this).Forward() - FVector::DotProduct(Speed::NativeKinematics::FComponentRead::Of(*this).Forward(), SurfaceNormal) * SurfaceNormal;
 		if (!ForwardDir.Normalize())
 			continue;
 
@@ -4008,19 +5297,19 @@ void USpeedWheeledComponent::ApplyDriveAcceleration(float Accel)
 		const FVector LongitudinalDir = FVector::CrossProduct(LateralDir, SurfaceNormal).GetSafeNormal();
 		const FVector ContactPoint = Wheel->GetHitContactPoint();
 		const FVector HardPoint = Wheel->SteeringPos();
-		FVector WheelVelocity = GetPhysVelocityAtPoint(HardPoint);
+		FVector WheelVelocity = Speed::NativeKinematics::FComponentRead::Of(*this).VelocityAtPoint(HardPoint);
         FVector PrescribedSurfaceVelocity;
         if(Wheel->TryGetPrescribedSupportVelocity(HardPoint,PrescribedSurfaceVelocity))WheelVelocity-=PrescribedSurfaceVelocity;
 		const float LateralSpeed = FVector::DotProduct(WheelVelocity, LateralDir);
 		const float LongitudinalSpeed = FVector::DotProduct(WheelVelocity, LongitudinalDir);
 		const float AbsLateralSpeed = FMath::Abs(LateralSpeed);
 		const float AbsLongitudinalSpeed = FMath::Abs(LongitudinalSpeed);
-		FVector ChassisUp = GetPhysUpVector().GetSafeNormal();
+		FVector ChassisUp = Speed::NativeKinematics::FComponentRead::Of(*this).Up().GetSafeNormal();
 		if (ChassisUp.IsNearlyZero())
 		{
 			ChassisUp = SurfaceNormal;
 		}
-		const FVector PhysCOM = GetPhysCOM();
+		const FVector PhysCOM = Speed::NativeKinematics::FComponentRead::Of(*this).COM();
 		const FVector ContactArm = ContactPoint - PhysCOM;
 		const FVector ProjectedContactArm = ContactArm - FVector::DotProduct(ContactArm, ChassisUp) * ChassisUp;
 		const FVector ForceApplicationPoint = GetWheelFrictionApplicationPoint(*Wheel, ContactPoint, SurfaceNormal);
@@ -4036,47 +5325,47 @@ void USpeedWheeledComponent::ApplyDriveAcceleration(float Accel)
 			FrictionCurveInput = AbsLateralSpeed / FMath::Max(KINDA_SMALL_NUMBER, AbsLongitudinalSpeed + AbsLateralSpeed);
 		}
 
-		float LongitudinalFrictionScale = FMath::Max(0.0f, EvaluateLinearFloatCurve(LongitudinalFrictionScaleCurve, FrictionCurveInput, 1.0f));
+		float LongitudinalFrictionScale = FMath::Max(0.0f, EvaluateLinearFloatCurve(LongitudinalFrictionScaleCurveWheeledDomainStorage(), FrictionCurveInput, 1.0f));
 		if (HandbrakeFrictionValue > KINDA_SMALL_NUMBER)
 		{
-			const float HandbrakeFactor = FMath::Max(0.0f, EvaluateLinearFloatCurve(HandbrakeLongitudinalFrictionFactorCurve, FrictionCurveInput, 1.0f));
+			const float HandbrakeFactor = FMath::Max(0.0f, EvaluateLinearFloatCurve(HandbrakeLongitudinalFrictionFactorCurveWheeledDomainStorage(), FrictionCurveInput, 1.0f));
 			LongitudinalFrictionScale *= FMath::Lerp(1.0f, HandbrakeFactor, HandbrakeFrictionValue);
 		}
 		const FVector Force = LongitudinalDir * AccelPerWheel * LongitudinalFrictionScale * FrictionStateScale * Mass;
-		const FVector AccelBefore = GetPhysAcceleration();
+		const FVector AccelBefore = Speed::NativeKinematics::FComponentRead::Of(*this).Acceleration();
 		AddPhysForceAtPoint(Force, ForceApplicationPoint);
 		if (bDebugWheelFriction)
 		{
 			DebugDriveFrictionInputSum += FrictionCurveInput;
 			DebugDriveLongitudinalScaleSum += LongitudinalFrictionScale * FrictionStateScale;
 			DebugDriveTotalForce += Force;
-			DebugDriveAppliedAccel += GetPhysAcceleration() - AccelBefore;
+			DebugDriveAppliedAccel += Speed::NativeKinematics::FComponentRead::Of(*this).Acceleration() - AccelBefore;
 			DebugDriveYawTorque += FVector::DotProduct(FVector::CrossProduct(ProjectedContactArm, Force), SurfaceNormal);
 		}
 	}
 
-	const uint32 DebugIntervalFrames = static_cast<uint32>(FMath::Max(1, CVarIAmSpeedWheelFrameDebugIntervalFrames.GetValueOnAnyThread()));
+	const uint32 DebugIntervalFrames = static_cast<uint32>(FMath::Max(1, Speed::RoadSettings::ReadOriginalOrLegacy<112>([](){ return CVarIAmSpeedWheelFrameDebugIntervalFrames.GetValueOnAnyThread(); })));
 	if (bDebugWheelFriction && DebugDriveWheelCount > 0 && NumFrame() % DebugIntervalFrames == 0)
 	{
 		const FVector UpVector = GetNormalFromWheels();
-		const float YawRate = FVector::DotProduct(GetPhysAngularVelocity(), UpVector);
-		const float AllowedYawRate = FVector::DotProduct(WheeledPhysicsState.AllowedAngularVelocity, UpVector);
+		const float YawRate = FVector::DotProduct(Speed::NativeKinematics::FComponentRead::Of(*this).AngularVelocity(), UpVector);
+		const float AllowedYawRate = FVector::DotProduct(WheeledPhysicsStateStorage().AllowedAngularVelocity, UpVector);
 		const float Radius = FMath::Abs(YawRate) > KINDA_SMALL_NUMBER ? AbsForwardSpeed / FMath::Abs(YawRate) : 0.0f;
-		FVector ForwardDir = GetPhysForwardVector() - FVector::DotProduct(GetPhysForwardVector(), UpVector) * UpVector;
+		FVector ForwardDir = Speed::NativeKinematics::FComponentRead::Of(*this).Forward() - FVector::DotProduct(Speed::NativeKinematics::FComponentRead::Of(*this).Forward(), UpVector) * UpVector;
 		ForwardDir.Normalize();
 		const FVector RightDir = FVector::CrossProduct(UpVector, ForwardDir).GetSafeNormal();
 		const float ForwardAccel = FVector::DotProduct(DebugDriveTotalForce, ForwardDir) / Mass;
 		const float SideAccel = FVector::DotProduct(DebugDriveTotalForce, RightDir) / Mass;
 		const float AppliedForwardAccel = FVector::DotProduct(DebugDriveAppliedAccel, ForwardDir);
 		const float AppliedSideAccel = FVector::DotProduct(DebugDriveAppliedAccel, RightDir);
-		const float SideSpeed = FVector::DotProduct(GetPhysCOMVelocity(), RightDir);
-		const FVector COMVelocity = GetPhysCOMVelocity();
+		const float SideSpeed = FVector::DotProduct(Speed::NativeKinematics::FComponentRead::Of(*this).COMVelocity(), RightDir);
+		const FVector COMVelocity = Speed::NativeKinematics::FComponentRead::Of(*this).COMVelocity();
 		const float GroundSpeed = (COMVelocity - FVector::DotProduct(COMVelocity, UpVector) * UpVector).Size();
-		const float BasisForwardRate = FVector::DotProduct(GetPhysCOMVelocity(), FVector::CrossProduct(GetPhysAngularVelocity(), ForwardDir));
-		const float TotalForwardRateNow = FVector::DotProduct(GetPhysAcceleration(), ForwardDir) + BasisForwardRate;
-		UE_LOG(SpeedPhysicsLog, Log,
+		const float BasisForwardRate = FVector::DotProduct(Speed::NativeKinematics::FComponentRead::Of(*this).COMVelocity(), FVector::CrossProduct(Speed::NativeKinematics::FComponentRead::Of(*this).AngularVelocity(), ForwardDir));
+		const float TotalForwardRateNow = FVector::DotProduct(Speed::NativeKinematics::FComponentRead::Of(*this).Acceleration(), ForwardDir) + BasisForwardRate;
+		SPEED_NATIVE_LOG(SpeedPhysicsLog, Log,
 			TEXT("[%s(%s)][WheelDriveForce] Frame=%d Speed=%.1f GroundSpeed=%.1f SideSpeed=%.1f Accel=%.1f AccelPerWheel=%.1f Steering=%.2f SteerAngle=%.4f Handbrake=%.3f RearRelease=%.3f TargetRadius=%.1f Wheelbase=%.1f Grounded=%d AvgAbsLat=%.2f AvgAbsLong=%.2f AvgFrictionInput=%.3f AvgLongitudinalScale=%.3f ForwardAccel=%.1f SideAccel=%.1f AppliedForwardAccel=%.1f AppliedSideAccel=%.1f BasisForwardRate=%.1f TotalForwardRateNow=%.1f TotalForce=%s YawTorque=%.1f YawRate=%.3f Radius=%.1f"),
-			*GetOwner()->GetName(), *GetRole(), NumFrame(), GetPhysForwardSpeed(), GroundSpeed, SideSpeed, Accel, AccelPerWheel, GetPhysSteeringInput(), SteerAngle, HandbrakeFrictionValue, DebugSteeringRearReleaseScale, TargetRadius, Wheelbase, DebugDriveWheelCount,
+			*GetOwner()->GetName(), *GetRole(), NumFrame(), Speed::NativeKinematics::FComponentRead::Of(*this).ForwardSpeed(), GroundSpeed, SideSpeed, Accel, AccelPerWheel, GetPhysSteeringInput(), SteerAngle, HandbrakeFrictionValue, DebugSteeringRearReleaseScale, TargetRadius, Wheelbase, DebugDriveWheelCount,
 			DebugDriveAbsLatSpeedSum / DebugDriveWheelCount, DebugDriveAbsLongSpeedSum / DebugDriveWheelCount,
 			DebugDriveFrictionInputSum / DebugDriveWheelCount, DebugDriveLongitudinalScaleSum / DebugDriveWheelCount,
 			ForwardAccel, SideAccel, AppliedForwardAccel, AppliedSideAccel, BasisForwardRate, TotalForwardRateNow, *DebugDriveTotalForce.ToString(), DebugDriveYawTorque, YawRate, Radius);
@@ -4109,7 +5398,7 @@ float USpeedWheeledComponent::ComputeAccelFromSignedThrottle(float SignedThrottl
 	const uint8 nbWheelsOnGround = NumWheelsOnGround();
 	const float groundRatio = static_cast<float>(nbWheelsOnGround) / 4.0f;
 	const float airRatio = 1.0f - groundRatio;
-	const float forwardSpeed = GetPhysForwardSpeed();
+	const float forwardSpeed = Speed::NativeKinematics::FComponentRead::Of(*this).ForwardSpeed();
 	const float absForwardSpeed = FMath::Abs(forwardSpeed);
 	const float absThrottle = FMath::Abs(SignedThrottle);
 
@@ -4119,17 +5408,17 @@ float USpeedWheeledComponent::ComputeAccelFromSignedThrottle(float SignedThrottl
 	// The raw handbrake request selects drive behavior independently of its
 	// smoothed tire-friction state. In particular, chassis rotation can make
 	// forward speed oppose the throttle without requesting the service brake.
-	const bool bRetainHandbrakeThrottle = bUseWheelFrameLateralFriction
-		&& !bUseLegacySteeringVelocityState
+	const bool bRetainHandbrakeThrottle = bUseWheelFrameLateralFrictionWheeledDomainStorage()
+		&& !bUseLegacySteeringVelocityStateWheeledDomainStorage()
 		&& IsHandbrakingForWheelFriction()
-		&& CVarIAmSpeedWheelFrameHandbrakeDriveModel.GetValueOnAnyThread() != 0;
+		&& Speed::RoadSettings::ReadOriginalOrLegacy<115>([](){ return CVarIAmSpeedWheelFrameHandbrakeDriveModel.GetValueOnAnyThread(); }) != 0;
 
-	if (!bRetainHandbrakeThrottle && absThrottle >= ThrottleDeadzone)
+	if (!bRetainHandbrakeThrottle && absThrottle >= ThrottleDeadzoneWheeledDomainStorage())
 	{
-		if (absForwardSpeed > StoppingForwardSpeed && FMath::Sign(SignedThrottle) != FMath::Sign(forwardSpeed))
+		if (absForwardSpeed > StoppingForwardSpeedWheeledDomainStorage() && FMath::Sign(SignedThrottle) != FMath::Sign(forwardSpeed))
 		{
 			realBrake = 1.0f;
-			if (absForwardSpeed > BrakingNoThrottleSpeedThreshold)
+			if (absForwardSpeed > BrakingNoThrottleSpeedThresholdWheeledDomainStorage())
 			{
 				engineThrottle = 0.0f;
 			}
@@ -4138,37 +5427,37 @@ float USpeedWheeledComponent::ComputeAccelFromSignedThrottle(float SignedThrottl
 	else if (!bRetainHandbrakeThrottle)
 	{
 		engineThrottle = 0.0f;
-		realBrake = CoastingBrakeFactor;
+		realBrake = CoastingBrakeFactorWheeledDomainStorage();
 	}
 
 	float driveSpeedScale = EvaluateLinearFloatCurve(
-		DriveSpeedAccelScaleCurve,
+		DriveSpeedAccelScaleCurveWheeledDomainStorage(),
 		absForwardSpeed,
-		FMath::Clamp(1.0f - absForwardSpeed / FMath::Max(MaxThrottleSpeed, 1.0f), 0.0f, 1.0f));
+		FMath::Clamp(1.0f - absForwardSpeed / FMath::Max(MaxThrottleSpeedWheeledDomainStorage(), 1.0f), 0.0f, 1.0f));
 
 	if (nbWheelsOnGround < 3)
 	{
 		driveSpeedScale *= 0.25f;
 	}
 
-	float groundEngineAccel = engineThrottle * ThrottleAccel * driveSpeedScale * groundRatio;
-	const float HandbrakeDriveScale = CVarIAmSpeedWheelFrameHandbrakeDriveForceScale.GetValueOnAnyThread();
+	float groundEngineAccel = engineThrottle * ThrottleAccelWheeledDomainStorage() * driveSpeedScale * groundRatio;
+	const float HandbrakeDriveScale = Speed::RoadSettings::ReadOriginalOrLegacy<114>([](){ return CVarIAmSpeedWheelFrameHandbrakeDriveForceScale.GetValueOnAnyThread(); });
 	if (bRetainHandbrakeThrottle && FMath::IsFinite(HandbrakeDriveScale) && HandbrakeDriveScale >= 0.0f)
 	{
-		const float EffectiveScale = CVarIAmSpeedWheelFrameHandbrakeDriveForceBlendModel.GetValueOnAnyThread() != 0
+		const float EffectiveScale = Speed::RoadSettings::ReadOriginalOrLegacy<113>([](){ return CVarIAmSpeedWheelFrameHandbrakeDriveForceBlendModel.GetValueOnAnyThread(); }) != 0
 			? HandbrakeDriveScale
-			: FMath::Lerp(1.0f, HandbrakeDriveScale, WheelFrameHandbrakeValue);
+			: FMath::Lerp(1.0f, HandbrakeDriveScale, WheelFrameHandbrakeValueWheeledDomainStorage());
 		groundEngineAccel *= EffectiveScale;
 	}
 	float groundBrakeAccel = 0.0f;
 	if (realBrake > 0.0f && absForwardSpeed > KINDA_SMALL_NUMBER)
 	{
-		groundBrakeAccel = -FMath::Sign(forwardSpeed) * realBrake * BrakeAccel * groundRatio;
+		groundBrakeAccel = -FMath::Sign(forwardSpeed) * realBrake * BrakeAccelWheeledDomainStorage() * groundRatio;
 	}
 
 	const float airAccel = engineThrottle >= 0.0f ?
-		engineThrottle * AirForwardThrottle * airRatio :
-		engineThrottle * AirBackwardThrottle * airRatio;
+		engineThrottle * AirForwardThrottleWheeledDomainStorage() * airRatio :
+		engineThrottle * AirBackwardThrottleWheeledDomainStorage() * airRatio;
 
 	return groundEngineAccel + groundBrakeAccel + airAccel;
 }
@@ -4181,28 +5470,28 @@ void USpeedWheeledComponent::HandleCountdownTimer()
 {
 	if (!CanMove() && CountdownHasStarted())
 	{
-		WheeledPhysicsState.nbFramesbeforeCanMove--;
+		WheeledPhysicsStateStorage().nbFramesbeforeCanMove--;
 		if (CanMove())
 		{
-			WheeledPhysicsState.bStartCountdown = false;
-			SinceCanMoveFrame = NumFrame();
-			bSimTimelineWasCanMove = true;
-			bSimTimelineHasGroundState = true;
-			bSimTimelineWasGrounded = IsOnTheGround();
+			WheeledPhysicsStateStorage().bStartCountdown = false;
+			SinceCanMoveFrameWheeledDomainStorage() = NumFrame();
+			bSimTimelineWasCanMoveWheeledDomainStorage() = true;
+			bSimTimelineHasGroundStateWheeledDomainStorage() = true;
+			bSimTimelineWasGroundedWheeledDomainStorage() = IsOnTheGround();
 			// Preserve the historical air-side spring reset for every countdown
 			// release. A proven stationary support may replace it with contact
 			// geometry in UpdateFrameState before forces are evaluated.
 			ResetWheelTransientStateForCurrentPose(false);
 			UnFreezeMovement();
-			UE_LOG(SpeedPhysicsLog, Log, TEXT("[%s(%s)][CAN MOVE] At Frame = %d, Kinematics: %s"),
-				*GetOwner()->GetName(), *GetRole(), NumFrame(), *BasePhysicsState.Kinematic.ToString());
+			SPEED_NATIVE_LOG(SpeedPhysicsLog, Log, TEXT("[%s(%s)][CAN MOVE] At Frame = %d, Kinematics: %s"),
+				*GetOwner()->GetName(), *GetRole(), NumFrame(), *BasePhysicsStateStorage().Kinematic.ToString());
 		}
 	}
 }
 
 void USpeedWheeledComponent::HandleWheelTimers()
 {
-	for (auto& wheel : WheelSubBodies)
+	for (auto wheel : ReadWheelSubBodiesForPhysics())
 	{
 		wheel->HandleTimers();
 	}
@@ -4211,32 +5500,32 @@ void USpeedWheeledComponent::HandleWheelTimers()
 void USpeedWheeledComponent::HandleSteering(const float& delta)
 {
 	const float steeringInput = GetPhysSteeringInput(); // [-1,1]
-	const float forwardVelocity = GetPhysForwardSpeed();
+	const float forwardVelocity = Speed::NativeKinematics::FComponentRead::Of(*this).ForwardSpeed();
 
 	// Wheel-frame friction owns steering in the RocketSim-like model. Do not let the legacy velocity controller inject a second yaw response.
-	if (bUseWheelFrameLateralFriction && !bUseLegacySteeringVelocityState)
+	if (bUseWheelFrameLateralFrictionWheeledDomainStorage() && !bUseLegacySteeringVelocityStateWheeledDomainStorage())
 	{
-		WheeledPhysicsState.AllowedSideVelocity = FVector::ZeroVector;
-		WheeledPhysicsState.AllowedAngularVelocity = FVector::ZeroVector;
+		WheeledPhysicsStateStorage().AllowedSideVelocity = FVector::ZeroVector;
+		WheeledPhysicsStateStorage().AllowedAngularVelocity = FVector::ZeroVector;
 		return;
 	}
 
 	if (NoWheelOnGround())
 	{
-		WheeledPhysicsState.AllowedSideVelocity = FVector::ZeroVector;
-		WheeledPhysicsState.AllowedAngularVelocity = FVector::ZeroVector;
+		WheeledPhysicsStateStorage().AllowedSideVelocity = FVector::ZeroVector;
+		WheeledPhysicsStateStorage().AllowedAngularVelocity = FVector::ZeroVector;
 		return;
 	}
 
 	// Reset accumulators when going straight or very slow
 	if (MustReduceAllowedVelocityForSteering())
 	{
-		const float ReleaseInterpSpeed = FMath::Max(0.01f, CVarSkyLeagueSteeringReleaseInterpSpeed.GetValueOnAnyThread());
-		WheeledPhysicsState.AllowedSideVelocity = FMath::VInterpTo(
-			WheeledPhysicsState.AllowedSideVelocity, FVector::ZeroVector, delta, ReleaseInterpSpeed
+		const float ReleaseInterpSpeed = FMath::Max(0.01f, Speed::RoadSettings::ReadOriginalOrLegacy<150>([](){ return CVarSkyLeagueSteeringReleaseInterpSpeed.GetValueOnAnyThread(); }));
+		WheeledPhysicsStateStorage().AllowedSideVelocity = FMath::VInterpTo(
+			WheeledPhysicsStateStorage().AllowedSideVelocity, FVector::ZeroVector, delta, ReleaseInterpSpeed
 		);
-		WheeledPhysicsState.AllowedAngularVelocity = FMath::VInterpTo(
-			WheeledPhysicsState.AllowedAngularVelocity, FVector::ZeroVector, delta, ReleaseInterpSpeed
+		WheeledPhysicsStateStorage().AllowedAngularVelocity = FMath::VInterpTo(
+			WheeledPhysicsStateStorage().AllowedAngularVelocity, FVector::ZeroVector, delta, ReleaseInterpSpeed
 		);
 		return;
 	}
@@ -4256,8 +5545,8 @@ void USpeedWheeledComponent::HandleSteering(const float& delta)
 	// -------------------------------------
 	// Build ground tangent basis (fallback)
 	// -------------------------------------
-	FVector FwdGround = GetPhysForwardVector()
-		- FVector::DotProduct(GetPhysForwardVector(), UpVector) * UpVector;
+	FVector FwdGround = Speed::NativeKinematics::FComponentRead::Of(*this).Forward()
+		- FVector::DotProduct(Speed::NativeKinematics::FComponentRead::Of(*this).Forward(), UpVector) * UpVector;
 	FwdGround.Normalize();
 
 	FVector RightGround = FVector::CrossProduct(UpVector, FwdGround);
@@ -4275,7 +5564,7 @@ void USpeedWheeledComponent::HandleSteering(const float& delta)
 	const float desiredRadiusWall = desiredRadius * radiusBoost;
 
 	// Target yaw-rate (physics)
-	const float SteeringYawScale = FMath::Clamp(CVarSkyLeagueSteeringYawScale.GetValueOnAnyThread(), 0.1f, 2.0f);
+	const float SteeringYawScale = FMath::Clamp(Speed::RoadSettings::ReadOriginalOrLegacy<152>([](){ return CVarSkyLeagueSteeringYawScale.GetValueOnAnyThread(); }), 0.1f, 2.0f);
 	const float absTargetYawRate = SteeringYawScale * speed / desiredRadiusWall; // rad/s
 	const float targetYaw = ComputeSteeringTargetYawRate(steeringInput, forwardVelocity, absTargetYawRate);
 	FVector TargetAngularVelocity = targetYaw * UpVector;
@@ -4299,22 +5588,22 @@ void USpeedWheeledComponent::HandleSteering(const float& delta)
 	const float rearRatio = 0.10f;
 
 	const float vehicleMass = Mass;
-	const float gravity = GravityZ;
+	const float gravity = GravityZWheeledDomainStorage();
 
 	// -------------------------------------
 	// Save current accelerations
 	// -------------------------------------
-	FVector oldAccel = GetPhysAcceleration();
-	FVector oldAngAccel = GetPhysAngularAcceleration();
+	FVector oldAccel = Speed::NativeKinematics::FComponentRead::Of(*this).Acceleration();
+	FVector oldAngAccel = Speed::NativeKinematics::FComponentRead::Of(*this).AngularAcceleration();
 
 	// -------------------------------------
 	// Wheel-by-wheel steering force
 	// -------------------------------------
-	if (bUseExplicitSteeringForce)
+	if (bUseExplicitSteeringForceWheeledDomainStorage())
 	{
 	for (int i = 0; i < 4; i++)
 	{
-		auto& W = WheelSubBodies[i];
+		auto W = ReadWheelSubBodiesForPhysics()[i];
 		if (!W->IsOnGround())
 			continue;
 
@@ -4322,8 +5611,8 @@ void USpeedWheeledComponent::HandleSteering(const float& delta)
 
 		// Compute forward projected onto the surface plane (required for walls)
 		FVector ForwardProjected =
-			GetPhysForwardVector() -
-			FVector::DotProduct(GetPhysForwardVector(), SurfaceNormal) * SurfaceNormal;
+			Speed::NativeKinematics::FComponentRead::Of(*this).Forward() -
+			FVector::DotProduct(Speed::NativeKinematics::FComponentRead::Of(*this).Forward(), SurfaceNormal) * SurfaceNormal;
 		ForwardProjected.Normalize();
 
 		// True lateral axis tangent to the surface (ground or wall)
@@ -4371,17 +5660,17 @@ void USpeedWheeledComponent::HandleSteering(const float& delta)
 #endif
 	}
 	}
-	if (!bUseLegacySteeringVelocityState)
+	if (!bUseLegacySteeringVelocityStateWheeledDomainStorage())
 	{
 #if !(UE_BUILD_SHIPPING)
-		if (CVarIAmSpeedDebugSteering.GetValueOnAnyThread() != 0)
+		if (Speed::RoadSettings::ReadOriginalOrLegacy<44>([](){ return CVarIAmSpeedDebugSteering.GetValueOnAnyThread(); }) != 0)
 		{
-			FVector up = GetPhysUpVector();
-			float yawRate = FVector::DotProduct(GetPhysAngularVelocity(), up);
+			FVector up = Speed::NativeKinematics::FComponentRead::Of(*this).Up();
+			float yawRate = FVector::DotProduct(Speed::NativeKinematics::FComponentRead::Of(*this).AngularVelocity(), up);
 			if (FMath::Abs(yawRate) > KINDA_SMALL_NUMBER)
 			{
 				float radius = speed / FMath::Abs(yawRate);
-				UE_LOG(SpeedPhysicsLog, Log,
+				SPEED_NATIVE_LOG(SpeedPhysicsLog, Log,
 					TEXT("[%s(%s)][Steering] NumFrame=%d, ForwardSpeed=%.1f cm/s, upDot=%.2f, SteeringInput=%.2f, YawRate=%.3f rad/s, AllowedSideSpeed=%f, AllowedYaw=%f, Actual Radius=%.1f cm, Desired Radius=%.1f cm"),
 					*GetOwner()->GetName(), *GetRole(), NumFrame(), forwardVelocity, upDot, steeringInput, yawRate,
 					0.0f, 0.0f, radius, desiredRadiusWall);
@@ -4393,13 +5682,13 @@ void USpeedWheeledComponent::HandleSteering(const float& delta)
 	// -------------------------------------
 	// Update AllowedSideVelocity / Angular
 	// -------------------------------------
-	FVector newAccel = GetPhysAcceleration();
+	FVector newAccel = Speed::NativeKinematics::FComponentRead::Of(*this).Acceleration();
 	FVector deltaAccel = newAccel - oldAccel;
-	WheeledPhysicsState.AllowedSideVelocity += deltaAccel * delta * steerGain;
+	WheeledPhysicsStateStorage().AllowedSideVelocity += deltaAccel * delta * steerGain;
 
-	const float SteeringTimeConstant = FMath::Clamp(CVarSkyLeagueSteeringTimeConstant.GetValueOnAnyThread(), 0.005f, 0.25f);
+	const float SteeringTimeConstant = FMath::Clamp(Speed::RoadSettings::ReadOriginalOrLegacy<151>([](){ return CVarSkyLeagueSteeringTimeConstant.GetValueOnAnyThread(); }), 0.005f, 0.25f);
 	const float alpha = 1.f - FMath::Exp(-delta / SteeringTimeConstant);
-	WheeledPhysicsState.AllowedAngularVelocity = FMath::Lerp(WheeledPhysicsState.AllowedAngularVelocity, TargetAngularVelocity, alpha);
+	WheeledPhysicsStateStorage().AllowedAngularVelocity = FMath::Lerp(WheeledPhysicsStateStorage().AllowedAngularVelocity, TargetAngularVelocity, alpha);
 
 	// -------------------------------------
 	// Clamp AllowedSideVelocity (surface tangent, not ground frame)
@@ -4409,33 +5698,33 @@ void USpeedWheeledComponent::HandleSteering(const float& delta)
 	// On walls, rebuild a correct tangent axis
 	if (incline > 0.05f)
 	{
-		FVector FwdProj = GetPhysForwardVector()
-			- FVector::DotProduct(GetPhysForwardVector(), UpVector) * UpVector;
+		FVector FwdProj = Speed::NativeKinematics::FComponentRead::Of(*this).Forward()
+			- FVector::DotProduct(Speed::NativeKinematics::FComponentRead::Of(*this).Forward(), UpVector) * UpVector;
 		FwdProj.Normalize();
 		RightSurface = FVector::CrossProduct(UpVector, FwdProj).GetSafeNormal();
 	}
 
-	float allowedSideScalar = FVector::DotProduct(WheeledPhysicsState.AllowedSideVelocity, RightSurface);
+	float allowedSideScalar = FVector::DotProduct(WheeledPhysicsStateStorage().AllowedSideVelocity, RightSurface);
 	float sideSign = FMath::Sign(allowedSideScalar);
 	float allowedSideAbs = FMath::Min(FMath::Abs(allowedSideScalar), sideSpeedTarget);
 	float clampedSide = sideSign * allowedSideAbs;
 
-	WheeledPhysicsState.AllowedSideVelocity += (clampedSide - allowedSideScalar) * RightSurface;
+	WheeledPhysicsStateStorage().AllowedSideVelocity += (clampedSide - allowedSideScalar) * RightSurface;
 
 	// -------------------------------------
 	// Clamp AllowedAngularVelocity (yaw)
 	// -------------------------------------
-	float allowedYaw = FVector::DotProduct(WheeledPhysicsState.AllowedAngularVelocity, UpVector);
+	float allowedYaw = FVector::DotProduct(WheeledPhysicsStateStorage().AllowedAngularVelocity, UpVector);
 	float yawSign = FMath::Sign(allowedYaw);
 	float allowedYawAbs = FMath::Min(FMath::Abs(allowedYaw), GetSteeringAllowedYawClamp(absTargetYawRate));
 	float clampedYaw = yawSign * allowedYawAbs;
 
-	WheeledPhysicsState.AllowedAngularVelocity += (clampedYaw - allowedYaw) * UpVector;
+	WheeledPhysicsStateStorage().AllowedAngularVelocity += (clampedYaw - allowedYaw) * UpVector;
 
 	// Override yaw angular velocity along Up
 	{
-		FVector currentAngVel = GetPhysAngularVelocity();
-		FVector correctedAngVel = WheeledPhysicsState.AllowedAngularVelocity - FVector::DotProduct(currentAngVel, UpVector) * UpVector;
+		FVector currentAngVel = Speed::NativeKinematics::FComponentRead::Of(*this).AngularVelocity();
+		FVector correctedAngVel = WheeledPhysicsStateStorage().AllowedAngularVelocity - FVector::DotProduct(currentAngVel, UpVector) * UpVector;
 		const float YawCorrectionTimeConstant = GetSteeringYawCorrectionTimeConstant();
 		if (YawCorrectionTimeConstant > KINDA_SMALL_NUMBER)
 		{
@@ -4448,18 +5737,18 @@ void USpeedWheeledComponent::HandleSteering(const float& delta)
 
 
 #if !(UE_BUILD_SHIPPING)
-	if (CVarIAmSpeedDebugSteering.GetValueOnAnyThread() != 0)
+	if (Speed::RoadSettings::ReadOriginalOrLegacy<44>([](){ return CVarIAmSpeedDebugSteering.GetValueOnAnyThread(); }) != 0)
 	{
-		FVector up = GetPhysUpVector();
-		float yawRate = FVector::DotProduct(GetPhysAngularVelocity(), up); // rad/s
+		FVector up = Speed::NativeKinematics::FComponentRead::Of(*this).Up();
+		float yawRate = FVector::DotProduct(Speed::NativeKinematics::FComponentRead::Of(*this).AngularVelocity(), up); // rad/s
 		if (FMath::Abs(yawRate) > KINDA_SMALL_NUMBER)
 		{
 			float radius = speed / FMath::Abs(yawRate);
 			// UE_LOG(SpeedPhysicsLog, Log, TEXT("AllowedYaw=%.3f | RealYaw=%.3f | TargetYaw=%.3f"), allowedYaw, yawRate, targetYaw);
-			UE_LOG(SpeedPhysicsLog, Log,
+			SPEED_NATIVE_LOG(SpeedPhysicsLog, Log,
 				TEXT("[%s(%s)][Steering] NumFrame=%d, ForwardSpeed=%.1f cm/s, upDot=%.2f, SteeringInput=%.2f, YawRate=%.3f rad/s, AllowedSideSpeed=%f, AllowedYaw=%f, Actual Radius=%.1f cm, Desired Radius=%.1f cm"),
 				*GetOwner()->GetName(), *GetRole(), NumFrame(), forwardVelocity, upDot, steeringInput, yawRate,
-				FVector::DotProduct(WheeledPhysicsState.AllowedSideVelocity, RightSurface),
+				FVector::DotProduct(WheeledPhysicsStateStorage().AllowedSideVelocity, RightSurface),
 				allowedYaw, radius, desiredRadiusWall);
 		}
 	}
@@ -4476,19 +5765,19 @@ float USpeedWheeledComponent::GetWheelContactNormalVelocityTimeConstant() const
 	const float DiagnosticOverride = GetWheelContactNormalVelocityTimeConstantOverride();
 	return DiagnosticOverride >= 0.0f
 		? DiagnosticOverride
-		: FMath::Max(WheelContactNormalVelocityTimeConstant, 1e-6f);
+		: FMath::Max(WheelContactNormalVelocityTimeConstantWheeledDomainStorage(), 1e-6f);
 }
 
 bool USpeedWheeledComponent::NoSteeringAllowed() const
 {
-	const float MinForwardSpeed = FMath::Max(0.0f, CVarSkyLeagueSteeringMinForwardSpeed.GetValueOnAnyThread());
-	return FMath::Abs(GetPhysForwardSpeed()) < MinForwardSpeed || FMath::IsNearlyZero(GetPhysSteeringInput());
+	const float MinForwardSpeed = FMath::Max(0.0f, Speed::RoadSettings::ReadOriginalOrLegacy<149>([](){ return CVarSkyLeagueSteeringMinForwardSpeed.GetValueOnAnyThread(); }));
+	return FMath::Abs(Speed::NativeKinematics::FComponentRead::Of(*this).ForwardSpeed()) < MinForwardSpeed || FMath::IsNearlyZero(GetPhysSteeringInput());
 }
 
 bool USpeedWheeledComponent::MustReduceAllowedVelocityForSteering() const
 {
-	const float MinForwardSpeed = FMath::Max(0.0f, CVarSkyLeagueSteeringMinForwardSpeed.GetValueOnAnyThread());
-	return FMath::Abs(GetPhysForwardSpeed()) < MinForwardSpeed || FMath::IsNearlyZero(GetPhysSteeringInput());
+	const float MinForwardSpeed = FMath::Max(0.0f, Speed::RoadSettings::ReadOriginalOrLegacy<149>([](){ return CVarSkyLeagueSteeringMinForwardSpeed.GetValueOnAnyThread(); }));
+	return FMath::Abs(Speed::NativeKinematics::FComponentRead::Of(*this).ForwardSpeed()) < MinForwardSpeed || FMath::IsNearlyZero(GetPhysSteeringInput());
 }
 
 float USpeedWheeledComponent::GetSteeringYawCorrectionTimeConstant() const
@@ -4523,7 +5812,7 @@ float USpeedWheeledComponent::ComputeSteeringRadius(const float& ForwardVelocity
 		return BIG_NUMBER;
 	}
 
-	const float maxSteerAngle = EvaluateLinearFloatCurve(SteerAngleFromSpeedCurve, absForwardSpeed, 0.1f);
+	const float maxSteerAngle = EvaluateLinearFloatCurve(SteerAngleFromSpeedCurveWheeledDomainStorage(), absForwardSpeed, 0.1f);
 	const float fullSteerTan = FMath::Tan(maxSteerAngle);
 	if (FMath::Abs(fullSteerTan) <= KINDA_SMALL_NUMBER)
 	{
@@ -4536,7 +5825,7 @@ float USpeedWheeledComponent::ComputeSteeringRadius(const float& ForwardVelocity
 FVector USpeedWheeledComponent::ComputeTurningForce(const float& SteeringInput_, const float& UpDot, const float& ForwardVelocity, const float& DesiredRadius, const FVector& WheelRight) const
 {
 	// 1) If no speed -> no steering force
-	const float MinForwardSpeed = FMath::Max(0.0f, CVarSkyLeagueSteeringMinForwardSpeed.GetValueOnAnyThread());
+	const float MinForwardSpeed = FMath::Max(0.0f, Speed::RoadSettings::ReadOriginalOrLegacy<149>([](){ return CVarSkyLeagueSteeringMinForwardSpeed.GetValueOnAnyThread(); }));
 	if (FMath::Abs(ForwardVelocity) < MinForwardSpeed)
 		return FVector::ZeroVector;
 
@@ -4557,11 +5846,11 @@ FVector USpeedWheeledComponent::ComputeTurningForce(const float& SteeringInput_,
 
 void USpeedWheeledComponent::TagStateHistoryProxyRole()
 {
-	if (HasAuthority() || !SNetworkPhysicsComponent || !WheeledNetworkPhysicsComponent)
+	if (HasAuthority() || !SNetworkPhysicsComponentWheeledDomainStorage() || !WheeledNetworkPhysicsComponentWheeledDomainStorage())
 		return;
 
-	const TSharedPtr<Chaos::FBaseRewindHistory>& History = SNetworkPhysicsComponent->GetStateHistory_Internal();
-	const TSharedPtr<Chaos::FBaseRewindHistory>& WheeledHistory = WheeledNetworkPhysicsComponent->GetStateHistory_Internal();
+	const TSharedPtr<Chaos::FBaseRewindHistory>& History = SNetworkPhysicsComponentWheeledDomainStorage()->GetStateHistory_Internal();
+	const TSharedPtr<Chaos::FBaseRewindHistory>& WheeledHistory = WheeledNetworkPhysicsComponentWheeledDomainStorage()->GetStateHistory_Internal();
 	if (!History.IsValid() || !WheeledHistory.IsValid())
 		return;
 
@@ -4588,13 +5877,13 @@ void USpeedWheeledComponent::TagStateHistoryProxyRole()
 
 void USpeedWheeledComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 {
-	if (HasAuthority() || !SNetworkPhysicsComponent || !WheeledNetworkPhysicsComponent)
+	if (HasAuthority() || !SNetworkPhysicsComponentWheeledDomainStorage() || !WheeledNetworkPhysicsComponentWheeledDomainStorage())
 	{
 		return;
 	}
 
-	const TSharedPtr<Chaos::FBaseRewindHistory>& History = SNetworkPhysicsComponent->GetStateHistory_Internal();
-	const TSharedPtr<Chaos::FBaseRewindHistory>& WheeledHistory = WheeledNetworkPhysicsComponent->GetStateHistory_Internal();
+	const TSharedPtr<Chaos::FBaseRewindHistory>& History = SNetworkPhysicsComponentWheeledDomainStorage()->GetStateHistory_Internal();
+	const TSharedPtr<Chaos::FBaseRewindHistory>& WheeledHistory = WheeledNetworkPhysicsComponentWheeledDomainStorage()->GetStateHistory_Internal();
 	if (!History.IsValid() || !WheeledHistory.IsValid())
 		return;
 
@@ -4629,9 +5918,9 @@ void USpeedWheeledComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 	{
 		if (SourceFramesSinceCanMove != INDEX_NONE)
 		{
-			if (SinceCanMoveFrame != INDEX_NONE)
+			if (SinceCanMoveFrameWheeledDomainStorage() != INDEX_NONE)
 			{
-				return SinceCanMoveFrame + SourceFramesSinceCanMove;
+				return SinceCanMoveFrameWheeledDomainStorage() + SourceFramesSinceCanMove;
 			}
 		}
 
@@ -4643,21 +5932,21 @@ void USpeedWheeledComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 		return;
 	}
 
-	const bool bNewTarget = (Target.ServerFrame != NetCorr_LastServerFrame)
-		|| (TargetSourceLocalFrame != NetCorr_LastLocalFrame);
+	const bool bNewTarget = (Target.ServerFrame != NetCorr_LastServerFrameWheeledDomainStorage())
+		|| (TargetSourceLocalFrame != NetCorr_LastLocalFrameWheeledDomainStorage());
 
 	if (bNewTarget)
 	{
-		NetCorr_LastServerFrame = Target.ServerFrame;
-		NetCorr_LastLocalFrame = TargetSourceLocalFrame;
-		NetCorrTickCount = 0;
-		NetCorr_BaseNumPredictedFrames = FMath::Max(1, CurrentFrame - TargetSourceLocalFrame);
+		NetCorr_LastServerFrameWheeledDomainStorage() = Target.ServerFrame;
+		NetCorr_LastLocalFrameWheeledDomainStorage() = TargetSourceLocalFrame;
+		NetCorrTickCountWheeledDomainStorage() = 0;
+		NetCorr_BaseNumPredictedFramesWheeledDomainStorage() = FMath::Max(1, CurrentFrame - TargetSourceLocalFrame);
 	}
 	else
 	{
-		NetCorrTickCount++;
+		NetCorrTickCountWheeledDomainStorage()++;
 	}
-	const int32 FramesToCorrect = FMath::Clamp(NetCorr_BaseNumPredictedFrames, 1, 64);
+	const int32 FramesToCorrect = FMath::Clamp(NetCorr_BaseNumPredictedFramesWheeledDomainStorage(), 1, 64);
 
 	const int32 CurrentWheeledFrame = WheeledSpeedHistory->GetLatestFrame();
 	// ----------------------------
@@ -4701,9 +5990,9 @@ void USpeedWheeledComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 	if (!GetWheeledState(WheeledSourceLocalFrame, PastPredictedWheeledState))
 		return;
 
-	const int32 NumPredictedFrames = CurrentFrame - LocalFrame - NetCorrTickCount;
-	const int32 WheeledNumPredictedFrames = CurrentFrame - WheeledSourceLocalFrame - NetCorrTickCount;
-	if (NetCorrTickCount >= FramesToCorrect || NumPredictedFrames <= 0)
+	const int32 NumPredictedFrames = CurrentFrame - LocalFrame - NetCorrTickCountWheeledDomainStorage();
+	const int32 WheeledNumPredictedFrames = CurrentFrame - WheeledSourceLocalFrame - NetCorrTickCountWheeledDomainStorage();
+	if (NetCorrTickCountWheeledDomainStorage() >= FramesToCorrect || NumPredictedFrames <= 0)
 		return;
 
 	// Correct isFrozen state immediately if mismatch, to avoid diverging too much (e.g. if we are frozen but server says we should be moving, or vice versa)
@@ -4715,9 +6004,9 @@ void USpeedWheeledComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 	// check coutdown mismatch
 	if (bNewTarget && (WheeledTarget.WheeledState.bStartCountdown != PastPredictedWheeledState.bStartCountdown))
 	{
-		UE_LOG(WheelNetcodeLog, Verbose, TEXT("[%s(%s)][COUNTDOWN MISMATCH] Countdown mismatch: Target=%d, PastPred=%d, NbFramesBeforeCanMove=%d, NumPredictedFrames=%d"), *GetOwner()->GetName(), *GetRole(),
-			WheeledTarget.WheeledState.bStartCountdown, PastPredictedWheeledState.bStartCountdown, WheeledPhysicsState.nbFramesbeforeCanMove, NumPredictedFrames);
-		WheeledPhysicsState.bStartCountdown = WheeledTarget.WheeledState.bStartCountdown;
+		SPEED_NATIVE_LOG(WheelNetcodeLog, Verbose, TEXT("[%s(%s)][COUNTDOWN MISMATCH] Countdown mismatch: Target=%d, PastPred=%d, NbFramesBeforeCanMove=%d, NumPredictedFrames=%d"), *GetOwner()->GetName(), *GetRole(),
+			WheeledTarget.WheeledState.bStartCountdown, PastPredictedWheeledState.bStartCountdown, WheeledPhysicsStateStorage().nbFramesbeforeCanMove, NumPredictedFrames);
+		WheeledPhysicsStateStorage().bStartCountdown = WheeledTarget.WheeledState.bStartCountdown;
 	}
 	/*else
 	{
@@ -4726,44 +6015,44 @@ void USpeedWheeledComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 
 	// check nbFramesbeforeCanMove alignment
 	if (bNewTarget && (WheeledTarget.WheeledState.nbFramesbeforeCanMove != PastPredictedWheeledState.nbFramesbeforeCanMove)
-		// && (WheeledPhysicsState.nbFramesbeforeCanMove > WheeledNumPredictedFrames - 1)
-		// && (WheeledTarget.WheeledState.nbFramesbeforeCanMove != WheeledPhysicsState.nbFramesbeforeCanMove - NumPredictedFrames - 1)
-		&& (WheeledPhysicsState.nbFramesbeforeCanMove != FMath::Max(0, int32(WheeledTarget.WheeledState.nbFramesbeforeCanMove) - WheeledNumPredictedFrames)))
+		// && (WheeledPhysicsStateStorage().nbFramesbeforeCanMove > WheeledNumPredictedFrames - 1)
+		// && (WheeledTarget.WheeledState.nbFramesbeforeCanMove != WheeledPhysicsStateStorage().nbFramesbeforeCanMove - NumPredictedFrames - 1)
+		&& (WheeledPhysicsStateStorage().nbFramesbeforeCanMove != FMath::Max(0, int32(WheeledTarget.WheeledState.nbFramesbeforeCanMove) - WheeledNumPredictedFrames)))
 	{
-		if (WheeledTarget.WheeledState.nbFramesbeforeCanMove == 0 && WheeledPhysicsState.nbFramesbeforeCanMove != 0)
+		if (WheeledTarget.WheeledState.nbFramesbeforeCanMove == 0 && WheeledPhysicsStateStorage().nbFramesbeforeCanMove != 0)
 		{
-			WheeledPhysicsState.nbFramesbeforeCanMove = 0;
-			WheeledPhysicsState.bStartCountdown = false;
+			WheeledPhysicsStateStorage().nbFramesbeforeCanMove = 0;
+			WheeledPhysicsStateStorage().bStartCountdown = false;
 			ResetWheelTransientStateForCurrentPose();
 			UnFreezeMovement();
 #if !(UE_BUILD_SHIPPING)
-			UE_LOG(WheelNetcodeLog, Warning, TEXT("[%s(%s)][LATE CAN MOVE MISMATCH] nbFramesbeforeCanMove mismatch: Target=%d, PastPred=%d"), *GetOwner()->GetName(), *GetRole(), WheeledTarget.WheeledState.nbFramesbeforeCanMove, PastPredictedWheeledState.nbFramesbeforeCanMove);
-			UE_LOG(SpeedPhysicsLog, Warning, TEXT("[%s(%s)][LATE CAN MOVE] At CurrentFrame = %d, NumFrame = %d, Kinematics: %s"),
-				*GetOwner()->GetName(), *GetRole(), CurrentFrame, NumFrame(), *BasePhysicsState.Kinematic.ToString());
+			SPEED_NATIVE_LOG(WheelNetcodeLog, Warning, TEXT("[%s(%s)][LATE CAN MOVE MISMATCH] nbFramesbeforeCanMove mismatch: Target=%d, PastPred=%d"), *GetOwner()->GetName(), *GetRole(), WheeledTarget.WheeledState.nbFramesbeforeCanMove, PastPredictedWheeledState.nbFramesbeforeCanMove);
+			SPEED_NATIVE_LOG(SpeedPhysicsLog, Warning, TEXT("[%s(%s)][LATE CAN MOVE] At CurrentFrame = %d, NumFrame = %d, Kinematics: %s"),
+				*GetOwner()->GetName(), *GetRole(), CurrentFrame, NumFrame(), *BasePhysicsStateStorage().Kinematic.ToString());
 #endif
 		}
 		else
 		{
 #if !(UE_BUILD_SHIPPING)
-			UE_LOG(WheelNetcodeLog, Verbose, TEXT("[%s(%s)][CAN MOVE MISMATCH] nbFramesbeforeCanMove mismatch: Target=%d, PastPred=%d"), *GetOwner()->GetName(), *GetRole(), WheeledTarget.WheeledState.nbFramesbeforeCanMove, PastPredictedWheeledState.nbFramesbeforeCanMove);
+			SPEED_NATIVE_LOG(WheelNetcodeLog, Verbose, TEXT("[%s(%s)][CAN MOVE MISMATCH] nbFramesbeforeCanMove mismatch: Target=%d, PastPred=%d"), *GetOwner()->GetName(), *GetRole(), WheeledTarget.WheeledState.nbFramesbeforeCanMove, PastPredictedWheeledState.nbFramesbeforeCanMove);
 #endif
 			const bool bStartupCountdownCatchup =
 				WheeledTarget.WheeledState.bStartCountdown
 				&& PastPredictedWheeledState.nbFramesbeforeCanMove <= 1
-				&& WheeledTarget.WheeledState.nbFramesbeforeCanMove > MinNbFramesBeforeCanMove;
+				&& WheeledTarget.WheeledState.nbFramesbeforeCanMove > MinNbFramesBeforeCanMoveWheeledDomainStorage();
 			const int32 CorrectedFramesBeforeCanMove = bStartupCountdownCatchup
 				? int32(WheeledTarget.WheeledState.nbFramesbeforeCanMove)
 				: FMath::Max(0, int32(WheeledTarget.WheeledState.nbFramesbeforeCanMove) - WheeledNumPredictedFrames);
-			WheeledPhysicsState.nbFramesbeforeCanMove = static_cast<uint16>(CorrectedFramesBeforeCanMove);
-			if (!WheeledPhysicsState.bStartCountdown && WheeledPhysicsState.nbFramesbeforeCanMove == 0)
+			WheeledPhysicsStateStorage().nbFramesbeforeCanMove = static_cast<uint16>(CorrectedFramesBeforeCanMove);
+			if (!WheeledPhysicsStateStorage().bStartCountdown && WheeledPhysicsStateStorage().nbFramesbeforeCanMove == 0)
 			{
 				// If countdown has not started, we cannot start to move immediately
-				WheeledPhysicsState.nbFramesbeforeCanMove = 1;
+				WheeledPhysicsStateStorage().nbFramesbeforeCanMove = 1;
 			}
 
 			if (CanMove())
 			{
-				WheeledPhysicsState.bStartCountdown = false;
+				WheeledPhysicsStateStorage().bStartCountdown = false;
 				ResetWheelTransientStateForCurrentPose();
 				UnFreezeMovement();
 			}
@@ -4777,13 +6066,13 @@ void USpeedWheeledComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 		const int32 CorrectedFramesBeforeCanMove = FMath::Max(0, int32(WheeledTarget.WheeledState.nbFramesbeforeCanMove) - WheeledNumPredictedFrames);
 		if (CorrectedFramesBeforeCanMove > 0)
 		{
-			WheeledPhysicsState.nbFramesbeforeCanMove = static_cast<uint16>(CorrectedFramesBeforeCanMove);
-			WheeledPhysicsState.bStartCountdown = true;
-			SinceCanMoveFrame = INDEX_NONE;
+			WheeledPhysicsStateStorage().nbFramesbeforeCanMove = static_cast<uint16>(CorrectedFramesBeforeCanMove);
+			WheeledPhysicsStateStorage().bStartCountdown = true;
+			SinceCanMoveFrameWheeledDomainStorage() = INDEX_NONE;
 			FreezeMovement();
 #if !(UE_BUILD_SHIPPING)
-			UE_LOG(WheelNetcodeLog, Warning, TEXT("[%s(%s)][EARLY CAN MOVE MISMATCH] nbFramesbeforeCanMove mismatch: Target=%d, PastPred=%d, Corrected=%d"), *GetOwner()->GetName(), *GetRole(),
-				WheeledTarget.WheeledState.nbFramesbeforeCanMove, PastPredictedWheeledState.nbFramesbeforeCanMove, WheeledPhysicsState.nbFramesbeforeCanMove);
+			SPEED_NATIVE_LOG(WheelNetcodeLog, Warning, TEXT("[%s(%s)][EARLY CAN MOVE MISMATCH] nbFramesbeforeCanMove mismatch: Target=%d, PastPred=%d, Corrected=%d"), *GetOwner()->GetName(), *GetRole(),
+				WheeledTarget.WheeledState.nbFramesbeforeCanMove, PastPredictedWheeledState.nbFramesbeforeCanMove, WheeledPhysicsStateStorage().nbFramesbeforeCanMove);
 #endif
 		}
 	}
@@ -4806,27 +6095,27 @@ void USpeedWheeledComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 	const float ErrRotDeg = FMath::RadiansToDegrees(ErrRot.AngularDistance(FQuat::Identity));
 	if (bNewTarget)
 	{
-		NetCorrAccum.SourceServerFrame = Target.ServerFrame;
-		NetCorrAccum.SourceLocalFrame = TargetSourceLocalFrame;
+		NetCorrAccumWheeledDomainStorage().SourceServerFrame = Target.ServerFrame;
+		NetCorrAccumWheeledDomainStorage().SourceLocalFrame = TargetSourceLocalFrame;
 
-		NetCorrAccum.RemPos = (ErrPos.Size() > PosCorrDeadzone) ? ErrPos : FVector::ZeroVector;
+		NetCorrAccumWheeledDomainStorage().RemPos = (ErrPos.Size() > PosCorrDeadzoneWheeledDomainStorage()) ? ErrPos : FVector::ZeroVector;
 
 		// delta rot : Past^-1 * Target
-		NetCorrAccum.RemRot = (ErrRotDeg > RotCorrDeadzone) ? ErrRot : FQuat::Identity;
-		NetCorrAccum.RemRot.Normalize();
+		NetCorrAccumWheeledDomainStorage().RemRot = (ErrRotDeg > RotCorrDeadzoneWheeledDomainStorage()) ? ErrRot : FQuat::Identity;
+		NetCorrAccumWheeledDomainStorage().RemRot.Normalize();
 
 		// vel budgets : Target - PastPred - "impulse mismatch"
-		NetCorrAccum.RemVel = (ErrVel.Size() > VelCorrDeadzone) ? ErrVel : FVector::ZeroVector;
-		NetCorrAccum.RemAngVel = (ErrAngVel.Size() > AngVelCorrDeadzone) ? ErrAngVel : FVector::ZeroVector;
+		NetCorrAccumWheeledDomainStorage().RemVel = (ErrVel.Size() > VelCorrDeadzoneWheeledDomainStorage()) ? ErrVel : FVector::ZeroVector;
+		NetCorrAccumWheeledDomainStorage().RemAngVel = (ErrAngVel.Size() > AngVelCorrDeadzoneWheeledDomainStorage()) ? ErrAngVel : FVector::ZeroVector;
 
-		NetCorrAccum.bActive =
-			!NetCorrAccum.RemPos.IsNearlyZero() ||
-			!NetCorrAccum.RemVel.IsNearlyZero() ||
-			!NetCorrAccum.RemAngVel.IsNearlyZero() ||
-			NetCorrAccum.RemRot.AngularDistance(FQuat::Identity) > FMath::DegreesToRadians(RotCorrDeadzone);
+		NetCorrAccumWheeledDomainStorage().bActive =
+			!NetCorrAccumWheeledDomainStorage().RemPos.IsNearlyZero() ||
+			!NetCorrAccumWheeledDomainStorage().RemVel.IsNearlyZero() ||
+			!NetCorrAccumWheeledDomainStorage().RemAngVel.IsNearlyZero() ||
+			NetCorrAccumWheeledDomainStorage().RemRot.AngularDistance(FQuat::Identity) > FMath::DegreesToRadians(RotCorrDeadzoneWheeledDomainStorage());
 	}
 
-	if (!NetCorrAccum.bActive)
+	if (!NetCorrAccumWheeledDomainStorage().bActive)
 		return;
 
 	// ------------------------------------------------------------
@@ -4836,25 +6125,25 @@ void USpeedWheeledComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 	FVector WheelN = bAllWheelsContact ? GroundN : FVector::ZeroVector;
 	if (bAllWheelsContact && !WheelN.IsNearlyZero())
 	{
-		const float d = FVector::DotProduct(WheelN, NetCorr_LastContactN);
+		const float d = FVector::DotProduct(WheelN, NetCorr_LastContactNWheeledDomainStorage());
 		if (d > 0.995f) // ~5.7 deg max
 		{
-			if (NetCorr_StableNFrames < 255) NetCorr_StableNFrames++;
+			if (NetCorr_StableNFramesWheeledDomainStorage() < 255) NetCorr_StableNFramesWheeledDomainStorage()++;
 		}
 		else
 		{
-			NetCorr_StableNFrames = 0;
+			NetCorr_StableNFramesWheeledDomainStorage() = 0;
 		}
-		NetCorr_LastContactN = WheelN;
+		NetCorr_LastContactNWheeledDomainStorage() = WheelN;
 	}
 	else
 	{
-		NetCorr_StableNFrames = 0;
+		NetCorr_StableNFramesWheeledDomainStorage() = 0;
 	}
 
-	const bool bStableContact = (NetCorr_StableNFrames > 6); // ~6 frames = 20ms @300Hz
-	const bool bPersistentContact = bStableContact || (IsOnTheGround() && (WheeledPhysicsState.FramesSinceLastImpact > NumPredictedFrames));
-	const FVector ContactN = bPersistentContact ? NetCorr_LastContactN : FVector::ZeroVector;
+	const bool bStableContact = (NetCorr_StableNFramesWheeledDomainStorage() > 6); // ~6 frames = 20ms @300Hz
+	const bool bPersistentContact = bStableContact || (IsOnTheGround() && (WheeledPhysicsStateStorage().FramesSinceLastImpact > NumPredictedFrames));
+	const FVector ContactN = bPersistentContact ? NetCorr_LastContactNWheeledDomainStorage() : FVector::ZeroVector;
 	const bool bHasN = bPersistentContact && !ContactN.IsNearlyZero(1e-3f);
 
 	// ------------------------------------------------------------
@@ -4874,7 +6163,7 @@ void USpeedWheeledComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 	// ----------------------------
 	// Position drain (+ clamp)
 	// ----------------------------
-	FVector dX = NetCorrAccum.RemPos * aX;
+	FVector dX = NetCorrAccumWheeledDomainStorage().RemPos * aX;
 	constexpr float MaxPosCorrPerSec = 600.f; // cm/s
 	dX = dX.GetClampedToMaxSize(MaxPosCorrPerSec * DeltaSeconds);
 	dX = FNetCorrAccum::RejectNormal(dX, GroundN);
@@ -4882,7 +6171,7 @@ void USpeedWheeledComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 	// ----------------------------
 	// Velocity drain (+ clamp)
 	// ----------------------------
-	FVector dV = NetCorrAccum.RemVel * aV;
+	FVector dV = NetCorrAccumWheeledDomainStorage().RemVel * aV;
 	constexpr float MaxVelCorrPerSec = 3600.f; // cm/s^2
 	dV = dV.GetClampedToMaxSize(MaxVelCorrPerSec * DeltaSeconds);
 	// all wheel on ground -> reject correction along the ground normal
@@ -4908,27 +6197,27 @@ void USpeedWheeledComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 	// ----------------------------
 	// Angular velocity drain (+ clamp)
 	// ----------------------------
-	FVector dW = NetCorrAccum.RemAngVel * aW;
+	FVector dW = NetCorrAccumWheeledDomainStorage().RemAngVel * aW;
 	constexpr float MaxAngVelCorrPerSec = 9.f; // rad/s per sec -> rad/s per tick
 	dW = dW.GetClampedToMaxSize(MaxAngVelCorrPerSec * DeltaSeconds);
 	if (bStableContact)
 	{
 		dW = FNetCorrAccum::RejectNormal(dW, ContactN);
 	}
-	if (NetCorrAccum.RemAngVel.Size() <= AngVelCorrDeadzone)
+	if (NetCorrAccumWheeledDomainStorage().RemAngVel.Size() <= AngVelCorrDeadzoneWheeledDomainStorage())
 	{
 		dW = FVector::ZeroVector;
-		NetCorrAccum.RemAngVel = FVector::ZeroVector;
+		NetCorrAccumWheeledDomainStorage().RemAngVel = FVector::ZeroVector;
 	}
 
 	// ----------------------------
 	// Rotation drain (delta quat restant)
 	// ----------------------------
 	FQuat dR = FQuat::Identity;
-	if (NetCorrAccum.RemRot.AngularDistance(FQuat::Identity) > FMath::DegreesToRadians(RotCorrDeadzone))
+	if (NetCorrAccumWheeledDomainStorage().RemRot.AngularDistance(FQuat::Identity) > FMath::DegreesToRadians(RotCorrDeadzoneWheeledDomainStorage()))
 	{
 		FVector Axis; float Angle;
-		NetCorrAccum.RemRot.ToAxisAndAngle(Axis, Angle);
+		NetCorrAccumWheeledDomainStorage().RemRot.ToAxisAndAngle(Axis, Angle);
 		if (!Axis.Normalize())
 		{
 			Axis = FVector::UpVector;
@@ -4942,7 +6231,7 @@ void USpeedWheeledComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 		}
 
 		const float StepAngle = Angle * aR;
-		const float MaxStepAngle = FMath::DegreesToRadians(MaxRotCorrectionPerSecond) * DeltaSeconds;
+		const float MaxStepAngle = FMath::DegreesToRadians(MaxRotCorrectionPerSecondWheeledDomainStorage()) * DeltaSeconds;
 		const float ClampedStepAngle = FMath::Clamp(StepAngle, -MaxStepAngle, +MaxStepAngle);
 
 		dR = FQuat(Axis, ClampedStepAngle);
@@ -4966,9 +6255,9 @@ void USpeedWheeledComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 		if (canLog)
 		{
 #if !(UE_BUILD_SHIPPING)
-			UE_LOG(WheelNetcodeLog, Log, TEXT("[%s(%s)][CORR] ServerFrame=%d NumPredictedFrames=%d ErrVel=%.2f AppliedVelCorr=%.4fcm/s TargetVel=%fcm/s GroundN.Z=%.2f StableNFrames=%d "
-				"NbWheelOnGround=%d"), *GetOwner()->GetName(), *GetRole(), Target.ServerFrame, NumPredictedFrames, NetCorrAccum.RemVel.Size(), dV.Size(),
-				Target.BaseState.Kinematic.Velocity.Size(), GroundN.Z, NetCorr_StableNFrames, WheeledGameState.NbWheelsOnGround);
+			SPEED_NATIVE_LOG(WheelNetcodeLog, Log, TEXT("[%s(%s)][CORR] ServerFrame=%d NumPredictedFrames=%d ErrVel=%.2f AppliedVelCorr=%.4fcm/s TargetVel=%fcm/s GroundN.Z=%.2f StableNFrames=%d "
+				"NbWheelOnGround=%d"), *GetOwner()->GetName(), *GetRole(), Target.ServerFrame, NumPredictedFrames, NetCorrAccumWheeledDomainStorage().RemVel.Size(), dV.Size(),
+				Target.BaseState.Kinematic.Velocity.Size(), GroundN.Z, NetCorr_StableNFramesWheeledDomainStorage(), WheeledGameStateStorage().NbWheelsOnGround);
 #endif
 		}
 	}
@@ -4978,8 +6267,8 @@ void USpeedWheeledComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 		if (canLog)
 		{
 #if !(UE_BUILD_SHIPPING)
-			UE_LOG(WheelNetcodeLog, Log, TEXT("[%s(%s)][CORR] ServerFrame=%d NumPredictedFrames=%d ErrAngVel=%.4frad/s AppliedAngVelCorr=%.4frad/s TargetAngVel=%.4frad/s"),
-				*GetOwner()->GetName(), *GetRole(), Target.ServerFrame, NumPredictedFrames, NetCorrAccum.RemAngVel.Size(), dW.Size(),
+			SPEED_NATIVE_LOG(WheelNetcodeLog, Log, TEXT("[%s(%s)][CORR] ServerFrame=%d NumPredictedFrames=%d ErrAngVel=%.4frad/s AppliedAngVelCorr=%.4frad/s TargetAngVel=%.4frad/s"),
+				*GetOwner()->GetName(), *GetRole(), Target.ServerFrame, NumPredictedFrames, NetCorrAccumWheeledDomainStorage().RemAngVel.Size(), dW.Size(),
 				Target.BaseState.Kinematic.AngularVelocity.Size());
 #endif
 		}
@@ -4990,8 +6279,8 @@ void USpeedWheeledComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 		if (canLog)
 		{
 #if !(UE_BUILD_SHIPPING)
-			UE_LOG(WheelNetcodeLog, Log, TEXT("[%s(%s)][CORR] ServerFrame=%d NumPredictedFrames=%d ErrPos=%.2f AppliedPosCorr=%.2fcm"),
-				*GetOwner()->GetName(), *GetRole(), Target.ServerFrame, NumPredictedFrames, NetCorrAccum.RemPos.Size(), dX.Size());
+			SPEED_NATIVE_LOG(WheelNetcodeLog, Log, TEXT("[%s(%s)][CORR] ServerFrame=%d NumPredictedFrames=%d ErrPos=%.2f AppliedPosCorr=%.2fcm"),
+				*GetOwner()->GetName(), *GetRole(), Target.ServerFrame, NumPredictedFrames, NetCorrAccumWheeledDomainStorage().RemPos.Size(), dX.Size());
 #endif
 		}
 	}
@@ -5007,9 +6296,9 @@ void USpeedWheeledComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 			if (canLog)
 			{
 #if !(UE_BUILD_SHIPPING)
-				UE_LOG(WheelNetcodeLog, Log, TEXT("[%s(%s)][CORR] ServerFrame=%d NumPredictedFrames=%d ErrRot=%.2fdeg AppliedRotCorr=%.2fdeg"),
+				SPEED_NATIVE_LOG(WheelNetcodeLog, Log, TEXT("[%s(%s)][CORR] ServerFrame=%d NumPredictedFrames=%d ErrRot=%.2fdeg AppliedRotCorr=%.2fdeg"),
 					*GetOwner()->GetName(), *GetRole(), Target.ServerFrame, NumPredictedFrames,
-					FMath::RadiansToDegrees(NetCorrAccum.RemRot.GetAngle()), FMath::RadiansToDegrees(FMath::Abs(dR.GetAngle())));
+					FMath::RadiansToDegrees(NetCorrAccumWheeledDomainStorage().RemRot.GetAngle()), FMath::RadiansToDegrees(FMath::Abs(dR.GetAngle())));
 #endif
 			}
 		}
@@ -5018,32 +6307,32 @@ void USpeedWheeledComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 	// ------------------------------------------------------------
 	// Consume budgets
 	// ------------------------------------------------------------
-	NetCorrAccum.RemPos -= dX;
-	NetCorrAccum.RemVel -= dV;
-	NetCorrAccum.RemAngVel -= dW;
+	NetCorrAccumWheeledDomainStorage().RemPos -= dX;
+	NetCorrAccumWheeledDomainStorage().RemVel -= dV;
+	NetCorrAccumWheeledDomainStorage().RemAngVel -= dW;
 
 	// Remove rotation applied from the remaining delta:
 	// RemRot := dR^-1 * RemRot
-	NetCorrAccum.RemRot = dR.Inverse() * NetCorrAccum.RemRot;
-	NetCorrAccum.RemRot.Normalize();
+	NetCorrAccumWheeledDomainStorage().RemRot = dR.Inverse() * NetCorrAccumWheeledDomainStorage().RemRot;
+	NetCorrAccumWheeledDomainStorage().RemRot.Normalize();
 
 	// ...but when bHasN you already removed normal part via Forgive
 	// => ensure RemPos doesn't reintroduce normal via float drift
 	if (bHasN)
 	{
-		NetCorrAccum.RemPos = FNetCorrAccum::RejectNormal(NetCorrAccum.RemPos, ContactN);
+		NetCorrAccumWheeledDomainStorage().RemPos = FNetCorrAccum::RejectNormal(NetCorrAccumWheeledDomainStorage().RemPos, ContactN);
 	}
 
 	// Stop condition
 	const bool bDone =
-		NetCorrAccum.RemPos.Size() <= PosCorrDeadzone &&
-		NetCorrAccum.RemVel.Size() <= VelCorrDeadzone &&
-		NetCorrAccum.RemAngVel.Size() <= AngVelCorrDeadzone &&
-		NetCorrAccum.RemRot.AngularDistance(FQuat::Identity) <= FMath::DegreesToRadians(RotCorrDeadzone);
+		NetCorrAccumWheeledDomainStorage().RemPos.Size() <= PosCorrDeadzoneWheeledDomainStorage() &&
+		NetCorrAccumWheeledDomainStorage().RemVel.Size() <= VelCorrDeadzoneWheeledDomainStorage() &&
+		NetCorrAccumWheeledDomainStorage().RemAngVel.Size() <= AngVelCorrDeadzoneWheeledDomainStorage() &&
+		NetCorrAccumWheeledDomainStorage().RemRot.AngularDistance(FQuat::Identity) <= FMath::DegreesToRadians(RotCorrDeadzoneWheeledDomainStorage());
 
 	if (bDone)
 	{
-		NetCorrAccum.Reset();
+		NetCorrAccumWheeledDomainStorage().Reset();
 	}
 }
 
@@ -5054,14 +6343,14 @@ void USpeedWheeledComponent::QuantizePhysicalState()
 		return;
 
 	// Quantize kinematic state to reduce precision errors on client and server
-	QuantizeKinematicState(BasePhysicsState.Kinematic, GetKinematicStateForFrame(NumFrame() - 1).Rotation);
+	QuantizeKinematicState(BasePhysicsStateStorage().Kinematic, Speed::NativeKinematics::FComponentRead::ForFrame(*this, NumFrame() - 1).Rotation);
 
 	// round trip on last suspension length to avoid precision drift on client and server
-	for (const auto& W : WheelSubBodies)
+	for (const auto W : ReadWheelSubBodiesForPhysics())
 	{
-		const int32 WheelIdx = W->Idx();
-		const float QuantizedDisplacement = WheeledPhysicsState.DequantizeLastSuspensionDisplacement(WheeledPhysicsState.QuantizeLastSuspensionDisplacement(WheelIdx));
-		WheeledPhysicsState.SuspensionLastDisplacement[WheelIdx] = QuantizedDisplacement;
+		const int32 WheelIdx = Speed::NativeKinematics::FSolidPropertiesAccess::Idx(*W);
+		const float QuantizedDisplacement = WheeledPhysicsStateStorage().DequantizeLastSuspensionDisplacement(WheeledPhysicsStateStorage().QuantizeLastSuspensionDisplacement(WheelIdx));
+		WheeledPhysicsStateStorage().SuspensionLastDisplacement[WheelIdx] = QuantizedDisplacement;
 		W->SetLastDisplacement(QuantizedDisplacement);
 	}
 }
@@ -5070,26 +6359,26 @@ void USpeedWheeledComponent::QuantizePhysicalState()
 
 void USpeedWheeledComponent::InitChaosVehicle()
 {
-	bThrottleAsBrake = true;
-	bSuspensionEnabled = false;
-	bWheelFrictionEnabled = false;
+	SetOriginalThrottleAsBrake(true);
+	bSuspensionEnabledWheeledDomainStorage() = false;
+	bWheelFrictionEnabledWheeledDomainStorage() = false;
 
 	// Note: for faster iteration times, the vehicle setup can be tweaked in the Blueprint instead
 	// Set up the chassis
-	ChassisHeight = 122.0f;
-	DragCoefficient = 0.31f;
+	ChassisHeightWheeledDomainStorage() = 122.0f;
+	DragCoefficientWheeledDomainStorage() = 0.31f;
 
 	// Setup the wheels
 	bLegacyWheelFrictionPosition = true;
-	bUseDriveModelLongitudinalFriction = true;
+	bUseDriveModelLongitudinalFrictionWheeledDomainStorage() = true;
 
-	DriveSpeedAccelScaleCurve = {
+	DriveSpeedAccelScaleCurveWheeledDomainStorage() = {
 		FVector2D(0.0f, 1.0f),
 		FVector2D(1400.0f, 0.1f),
 		FVector2D(1410.0f, 0.0f)
 	};
 
-	SteerAngleFromSpeedCurve = {
+	SteerAngleFromSpeedCurveWheeledDomainStorage() = {
 		FVector2D(0.0f, 0.53356f),
 		FVector2D(500.0f, 0.31930f),
 		FVector2D(1000.0f, 0.18203f),
@@ -5097,158 +6386,155 @@ void USpeedWheeledComponent::InitChaosVehicle()
 		FVector2D(1750.0f, 0.08507f),
 		FVector2D(3000.0f, 0.03454f)
 	};
-	HandbrakeSteerAngleFromSpeedCurve = {
+	HandbrakeSteerAngleFromSpeedCurveWheeledDomainStorage() = {
 		FVector2D(0.0f, 0.39235f),
 		FVector2D(2500.0f, 0.12610f)
 	};
 
-	bUseWheelFrameLateralFriction = true;
-	bUseExplicitSteeringForce = false;
-	bUseLegacySteeringVelocityState = false;
-	WheelFrameLateralFrictionScale = 1.0f;
-	WheelFrameLateralImpulseTimeConstant = 0.037345f;
-	WheelFrameSteeringRearLateralFrictionScale = 1.0f;
-	WheelFrameLongitudinalScrubScale = 0.0f;
-	WheelFrameSteeringCurvatureScale = 1.0f;
-	WheelFrameLateralForwardLossScale = 1.0f;
-	LateralForwardLossScaleCurve = {
+	bUseWheelFrameLateralFrictionWheeledDomainStorage() = true;
+	bUseExplicitSteeringForceWheeledDomainStorage() = false;
+	bUseLegacySteeringVelocityStateWheeledDomainStorage() = false;
+	WheelFrameLateralFrictionScaleWheeledDomainStorage() = 1.0f;
+	WheelFrameLateralImpulseTimeConstantWheeledDomainStorage() = 0.037345f;
+	WheelFrameSteeringRearLateralFrictionScaleWheeledDomainStorage() = 1.0f;
+	WheelFrameLongitudinalScrubScaleWheeledDomainStorage() = 0.0f;
+	WheelFrameSteeringCurvatureScaleWheeledDomainStorage() = 1.0f;
+	WheelFrameLateralForwardLossScaleWheeledDomainStorage() = 1.0f;
+	LateralForwardLossScaleCurveWheeledDomainStorage() = {
 	};
-	LateralForwardLossSlipScaleCurve = {
+	LateralForwardLossSlipScaleCurveWheeledDomainStorage() = {
 	};
-	SteeringForwardLossSpeedScaleCurve = {
+	SteeringForwardLossSpeedScaleCurveWheeledDomainStorage() = {
 	};
-	LateralFrictionScaleCurve = {
+	LateralFrictionScaleCurveWheeledDomainStorage() = {
 		FVector2D(0.0f, 1.0f),
 		FVector2D(1.0f, 0.2f)
 	};
-	LongitudinalFrictionScaleCurve = {
+	LongitudinalFrictionScaleCurveWheeledDomainStorage() = {
 	};
-	NonAcceleratingFrictionScaleCurve = {
+	NonAcceleratingFrictionScaleCurveWheeledDomainStorage() = {
 		FVector2D(0.0f, 0.1f),
 		FVector2D(0.7075f, 0.5f),
 		FVector2D(1.0f, 1.0f)
 	};
-	HandbrakeFrontLateralFrictionFactorCurve = {
+	HandbrakeFrontLateralFrictionFactorCurveWheeledDomainStorage() = {
 		FVector2D(0.0f, 0.1f)
 	};
-	HandbrakeRearLateralFrictionFactorCurve = {
+	HandbrakeRearLateralFrictionFactorCurveWheeledDomainStorage() = {
 		FVector2D(0.0f, 0.1f)
 	};
-	HandbrakeSteeringRearLateralFrictionScaleCurve = {
+	HandbrakeSteeringRearLateralFrictionScaleCurveWheeledDomainStorage() = {
 		FVector2D(0.0f, 1.0f)
 	};
-	HandbrakeSteeringRearLateralFrictionSlipScaleCurve = {
+	HandbrakeSteeringRearLateralFrictionSlipScaleCurveWheeledDomainStorage() = {
 		FVector2D(0.0f, 1.0f)
 	};
-HandbrakeLowSlipYawCorrectionScaleCurve = {
+HandbrakeLowSlipYawCorrectionScaleCurveWheeledDomainStorage() = {
 		FVector2D(0.0f, 1.0f)
 	};
-	HandbrakeLongitudinalFrictionFactorCurve = {
+	HandbrakeLongitudinalFrictionFactorCurveWheeledDomainStorage() = {
 		FVector2D(0.0f, 0.5f),
 		FVector2D(1.0f, 0.9f)
 	};
-	WheelFrameHandbrakeEntryDuration = 0.0f;
-	WheelFrameHandbrakeEntryMinSpeed = 0.0f;
-	WheelFrameHandbrakeEntryFullSpeed = 1400.0f;
-	WheelFrameHandbrakeEntryMinSteering = 0.8f;
-	WheelFrameHandbrakeEntryRearReleaseScale = 1.0f;
-	WheelFrameHandbrakeRiseRate = 5.0f;
-	WheelFrameHandbrakeFallRate = 2.0f;
-	HandbrakeLateralImpulseScaleCurve.Empty();
-	LateralFrictionSlipThreshold = 5.0f;
+	WheelFrameHandbrakeEntryDurationWheeledDomainStorage() = 0.0f;
+	WheelFrameHandbrakeEntryMinSpeedWheeledDomainStorage() = 0.0f;
+	WheelFrameHandbrakeEntryFullSpeedWheeledDomainStorage() = 1400.0f;
+	WheelFrameHandbrakeEntryMinSteeringWheeledDomainStorage() = 0.8f;
+	WheelFrameHandbrakeEntryRearReleaseScaleWheeledDomainStorage() = 1.0f;
+	WheelFrameHandbrakeRiseRateWheeledDomainStorage() = 5.0f;
+	WheelFrameHandbrakeFallRateWheeledDomainStorage() = 2.0f;
+	HandbrakeLateralImpulseScaleCurveWheeledDomainStorage().Empty();
+	LateralFrictionSlipThresholdWheeledDomainStorage() = 5.0f;
 
-	WheelSetups.SetNum(4);
+	WheelSetupsWheeledDomainStorage().SetNum(4);
 
-	WheelSetups[0].WheelClass = UChaosVehicleWheel::StaticClass();
-	WheelSetups[0].BoneName = FName("Phys_Wheel_FL");
-	WheelSetups[0].AdditionalOffset = FVector(0.0f, 0.0f, 0.0f);
+	WheelSetupsWheeledDomainStorage()[0].WheelClass = UChaosVehicleWheel::StaticClass();
+	WheelSetupsWheeledDomainStorage()[0].BoneName = FName("Phys_Wheel_FL");
+	WheelSetupsWheeledDomainStorage()[0].AdditionalOffset = FVector(0.0f, 0.0f, 0.0f);
 
-	WheelSetups[1].WheelClass = UChaosVehicleWheel::StaticClass();
-	WheelSetups[1].BoneName = FName("Phys_Wheel_FR");
-	WheelSetups[1].AdditionalOffset = FVector(0.0f, 0.0f, 0.0f);
+	WheelSetupsWheeledDomainStorage()[1].WheelClass = UChaosVehicleWheel::StaticClass();
+	WheelSetupsWheeledDomainStorage()[1].BoneName = FName("Phys_Wheel_FR");
+	WheelSetupsWheeledDomainStorage()[1].AdditionalOffset = FVector(0.0f, 0.0f, 0.0f);
 
-	WheelSetups[2].WheelClass = UChaosVehicleWheel::StaticClass();
-	WheelSetups[2].BoneName = FName("Phys_Wheel_BL");
-	WheelSetups[2].AdditionalOffset = FVector(0.0f, 0.0f, 0.0f);
+	WheelSetupsWheeledDomainStorage()[2].WheelClass = UChaosVehicleWheel::StaticClass();
+	WheelSetupsWheeledDomainStorage()[2].BoneName = FName("Phys_Wheel_BL");
+	WheelSetupsWheeledDomainStorage()[2].AdditionalOffset = FVector(0.0f, 0.0f, 0.0f);
 
-	WheelSetups[3].WheelClass = UChaosVehicleWheel::StaticClass();
-	WheelSetups[3].BoneName = FName("Phys_Wheel_BR");
-	WheelSetups[3].AdditionalOffset = FVector(0.0f, 0.0f, 0.0f);
+	WheelSetupsWheeledDomainStorage()[3].WheelClass = UChaosVehicleWheel::StaticClass();
+	WheelSetupsWheeledDomainStorage()[3].BoneName = FName("Phys_Wheel_BR");
+	WheelSetupsWheeledDomainStorage()[3].AdditionalOffset = FVector(0.0f, 0.0f, 0.0f);
 
 	// Setup the engine
-	EngineSetup.MaxTorque = 400.0f;
-	EngineSetup.MaxRPM = 3875.0f;
-	EngineSetup.EngineIdleRPM = 900.0f;
-	EngineSetup.EngineBrakeEffect = 0.337f;
-	EngineSetup.EngineRevUpMOI = 5.0f;
-	EngineSetup.EngineRevDownRate = 600.0f;
+	EngineSetupWheeledDomainStorage().MaxTorque = 400.0f;
+	EngineSetupWheeledDomainStorage().MaxRPM = 3875.0f;
+	EngineSetupWheeledDomainStorage().EngineIdleRPM = 900.0f;
+	EngineSetupWheeledDomainStorage().EngineBrakeEffect = 0.337f;
+	EngineSetupWheeledDomainStorage().EngineRevUpMOI = 5.0f;
+	EngineSetupWheeledDomainStorage().EngineRevDownRate = 600.0f;
 
-	ThrottleInputRate.RiseRate = 6.0f;
-	ThrottleInputRate.FallRate = 5.0f;
-	ThrottleInputRate.InputCurveFunction = EInputFunctionType::LinearFunction;
+	ThrottleInputRateWheeledDomainStorage().RiseRate = 6.0f;
+	ThrottleInputRateWheeledDomainStorage().FallRate = 5.0f;
+	ThrottleInputRateWheeledDomainStorage().InputCurveFunction = EInputFunctionType::LinearFunction;
 
-	TransmissionSetup.ForwardGearRatios.SetNum(1);
-	TransmissionSetup.ForwardGearRatios[0] = 1.0f;
+	TransmissionSetupWheeledDomainStorage().ForwardGearRatios.SetNum(1);
+	TransmissionSetupWheeledDomainStorage().ForwardGearRatios[0] = 1.0f;
 
-	TransmissionSetup.ReverseGearRatios.SetNum(1);
-	TransmissionSetup.ReverseGearRatios[0] = 1.0f;
-	DifferentialSetup.DifferentialType = EVehicleDifferential::FrontWheelDrive;
-	bMechanicalSimEnabled = false;
+	TransmissionSetupWheeledDomainStorage().ReverseGearRatios.SetNum(1);
+	TransmissionSetupWheeledDomainStorage().ReverseGearRatios[0] = 1.0f;
+	DifferentialSetupWheeledDomainStorage().DifferentialType = EVehicleDifferential::FrontWheelDrive;
+	bMechanicalSimEnabledWheeledDomainStorage() = false;
 
 	// Steering parameters
-	SteeringInputRate.RiseRate = 60.0f;
-	SteeringInputRate.FallRate = 40.0f;
-	SteeringInputRate.InputCurveFunction = EInputFunctionType::LinearFunction;
-	bEnableCenterOfMassOverride = true;
-	SteeringSetup.SteeringType = ESteeringType::Ackermann;
+	SteeringInputRateWheeledDomainStorage().RiseRate = 60.0f;
+	SteeringInputRateWheeledDomainStorage().FallRate = 40.0f;
+	SteeringInputRateWheeledDomainStorage().InputCurveFunction = EInputFunctionType::LinearFunction;
+	bEnableCenterOfMassOverrideWheeledDomainStorage() = true;
+	SteeringSetupWheeledDomainStorage().SteeringType = ESteeringType::Ackermann;
 }
 
 bool USpeedWheeledComponent::IsLegacyNetworkHistoryExcluded() const
 {
     check(IsInGameThread());
-    return bLegacyNetworkHistoryExcluded && SNetworkPhysicsComponent && WheeledNetworkPhysicsComponent
-        && (!SNetworkSettings || !SNetworkSettings->IsRegistered())
-        && !SNetworkPhysicsComponent->IsRegistered() && !WheeledNetworkPhysicsComponent->IsRegistered()
-        && !SNetworkPhysicsComponent->GetStateHistory_External() && !SNetworkPhysicsComponent->GetInputHistory_External()
-        && !WheeledNetworkPhysicsComponent->GetStateHistory_External() && !WheeledNetworkPhysicsComponent->GetInputHistory_External();
+    return bLegacyNetworkHistoryExcludedWheeledDomainStorage() && SNetworkPhysicsComponentWheeledDomainStorage() && WheeledNetworkPhysicsComponentWheeledDomainStorage()
+        && (!SNetworkSettingsWheeledDomainStorage() || !SNetworkSettingsWheeledDomainStorage()->IsRegistered())
+        && !SNetworkPhysicsComponentWheeledDomainStorage()->IsRegistered() && !WheeledNetworkPhysicsComponentWheeledDomainStorage()->IsRegistered()
+        && !SNetworkPhysicsComponentWheeledDomainStorage()->GetStateHistory_External() && !SNetworkPhysicsComponentWheeledDomainStorage()->GetInputHistory_External()
+        && !WheeledNetworkPhysicsComponentWheeledDomainStorage()->GetStateHistory_External() && !WheeledNetworkPhysicsComponentWheeledDomainStorage()->GetInputHistory_External();
 }
 
 void USpeedWheeledComponent::InitNetwork()
 {
+    if(NetworkConstruction==ESpeedWheeledNetworkConstruction::IAmSpeedOnly)return;
 	static const FName SpeedNetSettingsName(TEXT("PC_SpeedNetSettingsName"));
-	SNetworkSettings = CreateDefaultSubobject<UNetworkPhysicsSettingsComponent, UNetworkPhysicsSettingsComponent>(SpeedNetSettingsName);
-	NetDataAsset = CreateDefaultSubobject<UNetworkPhysicsSettingsDataAsset, UNetworkPhysicsSettingsDataAsset>(TEXT("SpeedSettingsDataAsset"));
-	ConfigureWheeledSpeedNetworkPhysicsSettings(NetDataAsset);
-	SNetworkSettings->SettingsDataAsset = NetDataAsset;
-	SNetworkSettings->bAutoRegister = false;
+	SNetworkSettingsWheeledDomainStorage() = CreateDefaultSubobject<UNetworkPhysicsSettingsComponent, UNetworkPhysicsSettingsComponent>(SpeedNetSettingsName);
+	NetDataAssetWheeledDomainStorage() = CreateDefaultSubobject<UNetworkPhysicsSettingsDataAsset, UNetworkPhysicsSettingsDataAsset>(TEXT("SpeedSettingsDataAsset"));
+	ConfigureWheeledSpeedNetworkPhysicsSettings(NetDataAssetWheeledDomainStorage());
+	SNetworkSettingsWheeledDomainStorage()->SettingsDataAsset = NetDataAssetWheeledDomainStorage();
+	SNetworkSettingsWheeledDomainStorage()->bAutoRegister = false;
 
 	static const FName SpeedNetPCName(TEXT("PC_SpeedNetPCName"));
-	SNetworkPhysicsComponent = CreateDefaultSubobject<USafeNetworkPhysicsComponent, USafeNetworkPhysicsComponent>(SpeedNetPCName);
-	SNetworkPhysicsComponent->SetNetAddressable(); // Make DSO components net addressable
-	SNetworkPhysicsComponent->SetIsReplicated(true);
-	SNetworkPhysicsComponent->bAutoRegister = false;
+	SNetworkPhysicsComponentWheeledDomainStorage() = CreateDefaultSubobject<USafeNetworkPhysicsComponent, USafeNetworkPhysicsComponent>(SpeedNetPCName);
+	SNetworkPhysicsComponentWheeledDomainStorage()->SetNetAddressable(); // Make DSO components net addressable
+	SNetworkPhysicsComponentWheeledDomainStorage()->SetIsReplicated(true);
+	SNetworkPhysicsComponentWheeledDomainStorage()->bAutoRegister = false;
 
 	static const FName WheeledNetPCName(TEXT("PC_WheeledNetPCName"));
-	WheeledNetworkPhysicsComponent = CreateDefaultSubobject<USafeNetworkPhysicsComponent, USafeNetworkPhysicsComponent>(WheeledNetPCName);
-	WheeledNetworkPhysicsComponent->SetNetAddressable(); // Make DSO components net addressable
-	WheeledNetworkPhysicsComponent->SetIsReplicated(true);
-	WheeledNetworkPhysicsComponent->bAutoRegister = false;
+	WheeledNetworkPhysicsComponentWheeledDomainStorage() = CreateDefaultSubobject<USafeNetworkPhysicsComponent, USafeNetworkPhysicsComponent>(WheeledNetPCName);
+	WheeledNetworkPhysicsComponentWheeledDomainStorage()->SetNetAddressable(); // Make DSO components net addressable
+	WheeledNetworkPhysicsComponentWheeledDomainStorage()->SetIsReplicated(true);
+	WheeledNetworkPhysicsComponentWheeledDomainStorage()->bAutoRegister = false;
 
-	RecordedBaseFrames.Init(INDEX_NONE, SpeedConstants::RecordedHistorySize);
-	RecordedBaseFrames.SetNum(SpeedConstants::RecordedHistorySize);
-	RecordedBaseStates.SetNum(SpeedConstants::RecordedHistorySize);
-	RecordedWheeledStates.SetNum(SpeedConstants::RecordedHistorySize);
 }
 
 bool USpeedWheeledComponent::TryComputeWheelFrameNormalSteeringInputFraction(float& OutFraction) const
 {
-	const float FullFractionOverride = CVarIAmSpeedWheelFrameNormalInputFullFraction.GetValueOnAnyThread();
+	const float FullFractionOverride = Speed::RoadSettings::ReadOriginalOrLegacy<125>([](){ return CVarIAmSpeedWheelFrameNormalInputFullFraction.GetValueOnAnyThread(); });
 	if (!FMath::IsFinite(FullFractionOverride) || FullFractionOverride < 0.0f)
 		return false;
 
 	// Use the same handbrake phase as the wheel-angle law. The raw request also
 	// bypasses the option before its first smoothed handbrake update.
-	if (IsHandbrakingForWheelFriction() || WheelFrameHandbrakeValue > KINDA_SMALL_NUMBER)
+	if (IsHandbrakingForWheelFriction() || WheelFrameHandbrakeValueWheeledDomainStorage() > KINDA_SMALL_NUMBER)
 		return false;
 
 	const float Input = GetPhysSteeringInput();
@@ -5269,13 +6555,13 @@ bool USpeedWheeledComponent::TryComputeWheelFrameNormalSteeringInputFraction(flo
 
 bool USpeedWheeledComponent::TryProjectCanonicalWheelSupportPose()
 {
-	if (CVarIAmSpeedWheelFrameHandbrakeSupportProjectionGuard.GetValueOnAnyThread() != 0
-		&& bUseWheelFrameLateralFriction && !bUseLegacySteeringVelocityState
-		&& (IsHandbrakingForWheelFriction() || WheelFrameHandbrakeValue > KINDA_SMALL_NUMBER)
+	if (Speed::RoadSettings::ReadOriginalOrLegacy<121>([](){ return CVarIAmSpeedWheelFrameHandbrakeSupportProjectionGuard.GetValueOnAnyThread(); }) != 0
+		&& bUseWheelFrameLateralFrictionWheeledDomainStorage() && !bUseLegacySteeringVelocityStateWheeledDomainStorage()
+		&& (IsHandbrakingForWheelFriction() || WheelFrameHandbrakeValueWheeledDomainStorage() > KINDA_SMALL_NUMBER)
 		&& !CanPreserveCanonicalSupportNormalRotation())
 	{
 		const FVector SupportNormal = GetNormalFromWheels().GetSafeNormal();
-		const double NormalSpin = FVector::DotProduct(GetPhysAngularVelocity(), SupportNormal);
+		const double NormalSpin = FVector::DotProduct(Speed::NativeKinematics::FComponentRead::Of(*this).AngularVelocity(), SupportNormal);
 		if (!SupportNormal.IsNearlyZero() && NormalSpin != 0.0)
 		{
 			// The support point-fix must not repeatedly erase the small yaw that
@@ -5289,9 +6575,9 @@ bool USpeedWheeledComponent::TryProjectCanonicalWheelSupportPose()
 
 bool USpeedWheeledComponent::UsesRetainedHandbrakeDriveModel() const
 {
-	return bUseWheelFrameLateralFriction && !bUseLegacySteeringVelocityState
+	return bUseWheelFrameLateralFrictionWheeledDomainStorage() && !bUseLegacySteeringVelocityStateWheeledDomainStorage()
 		&& IsHandbrakingForWheelFriction()
-		&& CVarIAmSpeedWheelFrameHandbrakeDriveModel.GetValueOnAnyThread() != 0;
+		&& Speed::RoadSettings::ReadOriginalOrLegacy<115>([](){ return CVarIAmSpeedWheelFrameHandbrakeDriveModel.GetValueOnAnyThread(); }) != 0;
 }
 
 float USpeedWheeledComponent::ComputeFullHandbrakeGroundEngineAccel() const
@@ -5299,20 +6585,30 @@ float USpeedWheeledComponent::ComputeFullHandbrakeGroundEngineAccel() const
 	// The caller admits only four grounded wheels and raw retained-throttle HB.
 	// Keep the accepted virtual ComputeAccel paths byte-for-byte unchanged.
 	if (NumWheelsOnGround() != 4 || !UsesRetainedHandbrakeDriveModel()) return 0.0f;
-	const float AbsSpeed = FMath::Abs(GetPhysForwardSpeed());
-	const float DriveScale = EvaluateLinearFloatCurve(DriveSpeedAccelScaleCurve,
-		AbsSpeed, FMath::Clamp(1.0f - AbsSpeed / FMath::Max(MaxThrottleSpeed, 1.0f), 0.0f, 1.0f));
-	return ThrottleAccel * DriveScale;
+	const float AbsSpeed = FMath::Abs(Speed::NativeKinematics::FComponentRead::Of(*this).ForwardSpeed());
+	const float DriveScale = EvaluateLinearFloatCurve(DriveSpeedAccelScaleCurveWheeledDomainStorage(),
+		AbsSpeed, FMath::Clamp(1.0f - AbsSpeed / FMath::Max(MaxThrottleSpeedWheeledDomainStorage(), 1.0f), 0.0f, 1.0f));
+	return ThrottleAccelWheeledDomainStorage() * DriveScale;
 }
 
 void USpeedWheeledComponent::AppendReplayWheeledFields(Speed::Replay::FFieldWriter& W) const
 {
     // Wheeled derives from Chaos movement, independently of USpeedMovementComponent.
-    Speed::Replay::Fields::BasePhysics(W, BasePhysicsState);
-    Speed::Replay::Fields::BaseGame(W, BaseGameState);
-    W.Scalar(MinNbFramesBeforeCanMove);
-    W.Scalar(SinceCanMoveFrame);
-    Speed::Replay::Fields::WheeledGame(W, WheeledGameState);
-    Speed::Replay::Fields::WheeledPhysics(W, WheeledPhysicsState);
-    Speed::Replay::Fields::WheeledInput(W, WheeledPhysicalInput);
+    Speed::Replay::Fields::BasePhysics(W, BasePhysicsStateStorage());
+    Speed::Replay::Fields::BaseGame(W, BaseGameStateStorage());
+    W.Scalar(MinNbFramesBeforeCanMoveWheeledDomainStorage());
+    W.Scalar(SinceCanMoveFrameWheeledDomainStorage());
+    Speed::Replay::Fields::WheeledGame(W, WheeledGameStateStorage());
+    Speed::Replay::Fields::WheeledPhysics(W, WheeledPhysicsStateStorage());
+    Speed::Replay::Fields::WheeledInput(W, WheeledPhysicalInputStorage());
+}
+
+bool USpeedWheeledComponent::BindOriginalWheeledDomain(const std::shared_ptr<const Speed::NativeEpoch::IOriginalStorageRoute>& Route)
+{
+    if(!IsInGameThread()||!Route||OriginalWheeledDomain||!OriginalWheeledRoute.expired()||NetworkConstruction!=ESpeedWheeledNetworkConstruction::IAmSpeedOnly)return false;
+    OriginalWheeledDomain=std::make_shared<FOriginalWheeledDomain>();OriginalWheeledRoute=Route;
+    InitializeRecordedSlotsAtNativeBirth(OriginalWheeledDomain->RecordedBaseFrames,OriginalWheeledDomain->RecordedBaseStates,OriginalWheeledDomain->RecordedWheeledStates);
+    // Full native ctor/configuration/geometry setup is performed by the owner
+    // before registration. This allocation alone is not a boundary lease.
+    return true;
 }

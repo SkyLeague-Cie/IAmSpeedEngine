@@ -1,4 +1,5 @@
 #include "ISensorSweeper.h"
+#include "IAmSpeed/World/Simulation/Internal/BodyKinematicRead.h"
 #include "IAmSpeed/World/Analytic/AnalyticWorldQuery.h"
 #include "IAmSpeed/World/Analytic/StaticWorldQueryAudit.h"
 
@@ -14,7 +15,7 @@ bool ISensorSweeper::InternalSweep(UWorld* World, const FVector& Start, const FV
 		return false;
 	}
 
-    const Speed::FKinematicState& KS = GetKinematicState();
+    const Speed::FKinematicState& KS = Speed::NativeKinematics::FBodyRead::Sweeper(*this);
 	FHitResult Hit;
 	bool bHit = false;
 	Speed::Analytic::FWorldHit AnalyticHit;
@@ -43,7 +44,7 @@ bool ISensorSweeper::InternalSweep(UWorld* World, const FVector& Start, const FV
     if (bHit)
     {
 		OutHit = bUsedAnalyticAuthority
-			? SHitResult::FromAnalyticHit(AnalyticHit, delta, Hit.Component.Get())
+			? SHitResult::FromAnalyticHit(AnalyticHit, delta, Hit.Component)
 			: SHitResult::FromUnrealHit(Hit, delta);
 		OutHit.bBlockingHit = false;
     }

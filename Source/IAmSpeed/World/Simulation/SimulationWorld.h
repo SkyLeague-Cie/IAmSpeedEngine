@@ -10,6 +10,10 @@
 #include "IAmSpeed/SubBodies/Solid/SolidSubBody.h"
 
 class ISpeedComponent;
+class ASpeedPhysicsSimulation;
+class USpeedWorldSubsystem;
+struct FCanonicalFrameContext;
+namespace Speed::Netcode::Prediction { class FPrivateNativeOperation; }
 enum class ECanonicalFrameAbortReason : uint8;
 enum class ECanonicalPublicationResult : uint8 { Completed, ValidationFailed, PublicationFailed, CommitInvariantFailed };
 class USSubBody;
@@ -209,6 +213,10 @@ namespace Speed
 		int32 NumBodies() const { return Bodies.Num(); }
 
 	private:
+        friend class ::USpeedWorldSubsystem;
+        template<class TPublish> ECanonicalPublicationResult PublishCanonicalFrameBody(uint64 Frame,TPublish& Publish);
+        ECanonicalPublicationResult PublishNativeCanonicalFrame(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,
+            ASpeedPhysicsSimulation& Driver,const FCanonicalFrameContext& Context,const FSimulationSnapshot& Snapshot);
 #if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
         friend struct FBodyContactPairReadOnlyTestFixture;
 #endif

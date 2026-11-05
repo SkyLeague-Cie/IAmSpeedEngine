@@ -16,7 +16,14 @@ namespace Speed::Replay { class FFieldWriter; }
 #include "IAmSpeed/Input/SameFrameInputOwner.h"
 #include "IAmSpeed/Input/LegacyRemotePreSlew.h"
 
+#include "IAmSpeed/World/Simulation/NativeEpochStorageRoute.h"
 #include "SpeedWheeledComponent.generated.h"
+namespace Speed::Netcode::Prediction {class FPrivateRoadPhysicsWorld;class FPrivateNativeOperation;class FPrivateReferenceWheelBindingBirth;class FPrivateReferenceOwnerBirth;}
+namespace Speed::NativeKinematics {class FComponentRead;}
+class USpeedBranchWheeledComponent;
+
+// Explicit construction policy; never inferred from role, time or a packet.
+enum class ESpeedWheeledNetworkConstruction : uint8 { Legacy, IAmSpeedOnly };
 
 DECLARE_LOG_CATEGORY_EXTERN(WheelNetcodeLog, Log, All);
 DECLARE_LOG_CATEGORY_EXTERN(SpeedInputLog, Log, All);
@@ -48,10 +55,19 @@ public:
 #if !UE_BUILD_SHIPPING
 namespace Speed { struct FCanonicalForeignStateForTesting; }
 #endif
+namespace Speed::NativeKinematics { struct FCanonicalMassAppendDiagnostics; }
 UCLASS()
 class IAMSPEED_API USpeedWheeledComponent : public UChaosWheeledVehicleMovementComponent, public ISpeedWheeledComponent
 {
 	GENERATED_BODY()
+    // Ordinary binding family only; no operation, source/lifetime or restoration permission.
+    virtual void CheckOrdinaryComponentBindingEntry() const {}
+    virtual void CheckOrdinaryOwnerInitializationEntry() const {} // empty legacy/custom hook
+    virtual const FVector& PublicPhysCOMView() const { return BasePhysicsStateStorage().Kinematic.Location; }
+    virtual const FVector& PublicPhysLocalCOMView() const { return CenterOfMassWheeledDomainStorage(); }
+    friend class USpeedBranchWheeledComponent;
+    friend class Speed::Netcode::Prediction::FPrivateRoadPhysicsWorld;
+    friend class Speed::NativeKinematics::FComponentRead;
 #if WITH_DEV_AUTOMATION_TESTS
 	friend struct FLocalNormalCameraFixtureAccess;
 #endif
@@ -71,7 +87,7 @@ public:
 #endif
 #if !UE_BUILD_SHIPPING
     // Joined owner-lane diagnostics only; returns the actual applied input.
-    const FWheeledInputState& GetWheeledPhysicalInputForWitness() const { return WheeledPhysicalInput; }
+    const FWheeledInputState& GetWheeledPhysicalInputForWitness() const { return WheeledPhysicalInputStorage(); }
 #endif
 
 #if !UE_BUILD_SHIPPING
@@ -97,12 +113,12 @@ public:
 	bool ServiceInputRetirementAtBoundary() override;
 	// Transitional network input is forward-only. State restore cannot leave
 	// its separate filter running against a corrected/replayed component state.
-	bool AllowsExternalNetworkStateRestore() const { return !HasProducedInputAuthority() && !HasLegacyRemoteInputAuthority(); }
+	virtual bool AllowsExternalNetworkStateRestore() const { return !HasProducedInputAuthority() && !HasLegacyRemoteInputAuthority(); }
 protected:
 	// Shared arbitration for both native wire payloads. No live input mailbox.
 	bool ClaimLegacyRemoteInputAuthority();
-	bool HasLegacyRemoteInputAuthority() const { return bLegacyRemoteInputAuthority.load(std::memory_order_acquire); }
-	void RejectCanonicalInputFrame() { bInputFrameRejectedV2 = true; }
+	bool HasLegacyRemoteInputAuthority() const { return bLegacyRemoteInputAuthorityWheeledDomainStorage().load(std::memory_order_acquire); }
+	void RejectCanonicalInputFrame() { bInputFrameRejectedV2WheeledDomainStorage() = true; }
 public:
 	ASpeedCar* GetSpeedCarOwner() const;
 	/** Used to create any physics engine information for this component */
@@ -183,7 +199,7 @@ public:
 	void ApplyTestVelocity();
 
 	bool IsAffectedByGravity() const;
-	FVector GetNominalGravityAcceleration() const override { return bEnableGravity ? FVector(0, 0, GravityZ) : FVector::ZeroVector; }
+	FVector GetNominalGravityAcceleration() const override { return bEnableGravityWheeledDomainStorage() ? FVector(0, 0, GravityZWheeledDomainStorage()) : FVector::ZeroVector; }
 	void SetIsAffectedByGravity(bool value);
 	void EnableGravity();
 	bool HasAuthority() const;
@@ -212,7 +228,7 @@ public:
 	// Opt-in is lifetime scoped: detaching must not silently restore a legacy
 	// physical writer on the same component while cancellation is pending.
 	void JoinInputWorkerBeforeStorageDestruction();
-	bool HasProducedInputAuthority() const { return bProducedInputAuthority.load(std::memory_order_acquire); }
+	bool HasProducedInputAuthority() const { return bProducedInputAuthorityWheeledDomainStorage().load(std::memory_order_acquire); }
 	/** Opt-in generic camera input; SL keeps its independent legacy input adapter. */
 	void EnableGenericCameraInput(bool bEnabled);
 	bool SetHeldCameraBack(bool bBack);
@@ -252,6 +268,13 @@ public:
 	bool RightWheelsAreOnGround() const;
 	unsigned char NumWheelsOnGround() const;
 	const TArray<TObjectPtr<USWheelSubBody>>& GetWheelSubBodies() const override;
+    Speed::NativeObjectRead::TView<USWheelSubBody> ReadWheelSubBodiesForPhysics() const override
+    {return {WheelSubBodiesWheeledDomainStorage(),UsesOriginalWheeledDomain()};}
+    Speed::NativeObjectRead::TRead<UChaosVehicleWheel> ReadWheelConfigurationForPhysics(int32 Index) const
+    {return {WheelsWheeledDomainStorage()[Index],UsesOriginalWheeledDomain()};}
+    Speed::NativeObjectRead::TRead<UBoxSubBody> ReadHitboxForPhysics() const
+    {return {HitboxSubBodyWheeledDomainStorage(),UsesOriginalWheeledDomain()};}
+
 	// update wheel position, angular velocity etc. in Game Thread
 	virtual void UpdateWheelVisuals();
 	// recover wheel state from network replication
@@ -261,6 +284,41 @@ public:
 	void ResetWheelTransientStateForCurrentPose(bool bUseGroundContactGeometry = false);
 	float GetSuspensionOffset(int WheelIndex) override;
 
+protected:
+    // A selected physical network owner can keep startup closed independently
+    // of a product countdown. Legacy/offline components retain their own timer.
+    virtual bool IsInitialSynchronizationComplete() const { return true; }
+
+    // Native debug output can synchronously call arbitrary registered output
+    // devices. A specialized storage owner suspends its routing around that
+    // external call, after formatting immutable values from the physical cut.
+    virtual void* SuspendStorageRoutingForExternalObservation() const {return nullptr;}
+    virtual void ResumeStorageRoutingAfterExternalObservation(void*) const {}
+    class FScopedExternalObservationRouting
+    {
+        const USpeedWheeledComponent& Owner;
+        void* Token;
+    public:
+        explicit FScopedExternalObservationRouting(const USpeedWheeledComponent& In)
+            :Owner(In),Token(In.SuspendStorageRoutingForExternalObservation()){}
+        ~FScopedExternalObservationRouting(){Owner.ResumeStorageRoutingAfterExternalObservation(Token);}
+        FScopedExternalObservationRouting(const FScopedExternalObservationRouting&)=delete;
+        FScopedExternalObservationRouting& operator=(const FScopedExternalObservationRouting&)=delete;
+    };
+    // Legacy owns these fields directly. A private physical subtype may route
+    // its own native calls to separate storage; this is not a restore lease.
+    virtual SBaseGameState& BaseGameStateStorage() {return BaseGameState;}
+    virtual const SBaseGameState& BaseGameStateStorage() const {return BaseGameState;}
+    virtual FBasePhysicsState& BasePhysicsStateStorage() {return BasePhysicsState;}
+    virtual const FBasePhysicsState& BasePhysicsStateStorage() const {return BasePhysicsState;}
+    virtual FWheeledGameState& WheeledGameStateStorage() {return WheeledGameState;}
+    virtual const FWheeledGameState& WheeledGameStateStorage() const {return WheeledGameState;}
+    virtual FWheeledPhysicsState& WheeledPhysicsStateStorage() {return WheeledPhysicsState;}
+    virtual const FWheeledPhysicsState& WheeledPhysicsStateStorage() const {return WheeledPhysicsState;}
+    virtual FWheeledInputState& WheeledPhysicalInputStorage() {return WheeledPhysicalInput;}
+    virtual const FWheeledInputState& WheeledPhysicalInputStorage() const {return WheeledPhysicalInput;}
+
+public:
 	bool CanMove() const;
 	void RequestCanonicalSupportStartupInitialization()
 	{
@@ -296,7 +354,7 @@ public:
 	bool NeutralizeCanonicalInputAtBoundary() override;
 	bool InstallCanonicalInput(uint64 Frame,
 		std::shared_ptr<const Speed::Input::V2::FOwnerInputSnapshot> Snapshot) override;
-	const std::shared_ptr<const Speed::Input::V2::FOwnerInputSnapshot>& GetCanonicalInputSnapshot() const { return CanonicalInputSnapshot; }
+	const std::shared_ptr<const Speed::Input::V2::FOwnerInputSnapshot>& GetCanonicalInputSnapshot() const { return CanonicalInputSnapshotWheeledDomainStorage(); }
 	bool PrepareCanonicalInputs(const FCanonicalFrameContext& Context) override;
 	void PrepareCanonicalFrame(const FCanonicalFrameContext& Context) override;
 	// Set whether the movement is currently frozen (e.g. due to the game being paused)
@@ -326,6 +384,8 @@ private:
 	void HandleWheelTimers();
 	// End Timer methods
 protected:
+    USpeedWheeledComponent(const FObjectInitializer& ObjectInitializer,ESpeedWheeledNetworkConstruction Policy);
+    const ESpeedWheeledNetworkConstruction NetworkConstruction=ESpeedWheeledNetworkConstruction::Legacy;
 	virtual void InitChaosVehicle();
 	void InitNetwork();
 	void SetSubBodies(const TArray<USSubBody*>& NewSubBodies);
@@ -338,8 +398,8 @@ protected:
 	unsigned int NbFramesSinceCanMove() const;
 	// Get the current frame number for this component (e.g. to be used for network replication)
 	unsigned int GetCurrentFrame() const;
-	FVector GetAllowedAngularVelocity() const { return WheeledPhysicsState.AllowedAngularVelocity; }
-	void SetAllowedAngularVelocity(const FVector& NewAllowedAngularVelocity) { WheeledPhysicsState.AllowedAngularVelocity = NewAllowedAngularVelocity; }
+	FVector GetAllowedAngularVelocity() const { return WheeledPhysicsStateStorage().AllowedAngularVelocity; }
+	void SetAllowedAngularVelocity(const FVector& NewAllowedAngularVelocity) { WheeledPhysicsStateStorage().AllowedAngularVelocity = NewAllowedAngularVelocity; }
 
 	// Update Inputs
 	virtual void UpdateInputs();
@@ -357,7 +417,7 @@ protected:
 	virtual bool CanNeutralizeProducedInputStateAtBoundary() const { return true; }
 	// Owner-lane only; helpers do not certify an unknown derived adapter.
 	void AppendReplayWheeledFields(Speed::Replay::FFieldWriter& Writer) const;
-	bool IsProducedInputFrameOwned() const { return bProducedInputFrameOwned; }
+	bool IsProducedInputFrameOwned() const { return bProducedInputFrameOwnedWheeledDomainStorage(); }
 	// Vehicle presets may deterministically put an unchanged support manifold to
 	// sleep before frame forces are accumulated.
 	virtual void UpdateSupportForceSleepState() {}
@@ -366,9 +426,9 @@ protected:
 public:
 	// Legacy fixture admission flag; never writes physical values.
 	void SetTestInputOverrideEnabled(bool bEnabled);
-	bool IsTestInputOverrideEnabled() const { return bTestInputOverrideEnabled.load(std::memory_order_acquire); }
+	bool IsTestInputOverrideEnabled() const { return bTestInputOverrideEnabledWheeledDomainStorage().load(std::memory_order_acquire); }
 	// Configuration access for native deterministic vehicle profiles.
-	UBoxSubBody* GetHitboxSubBodyForConfiguration() const { return HitboxSubBody.Get(); }
+	UBoxSubBody* GetHitboxSubBodyForConfiguration() const { return ReadHitboxForPhysics().Get(); }
 
 protected:
 	// Apply here Gravity, air/ground drag, resting forces and other forces that shoukd be applied before gameplay
@@ -458,7 +518,7 @@ protected:
 	virtual void DampenAirAngularVelocity(const FVector& VelocityToDampen, const float& delta);
 	void SetDampenedAirAngularVelocity(const FVector& TargetAngularVelocity, const FVector& VelocityToSetNow, const float& delta);
 
-	const TObjectPtr<UBoxSubBody>& GetHitboxSubBody() const { return HitboxSubBody; }
+	const TObjectPtr<UBoxSubBody>& GetHitboxSubBody() const { return HitboxSubBodyWheeledDomainStorage(); }
 
 	/** Read current state for simulation */
 	void UpdateState(float DeltaTime) override;
@@ -785,16 +845,72 @@ private:
 	virtual TUniquePtr<Chaos::FSimpleWheeledVehicle> CreatePhysicsVehicle() override
 	{
 		// Make the Vehicle Simulation class that will be updated from the physics thread async callback
-		VehicleSimulationPT = MakeUnique<USpeedSimulation>();
+		VehicleSimulationPTWheeledDomainStorage() = MakeUnique<USpeedSimulation>();
 		VehicleSimulationPT->RigidHandle = nullptr;
-		static_cast<USpeedSimulation*>(VehicleSimulationPT.Get())->SpeedWheeledComponent = this;
-		SkySimulation = static_cast<USpeedSimulation*>(VehicleSimulationPT.Get());
+		static_cast<USpeedSimulation*>(VehicleSimulationPTWheeledDomainStorage().Get())->SpeedWheeledComponent = this;
+		SkySimulationWheeledDomainStorage() = static_cast<USpeedSimulation*>(VehicleSimulationPTWheeledDomainStorage().Get());
 
 		return UChaosVehicleMovementComponent::CreatePhysicsVehicle();
 	}
 
 	// Shared fixed-COM authoring rule for initial setup and BeginPlay.
 	void ResolveFixedCenterOfMassFromConfiguration();
+    // Shared value/body operation only. The public facade retains its original
+    // Engine tick/registration path; the private factory supplies real captured
+    // actor pose and explicitly registers its original bridge separately.
+    class FLegacyOwnerBirthAccess;class FNativeOwnerBirthAccess;class FReferenceOwnerBirthAccess;
+    friend class Speed::Netcode::Prediction::FPrivateReferenceOwnerBirth;
+    // Existing component authorization executes the unchanged root validator;
+    // this static hop requires no component lookup or live UObject.
+    static void RequireReferenceInitializerBirthRoot(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,
+        const Speed::Netcode::Prediction::FPrivateReferenceOwnerBirth& Proof);
+    void ValidateReferenceInitializerBody(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,
+        const Speed::Netcode::Prediction::FPrivateReferenceOwnerBirth& Proof,const USSubBody& Subject,ISpeedComponent* Parent);
+
+    struct FReferenceOwnerBirthObservation
+    {
+        uint32 BoundaryChecksReturned=0,TwoNullEntriesReturned=0,InitializersReturned=0;
+    };
+    template<class TAccess> void SetOwnerBody(TAccess& Storage,AActor* NewOwner);
+    void InitializeReferenceOwnerBirth(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,
+        const Speed::Netcode::Prediction::FPrivateReferenceOwnerBirth& Proof,AActor* ActualActor,
+        FReferenceOwnerBirthObservation* Observation=nullptr);
+    struct FNativeOwnerBirthObservation
+    {
+        enum class EMode : uint8 { CountOnly,StoredTensorFixtureAndAbort };
+        EMode Mode=EMode::CountOnly; // diagnostic choice only, never admission
+        uint32 InitializersReturned=0,InitialNullParents=0,Refusals=0;
+        bool AllRefusalsBeforeWrite=false,PositiveEntryReturned=false,PoseAndCOMMatch=false;
+        bool ClearKeepsCanonicalConfigurations=false,StoredTensorFixtureInstalled=false;
+        bool StoredChassisTensorMatch=false,StoredTensorDistinguished=false,ChildrenMatch=false;
+        bool WheelVelocityOrderDistinguished=false; // actual wheel matches its original FP order and differs from base-only oracle
+    };
+    template<class TAccess> void ResolveFixedCenterOfMassBody(TAccess& Storage);
+    template<class TAccess> void InitializeBoundSubBodiesForPhysicalOwnerBody(TAccess& Storage);
+    void InitializeBoundSubBodiesForPhysicalOwner();
+    void InitializeOriginalOwnerFromCapturedPose(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,
+        AActor* OriginalOwner,const FQuat& OriginalRotation,const FVector& OriginalLocation,
+        const TWeakObjectPtr<UBoxSubBody>& ActualHitboxBirth,
+        TConstArrayView<TWeakObjectPtr<USWheelSubBody>> ActualBodyBirths,
+        TConstArrayView<TWeakObjectPtr<UChaosVehicleWheel>> ActualConfigurationBirths,
+        FNativeOwnerBirthObservation* Observation=nullptr);
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+    friend class FIASLegacyFirstOwnerBirthTraversal;
+    bool ProbeNativeFirstOwnerBirthForDiagnostics(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,
+        AActor* ActualActor,const FQuat& Rotation,const FVector& Location,
+        const TWeakObjectPtr<UBoxSubBody>& HitboxBirth,TConstArrayView<TWeakObjectPtr<USWheelSubBody>> BodyBirths,
+        TConstArrayView<TWeakObjectPtr<UChaosVehicleWheel>> ConfigurationBirths,
+        TConstArrayView<TWeakObjectPtr<UChaosVehicleWheel>> ActualReferenceBirths,
+        USpeedWheeledComponent* ForeignComponent,AActor* ForeignActor,
+        const TWeakObjectPtr<UBoxSubBody>& ForeignHitbox,TConstArrayView<TWeakObjectPtr<USWheelSubBody>> ForeignBodyBirths,
+        TConstArrayView<TWeakObjectPtr<UChaosVehicleWheel>> ForeignConfigurationBirths,
+        USpeedSimulation* ForeignSimulation,const SKinematic& ForeignOriginalKinematic,FNativeOwnerBirthObservation& Out);
+    bool ProbeNativeFirstOwnerStepRefusalForDiagnostics(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,
+        AActor* ActualActor,const TWeakObjectPtr<UBoxSubBody>& HitboxBirth,
+        TConstArrayView<TWeakObjectPtr<USWheelSubBody>> BodyBirths,
+        TConstArrayView<TWeakObjectPtr<UChaosVehicleWheel>> ConfigurationBirths);
+#endif
+
 
 	void SetupSpeedSuspension(TUniquePtr<Chaos::FSimpleWheeledVehicle>& PVehicle);
 	// Rebind wheel sub-bodies whenever Chaos recreates the vehicle. The
@@ -802,9 +918,647 @@ private:
 	// across physics-state teardown/recreation.
 	void BindWheelSimulationPointers();
 	void BindWheelSimulationPointers(Chaos::FSimpleWheeledVehicle* PVehicle);
+    class FLegacyWheelBindingAccess;class FNativeWheelBindingAccess;class FReferenceWheelBindingAccess;
+    template<class TAccess> void BindWheelSimulationPointersBody(TAccess& Storage,Chaos::FSimpleWheeledVehicle* PVehicle);
+    void BindReferenceWheelSimulationPointersBirth(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,
+        const Speed::Netcode::Prediction::FPrivateReferenceWheelBindingBirth& Proof,
+        Chaos::FSimpleWheeledVehicle* RequestedVehicle,
+        TConstArrayView<TWeakObjectPtr<USWheelSubBody>> RequestedBodies,
+        TConstArrayView<TWeakObjectPtr<UChaosVehicleWheel>> RequestedConfigurations);
+    void BindNativeWheelSimulationPointersBirth(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,
+        Chaos::FSimpleWheeledVehicle* OriginalAllocation,
+        TConstArrayView<TWeakObjectPtr<USWheelSubBody>> ActualBodyBirths,
+        TConstArrayView<TWeakObjectPtr<UChaosVehicleWheel>> ActualConfigurationBirths);
+
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+    friend class FIASLegacyWheelSimulationBindings;
+    struct FNativeWheelBindingDiagnostics
+    {
+        uint32 Refusals=0,PositiveEntryReturns=0;
+        bool AllRefusalsBeforeWrite=false,PositiveValuesMatch=false,OverridePredicatesMatch=false;
+    };
+    bool ProbeReferenceWheelBindingsBirthForDiagnostics(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,
+        const Speed::Netcode::Prediction::FPrivateReferenceWheelBindingBirth& Proof,
+        USpeedWheeledComponent& ForeignComponent,USWheelSubBody* ForeignBody,
+        Chaos::FSimpleWheeledVehicle* ForeignVehicle,Chaos::FSimpleWheelSim* ForeignWheel,
+        Chaos::FSimpleSuspensionSim* ForeignSuspension,UChaosVehicleWheel* ForeignConfiguration,
+        FNativeWheelBindingDiagnostics& Out);
+    bool ProbeNativeWheelBindingsBirthForDiagnostics(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,
+        Chaos::FSimpleWheeledVehicle* OriginalAllocation,
+        TConstArrayView<TWeakObjectPtr<USWheelSubBody>> BodyBirths,
+        TConstArrayView<TWeakObjectPtr<UChaosVehicleWheel>> ConfigurationBirths,
+        USWheelSubBody* ForeignBody,ISpeedComponent* ForeignParent,
+        Chaos::FSimpleWheeledVehicle* ForeignVehicle,Chaos::FSimpleWheelSim* ForeignWheel,
+        Chaos::FSimpleSuspensionSim* ForeignSuspension,UChaosVehicleWheel* ForeignConfiguration,
+        FNativeWheelBindingDiagnostics& Out);
+    bool ProbeNativeWheelBindingStepRefusalForDiagnostics(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,
+        Chaos::FSimpleWheeledVehicle* OriginalAllocation,
+        TConstArrayView<TWeakObjectPtr<USWheelSubBody>> BodyBirths,
+        TConstArrayView<TWeakObjectPtr<UChaosVehicleWheel>> ConfigurationBirths,
+        TArray<Speed::NativeKinematics::FCanonicalMassAppendDiagnostics>& Observations);
+#endif
 	void ClearWheelSimulationPointers();
 	/** Latches game-thread driving inputs exactly once at a physics-frame boundary. */
 	bool ConsumeProducedWheeledInputs(uint64 CanonicalFrame);
+private:
+	struct FCompletedWheeledInput
+	{
+		FWheeledInputState Requested;
+		uint32 LocalFrame = 0;
+		int32 SinceCanMove = INDEX_NONE;
+	};	struct FPendingCameraInputCommand
+	{
+		int32 ActivationFrame = INDEX_NONE;
+		FSpeedCarCameraPhysicalInput Input;
+	};	using FLegacyWheeledIngress = Speed::Input::TLegacyRemotePreSlewIngress<FWheeledInputState>;
+	using FLegacyWheeledOwner = Speed::Input::TLegacyRemotePreSlewOwner<FWheeledInputState>;
+    class FLegacyInertiaAccess;class FNativeInertiaAccess;
+    template<class TAccess> static FMatrix ComputeWorldInvInertiaBody(TAccess& Storage);
+    static FMatrix ComputeNativeComponentInvInertia(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const ISpeedComponent& Component);
+    struct FOriginalWheeledDomain
+    {
+        bool bPublishWheelPresentation= false;
+        int32 CanonicalCameraYawAction= -1;
+        int32 CanonicalCameraPitchAction= -1;
+        TObjectPtr<UNetworkPhysicsSettingsDataAsset> NetDataAsset= nullptr;
+        float TimeBeforeCanMove= 0.2f;
+        float PhysMass= 1000.0f;
+        bool bEnableGravity= true;
+        float GravityZ= -980.0f;
+        float PhysMaxSpeed= 1e4;
+        float PhysMaxAngularSpeed= 4.f;
+        float PhysDamping= 0.0f;
+        FVector CenterOfMass= FVector::ZeroVector;
+        float MaxThrottleSpeed= 7000.0f;
+        FVector GroundFriction= FVector(510.0, 6120.0, 0.0);
+        float WheelContactNormalVelocityTimeConstant= 0.0075f;
+        float GroundAngularDamping= 5.0f;
+        float RollDragCoeff= 5.0f;
+        float PitchDragCoeff= 3.0f;
+        float YawDragCoeff= 2.0f;
+        float AirForwardThrottle= 0.0f;
+        float AirBackwardThrottle= 0.0f;
+        float ThrottleAccel= 2000.0f;
+        float SubSteeringAccel= 2000.0f;
+        float BrakeAccel= 4000.0f;
+        TArray<FVector2D> DriveSpeedAccelScaleCurve{};
+        bool bUseDriveModelLongitudinalFriction= true;
+        float ThrottleDeadzone= 0.001f;
+        float CoastingBrakeFactor= 0.0f;
+        float StoppingForwardSpeed= 25.0f;
+        float BrakingNoThrottleSpeedThreshold= 0.01f;
+        TArray<FVector2D> SteerAngleFromSpeedCurve{};
+        TArray<FVector2D> HandbrakeSteerAngleFromSpeedCurve{};
+        bool bUseWheelFrameLateralFriction= true;
+        bool bUseExplicitSteeringForce= false;
+        bool bUseLegacySteeringVelocityState= false;
+        float WheelFrameLateralFrictionScale= 1.0f;
+        float WheelFrameLateralResponseScale= 1.0f;
+        float WheelFrameFrontLateralResponseScale= 1.0f;
+        float WheelFrameRearLateralResponseScale= 1.0f;
+        float WheelFrameHandbrakeFrontLateralResponseScale= 1.0f;
+        float WheelFrameHandbrakeRearLateralResponseScale= 1.0f;
+        float WheelFrameHandbrakeReverseFrontLateralResponseScale= 0.0f;
+        float WheelFrameHandbrakeReverseRearLateralResponseScale= 0.0f;
+        float WheelFrameLateralImpulseTimeConstant= 0.037345f;
+        float WheelFrameZeroSteerLateralFrictionScale= 1.0f;
+        float WheelFrameUnsteeredAligningYawMaxRate= 0.0f;
+        float WheelFrameUnsteeredAligningYawFullSlipSpeed= 600.0f;
+        float WheelFrameUnsteeredAligningYawMinSlipSpeed= 0.0f;
+        float WheelFrameUnsteeredAligningYawTimeConstant= 0.025f;
+        float WheelFrameSteeringRearLateralFrictionScale= 1.0f;
+        bool bClampWheelFrameLateralImpulse= false;
+        float WheelFrameHandbrakeLateralImpulseScale= 1.0f;
+        TArray<FVector2D> HandbrakeLateralImpulseScaleCurve{};
+        float WheelFrameLongitudinalScrubScale= 0.0f;
+        float WheelFrameSteeringCurvatureScale= 1.0f;
+        float WheelFrameSteeringReferenceWheelbaseCm= 0.0f;
+        float WheelFrameLateralForwardLossScale= 1.0f;
+        TArray<FVector2D> LateralForwardLossScaleCurve{};
+        TArray<FVector2D> LateralForwardLossSlipScaleCurve{};
+        TArray<FVector2D> SteeringForwardLossSpeedScaleCurve{};
+        TArray<FVector2D> LateralFrictionScaleCurve{};
+        TArray<FVector2D> LongitudinalFrictionScaleCurve{};
+        TArray<FVector2D> NonAcceleratingFrictionScaleCurve{};
+        TArray<FVector2D> HandbrakeFrontLateralFrictionFactorCurve{};
+        TArray<FVector2D> HandbrakeRearLateralFrictionFactorCurve{};
+        TArray<FVector2D> HandbrakeFrontLateralFrictionSpeedScaleCurve{};
+        TArray<FVector2D> HandbrakeRearLateralFrictionSpeedScaleCurve{};
+        TArray<FVector2D> HandbrakeSteeringRearLateralFrictionScaleCurve{};
+        TArray<FVector2D> HandbrakeSteeringRearLateralFrictionSlipScaleCurve{};
+        TArray<FVector2D> HandbrakeLowSlipYawCorrectionScaleCurve{};
+        TArray<FVector2D> HandbrakeLongitudinalFrictionFactorCurve{};
+        float WheelFrameHandbrakeEntryDuration= 0.0f;
+        float WheelFrameHandbrakeEntryMinSpeed= 0.0f;
+        float WheelFrameHandbrakeEntryFullSpeed= 1400.0f;
+        float WheelFrameHandbrakeEntryMinSteering= 0.8f;
+        float WheelFrameHandbrakeEntryRearReleaseScale= 1.0f;
+        float WheelFrameHandbrakeRiseRate= 5.0f;
+        float WheelFrameHandbrakeFallRate= 2.0f;
+        float LateralFrictionSlipThreshold= 5.0f;
+        float WheelFrameHandbrakeValue= 0.0f;
+        float WheelFrameHandbrakeActiveTime= 0.0f;
+        int32 LastWheelFrameHandbrakeUpdateFrame= INDEX_NONE;
+        float PosStabilityMultiplier= 0.4f;
+        float VelStabilityMultiplier= 0.8f;
+        float RotStabilityMultiplier= 0.2f;
+        float AngVelStabilityMultiplier= 0.8f;
+        float MaxPosCorrectionPerSecond= 600.f;
+        float MaxVelCorrectionPerSecond= 3600.f;
+        float MaxAngVelCorrectionPerSecond= 9.f;
+        float MaxRotCorrectionPerSecond= 180.f;
+        float PosCorrDeadzone= 0.02f;
+        float VelCorrDeadzone= 0.02f;
+        float AngVelCorrDeadzone= 0.0002f;
+        float RotCorrDeadzone= 0.01f;
+        TObjectPtr<UBoxSubBody> HitboxSubBody= nullptr;
+        TArray< TObjectPtr<USWheelSubBody>> WheelSubBodies{};
+        TObjectPtr<UNetworkPhysicsSettingsComponent> SNetworkSettings= nullptr;
+        USpeedSimulation* SkySimulation= nullptr;
+        ASpeedCar* SpeedCarOwner= nullptr;
+        FCriticalSection FrameInputProducerMutex{};
+        std::shared_ptr<Speed::Input::FInputStream> FrameInputStream{};
+        std::shared_ptr<Speed::Input::FInputStream> ConsumedFrameInputStream{};
+        std::shared_ptr<Speed::Input::V2::FInputStream> FrameInputStreamV2{};
+        std::shared_ptr<Speed::Input::V2::FInputStream> ConsumedFrameInputStreamV2{};
+        std::optional<Speed::Input::V2::FReservationToken> InputReservationV2{};
+        std::optional<uint64> ReservedInputFrameV2{};
+        bool bInputFrameRejectedV2= false;
+        bool bResetProducedWheeledInputs= false;
+        bool bProducedInputFrameOwned= false;
+        std::atomic<bool> bProducedInputAuthority{false};
+        std::atomic<bool> bLegacyRemoteInputAuthority{false};
+        FCriticalSection LegacyWheeledIngressMutex{};
+        std::shared_ptr<FLegacyWheeledIngress> LegacyWheeledIngress{};
+        std::unique_ptr<FLegacyWheeledOwner> LegacyWheeledOwner{};
+        bool bLegacyWheeledRetired= false;
+        std::atomic<bool> bInputRetirementRequested{false};
+        std::atomic<bool> bInputRetirementCompleted{false};
+        bool bWheeledEndPlayTeardown= false;
+        bool bSpeedWorldAdapterRetiredForTeardown= false;
+        bool bResumeAfterPhysicsRecreation= false;
+        bool bOwnedRecreationBoundary= false;
+        TWeakObjectPtr<ASpeedPhysicsSimulation> RecreationDriver{};
+        TOptional<uint64> PreparedCanonicalInputFrame{};
+        std::shared_ptr<const Speed::Input::V2::FOwnerInputSnapshot> CanonicalInputSnapshot{};
+        bool bCanonicalInputPending= false;
+        mutable std::shared_ptr<const FCompletedWheeledInput> PreparedWheeledNetworkInput{};
+        Speed::Concurrency::TAtomicSharedPtr<const FCompletedWheeledInput> PublishedWheeledNetworkInput{};
+        std::atomic<bool> bGenericCameraInputEnabled{false};
+        std::atomic<uint32> PendingCameraInput{1};
+        mutable FCriticalSection PendingCameraInputMutex{};
+        mutable TArray<FPendingCameraInputCommand> PendingCameraInputCommands{};
+        mutable int32 LastCameraCaptureHistoryFrame= INDEX_NONE;
+        mutable int32 LastCameraCaptureActivationFrame= INDEX_NONE;
+        mutable FSpeedCarCameraPhysicalInput LastCapturedCameraInput{};
+#if WITH_DEV_AUTOMATION_TESTS
+        mutable uint64 CameraMailboxReadCount= 0;
+#endif
+#if WITH_DEV_AUTOMATION_TESTS
+        uint64 CameraInputApplyCount= 0;
+#endif
+        FMatrix CarLocalInvI= FMatrix::Identity;
+        TArray<int32> RecordedBaseFrames{};
+        TArray<FBasePhysicsState> RecordedBaseStates{};
+        TArray<FWheeledPhysicsState> RecordedWheeledStates{};
+        float EngineFPS= 120.0;
+        uint16 MinNbFramesBeforeCanMove= 0;
+        TArray<USSubBody*> SubBodies{};
+        TArray<USSubBody*> ExtSubBodies{};
+        TArray<SWheelGroundContact> PendingWheelContacts{};
+        bool bLegacyNetworkHistoryExcluded= false;
+        TObjectPtr<UNetworkPhysicsComponent> SNetworkPhysicsComponent= nullptr;
+        TObjectPtr<UNetworkPhysicsComponent> WheeledNetworkPhysicsComponent= nullptr;
+        int32 NetCorr_LastServerFrame= INDEX_NONE;
+        int32 NetCorr_LastLocalFrame= INDEX_NONE;
+        int32 NetCorr_BaseNumPredictedFrames= 1;
+        bool bNetCorrHasTarget= false;
+        int32 NetCorrTickCount= 0;
+        FNetworkBaseSpeedState NetCorrTarget{};
+        FNetCorrAccum NetCorrAccum{};
+        FVector NetCorr_LastContactN= FVector::UpVector;
+        uint8 NetCorr_StableNFrames= 0;
+        int32 SinceCanMoveFrame= INDEX_NONE;
+        bool bCanonicalSupportStartupInitializationRequested= false;
+        bool bCanonicalSupportStartupPoseConfirmed= false;
+        bool bSimTimelineWasCanMove= false;
+        bool bSimTimelineWasGrounded= false;
+        bool bSimTimelineHasGroundState= false;
+        std::atomic<bool> bTestInputOverrideEnabled{false};
+#if !UE_BUILD_SHIPPING
+        int TurnStartFrame= INDEX_NONE;
+#endif
+#if !UE_BUILD_SHIPPING
+        int LastTurnSummaryFrame= INDEX_NONE;
+#endif
+        decltype(UChaosWheeledVehicleMovementComponent::VehicleSimulationPT) VehicleSimulationPT{};
+        decltype(UChaosWheeledVehicleMovementComponent::Wheels) Wheels{};
+        decltype(UChaosWheeledVehicleMovementComponent::WheelSetups) WheelSetups{};
+        decltype(UChaosWheeledVehicleMovementComponent::CenterOfMassOverride) CenterOfMassOverride{};
+        decltype(UChaosWheeledVehicleMovementComponent::bEnableCenterOfMassOverride) bEnableCenterOfMassOverride{};
+        decltype(UChaosWheeledVehicleMovementComponent::bThrottleAsBrake) bThrottleAsBrake{};
+        decltype(UChaosWheeledVehicleMovementComponent::bSuspensionEnabled) bSuspensionEnabled{};
+        decltype(UChaosWheeledVehicleMovementComponent::bWheelFrictionEnabled) bWheelFrictionEnabled{};
+        decltype(UChaosWheeledVehicleMovementComponent::ChassisHeight) ChassisHeight{};
+        decltype(UChaosWheeledVehicleMovementComponent::DragCoefficient) DragCoefficient{};
+        decltype(UChaosWheeledVehicleMovementComponent::EngineSetup) EngineSetup{};
+        decltype(UChaosWheeledVehicleMovementComponent::ThrottleInputRate) ThrottleInputRate{};
+        decltype(UChaosWheeledVehicleMovementComponent::TransmissionSetup) TransmissionSetup{};
+        decltype(UChaosWheeledVehicleMovementComponent::DifferentialSetup) DifferentialSetup{};
+        decltype(UChaosWheeledVehicleMovementComponent::bMechanicalSimEnabled) bMechanicalSimEnabled{};
+        decltype(UChaosWheeledVehicleMovementComponent::SteeringInputRate) SteeringInputRate{};
+        decltype(UChaosWheeledVehicleMovementComponent::SteeringSetup) SteeringSetup{};
+    };
+    std::shared_ptr<FOriginalWheeledDomain> OriginalWheeledDomain;
+    std::weak_ptr<const Speed::NativeEpoch::IOriginalStorageRoute> OriginalWheeledRoute;
+    bool UsesOriginalWheeledDomain() const
+    {
+        if(!IsInGameThread())return false;
+        const auto Route=OriginalWheeledRoute.lock();
+        return OriginalWheeledDomain&&Route&&Route->SelectsOriginalStorage();
+    }
+    bool BindOriginalWheeledDomain(const std::shared_ptr<const Speed::NativeEpoch::IOriginalStorageRoute>& Route);
+protected:
+    // Presence of the actual legacy Engine GameMode field, NOT IAS server role.
+    // Only an original native owner with a real readonly field binding can
+    // supply this. Unknown original profiles refuse in the default method.
+    virtual bool ReadOriginalLegacyGameModePresence() const;
+    bool& bPublishWheelPresentationWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->bPublishWheelPresentation:bPublishWheelPresentation;}
+    bool const& bPublishWheelPresentationWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->bPublishWheelPresentation:bPublishWheelPresentation;}
+    int32& CanonicalCameraYawActionWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->CanonicalCameraYawAction:CanonicalCameraYawAction;}
+    int32 const& CanonicalCameraYawActionWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->CanonicalCameraYawAction:CanonicalCameraYawAction;}
+    int32& CanonicalCameraPitchActionWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->CanonicalCameraPitchAction:CanonicalCameraPitchAction;}
+    int32 const& CanonicalCameraPitchActionWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->CanonicalCameraPitchAction:CanonicalCameraPitchAction;}
+    TObjectPtr<UNetworkPhysicsSettingsDataAsset>& NetDataAssetWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->NetDataAsset:NetDataAsset;}
+    TObjectPtr<UNetworkPhysicsSettingsDataAsset> const& NetDataAssetWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->NetDataAsset:NetDataAsset;}
+    float& TimeBeforeCanMoveWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->TimeBeforeCanMove:TimeBeforeCanMove;}
+    float const& TimeBeforeCanMoveWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->TimeBeforeCanMove:TimeBeforeCanMove;}
+    float& PhysMassWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->PhysMass:PhysMass;}
+    float const& PhysMassWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->PhysMass:PhysMass;}
+    bool& bEnableGravityWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->bEnableGravity:bEnableGravity;}
+    bool const& bEnableGravityWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->bEnableGravity:bEnableGravity;}
+    float& GravityZWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->GravityZ:GravityZ;}
+    float const& GravityZWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->GravityZ:GravityZ;}
+    float& PhysMaxSpeedWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->PhysMaxSpeed:PhysMaxSpeed;}
+    float const& PhysMaxSpeedWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->PhysMaxSpeed:PhysMaxSpeed;}
+    float& PhysMaxAngularSpeedWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->PhysMaxAngularSpeed:PhysMaxAngularSpeed;}
+    float const& PhysMaxAngularSpeedWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->PhysMaxAngularSpeed:PhysMaxAngularSpeed;}
+    float& PhysDampingWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->PhysDamping:PhysDamping;}
+    float const& PhysDampingWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->PhysDamping:PhysDamping;}
+    FVector& CenterOfMassWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->CenterOfMass:CenterOfMass;}
+    FVector const& CenterOfMassWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->CenterOfMass:CenterOfMass;}
+    float& MaxThrottleSpeedWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->MaxThrottleSpeed:MaxThrottleSpeed;}
+    float const& MaxThrottleSpeedWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->MaxThrottleSpeed:MaxThrottleSpeed;}
+    FVector& GroundFrictionWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->GroundFriction:GroundFriction;}
+    FVector const& GroundFrictionWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->GroundFriction:GroundFriction;}
+    float& WheelContactNormalVelocityTimeConstantWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->WheelContactNormalVelocityTimeConstant:WheelContactNormalVelocityTimeConstant;}
+    float const& WheelContactNormalVelocityTimeConstantWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->WheelContactNormalVelocityTimeConstant:WheelContactNormalVelocityTimeConstant;}
+    float& GroundAngularDampingWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->GroundAngularDamping:GroundAngularDamping;}
+    float const& GroundAngularDampingWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->GroundAngularDamping:GroundAngularDamping;}
+    float& RollDragCoeffWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->RollDragCoeff:RollDragCoeff;}
+    float const& RollDragCoeffWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->RollDragCoeff:RollDragCoeff;}
+    float& PitchDragCoeffWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->PitchDragCoeff:PitchDragCoeff;}
+    float const& PitchDragCoeffWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->PitchDragCoeff:PitchDragCoeff;}
+    float& YawDragCoeffWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->YawDragCoeff:YawDragCoeff;}
+    float const& YawDragCoeffWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->YawDragCoeff:YawDragCoeff;}
+    float& AirForwardThrottleWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->AirForwardThrottle:AirForwardThrottle;}
+    float const& AirForwardThrottleWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->AirForwardThrottle:AirForwardThrottle;}
+    float& AirBackwardThrottleWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->AirBackwardThrottle:AirBackwardThrottle;}
+    float const& AirBackwardThrottleWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->AirBackwardThrottle:AirBackwardThrottle;}
+    float& ThrottleAccelWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->ThrottleAccel:ThrottleAccel;}
+    float const& ThrottleAccelWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->ThrottleAccel:ThrottleAccel;}
+    float& SubSteeringAccelWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->SubSteeringAccel:SubSteeringAccel;}
+    float const& SubSteeringAccelWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->SubSteeringAccel:SubSteeringAccel;}
+    float& BrakeAccelWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->BrakeAccel:BrakeAccel;}
+    float const& BrakeAccelWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->BrakeAccel:BrakeAccel;}
+    TArray<FVector2D>& DriveSpeedAccelScaleCurveWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->DriveSpeedAccelScaleCurve:DriveSpeedAccelScaleCurve;}
+    TArray<FVector2D> const& DriveSpeedAccelScaleCurveWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->DriveSpeedAccelScaleCurve:DriveSpeedAccelScaleCurve;}
+    bool& bUseDriveModelLongitudinalFrictionWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->bUseDriveModelLongitudinalFriction:bUseDriveModelLongitudinalFriction;}
+    bool const& bUseDriveModelLongitudinalFrictionWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->bUseDriveModelLongitudinalFriction:bUseDriveModelLongitudinalFriction;}
+    float& ThrottleDeadzoneWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->ThrottleDeadzone:ThrottleDeadzone;}
+    float const& ThrottleDeadzoneWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->ThrottleDeadzone:ThrottleDeadzone;}
+    float& CoastingBrakeFactorWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->CoastingBrakeFactor:CoastingBrakeFactor;}
+    float const& CoastingBrakeFactorWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->CoastingBrakeFactor:CoastingBrakeFactor;}
+    float& StoppingForwardSpeedWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->StoppingForwardSpeed:StoppingForwardSpeed;}
+    float const& StoppingForwardSpeedWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->StoppingForwardSpeed:StoppingForwardSpeed;}
+    float& BrakingNoThrottleSpeedThresholdWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->BrakingNoThrottleSpeedThreshold:BrakingNoThrottleSpeedThreshold;}
+    float const& BrakingNoThrottleSpeedThresholdWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->BrakingNoThrottleSpeedThreshold:BrakingNoThrottleSpeedThreshold;}
+    TArray<FVector2D>& SteerAngleFromSpeedCurveWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->SteerAngleFromSpeedCurve:SteerAngleFromSpeedCurve;}
+    TArray<FVector2D> const& SteerAngleFromSpeedCurveWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->SteerAngleFromSpeedCurve:SteerAngleFromSpeedCurve;}
+    TArray<FVector2D>& HandbrakeSteerAngleFromSpeedCurveWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->HandbrakeSteerAngleFromSpeedCurve:HandbrakeSteerAngleFromSpeedCurve;}
+    TArray<FVector2D> const& HandbrakeSteerAngleFromSpeedCurveWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->HandbrakeSteerAngleFromSpeedCurve:HandbrakeSteerAngleFromSpeedCurve;}
+    bool& bUseWheelFrameLateralFrictionWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->bUseWheelFrameLateralFriction:bUseWheelFrameLateralFriction;}
+    bool const& bUseWheelFrameLateralFrictionWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->bUseWheelFrameLateralFriction:bUseWheelFrameLateralFriction;}
+    bool& bUseExplicitSteeringForceWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->bUseExplicitSteeringForce:bUseExplicitSteeringForce;}
+    bool const& bUseExplicitSteeringForceWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->bUseExplicitSteeringForce:bUseExplicitSteeringForce;}
+    bool& bUseLegacySteeringVelocityStateWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->bUseLegacySteeringVelocityState:bUseLegacySteeringVelocityState;}
+    bool const& bUseLegacySteeringVelocityStateWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->bUseLegacySteeringVelocityState:bUseLegacySteeringVelocityState;}
+    float& WheelFrameLateralFrictionScaleWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->WheelFrameLateralFrictionScale:WheelFrameLateralFrictionScale;}
+    float const& WheelFrameLateralFrictionScaleWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->WheelFrameLateralFrictionScale:WheelFrameLateralFrictionScale;}
+    float& WheelFrameLateralResponseScaleWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->WheelFrameLateralResponseScale:WheelFrameLateralResponseScale;}
+    float const& WheelFrameLateralResponseScaleWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->WheelFrameLateralResponseScale:WheelFrameLateralResponseScale;}
+    float& WheelFrameFrontLateralResponseScaleWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->WheelFrameFrontLateralResponseScale:WheelFrameFrontLateralResponseScale;}
+    float const& WheelFrameFrontLateralResponseScaleWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->WheelFrameFrontLateralResponseScale:WheelFrameFrontLateralResponseScale;}
+    float& WheelFrameRearLateralResponseScaleWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->WheelFrameRearLateralResponseScale:WheelFrameRearLateralResponseScale;}
+    float const& WheelFrameRearLateralResponseScaleWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->WheelFrameRearLateralResponseScale:WheelFrameRearLateralResponseScale;}
+    float& WheelFrameHandbrakeFrontLateralResponseScaleWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->WheelFrameHandbrakeFrontLateralResponseScale:WheelFrameHandbrakeFrontLateralResponseScale;}
+    float const& WheelFrameHandbrakeFrontLateralResponseScaleWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->WheelFrameHandbrakeFrontLateralResponseScale:WheelFrameHandbrakeFrontLateralResponseScale;}
+    float& WheelFrameHandbrakeRearLateralResponseScaleWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->WheelFrameHandbrakeRearLateralResponseScale:WheelFrameHandbrakeRearLateralResponseScale;}
+    float const& WheelFrameHandbrakeRearLateralResponseScaleWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->WheelFrameHandbrakeRearLateralResponseScale:WheelFrameHandbrakeRearLateralResponseScale;}
+    float& WheelFrameHandbrakeReverseFrontLateralResponseScaleWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->WheelFrameHandbrakeReverseFrontLateralResponseScale:WheelFrameHandbrakeReverseFrontLateralResponseScale;}
+    float const& WheelFrameHandbrakeReverseFrontLateralResponseScaleWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->WheelFrameHandbrakeReverseFrontLateralResponseScale:WheelFrameHandbrakeReverseFrontLateralResponseScale;}
+    float& WheelFrameHandbrakeReverseRearLateralResponseScaleWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->WheelFrameHandbrakeReverseRearLateralResponseScale:WheelFrameHandbrakeReverseRearLateralResponseScale;}
+    float const& WheelFrameHandbrakeReverseRearLateralResponseScaleWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->WheelFrameHandbrakeReverseRearLateralResponseScale:WheelFrameHandbrakeReverseRearLateralResponseScale;}
+    float& WheelFrameLateralImpulseTimeConstantWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->WheelFrameLateralImpulseTimeConstant:WheelFrameLateralImpulseTimeConstant;}
+    float const& WheelFrameLateralImpulseTimeConstantWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->WheelFrameLateralImpulseTimeConstant:WheelFrameLateralImpulseTimeConstant;}
+    float& WheelFrameZeroSteerLateralFrictionScaleWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->WheelFrameZeroSteerLateralFrictionScale:WheelFrameZeroSteerLateralFrictionScale;}
+    float const& WheelFrameZeroSteerLateralFrictionScaleWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->WheelFrameZeroSteerLateralFrictionScale:WheelFrameZeroSteerLateralFrictionScale;}
+    float& WheelFrameUnsteeredAligningYawMaxRateWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->WheelFrameUnsteeredAligningYawMaxRate:WheelFrameUnsteeredAligningYawMaxRate;}
+    float const& WheelFrameUnsteeredAligningYawMaxRateWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->WheelFrameUnsteeredAligningYawMaxRate:WheelFrameUnsteeredAligningYawMaxRate;}
+    float& WheelFrameUnsteeredAligningYawFullSlipSpeedWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->WheelFrameUnsteeredAligningYawFullSlipSpeed:WheelFrameUnsteeredAligningYawFullSlipSpeed;}
+    float const& WheelFrameUnsteeredAligningYawFullSlipSpeedWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->WheelFrameUnsteeredAligningYawFullSlipSpeed:WheelFrameUnsteeredAligningYawFullSlipSpeed;}
+    float& WheelFrameUnsteeredAligningYawMinSlipSpeedWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->WheelFrameUnsteeredAligningYawMinSlipSpeed:WheelFrameUnsteeredAligningYawMinSlipSpeed;}
+    float const& WheelFrameUnsteeredAligningYawMinSlipSpeedWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->WheelFrameUnsteeredAligningYawMinSlipSpeed:WheelFrameUnsteeredAligningYawMinSlipSpeed;}
+    float& WheelFrameUnsteeredAligningYawTimeConstantWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->WheelFrameUnsteeredAligningYawTimeConstant:WheelFrameUnsteeredAligningYawTimeConstant;}
+    float const& WheelFrameUnsteeredAligningYawTimeConstantWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->WheelFrameUnsteeredAligningYawTimeConstant:WheelFrameUnsteeredAligningYawTimeConstant;}
+    float& WheelFrameSteeringRearLateralFrictionScaleWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->WheelFrameSteeringRearLateralFrictionScale:WheelFrameSteeringRearLateralFrictionScale;}
+    float const& WheelFrameSteeringRearLateralFrictionScaleWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->WheelFrameSteeringRearLateralFrictionScale:WheelFrameSteeringRearLateralFrictionScale;}
+    bool& bClampWheelFrameLateralImpulseWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->bClampWheelFrameLateralImpulse:bClampWheelFrameLateralImpulse;}
+    bool const& bClampWheelFrameLateralImpulseWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->bClampWheelFrameLateralImpulse:bClampWheelFrameLateralImpulse;}
+    float& WheelFrameHandbrakeLateralImpulseScaleWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->WheelFrameHandbrakeLateralImpulseScale:WheelFrameHandbrakeLateralImpulseScale;}
+    float const& WheelFrameHandbrakeLateralImpulseScaleWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->WheelFrameHandbrakeLateralImpulseScale:WheelFrameHandbrakeLateralImpulseScale;}
+    TArray<FVector2D>& HandbrakeLateralImpulseScaleCurveWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->HandbrakeLateralImpulseScaleCurve:HandbrakeLateralImpulseScaleCurve;}
+    TArray<FVector2D> const& HandbrakeLateralImpulseScaleCurveWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->HandbrakeLateralImpulseScaleCurve:HandbrakeLateralImpulseScaleCurve;}
+    float& WheelFrameLongitudinalScrubScaleWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->WheelFrameLongitudinalScrubScale:WheelFrameLongitudinalScrubScale;}
+    float const& WheelFrameLongitudinalScrubScaleWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->WheelFrameLongitudinalScrubScale:WheelFrameLongitudinalScrubScale;}
+    float& WheelFrameSteeringCurvatureScaleWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->WheelFrameSteeringCurvatureScale:WheelFrameSteeringCurvatureScale;}
+    float const& WheelFrameSteeringCurvatureScaleWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->WheelFrameSteeringCurvatureScale:WheelFrameSteeringCurvatureScale;}
+    float& WheelFrameSteeringReferenceWheelbaseCmWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->WheelFrameSteeringReferenceWheelbaseCm:WheelFrameSteeringReferenceWheelbaseCm;}
+    float const& WheelFrameSteeringReferenceWheelbaseCmWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->WheelFrameSteeringReferenceWheelbaseCm:WheelFrameSteeringReferenceWheelbaseCm;}
+    float& WheelFrameLateralForwardLossScaleWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->WheelFrameLateralForwardLossScale:WheelFrameLateralForwardLossScale;}
+    float const& WheelFrameLateralForwardLossScaleWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->WheelFrameLateralForwardLossScale:WheelFrameLateralForwardLossScale;}
+    TArray<FVector2D>& LateralForwardLossScaleCurveWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->LateralForwardLossScaleCurve:LateralForwardLossScaleCurve;}
+    TArray<FVector2D> const& LateralForwardLossScaleCurveWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->LateralForwardLossScaleCurve:LateralForwardLossScaleCurve;}
+    TArray<FVector2D>& LateralForwardLossSlipScaleCurveWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->LateralForwardLossSlipScaleCurve:LateralForwardLossSlipScaleCurve;}
+    TArray<FVector2D> const& LateralForwardLossSlipScaleCurveWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->LateralForwardLossSlipScaleCurve:LateralForwardLossSlipScaleCurve;}
+    TArray<FVector2D>& SteeringForwardLossSpeedScaleCurveWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->SteeringForwardLossSpeedScaleCurve:SteeringForwardLossSpeedScaleCurve;}
+    TArray<FVector2D> const& SteeringForwardLossSpeedScaleCurveWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->SteeringForwardLossSpeedScaleCurve:SteeringForwardLossSpeedScaleCurve;}
+    TArray<FVector2D>& LateralFrictionScaleCurveWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->LateralFrictionScaleCurve:LateralFrictionScaleCurve;}
+    TArray<FVector2D> const& LateralFrictionScaleCurveWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->LateralFrictionScaleCurve:LateralFrictionScaleCurve;}
+    TArray<FVector2D>& LongitudinalFrictionScaleCurveWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->LongitudinalFrictionScaleCurve:LongitudinalFrictionScaleCurve;}
+    TArray<FVector2D> const& LongitudinalFrictionScaleCurveWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->LongitudinalFrictionScaleCurve:LongitudinalFrictionScaleCurve;}
+    TArray<FVector2D>& NonAcceleratingFrictionScaleCurveWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->NonAcceleratingFrictionScaleCurve:NonAcceleratingFrictionScaleCurve;}
+    TArray<FVector2D> const& NonAcceleratingFrictionScaleCurveWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->NonAcceleratingFrictionScaleCurve:NonAcceleratingFrictionScaleCurve;}
+    TArray<FVector2D>& HandbrakeFrontLateralFrictionFactorCurveWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->HandbrakeFrontLateralFrictionFactorCurve:HandbrakeFrontLateralFrictionFactorCurve;}
+    TArray<FVector2D> const& HandbrakeFrontLateralFrictionFactorCurveWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->HandbrakeFrontLateralFrictionFactorCurve:HandbrakeFrontLateralFrictionFactorCurve;}
+    TArray<FVector2D>& HandbrakeRearLateralFrictionFactorCurveWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->HandbrakeRearLateralFrictionFactorCurve:HandbrakeRearLateralFrictionFactorCurve;}
+    TArray<FVector2D> const& HandbrakeRearLateralFrictionFactorCurveWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->HandbrakeRearLateralFrictionFactorCurve:HandbrakeRearLateralFrictionFactorCurve;}
+    TArray<FVector2D>& HandbrakeFrontLateralFrictionSpeedScaleCurveWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->HandbrakeFrontLateralFrictionSpeedScaleCurve:HandbrakeFrontLateralFrictionSpeedScaleCurve;}
+    TArray<FVector2D> const& HandbrakeFrontLateralFrictionSpeedScaleCurveWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->HandbrakeFrontLateralFrictionSpeedScaleCurve:HandbrakeFrontLateralFrictionSpeedScaleCurve;}
+    TArray<FVector2D>& HandbrakeRearLateralFrictionSpeedScaleCurveWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->HandbrakeRearLateralFrictionSpeedScaleCurve:HandbrakeRearLateralFrictionSpeedScaleCurve;}
+    TArray<FVector2D> const& HandbrakeRearLateralFrictionSpeedScaleCurveWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->HandbrakeRearLateralFrictionSpeedScaleCurve:HandbrakeRearLateralFrictionSpeedScaleCurve;}
+    TArray<FVector2D>& HandbrakeSteeringRearLateralFrictionScaleCurveWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->HandbrakeSteeringRearLateralFrictionScaleCurve:HandbrakeSteeringRearLateralFrictionScaleCurve;}
+    TArray<FVector2D> const& HandbrakeSteeringRearLateralFrictionScaleCurveWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->HandbrakeSteeringRearLateralFrictionScaleCurve:HandbrakeSteeringRearLateralFrictionScaleCurve;}
+    TArray<FVector2D>& HandbrakeSteeringRearLateralFrictionSlipScaleCurveWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->HandbrakeSteeringRearLateralFrictionSlipScaleCurve:HandbrakeSteeringRearLateralFrictionSlipScaleCurve;}
+    TArray<FVector2D> const& HandbrakeSteeringRearLateralFrictionSlipScaleCurveWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->HandbrakeSteeringRearLateralFrictionSlipScaleCurve:HandbrakeSteeringRearLateralFrictionSlipScaleCurve;}
+    TArray<FVector2D>& HandbrakeLowSlipYawCorrectionScaleCurveWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->HandbrakeLowSlipYawCorrectionScaleCurve:HandbrakeLowSlipYawCorrectionScaleCurve;}
+    TArray<FVector2D> const& HandbrakeLowSlipYawCorrectionScaleCurveWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->HandbrakeLowSlipYawCorrectionScaleCurve:HandbrakeLowSlipYawCorrectionScaleCurve;}
+    TArray<FVector2D>& HandbrakeLongitudinalFrictionFactorCurveWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->HandbrakeLongitudinalFrictionFactorCurve:HandbrakeLongitudinalFrictionFactorCurve;}
+    TArray<FVector2D> const& HandbrakeLongitudinalFrictionFactorCurveWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->HandbrakeLongitudinalFrictionFactorCurve:HandbrakeLongitudinalFrictionFactorCurve;}
+    float& WheelFrameHandbrakeEntryDurationWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->WheelFrameHandbrakeEntryDuration:WheelFrameHandbrakeEntryDuration;}
+    float const& WheelFrameHandbrakeEntryDurationWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->WheelFrameHandbrakeEntryDuration:WheelFrameHandbrakeEntryDuration;}
+    float& WheelFrameHandbrakeEntryMinSpeedWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->WheelFrameHandbrakeEntryMinSpeed:WheelFrameHandbrakeEntryMinSpeed;}
+    float const& WheelFrameHandbrakeEntryMinSpeedWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->WheelFrameHandbrakeEntryMinSpeed:WheelFrameHandbrakeEntryMinSpeed;}
+    float& WheelFrameHandbrakeEntryFullSpeedWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->WheelFrameHandbrakeEntryFullSpeed:WheelFrameHandbrakeEntryFullSpeed;}
+    float const& WheelFrameHandbrakeEntryFullSpeedWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->WheelFrameHandbrakeEntryFullSpeed:WheelFrameHandbrakeEntryFullSpeed;}
+    float& WheelFrameHandbrakeEntryMinSteeringWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->WheelFrameHandbrakeEntryMinSteering:WheelFrameHandbrakeEntryMinSteering;}
+    float const& WheelFrameHandbrakeEntryMinSteeringWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->WheelFrameHandbrakeEntryMinSteering:WheelFrameHandbrakeEntryMinSteering;}
+    float& WheelFrameHandbrakeEntryRearReleaseScaleWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->WheelFrameHandbrakeEntryRearReleaseScale:WheelFrameHandbrakeEntryRearReleaseScale;}
+    float const& WheelFrameHandbrakeEntryRearReleaseScaleWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->WheelFrameHandbrakeEntryRearReleaseScale:WheelFrameHandbrakeEntryRearReleaseScale;}
+    float& WheelFrameHandbrakeRiseRateWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->WheelFrameHandbrakeRiseRate:WheelFrameHandbrakeRiseRate;}
+    float const& WheelFrameHandbrakeRiseRateWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->WheelFrameHandbrakeRiseRate:WheelFrameHandbrakeRiseRate;}
+    float& WheelFrameHandbrakeFallRateWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->WheelFrameHandbrakeFallRate:WheelFrameHandbrakeFallRate;}
+    float const& WheelFrameHandbrakeFallRateWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->WheelFrameHandbrakeFallRate:WheelFrameHandbrakeFallRate;}
+    float& LateralFrictionSlipThresholdWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->LateralFrictionSlipThreshold:LateralFrictionSlipThreshold;}
+    float const& LateralFrictionSlipThresholdWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->LateralFrictionSlipThreshold:LateralFrictionSlipThreshold;}
+    float& WheelFrameHandbrakeValueWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->WheelFrameHandbrakeValue:WheelFrameHandbrakeValue;}
+    float const& WheelFrameHandbrakeValueWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->WheelFrameHandbrakeValue:WheelFrameHandbrakeValue;}
+    float& WheelFrameHandbrakeActiveTimeWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->WheelFrameHandbrakeActiveTime:WheelFrameHandbrakeActiveTime;}
+    float const& WheelFrameHandbrakeActiveTimeWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->WheelFrameHandbrakeActiveTime:WheelFrameHandbrakeActiveTime;}
+    int32& LastWheelFrameHandbrakeUpdateFrameWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->LastWheelFrameHandbrakeUpdateFrame:LastWheelFrameHandbrakeUpdateFrame;}
+    int32 const& LastWheelFrameHandbrakeUpdateFrameWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->LastWheelFrameHandbrakeUpdateFrame:LastWheelFrameHandbrakeUpdateFrame;}
+    float& PosStabilityMultiplierWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->PosStabilityMultiplier:PosStabilityMultiplier;}
+    float const& PosStabilityMultiplierWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->PosStabilityMultiplier:PosStabilityMultiplier;}
+    float& VelStabilityMultiplierWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->VelStabilityMultiplier:VelStabilityMultiplier;}
+    float const& VelStabilityMultiplierWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->VelStabilityMultiplier:VelStabilityMultiplier;}
+    float& RotStabilityMultiplierWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->RotStabilityMultiplier:RotStabilityMultiplier;}
+    float const& RotStabilityMultiplierWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->RotStabilityMultiplier:RotStabilityMultiplier;}
+    float& AngVelStabilityMultiplierWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->AngVelStabilityMultiplier:AngVelStabilityMultiplier;}
+    float const& AngVelStabilityMultiplierWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->AngVelStabilityMultiplier:AngVelStabilityMultiplier;}
+    float& MaxPosCorrectionPerSecondWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->MaxPosCorrectionPerSecond:MaxPosCorrectionPerSecond;}
+    float const& MaxPosCorrectionPerSecondWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->MaxPosCorrectionPerSecond:MaxPosCorrectionPerSecond;}
+    float& MaxVelCorrectionPerSecondWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->MaxVelCorrectionPerSecond:MaxVelCorrectionPerSecond;}
+    float const& MaxVelCorrectionPerSecondWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->MaxVelCorrectionPerSecond:MaxVelCorrectionPerSecond;}
+    float& MaxAngVelCorrectionPerSecondWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->MaxAngVelCorrectionPerSecond:MaxAngVelCorrectionPerSecond;}
+    float const& MaxAngVelCorrectionPerSecondWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->MaxAngVelCorrectionPerSecond:MaxAngVelCorrectionPerSecond;}
+    float& MaxRotCorrectionPerSecondWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->MaxRotCorrectionPerSecond:MaxRotCorrectionPerSecond;}
+    float const& MaxRotCorrectionPerSecondWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->MaxRotCorrectionPerSecond:MaxRotCorrectionPerSecond;}
+    float& PosCorrDeadzoneWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->PosCorrDeadzone:PosCorrDeadzone;}
+    float const& PosCorrDeadzoneWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->PosCorrDeadzone:PosCorrDeadzone;}
+    float& VelCorrDeadzoneWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->VelCorrDeadzone:VelCorrDeadzone;}
+    float const& VelCorrDeadzoneWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->VelCorrDeadzone:VelCorrDeadzone;}
+    float& AngVelCorrDeadzoneWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->AngVelCorrDeadzone:AngVelCorrDeadzone;}
+    float const& AngVelCorrDeadzoneWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->AngVelCorrDeadzone:AngVelCorrDeadzone;}
+    float& RotCorrDeadzoneWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->RotCorrDeadzone:RotCorrDeadzone;}
+    float const& RotCorrDeadzoneWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->RotCorrDeadzone:RotCorrDeadzone;}
+    TObjectPtr<UBoxSubBody>& HitboxSubBodyWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->HitboxSubBody:HitboxSubBody;}
+    TObjectPtr<UBoxSubBody> const& HitboxSubBodyWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->HitboxSubBody:HitboxSubBody;}
+    TArray< TObjectPtr<USWheelSubBody>>& WheelSubBodiesWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->WheelSubBodies:WheelSubBodies;}
+    TArray< TObjectPtr<USWheelSubBody>> const& WheelSubBodiesWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->WheelSubBodies:WheelSubBodies;}
+    TObjectPtr<UNetworkPhysicsSettingsComponent>& SNetworkSettingsWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->SNetworkSettings:SNetworkSettings;}
+    TObjectPtr<UNetworkPhysicsSettingsComponent> const& SNetworkSettingsWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->SNetworkSettings:SNetworkSettings;}
+    USpeedSimulation*& SkySimulationWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->SkySimulation:SkySimulation;}
+    USpeedSimulation* const& SkySimulationWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->SkySimulation:SkySimulation;}
+    ASpeedCar*& SpeedCarOwnerWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->SpeedCarOwner:SpeedCarOwner;}
+    ASpeedCar* const& SpeedCarOwnerWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->SpeedCarOwner:SpeedCarOwner;}
+    FCriticalSection& FrameInputProducerMutexWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->FrameInputProducerMutex:FrameInputProducerMutex;}
+    FCriticalSection const& FrameInputProducerMutexWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->FrameInputProducerMutex:FrameInputProducerMutex;}
+    std::shared_ptr<Speed::Input::FInputStream>& FrameInputStreamWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->FrameInputStream:FrameInputStream;}
+    std::shared_ptr<Speed::Input::FInputStream> const& FrameInputStreamWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->FrameInputStream:FrameInputStream;}
+    std::shared_ptr<Speed::Input::FInputStream>& ConsumedFrameInputStreamWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->ConsumedFrameInputStream:ConsumedFrameInputStream;}
+    std::shared_ptr<Speed::Input::FInputStream> const& ConsumedFrameInputStreamWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->ConsumedFrameInputStream:ConsumedFrameInputStream;}
+    std::shared_ptr<Speed::Input::V2::FInputStream>& FrameInputStreamV2WheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->FrameInputStreamV2:FrameInputStreamV2;}
+    std::shared_ptr<Speed::Input::V2::FInputStream> const& FrameInputStreamV2WheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->FrameInputStreamV2:FrameInputStreamV2;}
+    std::shared_ptr<Speed::Input::V2::FInputStream>& ConsumedFrameInputStreamV2WheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->ConsumedFrameInputStreamV2:ConsumedFrameInputStreamV2;}
+    std::shared_ptr<Speed::Input::V2::FInputStream> const& ConsumedFrameInputStreamV2WheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->ConsumedFrameInputStreamV2:ConsumedFrameInputStreamV2;}
+    std::optional<Speed::Input::V2::FReservationToken>& InputReservationV2WheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->InputReservationV2:InputReservationV2;}
+    std::optional<Speed::Input::V2::FReservationToken> const& InputReservationV2WheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->InputReservationV2:InputReservationV2;}
+    std::optional<uint64>& ReservedInputFrameV2WheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->ReservedInputFrameV2:ReservedInputFrameV2;}
+    std::optional<uint64> const& ReservedInputFrameV2WheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->ReservedInputFrameV2:ReservedInputFrameV2;}
+    bool& bInputFrameRejectedV2WheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->bInputFrameRejectedV2:bInputFrameRejectedV2;}
+    bool const& bInputFrameRejectedV2WheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->bInputFrameRejectedV2:bInputFrameRejectedV2;}
+    bool& bResetProducedWheeledInputsWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->bResetProducedWheeledInputs:bResetProducedWheeledInputs;}
+    bool const& bResetProducedWheeledInputsWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->bResetProducedWheeledInputs:bResetProducedWheeledInputs;}
+    bool& bProducedInputFrameOwnedWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->bProducedInputFrameOwned:bProducedInputFrameOwned;}
+    bool const& bProducedInputFrameOwnedWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->bProducedInputFrameOwned:bProducedInputFrameOwned;}
+    std::atomic<bool>& bProducedInputAuthorityWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->bProducedInputAuthority:bProducedInputAuthority;}
+    std::atomic<bool> const& bProducedInputAuthorityWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->bProducedInputAuthority:bProducedInputAuthority;}
+    std::atomic<bool>& bLegacyRemoteInputAuthorityWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->bLegacyRemoteInputAuthority:bLegacyRemoteInputAuthority;}
+    std::atomic<bool> const& bLegacyRemoteInputAuthorityWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->bLegacyRemoteInputAuthority:bLegacyRemoteInputAuthority;}
+    FCriticalSection& LegacyWheeledIngressMutexWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->LegacyWheeledIngressMutex:LegacyWheeledIngressMutex;}
+    FCriticalSection const& LegacyWheeledIngressMutexWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->LegacyWheeledIngressMutex:LegacyWheeledIngressMutex;}
+    std::shared_ptr<FLegacyWheeledIngress>& LegacyWheeledIngressWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->LegacyWheeledIngress:LegacyWheeledIngress;}
+    std::shared_ptr<FLegacyWheeledIngress> const& LegacyWheeledIngressWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->LegacyWheeledIngress:LegacyWheeledIngress;}
+    std::unique_ptr<FLegacyWheeledOwner>& LegacyWheeledOwnerWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->LegacyWheeledOwner:LegacyWheeledOwner;}
+    std::unique_ptr<FLegacyWheeledOwner> const& LegacyWheeledOwnerWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->LegacyWheeledOwner:LegacyWheeledOwner;}
+    bool& bLegacyWheeledRetiredWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->bLegacyWheeledRetired:bLegacyWheeledRetired;}
+    bool const& bLegacyWheeledRetiredWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->bLegacyWheeledRetired:bLegacyWheeledRetired;}
+    std::atomic<bool>& bInputRetirementRequestedWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->bInputRetirementRequested:bInputRetirementRequested;}
+    std::atomic<bool> const& bInputRetirementRequestedWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->bInputRetirementRequested:bInputRetirementRequested;}
+    std::atomic<bool>& bInputRetirementCompletedWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->bInputRetirementCompleted:bInputRetirementCompleted;}
+    std::atomic<bool> const& bInputRetirementCompletedWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->bInputRetirementCompleted:bInputRetirementCompleted;}
+    bool& bWheeledEndPlayTeardownWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->bWheeledEndPlayTeardown:bWheeledEndPlayTeardown;}
+    bool const& bWheeledEndPlayTeardownWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->bWheeledEndPlayTeardown:bWheeledEndPlayTeardown;}
+    bool& bSpeedWorldAdapterRetiredForTeardownWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->bSpeedWorldAdapterRetiredForTeardown:bSpeedWorldAdapterRetiredForTeardown;}
+    bool const& bSpeedWorldAdapterRetiredForTeardownWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->bSpeedWorldAdapterRetiredForTeardown:bSpeedWorldAdapterRetiredForTeardown;}
+    bool& bResumeAfterPhysicsRecreationWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->bResumeAfterPhysicsRecreation:bResumeAfterPhysicsRecreation;}
+    bool const& bResumeAfterPhysicsRecreationWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->bResumeAfterPhysicsRecreation:bResumeAfterPhysicsRecreation;}
+    bool& bOwnedRecreationBoundaryWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->bOwnedRecreationBoundary:bOwnedRecreationBoundary;}
+    bool const& bOwnedRecreationBoundaryWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->bOwnedRecreationBoundary:bOwnedRecreationBoundary;}
+    TWeakObjectPtr<ASpeedPhysicsSimulation>& RecreationDriverWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->RecreationDriver:RecreationDriver;}
+    TWeakObjectPtr<ASpeedPhysicsSimulation> const& RecreationDriverWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->RecreationDriver:RecreationDriver;}
+    TOptional<uint64>& PreparedCanonicalInputFrameWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->PreparedCanonicalInputFrame:PreparedCanonicalInputFrame;}
+    TOptional<uint64> const& PreparedCanonicalInputFrameWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->PreparedCanonicalInputFrame:PreparedCanonicalInputFrame;}
+    std::shared_ptr<const Speed::Input::V2::FOwnerInputSnapshot>& CanonicalInputSnapshotWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->CanonicalInputSnapshot:CanonicalInputSnapshot;}
+    std::shared_ptr<const Speed::Input::V2::FOwnerInputSnapshot> const& CanonicalInputSnapshotWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->CanonicalInputSnapshot:CanonicalInputSnapshot;}
+    bool& bCanonicalInputPendingWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->bCanonicalInputPending:bCanonicalInputPending;}
+    bool const& bCanonicalInputPendingWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->bCanonicalInputPending:bCanonicalInputPending;}
+    std::shared_ptr<const FCompletedWheeledInput>& PreparedWheeledNetworkInputWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->PreparedWheeledNetworkInput:PreparedWheeledNetworkInput;}
+    std::shared_ptr<const FCompletedWheeledInput>& PreparedWheeledNetworkInputWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->PreparedWheeledNetworkInput:PreparedWheeledNetworkInput;}
+    Speed::Concurrency::TAtomicSharedPtr<const FCompletedWheeledInput>& PublishedWheeledNetworkInputWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->PublishedWheeledNetworkInput:PublishedWheeledNetworkInput;}
+    Speed::Concurrency::TAtomicSharedPtr<const FCompletedWheeledInput> const& PublishedWheeledNetworkInputWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->PublishedWheeledNetworkInput:PublishedWheeledNetworkInput;}
+    std::atomic<bool>& bGenericCameraInputEnabledWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->bGenericCameraInputEnabled:bGenericCameraInputEnabled;}
+    std::atomic<bool> const& bGenericCameraInputEnabledWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->bGenericCameraInputEnabled:bGenericCameraInputEnabled;}
+    std::atomic<uint32>& PendingCameraInputWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->PendingCameraInput:PendingCameraInput;}
+    std::atomic<uint32> const& PendingCameraInputWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->PendingCameraInput:PendingCameraInput;}
+    FCriticalSection& PendingCameraInputMutexWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->PendingCameraInputMutex:PendingCameraInputMutex;}
+    FCriticalSection& PendingCameraInputMutexWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->PendingCameraInputMutex:PendingCameraInputMutex;}
+    TArray<FPendingCameraInputCommand>& PendingCameraInputCommandsWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->PendingCameraInputCommands:PendingCameraInputCommands;}
+    TArray<FPendingCameraInputCommand>& PendingCameraInputCommandsWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->PendingCameraInputCommands:PendingCameraInputCommands;}
+    int32& LastCameraCaptureHistoryFrameWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->LastCameraCaptureHistoryFrame:LastCameraCaptureHistoryFrame;}
+    int32& LastCameraCaptureHistoryFrameWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->LastCameraCaptureHistoryFrame:LastCameraCaptureHistoryFrame;}
+    int32& LastCameraCaptureActivationFrameWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->LastCameraCaptureActivationFrame:LastCameraCaptureActivationFrame;}
+    int32& LastCameraCaptureActivationFrameWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->LastCameraCaptureActivationFrame:LastCameraCaptureActivationFrame;}
+    FSpeedCarCameraPhysicalInput& LastCapturedCameraInputWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->LastCapturedCameraInput:LastCapturedCameraInput;}
+    FSpeedCarCameraPhysicalInput& LastCapturedCameraInputWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->LastCapturedCameraInput:LastCapturedCameraInput;}
+#if WITH_DEV_AUTOMATION_TESTS
+    uint64& CameraMailboxReadCountWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->CameraMailboxReadCount:CameraMailboxReadCount;}
+    uint64& CameraMailboxReadCountWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->CameraMailboxReadCount:CameraMailboxReadCount;}
+#endif
+#if WITH_DEV_AUTOMATION_TESTS
+    uint64& CameraInputApplyCountWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->CameraInputApplyCount:CameraInputApplyCount;}
+    uint64 const& CameraInputApplyCountWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->CameraInputApplyCount:CameraInputApplyCount;}
+#endif
+    FMatrix& CarLocalInvIWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->CarLocalInvI:CarLocalInvI;}
+    FMatrix const& CarLocalInvIWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->CarLocalInvI:CarLocalInvI;}
+    TArray<int32>& RecordedBaseFramesWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->RecordedBaseFrames:RecordedBaseFrames;}
+    TArray<int32> const& RecordedBaseFramesWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->RecordedBaseFrames:RecordedBaseFrames;}
+    TArray<FBasePhysicsState>& RecordedBaseStatesWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->RecordedBaseStates:RecordedBaseStates;}
+    TArray<FBasePhysicsState> const& RecordedBaseStatesWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->RecordedBaseStates:RecordedBaseStates;}
+    TArray<FWheeledPhysicsState>& RecordedWheeledStatesWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->RecordedWheeledStates:RecordedWheeledStates;}
+    TArray<FWheeledPhysicsState> const& RecordedWheeledStatesWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->RecordedWheeledStates:RecordedWheeledStates;}
+    float& EngineFPSWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->EngineFPS:EngineFPS;}
+    float const& EngineFPSWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->EngineFPS:EngineFPS;}
+    uint16& MinNbFramesBeforeCanMoveWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->MinNbFramesBeforeCanMove:MinNbFramesBeforeCanMove;}
+    uint16 const& MinNbFramesBeforeCanMoveWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->MinNbFramesBeforeCanMove:MinNbFramesBeforeCanMove;}
+    TArray<USSubBody*>& SubBodiesWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->SubBodies:SubBodies;}
+    TArray<USSubBody*> const& SubBodiesWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->SubBodies:SubBodies;}
+    TArray<USSubBody*>& ExtSubBodiesWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->ExtSubBodies:ExtSubBodies;}
+    TArray<USSubBody*> const& ExtSubBodiesWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->ExtSubBodies:ExtSubBodies;}
+    TArray<SWheelGroundContact>& PendingWheelContactsWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->PendingWheelContacts:PendingWheelContacts;}
+    TArray<SWheelGroundContact> const& PendingWheelContactsWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->PendingWheelContacts:PendingWheelContacts;}
+    bool& bLegacyNetworkHistoryExcludedWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->bLegacyNetworkHistoryExcluded:bLegacyNetworkHistoryExcluded;}
+    bool const& bLegacyNetworkHistoryExcludedWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->bLegacyNetworkHistoryExcluded:bLegacyNetworkHistoryExcluded;}
+    TObjectPtr<UNetworkPhysicsComponent>& SNetworkPhysicsComponentWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->SNetworkPhysicsComponent:SNetworkPhysicsComponent;}
+    TObjectPtr<UNetworkPhysicsComponent> const& SNetworkPhysicsComponentWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->SNetworkPhysicsComponent:SNetworkPhysicsComponent;}
+    TObjectPtr<UNetworkPhysicsComponent>& WheeledNetworkPhysicsComponentWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->WheeledNetworkPhysicsComponent:WheeledNetworkPhysicsComponent;}
+    TObjectPtr<UNetworkPhysicsComponent> const& WheeledNetworkPhysicsComponentWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->WheeledNetworkPhysicsComponent:WheeledNetworkPhysicsComponent;}
+    int32& NetCorr_LastServerFrameWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->NetCorr_LastServerFrame:NetCorr_LastServerFrame;}
+    int32 const& NetCorr_LastServerFrameWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->NetCorr_LastServerFrame:NetCorr_LastServerFrame;}
+    int32& NetCorr_LastLocalFrameWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->NetCorr_LastLocalFrame:NetCorr_LastLocalFrame;}
+    int32 const& NetCorr_LastLocalFrameWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->NetCorr_LastLocalFrame:NetCorr_LastLocalFrame;}
+    int32& NetCorr_BaseNumPredictedFramesWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->NetCorr_BaseNumPredictedFrames:NetCorr_BaseNumPredictedFrames;}
+    int32 const& NetCorr_BaseNumPredictedFramesWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->NetCorr_BaseNumPredictedFrames:NetCorr_BaseNumPredictedFrames;}
+    bool& bNetCorrHasTargetWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->bNetCorrHasTarget:bNetCorrHasTarget;}
+    bool const& bNetCorrHasTargetWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->bNetCorrHasTarget:bNetCorrHasTarget;}
+    int32& NetCorrTickCountWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->NetCorrTickCount:NetCorrTickCount;}
+    int32 const& NetCorrTickCountWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->NetCorrTickCount:NetCorrTickCount;}
+    FNetworkBaseSpeedState& NetCorrTargetWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->NetCorrTarget:NetCorrTarget;}
+    FNetworkBaseSpeedState const& NetCorrTargetWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->NetCorrTarget:NetCorrTarget;}
+    FNetCorrAccum& NetCorrAccumWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->NetCorrAccum:NetCorrAccum;}
+    FNetCorrAccum const& NetCorrAccumWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->NetCorrAccum:NetCorrAccum;}
+    FVector& NetCorr_LastContactNWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->NetCorr_LastContactN:NetCorr_LastContactN;}
+    FVector const& NetCorr_LastContactNWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->NetCorr_LastContactN:NetCorr_LastContactN;}
+    uint8& NetCorr_StableNFramesWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->NetCorr_StableNFrames:NetCorr_StableNFrames;}
+    uint8 const& NetCorr_StableNFramesWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->NetCorr_StableNFrames:NetCorr_StableNFrames;}
+    int32& SinceCanMoveFrameWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->SinceCanMoveFrame:SinceCanMoveFrame;}
+    int32 const& SinceCanMoveFrameWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->SinceCanMoveFrame:SinceCanMoveFrame;}
+    bool& bCanonicalSupportStartupInitializationRequestedWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->bCanonicalSupportStartupInitializationRequested:bCanonicalSupportStartupInitializationRequested;}
+    bool const& bCanonicalSupportStartupInitializationRequestedWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->bCanonicalSupportStartupInitializationRequested:bCanonicalSupportStartupInitializationRequested;}
+    bool& bCanonicalSupportStartupPoseConfirmedWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->bCanonicalSupportStartupPoseConfirmed:bCanonicalSupportStartupPoseConfirmed;}
+    bool const& bCanonicalSupportStartupPoseConfirmedWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->bCanonicalSupportStartupPoseConfirmed:bCanonicalSupportStartupPoseConfirmed;}
+    bool& bSimTimelineWasCanMoveWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->bSimTimelineWasCanMove:bSimTimelineWasCanMove;}
+    bool const& bSimTimelineWasCanMoveWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->bSimTimelineWasCanMove:bSimTimelineWasCanMove;}
+    bool& bSimTimelineWasGroundedWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->bSimTimelineWasGrounded:bSimTimelineWasGrounded;}
+    bool const& bSimTimelineWasGroundedWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->bSimTimelineWasGrounded:bSimTimelineWasGrounded;}
+    bool& bSimTimelineHasGroundStateWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->bSimTimelineHasGroundState:bSimTimelineHasGroundState;}
+    bool const& bSimTimelineHasGroundStateWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->bSimTimelineHasGroundState:bSimTimelineHasGroundState;}
+    std::atomic<bool>& bTestInputOverrideEnabledWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->bTestInputOverrideEnabled:bTestInputOverrideEnabled;}
+    std::atomic<bool> const& bTestInputOverrideEnabledWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->bTestInputOverrideEnabled:bTestInputOverrideEnabled;}
+#if !UE_BUILD_SHIPPING
+    int& TurnStartFrameWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->TurnStartFrame:TurnStartFrame;}
+    int const& TurnStartFrameWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->TurnStartFrame:TurnStartFrame;}
+#endif
+#if !UE_BUILD_SHIPPING
+    int& LastTurnSummaryFrameWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->LastTurnSummaryFrame:LastTurnSummaryFrame;}
+    int const& LastTurnSummaryFrameWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->LastTurnSummaryFrame:LastTurnSummaryFrame;}
+#endif
+    decltype(UChaosWheeledVehicleMovementComponent::VehicleSimulationPT)& VehicleSimulationPTWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->VehicleSimulationPT:VehicleSimulationPT;}
+    decltype(UChaosWheeledVehicleMovementComponent::VehicleSimulationPT) const& VehicleSimulationPTWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->VehicleSimulationPT:VehicleSimulationPT;}
+    decltype(UChaosWheeledVehicleMovementComponent::Wheels)& WheelsWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->Wheels:Wheels;}
+    decltype(UChaosWheeledVehicleMovementComponent::Wheels) const& WheelsWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->Wheels:Wheels;}
+    decltype(UChaosWheeledVehicleMovementComponent::WheelSetups)& WheelSetupsWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->WheelSetups:WheelSetups;}
+    decltype(UChaosWheeledVehicleMovementComponent::WheelSetups) const& WheelSetupsWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->WheelSetups:WheelSetups;}
+    decltype(UChaosWheeledVehicleMovementComponent::CenterOfMassOverride)& CenterOfMassOverrideWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->CenterOfMassOverride:CenterOfMassOverride;}
+    decltype(UChaosWheeledVehicleMovementComponent::CenterOfMassOverride) const& CenterOfMassOverrideWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->CenterOfMassOverride:CenterOfMassOverride;}
+    decltype(UChaosWheeledVehicleMovementComponent::bEnableCenterOfMassOverride)& bEnableCenterOfMassOverrideWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->bEnableCenterOfMassOverride:bEnableCenterOfMassOverride;}
+    decltype(UChaosWheeledVehicleMovementComponent::bEnableCenterOfMassOverride) const& bEnableCenterOfMassOverrideWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->bEnableCenterOfMassOverride:bEnableCenterOfMassOverride;}
+    uint8 bThrottleAsBrakeWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->bThrottleAsBrake:bThrottleAsBrake;}
+    void SetOriginalThrottleAsBrake(uint8 Value) {if(UsesOriginalWheeledDomain())OriginalWheeledDomain->bThrottleAsBrake=Value;else bThrottleAsBrake=Value;}
+
+    decltype(UChaosWheeledVehicleMovementComponent::bSuspensionEnabled)& bSuspensionEnabledWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->bSuspensionEnabled:bSuspensionEnabled;}
+    decltype(UChaosWheeledVehicleMovementComponent::bSuspensionEnabled) const& bSuspensionEnabledWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->bSuspensionEnabled:bSuspensionEnabled;}
+    decltype(UChaosWheeledVehicleMovementComponent::bWheelFrictionEnabled)& bWheelFrictionEnabledWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->bWheelFrictionEnabled:bWheelFrictionEnabled;}
+    decltype(UChaosWheeledVehicleMovementComponent::bWheelFrictionEnabled) const& bWheelFrictionEnabledWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->bWheelFrictionEnabled:bWheelFrictionEnabled;}
+    decltype(UChaosWheeledVehicleMovementComponent::ChassisHeight)& ChassisHeightWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->ChassisHeight:ChassisHeight;}
+    decltype(UChaosWheeledVehicleMovementComponent::ChassisHeight) const& ChassisHeightWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->ChassisHeight:ChassisHeight;}
+    decltype(UChaosWheeledVehicleMovementComponent::DragCoefficient)& DragCoefficientWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->DragCoefficient:DragCoefficient;}
+    decltype(UChaosWheeledVehicleMovementComponent::DragCoefficient) const& DragCoefficientWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->DragCoefficient:DragCoefficient;}
+    decltype(UChaosWheeledVehicleMovementComponent::EngineSetup)& EngineSetupWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->EngineSetup:EngineSetup;}
+    decltype(UChaosWheeledVehicleMovementComponent::EngineSetup) const& EngineSetupWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->EngineSetup:EngineSetup;}
+    decltype(UChaosWheeledVehicleMovementComponent::ThrottleInputRate)& ThrottleInputRateWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->ThrottleInputRate:ThrottleInputRate;}
+    decltype(UChaosWheeledVehicleMovementComponent::ThrottleInputRate) const& ThrottleInputRateWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->ThrottleInputRate:ThrottleInputRate;}
+    decltype(UChaosWheeledVehicleMovementComponent::TransmissionSetup)& TransmissionSetupWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->TransmissionSetup:TransmissionSetup;}
+    decltype(UChaosWheeledVehicleMovementComponent::TransmissionSetup) const& TransmissionSetupWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->TransmissionSetup:TransmissionSetup;}
+    decltype(UChaosWheeledVehicleMovementComponent::DifferentialSetup)& DifferentialSetupWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->DifferentialSetup:DifferentialSetup;}
+    decltype(UChaosWheeledVehicleMovementComponent::DifferentialSetup) const& DifferentialSetupWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->DifferentialSetup:DifferentialSetup;}
+    decltype(UChaosWheeledVehicleMovementComponent::bMechanicalSimEnabled)& bMechanicalSimEnabledWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->bMechanicalSimEnabled:bMechanicalSimEnabled;}
+    decltype(UChaosWheeledVehicleMovementComponent::bMechanicalSimEnabled) const& bMechanicalSimEnabledWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->bMechanicalSimEnabled:bMechanicalSimEnabled;}
+    decltype(UChaosWheeledVehicleMovementComponent::SteeringInputRate)& SteeringInputRateWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->SteeringInputRate:SteeringInputRate;}
+    decltype(UChaosWheeledVehicleMovementComponent::SteeringInputRate) const& SteeringInputRateWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->SteeringInputRate:SteeringInputRate;}
+    decltype(UChaosWheeledVehicleMovementComponent::SteeringSetup)& SteeringSetupWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->SteeringSetup:SteeringSetup;}
+    decltype(UChaosWheeledVehicleMovementComponent::SteeringSetup) const& SteeringSetupWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->SteeringSetup:SteeringSetup;}
+private:
 	FCriticalSection FrameInputProducerMutex;
 	std::shared_ptr<Speed::Input::FInputStream> FrameInputStream;
 	// Simulation-lane handle latched for this frame, including in-flight detach.
@@ -819,8 +1573,7 @@ private:
 	bool bProducedInputFrameOwned = false; // Simulation lane only, includes detach/reset frame.
 	std::atomic<bool> bProducedInputAuthority{false};
 	std::atomic<bool> bLegacyRemoteInputAuthority{false};
-	using FLegacyWheeledIngress = Speed::Input::TLegacyRemotePreSlewIngress<FWheeledInputState>;
-	using FLegacyWheeledOwner = Speed::Input::TLegacyRemotePreSlewOwner<FWheeledInputState>;
+
 	FCriticalSection LegacyWheeledIngressMutex;
 	std::shared_ptr<FLegacyWheeledIngress> LegacyWheeledIngress;
 	std::unique_ptr<FLegacyWheeledOwner> LegacyWheeledOwner;
@@ -838,12 +1591,7 @@ private:
 	TOptional<uint64> PreparedCanonicalInputFrame;
 	std::shared_ptr<const Speed::Input::V2::FOwnerInputSnapshot> CanonicalInputSnapshot;
 	bool bCanonicalInputPending = false;
-	struct FCompletedWheeledInput
-	{
-		FWheeledInputState Requested;
-		uint32 LocalFrame = 0;
-		int32 SinceCanMove = INDEX_NONE;
-	};
+
 	mutable std::shared_ptr<const FCompletedWheeledInput> PreparedWheeledNetworkInput;
 	Speed::Concurrency::TAtomicSharedPtr<const FCompletedWheeledInput> PublishedWheeledNetworkInput{};
 	bool PrepareWheeledNetworkInput(uint64 Frame) const;
@@ -861,11 +1609,7 @@ private:
 	// One atomic word publishes all version/flags/axis fields coherently.
 	std::atomic<uint32> PendingCameraInput{1};
 	bool PublishHeldCameraInput(const FSpeedCarCameraPhysicalInput& Input);
-	struct FPendingCameraInputCommand
-	{
-		int32 ActivationFrame = INDEX_NONE;
-		FSpeedCarCameraPhysicalInput Input;
-	};
+
 	// BuildData is logically const: it captures input without advancing vehicle
 	// state. Only this deferred camera mailbox/queue is mutable, never wheel state.
 	mutable FCriticalSection PendingCameraInputMutex;

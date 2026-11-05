@@ -2,6 +2,10 @@
 
 
 #include "SSubBody.h"
+#include "IAmSpeed/World/Simulation/Internal/ComponentKinematicRead.h"
+#include "IAmSpeed/Netcode/client-prediction/PrivateNativeStorageMap.h"
+#include "IAmSpeed/Netcode/client-prediction/PrivateRoadNativeObjects.h"
+#include "IAmSpeed/World/Simulation/Internal/BodyKinematicRead.h"
 #include "Solid/CylinderSubBody.h"
 #include "IAmSpeed/World/Simulation/JoinedActorKinematics1213.h"
 #include "IAmSpeed/Base/ExactRotatorQuaternionCache.h"
@@ -18,13 +22,18 @@ USSubBody::USSubBody(const FObjectInitializer& ObjectInitializer):
 	Super(ObjectInitializer)
 {
     PrimaryComponentTick.bCanEverTick = false;
-    ResponseParams.CollisionResponse.SetAllChannels(ECollisionResponse::ECR_Ignore);
-    ResponseParams.CollisionResponse.SetResponse(ECollisionChannel::ECC_WorldStatic, ECollisionResponse::ECR_Block);
+    ResponseParamsBodyDomainStorage().CollisionResponse.SetAllChannels(ECollisionResponse::ECR_Ignore);
+    ResponseParamsBodyDomainStorage().CollisionResponse.SetResponse(ECollisionChannel::ECC_WorldStatic, ECollisionResponse::ECR_Block);
 	SetCollisionResponseToAllChannels(ECollisionResponse::ECR_Ignore); // For UE
 	SetCollisionObjectType(ECollisionChannel::ECC_WorldDynamic); // For UE
     SetSimulatePhysics(false); // For UE
     SetGenerateOverlapEvents(false); // For UE
     SetCollisionEnabled(ECollisionEnabled::NoCollision);
+}
+
+TWeakObjectPtr<USSubBody> USSubBody::GetPhysicsWeakIdentity() const
+{
+    return const_cast<USSubBody*>(this); // ordinary raw->weak tracking unchanged
 }
 
 void USSubBody::OnRegister()
@@ -48,33 +57,104 @@ void USSubBody::OnRegister()
     Super::OnRegister();
 }
 
-void USSubBody::Initialize(ISpeedComponent* InParentComponent)
+class USSubBody::FLegacyBirthInitializeAccess
 {
-	ParentComponent = InParentComponent;
-    if (ParentComponent)
+    USSubBody& Owner;
+public:
+    explicit FLegacyBirthInitializeAccess(USSubBody& Value):Owner(Value){}
+    virtual void CheckCallbackBoundary() const {}
+    decltype(auto) Parent() const {return Owner.ParentComponentBodyDomainStorage();}
+    SubBodyConfig Configuration(ISpeedComponent* Parent) const {return Parent->GetSubBodyConfig(Owner);}
+    void LocalOffset(const FVector& Value) const {Owner.SetPhysicalLocalOffset(Value);}
+    void LocalRotation(const FQuat& Value) const {Owner.SetPhysicalLocalRotation(Value);}
+    decltype(auto) CollisionChannel() const {return Owner.CollisionChannelBodyDomainStorage();}
+    decltype(auto) SubBodies() const {return Owner.ParentComponentBodyDomainStorage()->GetSubBodies();}
+    decltype(auto) AlwaysIgnored() const {return Owner.AlwaysIgnoredComponentsBodyDomainStorage();}
+};
+class USSubBody::FNativeBirthInitializeAccess final
+{
+    USSubBody& Owner;const Speed::Netcode::Prediction::FPrivateNativeOperation& Op;
+    decltype(auto) Values() const {return Speed::Netcode::Prediction::FPrivateNativeStorageAccess::Part<Speed::Netcode::Prediction::FPrivateRoadSubBodyValues>(Op,&Owner);}
+public:
+    void CheckCallbackBoundary() const {}
+    FNativeBirthInitializeAccess(USSubBody& Value,const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation):Owner(Value),Op(Operation)
+    {Speed::Netcode::Prediction::FPrivateNativeStorageAccess::RequireBirth(Op);(void)Values();}
+    decltype(auto) Parent() const {return (Values().ParentComponent);}
+    SubBodyConfig Configuration(ISpeedComponent* ParentValue) const {return Speed::NativeKinematics::FComponentRead::BirthSubBodyConfiguration(Op,*ParentValue,Owner);}
+    void LocalOffset(const FVector& Value) const {Values().LocalPose.SetLocation(Value);}
+    void LocalRotation(const FQuat& Value) const {Values().LocalEulerRotation=Value.Rotator();Values().LocalPose.SetRotation(Value);}
+    decltype(auto) CollisionChannel() const {return (Values().CollisionChannel);}
+    decltype(auto) SubBodies() const {return Speed::NativeKinematics::FComponentRead::SubBodies(Op,*Values().ParentComponent);}
+    decltype(auto) AlwaysIgnored() const {return (Values().AlwaysIgnoredComponents);}
+};
+
+class USSubBody::FReferenceBirthInitializeAccess final : public FLegacyBirthInitializeAccess
+{
+    USSubBody& Owner;
+    const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation;
+    const Speed::Netcode::Prediction::FPrivateReferenceOwnerBirth& Proof;
+    ISpeedComponent* const RequestedParent;
+public:
+    FReferenceBirthInitializeAccess(USSubBody& Value,const Speed::Netcode::Prediction::FPrivateNativeOperation& Op,
+        const Speed::Netcode::Prediction::FPrivateReferenceOwnerBirth& ActualProof,ISpeedComponent* Parent)
+      :FLegacyBirthInitializeAccess(Value),Owner(Value),Operation(Op),Proof(ActualProof),RequestedParent(Parent)
+    {CheckCallbackBoundary();}
+    FReferenceBirthInitializeAccess(const FReferenceBirthInitializeAccess&)=delete;
+    FReferenceBirthInitializeAccess& operator=(const FReferenceBirthInitializeAccess&)=delete;
+    void CheckCallbackBoundary() const override
+    {Proof.RequireInitializerBody(Operation,Owner,RequestedParent);}
+};
+
+template<class TAccess>
+void USSubBody::InitializeBirthBody(TAccess& Storage,ISpeedComponent* InParentComponent)
+{
+    Storage.CheckCallbackBoundary();
+	Storage.Parent() = InParentComponent;
+	Storage.CheckCallbackBoundary();
+    if (Storage.Parent())
     {
-		SubBodyConfig Config = ParentComponent->GetSubBodyConfig(*this);
+		SubBodyConfig Config = Storage.Configuration(Storage.Parent());
+		Storage.CheckCallbackBoundary();
         if (Config.bValid)
         {
-            SetRelativeLocation(Config.LocalOffset);
-            SetRelativeRotation(Config.LocalRotation);
-            CollisionChannel = Config.CollisionChannel;
+            Storage.LocalOffset(Config.LocalOffset);
+            Storage.CheckCallbackBoundary();
+            Storage.LocalRotation(Config.LocalRotation);
+            Storage.CheckCallbackBoundary();
+            Storage.CollisionChannel() = Config.CollisionChannel;
+            Storage.CheckCallbackBoundary();
         }
         
-        for (USSubBody* SubBody: ParentComponent->GetSubBodies())
+        for (USSubBody* SubBody: Storage.SubBodies())
         {
             if (SubBody)
             {
-                AlwaysIgnoredComponents.AddUnique(SubBody);
+                Storage.AlwaysIgnored().AddUnique(SubBody);
+                Storage.CheckCallbackBoundary();
             }
 		}
     }
 }
 
+void USSubBody::Initialize(ISpeedComponent* InParentComponent)
+{CheckOrdinaryBodyInitializationEntry();FLegacyBirthInitializeAccess Storage(*this);InitializeBirthBody(Storage,InParentComponent);}
+void USSubBody::InitializeNativeBase(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,ISpeedComponent* Parent)
+{FNativeBirthInitializeAccess Storage(*this,Operation);InitializeBirthBody(Storage,Parent);}
+void USSubBody::InitializeReferenceBase(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,
+    const Speed::Netcode::Prediction::FPrivateReferenceOwnerBirth& Proof,ISpeedComponent* Parent)
+{FReferenceBirthInitializeAccess Storage(*this,Operation,Proof,Parent);InitializeBirthBody(Storage,Parent);}
+void USSubBody::InitializeNative(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,ISpeedComponent* Parent)
+{(void)Operation;(void)Parent;throw Speed::Netcode::Prediction::FPrivateNativeStorageUnavailable{};}
+void USSubBody::InitializeReference(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,
+    const Speed::Netcode::Prediction::FPrivateReferenceOwnerBirth& Proof,ISpeedComponent* Parent)
+{(void)Operation;(void)Proof;(void)Parent;throw Speed::Netcode::Prediction::FPrivateNativeStorageUnavailable{};}
+
+
+
 void USSubBody::ResetForFrame(const float& Delta)
 {
-    FutureHit = SHitResult();
-    CurrentHit = SHitResult();
+    FutureHitStorage() = SHitResult();
+    CurrentHitStorage() = SHitResult();
     ResetIgnoredComponents();
 }
 
@@ -83,38 +163,38 @@ void USSubBody::ResetIgnoredComponents()
     // Reuse the ordinary frame's buffer instead of freeing/reallocating it at
     // 300 Hz. An exceptional contact burst must not retain unbounded slack:
     // keep at most 1 KiB or the permanent registry's existing allocation.
-    const SIZE_T RetainedBytes = FMath::Max<SIZE_T>(1024, AlwaysIgnoredComponents.GetAllocatedSize());
-    if (IgnoredComponents.GetAllocatedSize() > RetainedBytes)
-        IgnoredComponents.Empty(AlwaysIgnoredComponents.Num());
+    const SIZE_T RetainedBytes = FMath::Max<SIZE_T>(1024, AlwaysIgnoredComponentsBodyDomainStorage().GetAllocatedSize());
+    if (IgnoredComponentsBodyDomainStorage().GetAllocatedSize() > RetainedBytes)
+        IgnoredComponentsBodyDomainStorage().Empty(AlwaysIgnoredComponentsBodyDomainStorage().Num());
     else
-        IgnoredComponents.Reset(AlwaysIgnoredComponents.Num());
-    IgnoredComponents.Append(AlwaysIgnoredComponents);
+        IgnoredComponentsBodyDomainStorage().Reset(AlwaysIgnoredComponentsBodyDomainStorage().Num());
+    IgnoredComponentsBodyDomainStorage().Append(AlwaysIgnoredComponentsBodyDomainStorage());
 }
 
 void USSubBody::AddExternalSubBodies(const TArray<USSubBody*>& SubBodies)
 {
     for (USSubBody* SubBody : SubBodies)
     {
-        if (SubBody && SubBody->GetParentComponent() != ParentComponent &&
-            !AlwaysIgnoredComponents.Contains(SubBody) && !SubBody->IsSensor() &&
-            !(ParentComponent && ParentComponent->IsPrescribedMotion() && SubBody->GetParentComponent() && SubBody->GetParentComponent()->IsPrescribedMotion()))
+        if (SubBody && SubBody->GetParentComponent() != ParentComponentBodyDomainStorage() &&
+            !AlwaysIgnoredComponentsBodyDomainStorage().Contains(SubBody) && !SubBody->IsSensor() &&
+            !(ParentComponentBodyDomainStorage() && ParentComponentBodyDomainStorage()->IsPrescribedMotion() && SubBody->GetParentComponent() && SubBody->GetParentComponent()->IsPrescribedMotion()))
         {
             switch (SubBody->GetSubBodyType())
             {
             case ESubBodyType::Cylinder:
-                if(!IgnoredSubBodyTypes.Contains(ESubBodyType::Cylinder))ExternalCylinderSubBodies.AddUnique(Cast<UCylinderSubBody>(SubBody));
+                if(!IgnoredSubBodyTypesBodyDomainStorage().Contains(ESubBodyType::Cylinder))ExternalCylinderSubBodiesBodyDomainStorage().AddUnique(Cast<UCylinderSubBody>(SubBody));
                 break;
 			case ESubBodyType::Hitbox:
-				if (!IgnoredSubBodyTypes.Contains(ESubBodyType::Hitbox))
-				    ExternalBoxSubBodies.AddUnique(Cast<UBoxSubBody>(SubBody));
+				if (!IgnoredSubBodyTypesBodyDomainStorage().Contains(ESubBodyType::Hitbox))
+				    ExternalBoxSubBodiesBodyDomainStorage().AddUnique(Cast<UBoxSubBody>(SubBody));
 				break;
 			case ESubBodyType::Sphere:
-				if (!IgnoredSubBodyTypes.Contains(ESubBodyType::Sphere))
-				    ExternalSphereSubBodies.AddUnique(Cast<USphereSubBody>(SubBody));
+				if (!IgnoredSubBodyTypesBodyDomainStorage().Contains(ESubBodyType::Sphere))
+				    ExternalSphereSubBodiesBodyDomainStorage().AddUnique(Cast<USphereSubBody>(SubBody));
 				break;
 			case ESubBodyType::Wheel:
-				if (!IgnoredSubBodyTypes.Contains(ESubBodyType::Wheel))
-				    ExternalWheelSubBodies.AddUnique(Cast<USWheelSubBody>(SubBody));
+				if (!IgnoredSubBodyTypesBodyDomainStorage().Contains(ESubBodyType::Wheel))
+				    ExternalWheelSubBodiesBodyDomainStorage().AddUnique(Cast<USWheelSubBody>(SubBody));
 				break;
             }
         }
@@ -130,59 +210,114 @@ void USSubBody::RemoveExternalSubBodies(const TArray<USSubBody*>& SubBodies)
             switch (SubBody->GetSubBodyType())
             {
             case ESubBodyType::Cylinder:
-                ExternalCylinderSubBodies.Remove(Cast<UCylinderSubBody>(SubBody));break;
+                ExternalCylinderSubBodiesBodyDomainStorage().Remove(Cast<UCylinderSubBody>(SubBody));break;
             case ESubBodyType::Hitbox:
-                ExternalBoxSubBodies.Remove(Cast<UBoxSubBody>(SubBody));
+                ExternalBoxSubBodiesBodyDomainStorage().Remove(Cast<UBoxSubBody>(SubBody));
                 break;
             case ESubBodyType::Sphere:
-                ExternalSphereSubBodies.Remove(Cast<USphereSubBody>(SubBody));
+                ExternalSphereSubBodiesBodyDomainStorage().Remove(Cast<USphereSubBody>(SubBody));
                 break;
             case ESubBodyType::Wheel:
-                ExternalWheelSubBodies.Remove(Cast<USWheelSubBody>(SubBody));
+                ExternalWheelSubBodiesBodyDomainStorage().Remove(Cast<USWheelSubBody>(SubBody));
                 break;
             }
         }
     }
 }
 
-void USSubBody::UpdateKinematicsFromOwner(const SKinematic& ParentKinematic)
+namespace
+{
+Speed::FExactRotatorQuaternionCache& SubBodyLocalRotationCache()
+{
+    static thread_local Speed::FExactRotatorQuaternionCache Cache;
+    return Cache;
+}
+}
+
+class USSubBody::FLegacyBodyUpdateAccess final
+{
+    friend class USSubBody;USSubBody& Owner;
+    explicit FLegacyBodyUpdateAccess(USSubBody& Value):Owner(Value){}
+    FLegacyBodyUpdateAccess(const FLegacyBodyUpdateAccess&)=delete;
+    FLegacyBodyUpdateAccess& operator=(const FLegacyBodyUpdateAccess&)=delete;
+    FLegacyBodyUpdateAccess(FLegacyBodyUpdateAccess&&)=delete;
+    FLegacyBodyUpdateAccess& operator=(FLegacyBodyUpdateAccess&&)=delete;
+public:
+    FVector LocalOffset() const {return Owner.PhysicalLocalOffset();}
+    FRotator LocalEuler() const {return Owner.PhysicalLocalEulerRotation();}
+    SKinematic& Body() const {return Owner.KinematicsStorage();}
+};
+class USSubBody::FNativeBodyUpdateAccess final
+{
+    friend class USSubBody;USSubBody& Owner;
+    const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation;
+    explicit FNativeBodyUpdateAccess(USSubBody& Value,const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation):Owner(Value),Operation(Operation){(void)Actual();}
+    FNativeBodyUpdateAccess(const FNativeBodyUpdateAccess&)=delete;
+    FNativeBodyUpdateAccess& operator=(const FNativeBodyUpdateAccess&)=delete;
+    FNativeBodyUpdateAccess(FNativeBodyUpdateAccess&&)=delete;
+    FNativeBodyUpdateAccess& operator=(FNativeBodyUpdateAccess&&)=delete;
+    Speed::Netcode::Prediction::FPrivateRoadSubBodyValues& Actual() const {return Speed::Netcode::Prediction::FPrivateNativeStorageAccess::Part<Speed::Netcode::Prediction::FPrivateRoadSubBodyValues>(Operation,&Owner);}
+public:
+    FVector LocalOffset() const {return Actual().LocalPose.GetLocation();}
+    FRotator LocalEuler() const {return Actual().LocalEulerRotation;}
+    SKinematic& Body() const {return Actual().Kinematics;}
+};
+template<class TAccess>
+void USSubBody::UpdateKinematicsFromOwnerBody(TAccess& Storage,const SKinematic& ParentKinematic)
 {
 	// Reuse only pure local Euler conversion, independently on each calling lane.
 	// Do not share USceneComponent's mutable rotation cache with the game thread.
-	static thread_local Speed::FExactRotatorQuaternionCache LocalRotationCache;
-	auto RelativeLocationVar = GetRelativeLocation();
-	auto RelativeRotationVar = LocalRotationCache.Get(GetRelativeRotation());
+	auto& LocalRotationCache = SubBodyLocalRotationCache();
+	auto RelativeLocationVar = Storage.LocalOffset();
+	auto RelativeRotationVar = LocalRotationCache.Get(Storage.LocalEuler());
  // Preserve this exact native cache access even when completed base arithmetic
  // can be reused. Failed value/FP validation leaves the original path intact.
  if(Speed::FrameParallel::TryConsumeJoinedActorBase1430(*this,ParentKinematic,
-     RelativeLocationVar,RelativeRotationVar,Kinematics))return;
+     RelativeLocationVar,RelativeRotationVar,Storage.Body()))return;
 	const FVector WorldOffset = ParentKinematic.Rotation.RotateVector(RelativeLocationVar);
-	Kinematics.Location = ParentKinematic.Location + WorldOffset;
-	Kinematics.Velocity = ParentKinematic.Velocity + FVector::CrossProduct(ParentKinematic.AngularVelocity, WorldOffset);
-	Kinematics.Acceleration = ParentKinematic.Acceleration +
+	Storage.Body().Location = ParentKinematic.Location + WorldOffset;
+	Storage.Body().Velocity = ParentKinematic.Velocity + FVector::CrossProduct(ParentKinematic.AngularVelocity, WorldOffset);
+	Storage.Body().Acceleration = ParentKinematic.Acceleration +
         FVector::CrossProduct(ParentKinematic.AngularAcceleration, WorldOffset) +
         FVector::CrossProduct(ParentKinematic.AngularVelocity, FVector::CrossProduct(ParentKinematic.AngularVelocity, WorldOffset));
-    Kinematics.Rotation = ParentKinematic.Rotation * RelativeRotationVar;
-	Kinematics.AngularVelocity = ParentKinematic.AngularVelocity;
-	Kinematics.AngularAcceleration = ParentKinematic.AngularAcceleration;
+    Storage.Body().Rotation = ParentKinematic.Rotation * RelativeRotationVar;
+	Storage.Body().AngularVelocity = ParentKinematic.AngularVelocity;
+	Storage.Body().AngularAcceleration = ParentKinematic.AngularAcceleration;
 }
+
+void USSubBody::UpdateKinematicsFromOwner(const SKinematic& ParentKinematic)
+{
+    FLegacyBodyUpdateAccess Storage(*this);
+    UpdateKinematicsFromOwnerBody(Storage,ParentKinematic);
+}
+void USSubBody::UpdateNativeBaseKinematicsFromOwner(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const SKinematic& ParentKinematic)
+{
+    FNativeBodyUpdateAccess Storage(*this,Operation);
+    UpdateKinematicsFromOwnerBody(Storage,ParentKinematic);
+}
+void USSubBody::UpdateNativeKinematicsFromOwner(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const SKinematic& ParentKinematic)
+{
+    (void)Operation;(void)ParentKinematic;
+    throw Speed::Netcode::Prediction::FPrivateNativeStorageUnavailable{};
+}
+
 
 bool USSubBody::SweepTOI(const float& RemainingDelta, float& OutTOI)
 {
     OutTOI = RemainingDelta;
-    FutureHit = SHitResult();
+    FutureHitStorage() = SHitResult();
 
-    const FVector Start = Kinematics.Location;
+    const FVector Start = KinematicsStorage().Location;
     const FVector End =
         Start +
-        Kinematics.Velocity * RemainingDelta +
-        0.5f * Kinematics.Acceleration * RemainingDelta * RemainingDelta;
+        KinematicsStorage().Velocity * RemainingDelta +
+        0.5f * KinematicsStorage().Acceleration * RemainingDelta * RemainingDelta;
 
-    if (!InternalSweep(Start, End, FutureHit, RemainingDelta))
+    if (!InternalSweep(Start, End, FutureHitStorage(), RemainingDelta))
         return false;
 
     // Convert normalized Hit.Time (0..1) to true TOI (seconds)
-    OutTOI = FutureHit.TOI;
+    OutTOI = FutureHitStorage().TOI;
     OutTOI = FMath::Clamp(OutTOI, 0.f, RemainingDelta);
 
     return true;
@@ -192,25 +327,29 @@ void USSubBody::AdvanceToTOI(const float& t)
 {
     // Integrate Kinematics to time t
     if (t > 0.f)
-        Kinematics = Kinematics.Integrate(t);
+        KinematicsStorage() = KinematicsStorage().Integrate(t);
 }
 
+void USSubBody::AcceptNativeHit(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation)
+{
+    (void)Operation;throw Speed::Netcode::Prediction::FPrivateNativeStorageUnavailable{};
+}
 void USSubBody::AcceptHit()
 {
-    CurrentHit = FutureHit;
-    FutureHit = SHitResult();
+    CurrentHitStorage() = FutureHitStorage();
+    FutureHitStorage() = SHitResult();
 
-    if (CurrentHit.SubBody.IsValid())
+    if (CurrentHitStorage().SubBody.IsValid())
     {
-        USSubBody* OtherSubBody = CurrentHit.SubBody.Get();
-        IgnoredComponents.AddUnique(OtherSubBody);
+        USSubBody* OtherSubBody = CurrentHitStorage().SubBody.Get();
+        IgnoredComponentsBodyDomainStorage().AddUnique(OtherSubBody);
 
         // Do NOT blindly accept OtherSubBody->FutureHit.
         // It may be an unrelated hit, e.g. Hitbox vs Stadium while Sensor vs Hitbox is being resolved.
 
-        if (OtherSubBody->WillHit())
+        if (Speed::NativeKinematics::FBodyRead::WillHit(*OtherSubBody))
         {
-            const SHitResult& OtherFutureHit = OtherSubBody->GetFutureHit();
+            const SHitResult& OtherFutureHit = Speed::NativeKinematics::FBodyRead::FutureHit(*OtherSubBody);
 
             const bool bIsReciprocal =
                 OtherFutureHit.SubBody.Get() == this ||
@@ -227,20 +366,20 @@ void USSubBody::AcceptHit()
             }
         }
     }
-    else if (CurrentHit.Component.IsValid())
+    else if (CurrentHitStorage().Component.IsValid())
     {
-        IgnoredComponents.AddUnique(CurrentHit.Component.Get());
+        IgnoredComponentsBodyDomainStorage().AddUnique(CurrentHitStorage().Component.Get());
     }
 }
 
 bool USSubBody::ComponentHasBeenIgnored(const UPrimitiveComponent& OtherComp) const
 {
-	return IgnoredComponents.Contains(&OtherComp);
+	return IgnoredComponentsBodyDomainStorage().Contains(&OtherComp);
 }
 
 void USSubBody::ResolveCurrentHit(const float& delta, const float& SimTime)
 {
-    if (CurrentHit.bBlockingHit)
+    if (CurrentHitStorage().bBlockingHit)
         ResolveCurrentHitPrv(delta, SimTime);
 }
 
@@ -255,7 +394,7 @@ bool USSubBody::InternalSweep(const FVector& Start, const FVector& End, SHitResu
 	const bool bUsedAnalyticAuthority =
 		Speed::Analytic::FStaticWorldQueryAudit::TryCompactAuthoritySingle(
 		World,
-		Start, End, Kinematics.Rotation, GetCollisionShape(),
+		Start, End, KinematicsStorage().Rotation, GetCollisionShape(),
 		static_cast<uint8>(GetCollisionChannel()), GetResponseParams(), Hit, bHit,
 		&AnalyticHit);
 	if (!bUsedAnalyticAuthority)
@@ -263,12 +402,12 @@ bool USSubBody::InternalSweep(const FVector& Start, const FVector& End, SHitResu
 		const FCollisionQueryParams Params = BuildTraceParams();
 		Speed::Analytic::FStaticWorldQueryAudit::RecordLegacySweep();
 		bHit = World->SweepSingleByChannel(Hit, Start, End,
-			Kinematics.Rotation, GetCollisionChannel(), GetCollisionShape(),
+			KinematicsStorage().Rotation, GetCollisionChannel(), GetCollisionShape(),
 			Params, GetResponseParams());
 	}
 	Speed::Analytic::FStaticWorldQueryAudit::RecordSingle(
 		Speed::Analytic::EStaticQuerySite::SubBodySweep,
-		Start, End, Kinematics.Rotation, GetCollisionShape(),
+		Start, End, KinematicsStorage().Rotation, GetCollisionShape(),
 		static_cast<uint8>(GetCollisionChannel()), GetResponseParams(), bHit, Hit);
 
 	OutHit = SHitResult();
@@ -277,7 +416,7 @@ bool USSubBody::InternalSweep(const FVector& Start, const FVector& End, SHitResu
     if (bHit)
     {
 		OutHit = bUsedAnalyticAuthority
-			? SHitResult::FromAnalyticHit(AnalyticHit, delta, Hit.Component.Get())
+			? SHitResult::FromAnalyticHit(AnalyticHit, delta, Hit.Component)
 			: SHitResult::FromUnrealHit(Hit, delta);
     }
 	return bHit;
@@ -288,7 +427,7 @@ FCollisionQueryParams USSubBody::BuildTraceParams() const
     FCollisionQueryParams Params(NAME_None, false);
     Params.bReturnFaceIndex = true;
     Params.bReturnPhysicalMaterial = true;
-	Params.AddIgnoredComponents(IgnoredComponents);
+	Params.AddIgnoredComponents(IgnoredComponentsBodyDomainStorage());
     return Params;
 }
 
@@ -333,17 +472,25 @@ USSubBody* USSubBody::PickResolver(USSubBody* A, USSubBody* B)
 
 const TArray<TWeakObjectPtr<UBoxSubBody>>& USSubBody::GetExternalBoxSubBodies() const
 {
-    return ExternalBoxSubBodies;
+    return ExternalBoxSubBodiesBodyDomainStorage();
 }
 
 const TArray<TWeakObjectPtr<USphereSubBody>>& USSubBody::GetExternalSphereSubBodies() const
 {
-    return ExternalSphereSubBodies;
+    return ExternalSphereSubBodiesBodyDomainStorage();
 }
 
 const TArray<TWeakObjectPtr<USWheelSubBody>>& USSubBody::GetExternalWheelSubBodies() const
 {
-    return ExternalWheelSubBodies;
+    return ExternalWheelSubBodiesBodyDomainStorage();
 }
 
 
+
+// Unsupported native dispatch stays closed. No public operation issuer.
+void USSubBody::ValidateNativeResetFrame(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation) const
+{(void)Operation;throw Speed::Netcode::Prediction::FPrivateNativeStorageUnavailable{};}
+void USSubBody::ResetNativeForFrame(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const float& Delta)
+{(void)Operation;(void)Delta;throw Speed::Netcode::Prediction::FPrivateNativeStorageUnavailable{};}
+void USSubBody::ResolveNativeCurrentHit(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const float& Delta,const float& SimTime)
+{(void)Operation;(void)Delta;(void)SimTime;throw Speed::Netcode::Prediction::FPrivateNativeStorageUnavailable{};}

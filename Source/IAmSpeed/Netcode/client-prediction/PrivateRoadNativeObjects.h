@@ -1,0 +1,940 @@
+#pragma once
+#include "CoreMinimal.h"
+#include "IAmSpeed/Actors/SpeedCar.h"
+#include "IAmSpeed/Components/SpeedWheeledComponent.h"
+#include "IAmSpeed/World/Simulation/SpeedPhysicsSimulation.h"
+#include "IAmSpeed/SubBodies/Solid/BoxSubBody.h"
+#include "IAmSpeed/SubBodies/Solid/SWheelSubBody.h"
+#include <memory>
+#include "PrivateRoadNativeObjects.generated.h"
+namespace Speed::Netcode::Prediction { struct FPrivateRoadAccess;class FPrivateRoadPhysicsWorld;class FPrivateNativeOperation; }
+namespace Speed::CommonState {struct FSleepValues;struct FQuantizationValues;}
+class USpeedWorldSubsystem;
+namespace Speed::Netcode::Prediction
+{
+// Actual original birth identities only; no physical-state capture, completeness
+// mask, source/lifetime lease or authority outside the private original map.
+class FPrivateRoadBirthIdentities final{
+    friend class FPrivateRoadPhysicsWorld;
+    friend class ::USpeedWheeledComponent;
+    const TWeakObjectPtr<AActor> Actor;
+    const TWeakObjectPtr<USpeedWheeledComponent> Component;
+    const TWeakObjectPtr<UBoxSubBody> Hitbox;
+    const TArray<TWeakObjectPtr<USWheelSubBody>> WheelBodies;
+    const TArray<TWeakObjectPtr<UChaosVehicleWheel>> WheelConfigurations;
+    const TWeakObjectPtr<UClass> WheelClass;
+
+    // The owner factory supplies its existing captured weak births, copying
+    // weak identity/index/serial directly. No raw-to-weak reconstruction.
+    FPrivateRoadBirthIdentities(const TWeakObjectPtr<AActor>& ActualActor,
+        const TWeakObjectPtr<USpeedWheeledComponent>& ActualComponent,
+        const TWeakObjectPtr<UBoxSubBody>& ActualHitbox,
+        const TArray<TWeakObjectPtr<USWheelSubBody>>& ActualWheelBodies,
+        const TArray<TWeakObjectPtr<UChaosVehicleWheel>>& ActualConfigurations,
+        const TWeakObjectPtr<UClass>& ActualWheelClass)
+      :Actor(ActualActor),Component(ActualComponent),Hitbox(ActualHitbox),
+       WheelBodies(ActualWheelBodies),WheelConfigurations(ActualConfigurations),
+       WheelClass(ActualWheelClass) {}
+public:
+    ~FPrivateRoadBirthIdentities()=default;
+    FPrivateRoadBirthIdentities(const FPrivateRoadBirthIdentities&)=delete;
+    FPrivateRoadBirthIdentities& operator=(const FPrivateRoadBirthIdentities&)=delete;
+    FPrivateRoadBirthIdentities(FPrivateRoadBirthIdentities&&)=delete;
+    FPrivateRoadBirthIdentities& operator=(FPrivateRoadBirthIdentities&&)=delete;
+};
+
+// Call-scoped EARLY reference owner witness. It contains actual pre-vehicle
+// weak births and the retained factory root, never a late vehicle allocation.
+class FPrivateReferenceOwnerBirth final
+{
+    friend class FPrivateRoadPhysicsWorld;
+    friend class ::USpeedWheeledComponent;
+    friend class ::USSubBody;friend class ::USolidSubBody;friend class ::USphereSubBody;
+    friend class ::UBoxSubBody;friend class ::USWheelSubBody;
+    void RequireInitializerBody(const FPrivateNativeOperation&,const USSubBody&,ISpeedComponent*) const;
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+    mutable uint32 DiagnosticInitializerSubjectChecks=0; // actual successful checks only, no permission
+#endif
+
+    const std::shared_ptr<void> ActualRoot;
+    const TWeakObjectPtr<UWorld> World;
+    const TWeakObjectPtr<USpeedWorldSubsystem> Bridge;
+    const TWeakObjectPtr<AActor> Actor;
+    const TWeakObjectPtr<USpeedWheeledComponent> Component;
+    const TWeakObjectPtr<UBoxSubBody> Hitbox;
+    const TArray<TWeakObjectPtr<USWheelSubBody>> Bodies;
+    FPrivateReferenceOwnerBirth(const std::shared_ptr<void>& Root,
+        const TWeakObjectPtr<UWorld>& WorldBirth,
+        const TWeakObjectPtr<USpeedWorldSubsystem>& BridgeBirth,
+        const TWeakObjectPtr<AActor>& ActorBirth,
+        const TWeakObjectPtr<USpeedWheeledComponent>& ComponentBirth,
+        const TWeakObjectPtr<UBoxSubBody>& HitboxBirth,
+        const TArray<TWeakObjectPtr<USWheelSubBody>>& BodyBirths)
+      :ActualRoot(Root),World(WorldBirth),Bridge(BridgeBirth),Actor(ActorBirth),Component(ComponentBirth),
+       Hitbox(HitboxBirth),Bodies(BodyBirths) {}
+public:
+    ~FPrivateReferenceOwnerBirth()=default;
+    FPrivateReferenceOwnerBirth(const FPrivateReferenceOwnerBirth&)=delete;
+    FPrivateReferenceOwnerBirth& operator=(const FPrivateReferenceOwnerBirth&)=delete;
+    FPrivateReferenceOwnerBirth(FPrivateReferenceOwnerBirth&&)=delete;
+    FPrivateReferenceOwnerBirth& operator=(FPrivateReferenceOwnerBirth&&)=delete;
+};
+
+// Birth-call-scoped witness of the real REFERENCE allocation made by the factory.
+// Private construction only; not an Op issuer, source/lifetime lease or snapshot.
+namespace RetirementDraft {struct FVehicleConfiguration;}
+class FPrivateReferenceWheelBindingBirth final
+{
+    friend class FPrivateRoadPhysicsWorld;
+    friend class ::USpeedWheeledComponent;
+    const std::shared_ptr<void> ActualRoot;
+    const TWeakObjectPtr<AActor> Actor;
+    const TWeakObjectPtr<USpeedWheeledComponent> Component;
+    Chaos::FSimpleWheeledVehicle* const Vehicle;
+    const void* const Simulation;
+    const Chaos::FSimpleWheelSim* const WheelBase;
+    const Chaos::FSimpleSuspensionSim* const SuspensionBase;
+    const int32 WheelCount,SuspensionCount;
+    const std::shared_ptr<RetirementDraft::FVehicleConfiguration> Configuration;
+    const TArray<TWeakObjectPtr<USWheelSubBody>> Bodies;
+    const TArray<TWeakObjectPtr<UChaosVehicleWheel>> Configurations;
+    FPrivateReferenceWheelBindingBirth(const std::shared_ptr<void>& Root,
+        const TWeakObjectPtr<AActor>& ActualActor,
+        const TWeakObjectPtr<USpeedWheeledComponent>& ActualComponent,
+        Chaos::FSimpleWheeledVehicle* AllocationBeforeInit,const void* SimulationBeforeInit,
+        const Chaos::FSimpleWheelSim* WheelsBeforeInit,int32 NumWheelsBeforeInit,
+        const Chaos::FSimpleSuspensionSim* SuspensionBeforeInit,int32 NumSuspensionBeforeInit,
+        const std::shared_ptr<RetirementDraft::FVehicleConfiguration>& ActualConfiguration,
+        const TArray<TWeakObjectPtr<USWheelSubBody>>& ActualBodyBirths,
+        const TArray<TWeakObjectPtr<UChaosVehicleWheel>>& ActualConfigurationBirths)
+      :ActualRoot(Root),Actor(ActualActor),Component(ActualComponent),Vehicle(AllocationBeforeInit),
+       Simulation(SimulationBeforeInit),WheelBase(WheelsBeforeInit),SuspensionBase(SuspensionBeforeInit),
+       WheelCount(NumWheelsBeforeInit),SuspensionCount(NumSuspensionBeforeInit),
+       Configuration(ActualConfiguration),Bodies(ActualBodyBirths),Configurations(ActualConfigurationBirths) {}
+public:
+    ~FPrivateReferenceWheelBindingBirth()=default;
+    FPrivateReferenceWheelBindingBirth(const FPrivateReferenceWheelBindingBirth&)=delete;
+    FPrivateReferenceWheelBindingBirth& operator=(const FPrivateReferenceWheelBindingBirth&)=delete;
+    FPrivateReferenceWheelBindingBirth(FPrivateReferenceWheelBindingBirth&&)=delete;
+    FPrivateReferenceWheelBindingBirth& operator=(FPrivateReferenceWheelBindingBirth&&)=delete;
+};
+
+// Seven declared value blocks only. Shape configuration, parent/registry,
+// ignored/external lists, solid/wheel/suspension extra state remain separate.
+struct FPrivateRoadSubBodyValues
+{
+    FTransform LocalPose=FTransform::Identity;
+    // Authored original local Euler value, not imported from a facade. Retain
+    // it separately: a quaternion round trip can change the native bits.
+    FRotator LocalEulerRotation=FRotator::ZeroRotator;
+    ISpeedComponent* ParentComponent=nullptr;
+    USSubBody::ESubBodyType SubBodyType=USSubBody::ESubBodyType::Unknown;
+    ECollisionChannel CollisionChannel=ECC_WorldDynamic;
+    FCollisionResponseParams ResponseParams{};
+    TArray<UPrimitiveComponent*> AlwaysIgnoredComponents{};
+    TArray<UPrimitiveComponent*> IgnoredComponents{};
+    TArray<USSubBody::ESubBodyType> IgnoredSubBodyTypes{};
+    TArray<TWeakObjectPtr<UBoxSubBody>> ExternalBoxSubBodies{};
+    TArray<TWeakObjectPtr<USphereSubBody>> ExternalSphereSubBodies{};
+    TArray<TWeakObjectPtr<USWheelSubBody>> ExternalWheelSubBodies{};
+    TArray<TWeakObjectPtr<UCylinderSubBody>> ExternalCylinderSubBodies{};
+    Speed::FKinematicState Kinematics;
+    SHitResult FutureHit;
+    SHitResult CurrentHit;
+    SHitResult GroundHit;
+    SHitResult BoxHit;
+    SHitResult SphereHit;
+    SHitResult WheelHit;
+ };
+// Declared solid values only. No complete reference/configuration closure.
+struct FPrivateRoadBoxDomain
+{
+    FVector BoxExtent=FVector(32.f,32.f,32.f);
+    bool bProductionNonpenetratingSphereContacts=false;
+    TArray<FVector> CurrentGroundContactsWS{};
+    TArray<FVector> PreviousFrameGroundContactsWS{};
+    TArray<FVector> CurrentGroundNormalsWS{};
+    TArray<FVector> PrevGroundContactsLS{};
+    TArray<FVector> LatchedEdgeContactsLS{};
+    bool bEdgeSupportLatched=false;
+    int32 EdgeSupportLatchFrame=-1;
+    bool bRoofSurfaceTraversalLatched=false;
+    int32 LastRoofSurfaceContactFrame=INDEX_NONE;
+    TWeakObjectPtr<UPrimitiveComponent> RoofSurfaceComp{};
+    FVector CompositeGroundNormal=FVector::ZeroVector;
+    TMap<TWeakObjectPtr<UPrimitiveComponent>, uint32> HitCountThisFrame{};
+    uint32 MaxHitsPerComponentPerFrame=4;
+    TArray<float> PrevLambdaN{};
+    bool bGroundContactStable=false;
+    int32 LastResolvedGroundHitFrame=INDEX_NONE;
+    bool bHasGroundContact=false;
+    bool bFreshEdgeRecoverCandidate=false;
+    float StableTime=0.f;
+    bool bGroundHitFromSweep=false;
+    bool bGroundPlaneValid=false;
+    FVector GroundPlanePointWS=FVector::ZeroVector;
+    FVector GroundPlaneN=FVector::UpVector;
+    float GroundPlaneD=0.f;
+    TWeakObjectPtr<UPrimitiveComponent> GroundComp{};
+    uint64 EstablishedSupportSourceId=0;
+    uint64 EstablishedSupportSurfaceId=0;
+    int32 FreshSupportClampUntilFrame=INDEX_NONE;
+    FVector FreshSupportClampN=FVector::UpVector;
+    TWeakObjectPtr<UPrimitiveComponent> FreshSupportClampComp{};
+    FVector PrevGroundNormal=FVector::UpVector;
+    bool bHadGroundContactPrevFrame=false;
+    FVector PrevContactNormal=FVector::UpVector;
+    bool bHadContactPrevFrame=false;
+    float MinSlopCm=0.05f;
+    int32 LastWallOrGutterFrame=INDEX_NONE;
+    FVector LastWallOrGutterN=FVector::ZeroVector;
+    float LastWallOrGutterUpDot=0.f;
+    SHitResult LastResolvedSphereHit{};
+    int32 LastResolvedSphereHitFrame=INDEX_NONE;
+};
+struct FPrivateRoadWheelDomain
+{
+    ISpeedWheeledComponent* WheelComponent=nullptr;
+    UChaosVehicleWheel* ChaosWheel=nullptr;
+    Chaos::FSimpleWheelSim* PWheel=nullptr;
+    Chaos::FSimpleSuspensionSim* PSuspension=nullptr;
+    float WheelMass=USWheelSubBody::DefaultWheelMass;
+    float SuspensionSpringRate=2750.0f;
+    float SuspensionDampingCompressionRatio=0.3f;
+    float SuspensionDampingReboundRatio=0.5f;
+    bool bUseSuspensionForceModelOverride=false;
+    bool bClampSuspensionForceToPositive=false;
+    bool bClampPositiveUntilFirstCompression=false;
+    bool bUseEffectiveSuspensionSweepRadius=false;
+    bool bUseIncreasingDisplacementAsCompression=false;
+    bool bUseCompressionCrossingContactImpulse=false;
+    uint8 GroundForceApplicationMode=0;
+    uint8 ContactImpulseApplicationMode=0;
+    float SuspensionStiffnessForceScale=1.0f;
+    float SuspensionStiffnessReferenceDisplacement=0.0f;
+    float SuspensionPreRestCompressionDampingScale=-1.0f;
+    bool bClampNegativeSuspensionDisplacement=false;
+    bool bDisableSuspensionBumpStopForce=false;
+    float SuspensionSpringRateCmOverride=0.0f;
+    float SuspensionCompressionDampingOverride=0.0f;
+    float SuspensionReboundDampingOverride=0.0f;
+    float SuspensionMaxRaiseOverride=-1.0f;
+    float SuspensionMaxDropOverride=-1.0f;
+    float ConfiguredStaticSpringCompression=0.0f;
+};
+struct FPrivateRoadSphereDomain {float Radius=0.f;};
+struct FPrivateRoadSolidValues
+{
+    float Mass=1.0f;
+    bool bIsMainSubBody=false;
+    bool bApplyRestForce=true;
+    bool EnableFakePhysics=false;
+    bool bEnableConstraintOnSubBodyHit=false;
+    float Restitution=0.0f;
+    float SphereBoxRestitutionOverride=-1.0f;
+    float SphereBoxFrictionOverride=-1.0f;
+    float SphereBoxManifoldFrictionOverride=-1.0f;
+    bool bUseCoupledContactImpulse=false;
+    bool bUsePostNormalFrictionImpulse=false;
+    bool bUsePersistentBilateralContact=false;
+    float CoupledContactMaxLinearSpeed=-1.0f;
+    float CoupledContactMaxAngularSpeed=-1.0f;
+    float CoupledContactMaxAbsLocalNormalY=-1.0f;
+    float StaticFriction=0.0f;
+    float DynamicFriction=0.0f;
+    float ImpactThreshold=0.0f;
+    float HitDamping=1.0f;
+    FMatrix InvInertiaLocal=FMatrix::Identity;
+    int idx=-1;
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+    // Actual immediate native Birth mass-store return observations only. These
+    // never authorize access or certify complete physical/lifetime state.
+    uint32 DiagnosticBirthMassValueReturns=0;
+    uint32 DiagnosticBirthMassConfigReturns=0,DiagnosticBirthMassValidConfigReturns=0;
+    uint32 DiagnosticBirthMassRequestedBits=0,DiagnosticBirthMassObservedBits=0;
+#endif
+};
+// Declared runtime values only, not configuration or a complete wheel checkpoint.
+struct FPrivateRoadWheelRuntimeValues
+{
+    float SuspensionForce=0.0f;
+    uint8 bIsJumping=0;
+    bool bJumpUnilateralSupport=false;
+    uint8 ConsecutiveGroundFrames=0;
+    float SteeringAngle=0.0f;
+    float Omega=0.0f;
+    float RollAngle=0.0f;
+    bool bWasOnGroundPrevFrame=false;
+    bool bCountedGroundFrame=false;
+    bool bContactVelocityLocked=false;
+    bool bCrossedIntoCompressionThisFrame=false;
+    FVector ForwardAxis=FVector::ForwardVector;
+    FVector RightAxis=FVector::RightVector;
+    FVector UpAxis=FVector::UpVector;
+    SWheelRenderData RenderData;
+};
+
+}
+
+
+// Only the private physical factory selects this default subobject subtype.
+// Observe the real native dispatch; do not add impulses or optional constraints.
+UCLASS(NotBlueprintable,Transient)
+class IAMSPEED_API USpeedBranchBoxSubBody final : public UBoxSubBody
+{
+    GENERATED_BODY()
+private:
+    const Speed::FKinematicState& PublicKinematicView() const override { return Kinematics; }
+    const SHitResult& PublicCurrentHitView() const override { return CurrentHit; }
+    const SHitResult& PublicFutureHitView() const override { return FutureHit; }
+    SHitResult& PublicCurrentHitMutableView() override { return CurrentHit; }
+    SHitResult& PublicFutureHitMutableView() override { return FutureHit; }
+    const float& PublicMassView() const override { return Mass; }
+    float& PublicMassMutableView() override { return Mass; }
+    const int& PublicSolid_idxStorage() const override { return idx; }
+    int& PublicSolid_idxStorage() override { return idx; }
+    const bool& PublicSolid_bIsMainSubBodyStorage() const override { return bIsMainSubBody; }
+    bool& PublicSolid_bIsMainSubBodyStorage() override { return bIsMainSubBody; }
+    const bool& PublicSolid_bApplyRestForceStorage() const override { return bApplyRestForce; }
+    bool& PublicSolid_bApplyRestForceStorage() override { return bApplyRestForce; }
+    const bool& PublicSolid_EnableFakePhysicsStorage() const override { return EnableFakePhysics; }
+    bool& PublicSolid_EnableFakePhysicsStorage() override { return EnableFakePhysics; }
+    const float& PublicSolid_RestitutionStorage() const override { return Restitution; }
+    float& PublicSolid_RestitutionStorage() override { return Restitution; }
+    const float& PublicSolid_SphereBoxRestitutionOverrideStorage() const override { return SphereBoxRestitutionOverride; }
+    float& PublicSolid_SphereBoxRestitutionOverrideStorage() override { return SphereBoxRestitutionOverride; }
+    const float& PublicSolid_SphereBoxFrictionOverrideStorage() const override { return SphereBoxFrictionOverride; }
+    float& PublicSolid_SphereBoxFrictionOverrideStorage() override { return SphereBoxFrictionOverride; }
+    const float& PublicSolid_SphereBoxManifoldFrictionOverrideStorage() const override { return SphereBoxManifoldFrictionOverride; }
+    float& PublicSolid_SphereBoxManifoldFrictionOverrideStorage() override { return SphereBoxManifoldFrictionOverride; }
+    const bool& PublicSolid_bUseCoupledContactImpulseStorage() const override { return bUseCoupledContactImpulse; }
+    bool& PublicSolid_bUseCoupledContactImpulseStorage() override { return bUseCoupledContactImpulse; }
+    const bool& PublicSolid_bUsePostNormalFrictionImpulseStorage() const override { return bUsePostNormalFrictionImpulse; }
+    bool& PublicSolid_bUsePostNormalFrictionImpulseStorage() override { return bUsePostNormalFrictionImpulse; }
+    const bool& PublicSolid_bUsePersistentBilateralContactStorage() const override { return bUsePersistentBilateralContact; }
+    bool& PublicSolid_bUsePersistentBilateralContactStorage() override { return bUsePersistentBilateralContact; }
+    const float& PublicSolid_CoupledContactMaxLinearSpeedStorage() const override { return CoupledContactMaxLinearSpeed; }
+    float& PublicSolid_CoupledContactMaxLinearSpeedStorage() override { return CoupledContactMaxLinearSpeed; }
+    const float& PublicSolid_CoupledContactMaxAngularSpeedStorage() const override { return CoupledContactMaxAngularSpeed; }
+    float& PublicSolid_CoupledContactMaxAngularSpeedStorage() override { return CoupledContactMaxAngularSpeed; }
+    const float& PublicSolid_CoupledContactMaxAbsLocalNormalYStorage() const override { return CoupledContactMaxAbsLocalNormalY; }
+    float& PublicSolid_CoupledContactMaxAbsLocalNormalYStorage() override { return CoupledContactMaxAbsLocalNormalY; }
+    const float& PublicSolid_StaticFrictionStorage() const override { return StaticFriction; }
+    float& PublicSolid_StaticFrictionStorage() override { return StaticFriction; }
+    const float& PublicSolid_DynamicFrictionStorage() const override { return DynamicFriction; }
+    float& PublicSolid_DynamicFrictionStorage() override { return DynamicFriction; }
+    const float& PublicSolid_ImpactThresholdStorage() const override { return ImpactThreshold; }
+    float& PublicSolid_ImpactThresholdStorage() override { return ImpactThreshold; }
+    const float& PublicSolid_HitDampingStorage() const override { return HitDamping; }
+    float& PublicSolid_HitDampingStorage() override { return HitDamping; }
+    const Speed::FKinematicState& ReadPhysicsSweeperKinematics() const override;
+    friend class Speed::Netcode::Prediction::FPrivateRoadPhysicsWorld;
+    std::weak_ptr<Speed::Netcode::Prediction::FPrivateRoadAccess> StorageAccess;
+    std::shared_ptr<Speed::Netcode::Prediction::FPrivateRoadSubBodyValues> OwnedBodyValues;
+    bool UsesOriginalBodyStorage() const;
+    friend class USpeedWheeledComponent;
+    TWeakObjectPtr<USSubBody> OriginalBodyIdentity; // private, copied once by actual birth owner
+    TWeakObjectPtr<USSubBody> GetPhysicsWeakIdentity() const override;
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+    Speed::Netcode::Prediction::FPrivateRoadSolidValues ReadLegacySolidDiagnosticValues() const;
+#endif
+    std::shared_ptr<Speed::Netcode::Prediction::FPrivateRoadSolidValues> OwnedSolidValues;
+    float& MassSolidStorage() override;
+    float const& MassSolidStorage() const override;
+    bool& bIsMainSubBodySolidStorage() override;
+    bool const& bIsMainSubBodySolidStorage() const override;
+    bool& bApplyRestForceSolidStorage() override;
+    bool const& bApplyRestForceSolidStorage() const override;
+    bool& EnableFakePhysicsSolidStorage() override;
+    bool const& EnableFakePhysicsSolidStorage() const override;
+    bool& bEnableConstraintOnSubBodyHitSolidStorage() override;
+    bool const& bEnableConstraintOnSubBodyHitSolidStorage() const override;
+    float& RestitutionSolidStorage() override;
+    float const& RestitutionSolidStorage() const override;
+    float& SphereBoxRestitutionOverrideSolidStorage() override;
+    float const& SphereBoxRestitutionOverrideSolidStorage() const override;
+    float& SphereBoxFrictionOverrideSolidStorage() override;
+    float const& SphereBoxFrictionOverrideSolidStorage() const override;
+    float& SphereBoxManifoldFrictionOverrideSolidStorage() override;
+    float const& SphereBoxManifoldFrictionOverrideSolidStorage() const override;
+    bool& bUseCoupledContactImpulseSolidStorage() override;
+    bool const& bUseCoupledContactImpulseSolidStorage() const override;
+    bool& bUsePostNormalFrictionImpulseSolidStorage() override;
+    bool const& bUsePostNormalFrictionImpulseSolidStorage() const override;
+    bool& bUsePersistentBilateralContactSolidStorage() override;
+    bool const& bUsePersistentBilateralContactSolidStorage() const override;
+    float& CoupledContactMaxLinearSpeedSolidStorage() override;
+    float const& CoupledContactMaxLinearSpeedSolidStorage() const override;
+    float& CoupledContactMaxAngularSpeedSolidStorage() override;
+    float const& CoupledContactMaxAngularSpeedSolidStorage() const override;
+    float& CoupledContactMaxAbsLocalNormalYSolidStorage() override;
+    float const& CoupledContactMaxAbsLocalNormalYSolidStorage() const override;
+    float& StaticFrictionSolidStorage() override;
+    float const& StaticFrictionSolidStorage() const override;
+    float& DynamicFrictionSolidStorage() override;
+    float const& DynamicFrictionSolidStorage() const override;
+    float& ImpactThresholdSolidStorage() override;
+    float const& ImpactThresholdSolidStorage() const override;
+    float& HitDampingSolidStorage() override;
+    float const& HitDampingSolidStorage() const override;
+    FMatrix& InvInertiaLocalSolidStorage() override;
+    FMatrix const& InvInertiaLocalSolidStorage() const override;
+    int& idxSolidStorage() override;
+    int const& idxSolidStorage() const override;
+
+    Speed::FKinematicState& KinematicsStorage() override;
+    Speed::FKinematicState const& KinematicsStorage() const override;
+    SHitResult& FutureHitStorage() override;
+    SHitResult const& FutureHitStorage() const override;
+    SHitResult& CurrentHitStorage() override;
+    SHitResult const& CurrentHitStorage() const override;
+    SHitResult& GroundHitStorage() override;
+    SHitResult const& GroundHitStorage() const override;
+    SHitResult& BoxHitStorage() override;
+    SHitResult const& BoxHitStorage() const override;
+    SHitResult& SphereHitStorage() override;
+    SHitResult const& SphereHitStorage() const override;
+    SHitResult& WheelHitStorage() override;
+    SHitResult const& WheelHitStorage() const override;    FVector PhysicalLocalOffset() const override;
+    FQuat PhysicalLocalRotation() const override;
+    FRotator PhysicalLocalEulerRotation() const override;
+    void SetPhysicalLocalRotation(const FQuat&) override;
+    FTransform PhysicalLocalPose() const override;
+    void SetPhysicalLocalOffset(const FVector&) override;
+    ISpeedComponent*& ParentComponentBodyDomainStorage() override;
+    ISpeedComponent* const& ParentComponentBodyDomainStorage() const override;
+    ESubBodyType& SubBodyTypeBodyDomainStorage() override;
+    ESubBodyType const& SubBodyTypeBodyDomainStorage() const override;
+    ECollisionChannel& CollisionChannelBodyDomainStorage() override;
+    ECollisionChannel const& CollisionChannelBodyDomainStorage() const override;
+    FCollisionResponseParams& ResponseParamsBodyDomainStorage() override;
+    FCollisionResponseParams const& ResponseParamsBodyDomainStorage() const override;
+    TArray<UPrimitiveComponent*>& AlwaysIgnoredComponentsBodyDomainStorage() override;
+    TArray<UPrimitiveComponent*> const& AlwaysIgnoredComponentsBodyDomainStorage() const override;
+    TArray<UPrimitiveComponent*>& IgnoredComponentsBodyDomainStorage() override;
+    TArray<UPrimitiveComponent*> const& IgnoredComponentsBodyDomainStorage() const override;
+    TArray<ESubBodyType>& IgnoredSubBodyTypesBodyDomainStorage() override;
+    TArray<ESubBodyType> const& IgnoredSubBodyTypesBodyDomainStorage() const override;
+    TArray<TWeakObjectPtr<UBoxSubBody>>& ExternalBoxSubBodiesBodyDomainStorage() override;
+    TArray<TWeakObjectPtr<UBoxSubBody>> const& ExternalBoxSubBodiesBodyDomainStorage() const override;
+    TArray<TWeakObjectPtr<USphereSubBody>>& ExternalSphereSubBodiesBodyDomainStorage() override;
+    TArray<TWeakObjectPtr<USphereSubBody>> const& ExternalSphereSubBodiesBodyDomainStorage() const override;
+    TArray<TWeakObjectPtr<USWheelSubBody>>& ExternalWheelSubBodiesBodyDomainStorage() override;
+    TArray<TWeakObjectPtr<USWheelSubBody>> const& ExternalWheelSubBodiesBodyDomainStorage() const override;
+    TArray<TWeakObjectPtr<UCylinderSubBody>>& ExternalCylinderSubBodiesBodyDomainStorage() override;
+    TArray<TWeakObjectPtr<UCylinderSubBody>> const& ExternalCylinderSubBodiesBodyDomainStorage() const override;
+    FVector& BoxExtentBoxDomainStorage() override;
+    FVector const& BoxExtentBoxDomainStorage() const override;
+    bool& bProductionNonpenetratingSphereContactsBoxDomainStorage() override;
+    bool const& bProductionNonpenetratingSphereContactsBoxDomainStorage() const override;
+    TArray<FVector>& CurrentGroundContactsWSBoxDomainStorage() override;
+    TArray<FVector> const& CurrentGroundContactsWSBoxDomainStorage() const override;
+    TArray<FVector>& PreviousFrameGroundContactsWSBoxDomainStorage() override;
+    TArray<FVector> const& PreviousFrameGroundContactsWSBoxDomainStorage() const override;
+    TArray<FVector>& CurrentGroundNormalsWSBoxDomainStorage() override;
+    TArray<FVector> const& CurrentGroundNormalsWSBoxDomainStorage() const override;
+    TArray<FVector>& PrevGroundContactsLSBoxDomainStorage() override;
+    TArray<FVector> const& PrevGroundContactsLSBoxDomainStorage() const override;
+    TArray<FVector>& LatchedEdgeContactsLSBoxDomainStorage() override;
+    TArray<FVector> const& LatchedEdgeContactsLSBoxDomainStorage() const override;
+    bool& bEdgeSupportLatchedBoxDomainStorage() override;
+    bool const& bEdgeSupportLatchedBoxDomainStorage() const override;
+    int32& EdgeSupportLatchFrameBoxDomainStorage() override;
+    int32 const& EdgeSupportLatchFrameBoxDomainStorage() const override;
+    bool& bRoofSurfaceTraversalLatchedBoxDomainStorage() override;
+    bool const& bRoofSurfaceTraversalLatchedBoxDomainStorage() const override;
+    int32& LastRoofSurfaceContactFrameBoxDomainStorage() override;
+    int32 const& LastRoofSurfaceContactFrameBoxDomainStorage() const override;
+    TWeakObjectPtr<UPrimitiveComponent>& RoofSurfaceCompBoxDomainStorage() override;
+    TWeakObjectPtr<UPrimitiveComponent> const& RoofSurfaceCompBoxDomainStorage() const override;
+    FVector& CompositeGroundNormalBoxDomainStorage() override;
+    FVector const& CompositeGroundNormalBoxDomainStorage() const override;
+    TMap<TWeakObjectPtr<UPrimitiveComponent>, uint32>& HitCountThisFrameBoxDomainStorage() override;
+    TMap<TWeakObjectPtr<UPrimitiveComponent>, uint32> const& HitCountThisFrameBoxDomainStorage() const override;
+    uint32& MaxHitsPerComponentPerFrameBoxDomainStorage() override;
+    uint32 const& MaxHitsPerComponentPerFrameBoxDomainStorage() const override;
+    TArray<float>& PrevLambdaNBoxDomainStorage() override;
+    TArray<float> const& PrevLambdaNBoxDomainStorage() const override;
+    bool& bGroundContactStableBoxDomainStorage() override;
+    bool const& bGroundContactStableBoxDomainStorage() const override;
+    int32& LastResolvedGroundHitFrameBoxDomainStorage() override;
+    int32 const& LastResolvedGroundHitFrameBoxDomainStorage() const override;
+    bool& bHasGroundContactBoxDomainStorage() override;
+    bool const& bHasGroundContactBoxDomainStorage() const override;
+    bool& bFreshEdgeRecoverCandidateBoxDomainStorage() override;
+    bool const& bFreshEdgeRecoverCandidateBoxDomainStorage() const override;
+    float& StableTimeBoxDomainStorage() override;
+    float const& StableTimeBoxDomainStorage() const override;
+    bool& bGroundHitFromSweepBoxDomainStorage() override;
+    bool const& bGroundHitFromSweepBoxDomainStorage() const override;
+    bool& bGroundPlaneValidBoxDomainStorage() override;
+    bool const& bGroundPlaneValidBoxDomainStorage() const override;
+    FVector& GroundPlanePointWSBoxDomainStorage() override;
+    FVector const& GroundPlanePointWSBoxDomainStorage() const override;
+    FVector& GroundPlaneNBoxDomainStorage() override;
+    FVector const& GroundPlaneNBoxDomainStorage() const override;
+    float& GroundPlaneDBoxDomainStorage() override;
+    float const& GroundPlaneDBoxDomainStorage() const override;
+    TWeakObjectPtr<UPrimitiveComponent>& GroundCompBoxDomainStorage() override;
+    TWeakObjectPtr<UPrimitiveComponent> const& GroundCompBoxDomainStorage() const override;
+    uint64& EstablishedSupportSourceIdBoxDomainStorage() override;
+    uint64 const& EstablishedSupportSourceIdBoxDomainStorage() const override;
+    uint64& EstablishedSupportSurfaceIdBoxDomainStorage() override;
+    uint64 const& EstablishedSupportSurfaceIdBoxDomainStorage() const override;
+    int32& FreshSupportClampUntilFrameBoxDomainStorage() override;
+    int32 const& FreshSupportClampUntilFrameBoxDomainStorage() const override;
+    FVector& FreshSupportClampNBoxDomainStorage() override;
+    FVector const& FreshSupportClampNBoxDomainStorage() const override;
+    TWeakObjectPtr<UPrimitiveComponent>& FreshSupportClampCompBoxDomainStorage() override;
+    TWeakObjectPtr<UPrimitiveComponent> const& FreshSupportClampCompBoxDomainStorage() const override;
+    FVector& PrevGroundNormalBoxDomainStorage() override;
+    FVector const& PrevGroundNormalBoxDomainStorage() const override;
+    bool& bHadGroundContactPrevFrameBoxDomainStorage() override;
+    bool const& bHadGroundContactPrevFrameBoxDomainStorage() const override;
+    FVector& PrevContactNormalBoxDomainStorage() override;
+    FVector const& PrevContactNormalBoxDomainStorage() const override;
+    bool& bHadContactPrevFrameBoxDomainStorage() override;
+    bool const& bHadContactPrevFrameBoxDomainStorage() const override;
+    float& MinSlopCmBoxDomainStorage() override;
+    float const& MinSlopCmBoxDomainStorage() const override;
+    int32& LastWallOrGutterFrameBoxDomainStorage() override;
+    int32 const& LastWallOrGutterFrameBoxDomainStorage() const override;
+    FVector& LastWallOrGutterNBoxDomainStorage() override;
+    FVector const& LastWallOrGutterNBoxDomainStorage() const override;
+    float& LastWallOrGutterUpDotBoxDomainStorage() override;
+    float const& LastWallOrGutterUpDotBoxDomainStorage() const override;
+    SHitResult& LastResolvedSphereHitBoxDomainStorage() override;
+    SHitResult const& LastResolvedSphereHitBoxDomainStorage() const override;
+    int32& LastResolvedSphereHitFrameBoxDomainStorage() override;
+    int32 const& LastResolvedSphereHitFrameBoxDomainStorage() const override;
+    std::shared_ptr<Speed::Netcode::Prediction::FPrivateRoadBoxDomain> OwnedBoxDomain;
+
+public:
+    explicit USpeedBranchBoxSubBody(const FObjectInitializer& Initializer=FObjectInitializer::Get());
+protected:
+    const USpeedWorldSubsystem* ResolveEpochBridgeForSweep(UWorld*,const Speed::IStaticCollisionWorld*) const override;
+    void ResolveCurrentHitPrv(const float&,const float&) override;
+
+private:
+    void InitializeNative(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,ISpeedComponent* Parent) override;
+    void CheckOrdinaryBodyInitializationEntry() const override;
+    void InitializeReference(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const Speed::Netcode::Prediction::FPrivateReferenceOwnerBirth& Proof,ISpeedComponent* Parent) override;
+
+    FMatrix ComputeNativeInitialInverseTensor(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation) const override;
+    void AcceptNativeHit(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation) override;
+    void ValidateNativeResetFrame(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation) const override;
+    void ResetNativeForFrame(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const float& Delta) override;
+    void ResolveNativeCurrentHit(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const float& Delta,const float& SimTime) override;
+    void UpdateNativeKinematicsFromOwner(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const SKinematic& ParentKinematic) override;
+    void ApplyNativeFakePhysicsOn(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,USolidSubBody& OtherSubBody,const SHitResult& Hit,const float& DeltaTime,const FFakePhysicsImpactContext* ImpactContext) override;
+    FMatrix ComputeNativeWorldInvInertiaTensor(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation) const override;
+
+};
+// Same inherited wheel physics; only the declared core value storage routes.
+// Exact-class parallel query admission remains closed until separately checked.
+UCLASS(NotBlueprintable,Transient)
+class IAMSPEED_API USpeedBranchWheelSubBody final : public USWheelSubBody
+{
+    GENERATED_BODY()
+private:
+    const Speed::FKinematicState& PublicKinematicView() const override { return Kinematics; }
+    const SHitResult& PublicCurrentHitView() const override { return CurrentHit; }
+    const SHitResult& PublicFutureHitView() const override { return FutureHit; }
+    SHitResult& PublicCurrentHitMutableView() override { return CurrentHit; }
+    SHitResult& PublicFutureHitMutableView() override { return FutureHit; }
+    const float& PublicMassView() const override { return Mass; }
+    float& PublicMassMutableView() override { return Mass; }
+    const int& PublicSolid_idxStorage() const override { return idx; }
+    int& PublicSolid_idxStorage() override { return idx; }
+    const bool& PublicSolid_bIsMainSubBodyStorage() const override { return bIsMainSubBody; }
+    bool& PublicSolid_bIsMainSubBodyStorage() override { return bIsMainSubBody; }
+    const bool& PublicSolid_bApplyRestForceStorage() const override { return bApplyRestForce; }
+    bool& PublicSolid_bApplyRestForceStorage() override { return bApplyRestForce; }
+    const bool& PublicSolid_EnableFakePhysicsStorage() const override { return EnableFakePhysics; }
+    bool& PublicSolid_EnableFakePhysicsStorage() override { return EnableFakePhysics; }
+    const float& PublicSolid_RestitutionStorage() const override { return Restitution; }
+    float& PublicSolid_RestitutionStorage() override { return Restitution; }
+    const float& PublicSolid_SphereBoxRestitutionOverrideStorage() const override { return SphereBoxRestitutionOverride; }
+    float& PublicSolid_SphereBoxRestitutionOverrideStorage() override { return SphereBoxRestitutionOverride; }
+    const float& PublicSolid_SphereBoxFrictionOverrideStorage() const override { return SphereBoxFrictionOverride; }
+    float& PublicSolid_SphereBoxFrictionOverrideStorage() override { return SphereBoxFrictionOverride; }
+    const float& PublicSolid_SphereBoxManifoldFrictionOverrideStorage() const override { return SphereBoxManifoldFrictionOverride; }
+    float& PublicSolid_SphereBoxManifoldFrictionOverrideStorage() override { return SphereBoxManifoldFrictionOverride; }
+    const bool& PublicSolid_bUseCoupledContactImpulseStorage() const override { return bUseCoupledContactImpulse; }
+    bool& PublicSolid_bUseCoupledContactImpulseStorage() override { return bUseCoupledContactImpulse; }
+    const bool& PublicSolid_bUsePostNormalFrictionImpulseStorage() const override { return bUsePostNormalFrictionImpulse; }
+    bool& PublicSolid_bUsePostNormalFrictionImpulseStorage() override { return bUsePostNormalFrictionImpulse; }
+    const bool& PublicSolid_bUsePersistentBilateralContactStorage() const override { return bUsePersistentBilateralContact; }
+    bool& PublicSolid_bUsePersistentBilateralContactStorage() override { return bUsePersistentBilateralContact; }
+    const float& PublicSolid_CoupledContactMaxLinearSpeedStorage() const override { return CoupledContactMaxLinearSpeed; }
+    float& PublicSolid_CoupledContactMaxLinearSpeedStorage() override { return CoupledContactMaxLinearSpeed; }
+    const float& PublicSolid_CoupledContactMaxAngularSpeedStorage() const override { return CoupledContactMaxAngularSpeed; }
+    float& PublicSolid_CoupledContactMaxAngularSpeedStorage() override { return CoupledContactMaxAngularSpeed; }
+    const float& PublicSolid_CoupledContactMaxAbsLocalNormalYStorage() const override { return CoupledContactMaxAbsLocalNormalY; }
+    float& PublicSolid_CoupledContactMaxAbsLocalNormalYStorage() override { return CoupledContactMaxAbsLocalNormalY; }
+    const float& PublicSolid_StaticFrictionStorage() const override { return StaticFriction; }
+    float& PublicSolid_StaticFrictionStorage() override { return StaticFriction; }
+    const float& PublicSolid_DynamicFrictionStorage() const override { return DynamicFriction; }
+    float& PublicSolid_DynamicFrictionStorage() override { return DynamicFriction; }
+    const float& PublicSolid_ImpactThresholdStorage() const override { return ImpactThreshold; }
+    float& PublicSolid_ImpactThresholdStorage() override { return ImpactThreshold; }
+    const float& PublicSolid_HitDampingStorage() const override { return HitDamping; }
+    float& PublicSolid_HitDampingStorage() override { return HitDamping; }
+    void CheckOrdinaryWheelBindingEntry() const override;
+    void ApplyPublicChaosWheel(UChaosVehicleWheel* Value) override;
+    void ApplyPublicWheelSim(Chaos::FSimpleWheelSim* Value) override;
+    void ApplyPublicSuspensionSim(Chaos::FSimpleSuspensionSim* Value) override;
+    const UChaosVehicleWheel* PublicChaosWheelView() const override { return ChaosWheel; }
+    const Chaos::FSimpleWheelSim* PublicWheelSimView() const override { return PWheel; }
+    const Chaos::FSimpleSuspensionSim* PublicSuspensionSimView() const override { return PSuspension; }
+
+    const Speed::FKinematicState& ReadPhysicsSweeperKinematics() const override;
+    friend class Speed::Netcode::Prediction::FPrivateRoadPhysicsWorld;
+    std::weak_ptr<Speed::Netcode::Prediction::FPrivateRoadAccess> StorageAccess;
+    std::shared_ptr<Speed::Netcode::Prediction::FPrivateRoadSubBodyValues> OwnedBodyValues;
+    bool UsesOriginalBodyStorage() const;
+    TWeakObjectPtr<USSubBody> OriginalBodyIdentity; // private, copied once by actual birth owner
+    std::weak_ptr<void> OriginalOwnerRoot; // actual FImpl/control block, captured once with body birth
+    friend class USpeedWheeledComponent;
+    void ClearReferenceWheelBindingsAtOwnerBirth(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation);
+    void ClearReferenceWheelBindingsAtRetirement(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation);
+    TWeakObjectPtr<USSubBody> GetPhysicsWeakIdentity() const override;
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+    Speed::Netcode::Prediction::FPrivateRoadSolidValues ReadLegacySolidDiagnosticValues() const;
+#endif
+    std::shared_ptr<Speed::Netcode::Prediction::FPrivateRoadSolidValues> OwnedSolidValues;
+    float& MassSolidStorage() override;
+    float const& MassSolidStorage() const override;
+    bool& bIsMainSubBodySolidStorage() override;
+    bool const& bIsMainSubBodySolidStorage() const override;
+    bool& bApplyRestForceSolidStorage() override;
+    bool const& bApplyRestForceSolidStorage() const override;
+    bool& EnableFakePhysicsSolidStorage() override;
+    bool const& EnableFakePhysicsSolidStorage() const override;
+    bool& bEnableConstraintOnSubBodyHitSolidStorage() override;
+    bool const& bEnableConstraintOnSubBodyHitSolidStorage() const override;
+    float& RestitutionSolidStorage() override;
+    float const& RestitutionSolidStorage() const override;
+    float& SphereBoxRestitutionOverrideSolidStorage() override;
+    float const& SphereBoxRestitutionOverrideSolidStorage() const override;
+    float& SphereBoxFrictionOverrideSolidStorage() override;
+    float const& SphereBoxFrictionOverrideSolidStorage() const override;
+    float& SphereBoxManifoldFrictionOverrideSolidStorage() override;
+    float const& SphereBoxManifoldFrictionOverrideSolidStorage() const override;
+    bool& bUseCoupledContactImpulseSolidStorage() override;
+    bool const& bUseCoupledContactImpulseSolidStorage() const override;
+    bool& bUsePostNormalFrictionImpulseSolidStorage() override;
+    bool const& bUsePostNormalFrictionImpulseSolidStorage() const override;
+    bool& bUsePersistentBilateralContactSolidStorage() override;
+    bool const& bUsePersistentBilateralContactSolidStorage() const override;
+    float& CoupledContactMaxLinearSpeedSolidStorage() override;
+    float const& CoupledContactMaxLinearSpeedSolidStorage() const override;
+    float& CoupledContactMaxAngularSpeedSolidStorage() override;
+    float const& CoupledContactMaxAngularSpeedSolidStorage() const override;
+    float& CoupledContactMaxAbsLocalNormalYSolidStorage() override;
+    float const& CoupledContactMaxAbsLocalNormalYSolidStorage() const override;
+    float& StaticFrictionSolidStorage() override;
+    float const& StaticFrictionSolidStorage() const override;
+    float& DynamicFrictionSolidStorage() override;
+    float const& DynamicFrictionSolidStorage() const override;
+    float& ImpactThresholdSolidStorage() override;
+    float const& ImpactThresholdSolidStorage() const override;
+    float& HitDampingSolidStorage() override;
+    float const& HitDampingSolidStorage() const override;
+    FMatrix& InvInertiaLocalSolidStorage() override;
+    FMatrix const& InvInertiaLocalSolidStorage() const override;
+    int& idxSolidStorage() override;
+    int const& idxSolidStorage() const override;
+
+    std::shared_ptr<Speed::Netcode::Prediction::FPrivateRoadWheelRuntimeValues> OwnedWheelRuntime;
+    float& SuspensionForceRuntimeStorage() override;
+    float const& SuspensionForceRuntimeStorage() const override;
+    uint8& bIsJumpingRuntimeStorage() override;
+    uint8 const& bIsJumpingRuntimeStorage() const override;
+    bool& bJumpUnilateralSupportRuntimeStorage() override;
+    bool const& bJumpUnilateralSupportRuntimeStorage() const override;
+    uint8& ConsecutiveGroundFramesRuntimeStorage() override;
+    uint8 const& ConsecutiveGroundFramesRuntimeStorage() const override;
+    float& SteeringAngleRuntimeStorage() override;
+    float const& SteeringAngleRuntimeStorage() const override;
+    float& OmegaRuntimeStorage() override;
+    float const& OmegaRuntimeStorage() const override;
+    float& RollAngleRuntimeStorage() override;
+    float const& RollAngleRuntimeStorage() const override;
+    bool& bWasOnGroundPrevFrameRuntimeStorage() override;
+    bool const& bWasOnGroundPrevFrameRuntimeStorage() const override;
+    bool& bCountedGroundFrameRuntimeStorage() override;
+    bool const& bCountedGroundFrameRuntimeStorage() const override;
+    bool& bContactVelocityLockedRuntimeStorage() override;
+    bool const& bContactVelocityLockedRuntimeStorage() const override;
+    bool& bCrossedIntoCompressionThisFrameRuntimeStorage() override;
+    bool const& bCrossedIntoCompressionThisFrameRuntimeStorage() const override;
+    FVector& ForwardAxisRuntimeStorage() override;
+    FVector const& ForwardAxisRuntimeStorage() const override;
+    FVector& RightAxisRuntimeStorage() override;
+    FVector const& RightAxisRuntimeStorage() const override;
+    FVector& UpAxisRuntimeStorage() override;
+    FVector const& UpAxisRuntimeStorage() const override;
+    SWheelRenderData& RenderDataRuntimeStorage() override;
+    SWheelRenderData const& RenderDataRuntimeStorage() const override;
+
+    Speed::FKinematicState& KinematicsStorage() override;
+    Speed::FKinematicState const& KinematicsStorage() const override;
+    SHitResult& FutureHitStorage() override;
+    SHitResult const& FutureHitStorage() const override;
+    SHitResult& CurrentHitStorage() override;
+    SHitResult const& CurrentHitStorage() const override;
+    SHitResult& GroundHitStorage() override;
+    SHitResult const& GroundHitStorage() const override;
+    SHitResult& BoxHitStorage() override;
+    SHitResult const& BoxHitStorage() const override;
+    SHitResult& SphereHitStorage() override;
+    SHitResult const& SphereHitStorage() const override;
+    SHitResult& WheelHitStorage() override;
+    SHitResult const& WheelHitStorage() const override;    float PhysicalSuspensionRestLength() const override;
+    FVector PhysicalLocalOffset() const override;
+    FQuat PhysicalLocalRotation() const override;
+    FRotator PhysicalLocalEulerRotation() const override;
+    void SetPhysicalLocalRotation(const FQuat&) override;
+    FTransform PhysicalLocalPose() const override;
+    void SetPhysicalLocalOffset(const FVector&) override;
+    ISpeedComponent*& ParentComponentBodyDomainStorage() override;
+    ISpeedComponent* const& ParentComponentBodyDomainStorage() const override;
+    ESubBodyType& SubBodyTypeBodyDomainStorage() override;
+    ESubBodyType const& SubBodyTypeBodyDomainStorage() const override;
+    ECollisionChannel& CollisionChannelBodyDomainStorage() override;
+    ECollisionChannel const& CollisionChannelBodyDomainStorage() const override;
+    FCollisionResponseParams& ResponseParamsBodyDomainStorage() override;
+    FCollisionResponseParams const& ResponseParamsBodyDomainStorage() const override;
+    TArray<UPrimitiveComponent*>& AlwaysIgnoredComponentsBodyDomainStorage() override;
+    TArray<UPrimitiveComponent*> const& AlwaysIgnoredComponentsBodyDomainStorage() const override;
+    TArray<UPrimitiveComponent*>& IgnoredComponentsBodyDomainStorage() override;
+    TArray<UPrimitiveComponent*> const& IgnoredComponentsBodyDomainStorage() const override;
+    TArray<ESubBodyType>& IgnoredSubBodyTypesBodyDomainStorage() override;
+    TArray<ESubBodyType> const& IgnoredSubBodyTypesBodyDomainStorage() const override;
+    TArray<TWeakObjectPtr<UBoxSubBody>>& ExternalBoxSubBodiesBodyDomainStorage() override;
+    TArray<TWeakObjectPtr<UBoxSubBody>> const& ExternalBoxSubBodiesBodyDomainStorage() const override;
+    TArray<TWeakObjectPtr<USphereSubBody>>& ExternalSphereSubBodiesBodyDomainStorage() override;
+    TArray<TWeakObjectPtr<USphereSubBody>> const& ExternalSphereSubBodiesBodyDomainStorage() const override;
+    TArray<TWeakObjectPtr<USWheelSubBody>>& ExternalWheelSubBodiesBodyDomainStorage() override;
+    TArray<TWeakObjectPtr<USWheelSubBody>> const& ExternalWheelSubBodiesBodyDomainStorage() const override;
+    TArray<TWeakObjectPtr<UCylinderSubBody>>& ExternalCylinderSubBodiesBodyDomainStorage() override;
+    TArray<TWeakObjectPtr<UCylinderSubBody>> const& ExternalCylinderSubBodiesBodyDomainStorage() const override;
+    ISpeedWheeledComponent*& WheelComponentWheelDomainStorage() override;
+    ISpeedWheeledComponent* const& WheelComponentWheelDomainStorage() const override;
+    UChaosVehicleWheel*& ChaosWheelWheelDomainStorage() override;
+    UChaosVehicleWheel* const& ChaosWheelWheelDomainStorage() const override;
+    Chaos::FSimpleWheelSim*& PWheelWheelDomainStorage() override;
+    Chaos::FSimpleWheelSim* const& PWheelWheelDomainStorage() const override;
+    Chaos::FSimpleSuspensionSim*& PSuspensionWheelDomainStorage() override;
+    Chaos::FSimpleSuspensionSim* const& PSuspensionWheelDomainStorage() const override;
+    float& WheelMassWheelDomainStorage() override;
+    float const& WheelMassWheelDomainStorage() const override;
+    float& SuspensionSpringRateWheelDomainStorage() override;
+    float const& SuspensionSpringRateWheelDomainStorage() const override;
+    float& SuspensionDampingCompressionRatioWheelDomainStorage() override;
+    float const& SuspensionDampingCompressionRatioWheelDomainStorage() const override;
+    float& SuspensionDampingReboundRatioWheelDomainStorage() override;
+    float const& SuspensionDampingReboundRatioWheelDomainStorage() const override;
+    bool& bUseSuspensionForceModelOverrideWheelDomainStorage() override;
+    bool const& bUseSuspensionForceModelOverrideWheelDomainStorage() const override;
+    bool& bClampSuspensionForceToPositiveWheelDomainStorage() override;
+    bool const& bClampSuspensionForceToPositiveWheelDomainStorage() const override;
+    bool& bClampPositiveUntilFirstCompressionWheelDomainStorage() override;
+    bool const& bClampPositiveUntilFirstCompressionWheelDomainStorage() const override;
+    bool& bUseEffectiveSuspensionSweepRadiusWheelDomainStorage() override;
+    bool const& bUseEffectiveSuspensionSweepRadiusWheelDomainStorage() const override;
+    bool& bUseIncreasingDisplacementAsCompressionWheelDomainStorage() override;
+    bool const& bUseIncreasingDisplacementAsCompressionWheelDomainStorage() const override;
+    bool& bUseCompressionCrossingContactImpulseWheelDomainStorage() override;
+    bool const& bUseCompressionCrossingContactImpulseWheelDomainStorage() const override;
+    uint8& GroundForceApplicationModeWheelDomainStorage() override;
+    uint8 const& GroundForceApplicationModeWheelDomainStorage() const override;
+    uint8& ContactImpulseApplicationModeWheelDomainStorage() override;
+    uint8 const& ContactImpulseApplicationModeWheelDomainStorage() const override;
+    float& SuspensionStiffnessForceScaleWheelDomainStorage() override;
+    float const& SuspensionStiffnessForceScaleWheelDomainStorage() const override;
+    float& SuspensionStiffnessReferenceDisplacementWheelDomainStorage() override;
+    float const& SuspensionStiffnessReferenceDisplacementWheelDomainStorage() const override;
+    float& SuspensionPreRestCompressionDampingScaleWheelDomainStorage() override;
+    float const& SuspensionPreRestCompressionDampingScaleWheelDomainStorage() const override;
+    bool& bClampNegativeSuspensionDisplacementWheelDomainStorage() override;
+    bool const& bClampNegativeSuspensionDisplacementWheelDomainStorage() const override;
+    bool& bDisableSuspensionBumpStopForceWheelDomainStorage() override;
+    bool const& bDisableSuspensionBumpStopForceWheelDomainStorage() const override;
+    float& SuspensionSpringRateCmOverrideWheelDomainStorage() override;
+    float const& SuspensionSpringRateCmOverrideWheelDomainStorage() const override;
+    float& SuspensionCompressionDampingOverrideWheelDomainStorage() override;
+    float const& SuspensionCompressionDampingOverrideWheelDomainStorage() const override;
+    float& SuspensionReboundDampingOverrideWheelDomainStorage() override;
+    float const& SuspensionReboundDampingOverrideWheelDomainStorage() const override;
+    float& SuspensionMaxRaiseOverrideWheelDomainStorage() override;
+    float const& SuspensionMaxRaiseOverrideWheelDomainStorage() const override;
+    float& SuspensionMaxDropOverrideWheelDomainStorage() override;
+    float const& SuspensionMaxDropOverrideWheelDomainStorage() const override;
+    float& ConfiguredStaticSpringCompressionWheelDomainStorage() override;
+    float const& ConfiguredStaticSpringCompressionWheelDomainStorage() const override;
+    float& RadiusSphereDomainStorage() override;
+    float const& RadiusSphereDomainStorage() const override;
+    std::shared_ptr<Speed::Netcode::Prediction::FPrivateRoadWheelDomain> OwnedWheelDomain;
+    std::shared_ptr<Speed::Netcode::Prediction::FPrivateRoadSphereDomain> OwnedSphereDomain;
+
+public:
+    explicit USpeedBranchWheelSubBody(const FObjectInitializer& Initializer=FObjectInitializer::Get());
+    // Read-only proof of this actual original-map subject's REFERENCE parent.
+    // No view/issuer; Birth phase and actual owner map required before reads.
+    void ValidateReferenceWheelBindingBirth(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,
+        const ISpeedComponent* Parent,const ISpeedWheeledComponent* WheeledParent) const;
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+    struct FReferenceBindingFixtureValues
+    {float Mass,Raise,Drop;ISpeedComponent* Parent;ISpeedWheeledComponent* WheelParent;};
+    FReferenceBindingFixtureValues ReadReferenceBindingFixtureForDiagnostics(
+        const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation) const;
+    void WriteReferenceBindingFixtureForDiagnostics(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,
+        const FReferenceBindingFixtureValues& Values);
+#endif
+
+private:
+    void InitializeNative(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,ISpeedComponent* Parent) override;
+    void CheckOrdinaryBodyInitializationEntry() const override;
+    void InitializeReference(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const Speed::Netcode::Prediction::FPrivateReferenceOwnerBirth& Proof,ISpeedComponent* Parent) override;
+
+    FMatrix ComputeNativeInitialInverseTensor(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation) const override;
+    void AcceptNativeHit(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation) override;
+    void ValidateNativeResetFrame(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation) const override;
+    void ResetNativeForFrame(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const float& Delta) override;
+    void ResolveNativeCurrentHit(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const float& Delta,const float& SimTime) override;
+    void UpdateNativeKinematicsFromOwner(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const SKinematic& ParentKinematic) override;
+    void ApplyNativeFakePhysicsOn(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,USolidSubBody& OtherSubBody,const SHitResult& Hit,const float& DeltaTime,const FFakePhysicsImpactContext* ImpactContext) override;
+    FMatrix ComputeNativeWorldInvInertiaTensor(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation) const override;
+
+};
+// A real subtype whose lifecycle never creates a Chaos/network physics owner.
+// Its manually owned wheel/suspension storage belongs to the private factory.
+UCLASS(NotBlueprintable,Transient)
+class IAMSPEED_API USpeedBranchWheeledComponent final : public USpeedWheeledComponent
+{
+    GENERATED_BODY()
+    // Only this final private subtype bypasses public facade kinematics.
+    // Ordinary/custom wheeled adapters retain public virtual dispatch.
+    const SKinematic& ReadPhysicsKinematicState() const override;
+    const FVector& ReadPhysicsCOM() const override;
+    const FVector& ReadPhysicsCenterOfMassLocal() const override;
+    const FVector& PublicPhysCOMView() const override { return BasePhysicsState.Kinematic.Location; }
+    const FVector& PublicPhysLocalCOMView() const override { return CenterOfMass; }
+    const TArray<FPhysicalContactConstraint>& PublicPhysicalConstraintsView() const override { return PhysicalConstraints; }
+    TArray<FPhysicalContactConstraint>& PublicPhysicalConstraintsMutableView() override { return PhysicalConstraints; }
+    const SKinematic& ReadPhysicsKinematicStateForFrame(const unsigned int& Frame) const override;
+    friend class Speed::Netcode::Prediction::FPrivateRoadPhysicsWorld;
+    friend class Speed::NativeKinematics::FComponentRead;
+    friend class Speed::NativeKinematics::FComponentWrite;
+    std::weak_ptr<Speed::Netcode::Prediction::FPrivateRoadAccess> Access;
+    void CheckOrdinaryComponentBindingEntry() const override;
+    void CheckOrdinaryOwnerInitializationEntry() const override;
+    bool HasIsolatedNativeConstruction() const;
+    bool ReadOriginalLegacyGameModePresence() const override;
+
+    // Established after original construction, before its first physical step.
+    // External calls route to legacy facade storage. Other native domains are
+    // still unclosed; never infer complete owner/restore authority from this.
+    struct FOwnedComponentValues
+    {
+        TAtomic<uint64> PublishedStableId{0};
+        SBaseGameState BaseGameState;
+        FBasePhysicsState BasePhysicsState;
+        FWheeledGameState WheeledGameState;
+        FWheeledPhysicsState WheeledPhysicsState;
+        FWheeledInputState WheeledPhysicalInput;
+        TArray<FPhysicalContactConstraint> PhysicalConstraints;
+        Speed::FSimulationSleepState SleepState;
+        Speed::FIdentityKinematicQuantizationCache KinematicQuantizationCache;
+        const Speed::IStaticCollisionWorld* StaticRestingWorld=nullptr;
+        float StaticSupportFrameHorizon=0;
+
+    };
+    std::shared_ptr<FOwnedComponentValues> OwnedComponentValues;
+    bool UsesOriginalComponentStorage() const;
+    TAtomic<uint64>& PublishedSimulationStableIdStorage() override;
+    TAtomic<uint64> const& PublishedSimulationStableIdStorage() const override;
+    TArray<FPhysicalContactConstraint>& PhysicalConstraintsStorage() override;
+    TArray<FPhysicalContactConstraint> const& PhysicalConstraintsStorage() const override;
+    Speed::FSimulationSleepState& SleepStateStorage() override;
+    Speed::FSimulationSleepState const& SleepStateStorage() const override;
+    Speed::FIdentityKinematicQuantizationCache& KinematicQuantizationCacheStorage() override;
+    Speed::FIdentityKinematicQuantizationCache const& KinematicQuantizationCacheStorage() const override;
+    const Speed::IStaticCollisionWorld*& StaticRestingWorldStorage() override;
+    const Speed::IStaticCollisionWorld* const& StaticRestingWorldStorage() const override;
+    float& StaticSupportFrameHorizonStorage() override;
+    float const& StaticSupportFrameHorizonStorage() const override;
+
+    void* SuspendStorageRoutingForExternalObservation() const override;
+    void ResumeStorageRoutingAfterExternalObservation(void*) const override;
+    void EstablishOriginalComponentStorage();
+    SBaseGameState& BaseGameStateStorage() override;
+    const SBaseGameState& BaseGameStateStorage() const override;
+    FBasePhysicsState& BasePhysicsStateStorage() override;
+    const FBasePhysicsState& BasePhysicsStateStorage() const override;
+    FWheeledGameState& WheeledGameStateStorage() override;
+    const FWheeledGameState& WheeledGameStateStorage() const override;
+    FWheeledPhysicsState& WheeledPhysicsStateStorage() override;
+    const FWheeledPhysicsState& WheeledPhysicsStateStorage() const override;
+    FWheeledInputState& WheeledPhysicalInputStorage() override;
+    const FWheeledInputState& WheeledPhysicalInputStorage() const override;
+
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+    // Copies only the declared cache subset during this original native step.
+    // No mutable reference, restore authority or complete coverage is returned.
+    bool CopyActualCacheDiagnosticValues(Speed::CommonState::FSleepValues&,
+        Speed::CommonState::FQuantizationValues&) const;
+#endif
+    bool IsInitialSynchronizationComplete() const override;
+    void UpdateInputs() override;
+    friend class USpeedBranchBoxSubBody;
+    void ObserveContactPair(const USSubBody&,const USSubBody&,uint8 Kind);
+    void RegisterWheelGroundContact(const SWheelGroundContact&) override;
+    void OnRegister() override;
+    void OnCreatePhysicsState() override;
+    void OnDestroyPhysicsState() override;
+    void BeginPlay() override;
+public:
+    explicit USpeedBranchWheeledComponent(const FObjectInitializer& Initializer=FObjectInitializer::Get());
+    SubBodyConfig GetSubBodyConfig(const USSubBody& SubBody) const override;
+    bool AllowsExternalNetworkStateRestore() const override {return false;}
+    bool CanRestoreSimulationSnapshot(TConstArrayView<uint8>) const override {return false;}
+#if !UE_BUILD_SHIPPING
+    bool AllowsPhysicsPhaseObserverInstallation() const override {return false;}
+#endif
+    bool InstallCanonicalInput(uint64,std::shared_ptr<const Speed::Input::V2::FOwnerInputSnapshot>) override {return false;}
+    bool ValidateCanonicalFrameCommit(uint64 Frame) const override;
+    bool CommitCanonicalFrame(uint64 Frame) noexcept override;
+    void OnCanonicalFramePublished(uint64) override {}
+    void AbortCanonicalFrame(uint64,ECanonicalFrameAbortReason) noexcept override;
+};
+UCLASS(NotBlueprintable,NotPlaceable,Transient)
+class IAMSPEED_API ASpeedBranchCar final : public ASpeedCar
+{
+    GENERATED_BODY()
+public:
+    explicit ASpeedBranchCar(const FObjectInitializer& Initializer=FObjectInitializer::Get());
+    void BeginPlay() override;
+    void Tick(float) override {}
+};
+UCLASS(NotBlueprintable,NotPlaceable,Transient)
+class IAMSPEED_API ASpeedBranchSimulation final : public ASpeedPhysicsSimulation
+{
+    GENERATED_BODY()
+    friend class Speed::Netcode::Prediction::FPrivateRoadPhysicsWorld;
+    std::weak_ptr<Speed::Netcode::Prediction::FPrivateRoadAccess> Access;
+    UWorld* ResolveOriginalPhysicalWorld() const;
+    bool InitializePrivate(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,USpeedWorldSubsystem& Bridge);
+    bool AdvancePrivate(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,bool Resimulation);
+    uint64 NextPrivate(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation) const {return ReadNativeCanonicalFrame(Operation);}
+    ESimulationWorkerResult DriveSimulation(float,float) override {return ESimulationWorkerResult::Failed;}
+    void WaitBetweenFrames(FSimulationWorkerWaitContext&) override {}
+    bool AllowsLegacySnapshotRollback() const override {return false;}
+    bool AllowsNativeDriverExecution() const override {return HasOriginalDriverExecutionRoute();}
+public:
+    ASpeedBranchSimulation();
+    void BeginPlay() override;
+    void Tick(float) override {}
+};
