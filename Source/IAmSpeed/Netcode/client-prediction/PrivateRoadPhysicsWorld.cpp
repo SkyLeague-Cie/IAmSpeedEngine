@@ -41,6 +41,9 @@
 #include "IAmSpeed/World/Simulation/RoadSettings/NativeRoadSettingsRead.h"
 #include <algorithm>
 #include <mutex>
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+#include "IAmSpeed/Base/EpisodeStateBytesForTesting.h"
+#endif
 
 namespace Speed::Netcode::Prediction
 {
@@ -86,6 +89,15 @@ struct FPrivateRoadAccess : Speed::NativeEpoch::IOriginalStorageRoute
 };
 namespace
 {
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+// Copy raw Euler scalars only: diagnostic bytes have no composite fallback.
+// A getter temporary binds once for this call; no borrow crosses a callback.
+void AppendInitializerEulerScalars(TArray<uint8>& Bytes,const FRotator& Euler)
+{
+    using B=Speed::FEpisodeStateBytesForTesting;
+    B::Add(Bytes,Euler.Pitch);B::Add(Bytes,Euler.Yaw);B::Add(Bytes,Euler.Roll);
+}
+#endif
 // This routing scope can only be installed by this translation unit, under
 // the original factory/step/startup gate. It is NOT a complete boundary lease:
 // caches, subbodies, configurations and callback/lifetime closure remain work.
@@ -940,7 +952,7 @@ std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::CreateCore(s
                 using B=Speed::FEpisodeStateBytesForTesting;
                 const auto BodyValues=[&](TArray<uint8>& Bytes,const FPrivateRoadSubBodyValues& Body)
                 {
-                    B::Add(Bytes,Body.ParentComponent);B::Add(Bytes,Body.LocalPose);B::Add(Bytes,Body.LocalEulerRotation);
+                    B::Add(Bytes,Body.ParentComponent);B::Add(Bytes,Body.LocalPose);AppendInitializerEulerScalars(Bytes,Body.LocalEulerRotation);
                     B::Add(Bytes,Body.CollisionChannel);B::Add(Bytes,Body.AlwaysIgnoredComponents.GetData());
                     B::Array(Bytes,Body.AlwaysIgnoredComponents);
                 };
@@ -959,7 +971,7 @@ std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::CreateCore(s
                     if(!PartialObservation::AppendSolidValues(Original,*Box->OwnedSolidValues))return false;
                     B::Add(Original,Box->OwnedBoxDomain->BoxExtent);
                     B::Add(Reference,Box);Box->AppendEpisodeStateForTesting(Reference);
-                    B::Add(Reference,Box->PhysicalLocalEulerRotation());B::Add(Reference,Box->AlwaysIgnoredComponentsBodyDomainStorage().GetData());++Count;
+                    AppendInitializerEulerScalars(Reference,Box->PhysicalLocalEulerRotation());B::Add(Reference,Box->AlwaysIgnoredComponentsBodyDomainStorage().GetData());++Count;
                     for(const auto& Born:Node.OriginalWheelBodyBirth)
                     {
                         auto* Wheel=Cast<USpeedBranchWheelSubBody>(Born.Get());
@@ -973,7 +985,7 @@ std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::CreateCore(s
                         const auto& D=*Wheel->OwnedWheelDomain;
                         B::Add(Original,D.WheelComponent);B::Add(Original,D.ChaosWheel);B::Add(Original,D.PWheel);B::Add(Original,D.PSuspension);B::Add(Original,D.WheelMass);
                         B::Add(Reference,Wheel);Wheel->AppendEpisodeStateForTesting(Reference);
-                        B::Add(Reference,Wheel->PhysicalLocalEulerRotation());B::Add(Reference,Wheel->AlwaysIgnoredComponentsBodyDomainStorage().GetData());++Count;
+                        AppendInitializerEulerScalars(Reference,Wheel->PhysicalLocalEulerRotation());B::Add(Reference,Wheel->AlwaysIgnoredComponentsBodyDomainStorage().GetData());++Count;
                     }
                     return Count==5;
                 };
@@ -1565,7 +1577,7 @@ bool FPrivateRoadPhysicsWorld::ProbeOrdinaryInitializersWithoutOperationForDiagn
         };
         const auto InitialBody=[&](TArray<uint8>& Bytes,const FPrivateRoadSubBodyValues& Values)
         {
-            B::Add(Bytes,Values.ParentComponent);B::Add(Bytes,Values.LocalPose);B::Add(Bytes,Values.LocalEulerRotation);
+            B::Add(Bytes,Values.ParentComponent);B::Add(Bytes,Values.LocalPose);AppendInitializerEulerScalars(Bytes,Values.LocalEulerRotation);
             B::Add(Bytes,Values.CollisionChannel);B::Add(Bytes,Values.AlwaysIgnoredComponents.GetData());
             B::Array(Bytes,Values.AlwaysIgnoredComponents);
         };
@@ -1585,9 +1597,9 @@ bool FPrivateRoadPhysicsWorld::ProbeOrdinaryInitializersWithoutOperationForDiagn
                 InitialBody(Out.Original,*Box->OwnedBodyValues);
                 if(!PartialObservation::AppendSolidValues(Out.Original,*Box->OwnedSolidValues))return false;
                 B::Add(Out.Original,Box->OwnedBoxDomain->BoxExtent);
-                Box->AppendEpisodeStateForTesting(Out.Reference);B::Add(Out.Reference,Box->PhysicalLocalEulerRotation());
+                Box->AppendEpisodeStateForTesting(Out.Reference);AppendInitializerEulerScalars(Out.Reference,Box->PhysicalLocalEulerRotation());
                 B::Add(Out.Reference,Box->AlwaysIgnoredComponentsBodyDomainStorage().GetData());
-                Box->AppendEpisodeStateForTesting(Out.Facade);B::Add(Out.Facade,Box->PhysicalLocalEulerRotation());
+                Box->AppendEpisodeStateForTesting(Out.Facade);AppendInitializerEulerScalars(Out.Facade,Box->PhysicalLocalEulerRotation());
                 B::Add(Out.Facade,Box->AlwaysIgnoredComponentsBodyDomainStorage().GetData());
                 ++Out.Population.OriginalBodies;++Out.Population.ReferenceBodies;++Out.Population.Hitboxes;
                 auto& Domain=*Node->NativeVehicleRoot->Domain;
@@ -1629,9 +1641,9 @@ bool FPrivateRoadPhysicsWorld::ProbeOrdinaryInitializersWithoutOperationForDiagn
                         ||!Body->OwnedWheelDomain||!Body->OwnedWheelRuntime||!Body->OwnedSphereDomain)return false;
                     if(Body->UsesOriginalBodyStorage())return false;
                     InitialBody(Out.Original,*Body->OwnedBodyValues);B::Add(Out.Original,Body->OwnedSphereDomain->Radius);
-                    Body->AppendEpisodeStateForTesting(Out.Reference);B::Add(Out.Reference,Body->PhysicalLocalEulerRotation());
+                    Body->AppendEpisodeStateForTesting(Out.Reference);AppendInitializerEulerScalars(Out.Reference,Body->PhysicalLocalEulerRotation());
                     B::Add(Out.Reference,Body->AlwaysIgnoredComponentsBodyDomainStorage().GetData());
-                    B::Add(Out.Facade,Body->PhysicalLocalEulerRotation());B::Add(Out.Facade,Body->AlwaysIgnoredComponentsBodyDomainStorage().GetData());
+                    AppendInitializerEulerScalars(Out.Facade,Body->PhysicalLocalEulerRotation());B::Add(Out.Facade,Body->AlwaysIgnoredComponentsBodyDomainStorage().GetData());
                     ++Out.Population.OriginalBodies;++Out.Population.ReferenceBodies;++Out.Population.WheelBodies;
                     const auto& Values=*Body->OwnedWheelDomain;
                     // Preserve real LIVE storage/allocations. Missing aliases are

@@ -2166,3 +2166,16 @@ This occurs before Component.Get, flags or any UObject dereference. No StorageAc
 friendship, TLS/public permission, root predicate, numerical program or test
 expectation is relaxed. Compile125 remains FAIL6 and native125 NOT_RUN; candidate132
 requires a distinct compilation and fresh native validation, with no prior PASS.
+
+### Explicit Euler diagnostic fields (source133, native qualification pending)
+
+Actual source132/build126 failed compilation with C2027 and C3861 because
+initializer diagnostic captures requested an unsupported FRotator composite codec.
+Source133 records Pitch, Yaw, then Roll in their actual scalar types at the eight
+owned/reference/facade capture sites. Each existing Euler getter is evaluated once;
+no quaternion conversion, normalization, padding, fallback codec or field omission
+is introduced. Before/after comparisons, populations, physical programs, four Mass
+overrides, test expectations and the closed restore guard are unchanged.
+Compilation and native tests on this distinct tuple are still required. Build125
+and126 remain FAIL; prior native124 results do not qualify this change. Full state,
+source/lifetime exclusion, network activation and localized rollback remain open.
