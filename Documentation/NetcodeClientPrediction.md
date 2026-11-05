@@ -1957,3 +1957,23 @@ changes and their network reports are NOT_RUN until a distinct reviewed native
 tuple is compiled/executed. Added observation can change wall scheduling; new
 network outcomes and egress counters must be measured rather than imported.
 The four mass channels, restoration guards and physical programs are unchanged.
+
+
+### Declared payload size and exact table correction (candidate124)
+
+Source123's4096-byte diagnostic bound refuses the existing178-slot declared
+conformance profile. Its Encode layout derives9389 bytes from the current names
+and profile; that source derivation is not an observed native measurement. The
+copy bound now matches the existing32768-byte startup publication contract.
+The actual native regression selects that same existing profile in both graphs
+and requires exact observed declared bytes throughout the retained prefix.
+
+Probe JSON stores the complete declared byte payload once in a bounded table,
+then uses checked indices in each input frame. Table lookup compares full bytes;
+hashes are never payload equality. Missing indices and refused/overflow tables
+remain UNKNOWN. The offline comparison must resolve exact payloads before value
+comparison and keep unknowns explicit. This reduces repeated JSON bytes; capture
+still copies full values and remains quadratic in finite first-forward frames.
+Native tests, real serialized size/time, network and egress remain NOT_RUN on124.
+No complete physical/configuration state, lease, activation or localized K
+restoration follows from equality of these declared slots.

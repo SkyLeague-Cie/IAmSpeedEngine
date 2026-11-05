@@ -156,17 +156,53 @@ std::optional<P::FPrivateRoadObservedFrame> ReadObservation(const std::vector<st
 // every one of the finite 240 frames was actually observed in both graphs.
 // Full bounded value payloads, not hashes pretending to prove input equality.
 // These values never enter physics, ingress, egress, ACK or restoration paths.
+// Exact full declared bytes retained once per diagnostic report. Indices are
+// references into this checked value table; no hash stands in for equality.
+struct FDeclaredInputPayloadTable
+{
+    static constexpr size_t MaximumIdentityBytes=32768,MaximumPayloads=16;
+    std::vector<std::vector<uint8>> Payloads;
+    bool Overflow=false;
+    std::optional<size_t> Find(const std::vector<uint8>& Bytes) const
+    {
+        for(size_t N=0;N<Payloads.size();++N)if(Payloads[N]==Bytes)return N;
+        return {};
+    }
+    void Capture(const P::FPrivateRoadObservedInputFrame& Frame)
+    {
+        const auto& Bytes=Frame.DeclaredSettingsIdentity;
+        if(Find(Bytes))return;
+        if(Bytes.size()>MaximumIdentityBytes||Payloads.size()>=MaximumPayloads)
+        {Overflow=true;return;}
+        Payloads.push_back(Bytes);
+    }
+    void Write(std::ostream& S) const
+    {
+        S<<",\"declared_settings_payload_table\":{\"scope\":\"exact_full_declared_bytes_only\","
+            <<"\"max_identity_bytes\":"<<MaximumIdentityBytes<<",\"max_payloads\":"<<MaximumPayloads
+            <<",\"overflow\":"<<(Overflow?"true":"false")<<",\"payloads\":[";
+        for(size_t N=0;N<Payloads.size();++N)
+        {
+            if(N)S<<',';S<<"{\"index\":"<<N<<",\"bytes\":[";
+            for(size_t B=0;B<Payloads[N].size();++B){if(B)S<<',';S<<unsigned(Payloads[N][B]);}
+            S<<"]}";
+        }
+        S<<"]}";
+    }
+};
+
 void WriteConsumedValues(std::ostream& S,const Speed::Input::FActionValues& Values)
 {
     S<<'[';for(size_t A=0;A<ActionCount;++A){if(A)S<<',';S<<Values[A];}S<<']';
 }
-void WriteConsumedFrame(std::ostream& S,const P::FPrivateRoadObservedInputFrame& Frame)
+void WriteConsumedFrame(std::ostream& S,const P::FPrivateRoadObservedInputFrame& Frame,const FDeclaredInputPayloadTable& Declared)
 {
     S<<"{\"frame\":"<<Frame.Frame<<",\"local_kernel_lifetime\":"<<Frame.LocalKernelLifetime
         <<",\"awaiting_initial_publication\":"<<(Frame.AwaitingInitialPublication?"true":"false")
-        <<",\"declared_settings_identity\":[";
-    for(size_t N=0;N<Frame.DeclaredSettingsIdentity.size();++N){if(N)S<<',';S<<unsigned(Frame.DeclaredSettingsIdentity[N]);}
-    S<<"],\"actors\":[";
+        <<",\"declared_settings_payload_index\":";
+    const auto Index=Declared.Find(Frame.DeclaredSettingsIdentity);
+    if(Index)S<<*Index;else S<<"null";
+    S<<",\"actors\":[";
     bool First=true;
     for(const auto& A:Frame.Actors)
     {
@@ -204,7 +240,7 @@ const char* ConsumedPrefixStatus(P::EPrivateRoadInputPrefixCopy Status)
     default:return "unknown_unavailable";
     }
 }
-void WriteConsumedPrefix(std::ostream& S,const P::FPrivateRoadObservedInputPrefix* Prefix)
+void WriteConsumedPrefix(std::ostream& S,const P::FPrivateRoadObservedInputPrefix* Prefix,const FDeclaredInputPayloadTable& Declared)
 {
     const auto Status=Prefix?Prefix->Status:P::EPrivateRoadInputPrefixCopy::Unavailable;
     const bool Complete=Status==P::EPrivateRoadInputPrefixCopy::CompleteObservedPrefix;
@@ -218,7 +254,7 @@ void WriteConsumedPrefix(std::ostream& S,const P::FPrivateRoadObservedInputPrefi
     if(Complete)
     {
         S<<'[';bool First=true;
-        for(const auto& Frame:Prefix->Prefix){if(!First)S<<',';First=false;WriteConsumedFrame(S,Frame);}S<<']';
+        for(const auto& Frame:Prefix->Prefix){if(!First)S<<',';First=false;WriteConsumedFrame(S,Frame,Declared);}S<<']';
     }
     else S<<"null";
     S<<'}';
@@ -258,6 +294,9 @@ struct FActualServerConsumedInputTrace
     }
     void Write(std::ostream& S) const
     {
+        FDeclaredInputPayloadTable Declared;
+        for(const auto& Frame:Captured)if(Frame)Declared.Capture(*Frame);
+        Declared.Write(S);
         S<<",\"server_consumed_input_history\":{\"scope\":\"actual_original_step_publications_observed_inputs_only\","
             <<"\"action_slots\":"<<ActionCount<<",\"expected_frames\":"<<Frames
             <<",\"overflow\":"<<(Overflow?"true":"false")
@@ -268,7 +307,7 @@ struct FActualServerConsumedInputTrace
             if(N)S<<',';
             const char* Status=Duplicate[N]?"unknown_duplicate":!Attempted[N]?"unknown_missing":!Captured[N]?"unknown_rejected_or_unavailable":"observed";
             S<<"{\"frame\":"<<N<<",\"status\":\""<<Status<<"\",\"publication\":";
-            if(Captured[N])WriteConsumedFrame(S,*Captured[N]);else S<<"null";
+            if(Captured[N])WriteConsumedFrame(S,*Captured[N],Declared);else S<<"null";
             S<<'}';
         }
         S<<"]}";
@@ -306,6 +345,10 @@ struct FFirstForwardKinematicTrace
     }
     bool Write(std::ostream& S,U64 OwnActor,const FAuthorityInputJournal& Journal) const
     {
+        FDeclaredInputPayloadTable Declared;
+        for(const auto& H:History)if(H.ConsumedPrefix&&H.ConsumedPrefix->Status==P::EPrivateRoadInputPrefixCopy::CompleteObservedPrefix)
+            for(const auto& Frame:H.ConsumedPrefix->Prefix)Declared.Capture(Frame);
+        Declared.Write(S);
         U64 Matched=0,MissingLocal=0,MissingAuthority=0;
         for(const auto& H:History)
         {MissingLocal+=H.Local.empty();MissingAuthority+=H.Authority.empty();Matched+=!H.Local.empty()&&!H.Authority.empty();}
@@ -348,7 +391,7 @@ struct FFirstForwardKinematicTrace
         for(size_t N=0;N<Frames;++N)
         {
             if(N)S<<',';S<<"{\"frame\":"<<N<<",\"capture\":";
-            WriteConsumedPrefix(S,History[N].ConsumedPrefix?&*History[N].ConsumedPrefix:nullptr);S<<'}';
+            WriteConsumedPrefix(S,History[N].ConsumedPrefix?&*History[N].ConsumedPrefix:nullptr,Declared);S<<'}';
         }
         S<<"]}";return bool(S);
     }

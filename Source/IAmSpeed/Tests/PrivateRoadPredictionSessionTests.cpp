@@ -2,6 +2,7 @@
 #include "IAmSpeed/Netcode/client-prediction/PrivateRoadPredictionSession.h"
 #include "IAmSpeed/Netcode/client-prediction/PrivateRoadKinematicDiagnostics.h"
 #include "IAmSpeed/Driving/DrivingInput.h"
+#include "IAmSpeed/World/Simulation/RoadSettings/DeclaredRoadConformanceProfile.h"
 #include "Misc/AutomationTest.h"
 #include "UObject/GarbageCollection.h"
 
@@ -29,10 +30,14 @@ bool FIASPrivateRoadLateInputReconciliation::RunTest(const FString&)
         TestTrue(TEXT("small acceleration field differences are independently retained"),D.Valid&&D.Different&&D.Acceleration>0&&D.AngularAcceleration>0);
     }
     auto Contract=Speed::Driving::MakeContract(Speed::Driving::FBindings{});if(!Contract)return false;
+    const auto DeclaredSettings=Speed::RoadSettings::MakeDeclaredRoadConformanceProfile();
+    if(!DeclaredSettings)return false;
+    const auto DeclaredBytes=DeclaredSettings->CanonicalIdentity().size();
+    if(!TestTrue(TEXT("existing declared profile exceeds old4096 diagnostic cap and fits actual startup contract"),DeclaredBytes>4096&&DeclaredBytes<=32768))return false;
     std::vector<P::FPrivateRoadCarSeed> Seeds;
     for(U64 A=0;A<2;++A)
     {
-        P::FPrivateRoadCarSeed S;S.StartPolicy=P::EPrivateRoadStartPolicy::ExplicitUnitRecipe;S.Actor=101+A;S.Incarnation=3;S.Contract=Contract;
+        P::FPrivateRoadCarSeed S;S.StartPolicy=P::EPrivateRoadStartPolicy::ExplicitUnitRecipe;S.DeclaredSettings=DeclaredSettings;S.Actor=101+A;S.Incarnation=3;S.Contract=Contract;
         S.Role=A?P::EBranchFilterRole::RemoteRequests:P::EBranchFilterRole::LocalDevice;
         S.Local={Speed::Input::EProducerKind::Device,42+A};S.LocalEpoch={3};
         S.Remote.Session=1;S.Remote.Epoch=2;S.Remote.Actor=S.Actor;S.Remote.Incarnation=3;
@@ -117,6 +122,10 @@ bool FIASPrivateRoadLateInputReconciliation::RunTest(const FString&)
         OriginalPrefix.Status==P::EPrivateRoadInputPrefixCopy::CompleteObservedPrefix
         &&OriginalPrefix.Publication==Original&&OriginalPrefix.Prefix.size()==91
         &&OriginalPrefix.CompletedGraphAdoptions==0))return false;
+    bool DeclaredPayloadExact=true;
+    for(const auto& F:OriginalPrefix.Prefix)
+        DeclaredPayloadExact=DeclaredPayloadExact&&F.DeclaredSettingsIdentity==DeclaredSettings->CanonicalIdentity();
+    TestTrue(TEXT("actual native profile bytes copied exactly at every observed frame"),DeclaredPayloadExact);
     const auto BoundedOut=Client->CaptureConsumedInputPrefixForDiagnostics(90);
     const bool OverflowUnknown=BoundedOut.Status==P::EPrivateRoadInputPrefixCopy::Overflow
         &&BoundedOut.Publication==Original&&BoundedOut.Prefix.empty();
@@ -154,6 +163,9 @@ bool FIASPrivateRoadLateInputReconciliation::RunTest(const FString&)
         DuringStagedPrefix.Status==P::EPrivateRoadInputPrefixCopy::CompleteObservedPrefix
         &&DuringStagedPrefix.Publication==Original&&DuringStagedPrefix.Prefix==OriginalPrefix.Prefix
         &&DuringStagedPrefix.CompletedGraphAdoptions==0);
+    for(const auto& F:DuringStagedPrefix.Prefix)
+        DeclaredPayloadExact=DeclaredPayloadExact&&F.DeclaredSettingsIdentity==DeclaredSettings->CanonicalIdentity();
+    TestTrue(TEXT("actual declared payload stays exact while staged graph remains invisible"),DeclaredPayloadExact);
     U64 Last=90;
     for(U64 Pulse=1;Pulse<=64&&Status==P::EPrivateRoadCorrection::Replaying;++Pulse)
     {
@@ -191,6 +203,9 @@ bool FIASPrivateRoadLateInputReconciliation::RunTest(const FString&)
     TestTrue(TEXT("actual adoption replaces the full prefix, without concatenating first-forward history"),ActualAdoptedPrefix);
     for(const auto& F:AdoptedPrefix.Prefix)
         TestTrue(TEXT("every captured historical frame belongs to the adopted graph"),F.LocalKernelLifetime==Corrected->LocalKernelLifetime);
+    for(const auto& F:AdoptedPrefix.Prefix)
+        DeclaredPayloadExact=DeclaredPayloadExact&&F.DeclaredSettingsIdentity==DeclaredSettings->CanonicalIdentity();
+    TestTrue(TEXT("actual declared payload matches throughout genuinely adopted graph history"),DeclaredPayloadExact);
     TestTrue(TEXT("read-only input capture keeps actual adopted publication unchanged"),Client->ReadLatest()==Corrected);
     TestTrue(TEXT("actual reconciliation records native change and complete replay count"),Witness&&Witness->FirstInvalidated==8&&Witness->ReplayedFrames==Last+1&&Witness->ThroughFrame==Last&&Witness->MaximumPositionChange>1&&Witness->Corrections==1);
     TestTrue(TEXT("received authority is retained across adoption"),Client->ConfirmRemote(5,Late60).Status==EResult::Duplicate);
@@ -201,8 +216,8 @@ bool FIASPrivateRoadLateInputReconciliation::RunTest(const FString&)
     const bool ClosedUnknown=ClosedPrefix.Status==P::EPrivateRoadInputPrefixCopy::Unavailable
         &&!ClosedPrefix.Publication&&ClosedPrefix.Prefix.empty();
     TestTrue(TEXT("closed graph cannot claim an observed input prefix"),ClosedUnknown);
-    AddInfo(FString::Printf(TEXT("[NativeObservedInputPrefix] before=%llu after=%llu actionSlots=%u actualAdoption=%d oldCopyImmutable=%d cameraSlots=%d actualReset=%d speculativeResetUnknown=%d overflowUnknown=%d unstartedUnknown=%d closedUnknown=%d fullCausalState=0 restoreK=0"),
-        uint64(OriginalPrefix.Prefix.size()),uint64(AdoptedPrefix.Prefix.size()),unsigned(ActionCount),ActualAdoptedPrefix,
+    AddInfo(FString::Printf(TEXT("[NativeObservedInputPrefix] before=%llu after=%llu actionSlots=%u declaredBytes=%llu declaredPayloadExact=%d actualAdoption=%d oldCopyImmutable=%d cameraSlots=%d actualReset=%d speculativeResetUnknown=%d overflowUnknown=%d unstartedUnknown=%d closedUnknown=%d fullCausalState=0 restoreK=0"),
+        uint64(OriginalPrefix.Prefix.size()),uint64(AdoptedPrefix.Prefix.size()),unsigned(ActionCount),uint64(DeclaredBytes),DeclaredPayloadExact,ActualAdoptedPrefix,
         OriginalPrefix.Prefix[30].Actors[1].Requested[0]==255,CameraSlotsObserved,ActualResetCaptured,HoldResetUnknown,OverflowUnknown,UnstartedUnknown,ClosedUnknown));
     AddInfo(FString::Printf(TEXT("[NativeLateInputReconciliation] BeforePositionError=%.9g CorrectedFrame=%llu ReplayFrames=%llu ExactKinematics=1 NativeGraphs=REAL Correction=FRESH_ORIGIN_RECONSTRUCTION NetworkAuthentication=NOT_QUALIFIED CompleteSnapshotRestore=NOT_QUALIFIED"),BeforeError,Last,Witness?Witness->ReplayedFrames:0));
     return !HasAnyErrors();

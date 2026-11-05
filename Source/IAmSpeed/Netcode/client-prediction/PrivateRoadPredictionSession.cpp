@@ -306,7 +306,7 @@ CopyPrivateRoadConsumedInputFrameForDiagnostics(const FPrivateRoadPublication& P
     try
     {
         if(!Publication.LocalKernelLifetime||Publication.Actors.empty()||Publication.Actors.size()>16
-            ||Publication.DeclaredSettingsIdentity.size()>4096)return {};
+            ||Publication.DeclaredSettingsIdentity.size()>32768)return {};
         FPrivateRoadObservedInputFrame Out;
         Out.Frame=Publication.Frame;Out.LocalKernelLifetime=Publication.LocalKernelLifetime;
         Out.AwaitingInitialPublication=Publication.AwaitingInitialPublication;
