@@ -128,9 +128,40 @@ bool FIASPrivateRoadWheelSimulationBindings::RunTest(const FString&)
     };
     if(HA.Confirm(5,Packet(0)).Status!=EResult::Accepted||HB.Confirm(5,Packet(1)).Status!=EResult::Accepted)return false;
     std::vector<P::FPrivateRoadRequest> Requests={{101,3,HA.Predict(0)},{102,3,HB.Predict(0)}};
+    if(!TestTrue(*FString::Printf(TEXT("actual quiescent facade poison before diagnostic Step: %s"),*Why),
+        Own->PoisonFacadeMassForValueCommandDiagnostics(Why)))return false;
     P::FPrivateRoadHitAcceptanceProbe Step;
     if(!TestTrue(*FString::Printf(TEXT("real Step phase entry: %s"),*Why),Own->StepWithHitAcceptanceProbeForDiagnostics(Requests,false,*Foreign,Step,Why)))return false;
     TestTrue(TEXT("actual Step refuses Birth-only binding before target writes"),Step.BirthWheelBindingRefusedDuringStep);
+    TestEqual(TEXT("actual canonical mass first-car four-wheel before/after rows"),uint32(Step.CanonicalMassDiagnosticRows.size()),uint32(8));
+    for(const auto& Row:Step.CanonicalMassDiagnosticRows)
+    {
+        TestEqual(TEXT("actual first-car seed, second actor not observed by this control"),Row.Actor,U64(101));
+        TestEqual(TEXT("actual canonical diagnostic frame"),Row.Frame,U64(0));
+        TestTrue(TEXT("actual four wheels across two captures"),Row.Wheel<4&&Row.Capture<2);
+        TestTrue(TEXT("actual validated native mass encoded, facade distinct and finite, complete old encoding equal"),
+            Row.SourceValidated&&Row.EncodedMassMatches&&Row.OriginalEncodingMatches&&Row.FacadeDistinct&&Row.ValuesFinite);
+        TestTrue(TEXT("actual scalar mass span inside full observed encoding"),Row.MassOffset>=0&&Row.MassBytes>0
+            &&Row.MassOffset<=Row.EncodedBytes&&Row.MassBytes<=Row.EncodedBytes-Row.MassOffset&&Row.EncodedBytes==Row.OriginalEncodingBytes);
+        TestTrue(TEXT("actual finite distinct mass scalar bit copies"),Row.CanonicalMassBits!=Row.FacadeMassBits);
+        AddInfo(FString::Printf(TEXT("[PrivateRoadCanonicalMassDiagnostic] actor=%llu frame=%llu capture=%u wheel=%u canonicalBits=%u facadeBits=%u offset=%d massBytes=%d bytes=%d originalBytes=%d validated=%d encoded=%d originalEqual=%d facadeDistinct=%d finite=%d. Actual first-car four-wheel before/after Step captures only; actor102 NOT_OBSERVED, old comparison still depends on four ambient overrides, other fields and lifetime remain partial."),
+            Row.Actor,Row.Frame,Row.Capture,Row.Wheel,Row.CanonicalMassBits,Row.FacadeMassBits,Row.MassOffset,Row.MassBytes,Row.EncodedBytes,Row.OriginalEncodingBytes,
+            int(Row.SourceValidated),int(Row.EncodedMassMatches),int(Row.OriginalEncodingMatches),int(Row.FacadeDistinct),int(Row.ValuesFinite)));
+    }
+    if(!TestTrue(TEXT("actual retained first-car Box capture observed"),Step.CanonicalMassBoxObserved))return false;
+    const auto& BoxRow=Step.CanonicalMassBoxDiagnostic;
+    TestEqual(TEXT("actual Box actor seed"),BoxRow.Actor,U64(101));TestEqual(TEXT("actual Box canonical frame"),BoxRow.Frame,U64(0));
+    TestTrue(TEXT("actual finite distinct Box mass and exact native field/full old encoding"),BoxRow.SourceValidated&&BoxRow.EncodedMassMatches
+        &&BoxRow.OriginalEncodingMatches&&BoxRow.FacadeDistinct&&BoxRow.ValuesFinite&&BoxRow.CanonicalMassBits!=BoxRow.FacadeMassBits);
+    TestTrue(TEXT("actual Box scalar span and complete lengths"),BoxRow.MassOffset>=0&&BoxRow.MassBytes>0
+        &&BoxRow.MassOffset<=BoxRow.EncodedBytes&&BoxRow.MassBytes<=BoxRow.EncodedBytes-BoxRow.MassOffset&&BoxRow.EncodedBytes==BoxRow.OriginalEncodingBytes);
+    AddInfo(FString::Printf(TEXT("[PrivateRoadCanonicalMassBoxDiagnostic] actor=%llu frame=%llu canonicalBits=%u facadeBits=%u offset=%d massBytes=%d bytes=%d originalBytes=%d validated=%d encoded=%d originalEqual=%d facadeDistinct=%d finite=%d. One actual first-car fixed Box Step capture; no wheel/capture indices or actor102 observation. Old ambient comparison dependency and other lifetime/state domains remain open."),
+        BoxRow.Actor,BoxRow.Frame,BoxRow.CanonicalMassBits,BoxRow.FacadeMassBits,BoxRow.MassOffset,BoxRow.MassBytes,BoxRow.EncodedBytes,BoxRow.OriginalEncodingBytes,
+        int(BoxRow.SourceValidated),int(BoxRow.EncodedMassMatches),int(BoxRow.OriginalEncodingMatches),int(BoxRow.FacadeDistinct),int(BoxRow.ValuesFinite)));
+    TestTrue(TEXT("authentic foreign Step append refused before nonempty output changes"),Step.CanonicalMassForeignStepRefused&&Step.CanonicalMassForeignStepOutUnchanged);
+    AddInfo(FString::Printf(TEXT("[PrivateRoadCanonicalMassForeignStepRefusal] refused=%d unchanged=%d actualStep=%d. Actual retained foreign box and original Step operation; no stale or fabricated token."),
+        int(Step.CanonicalMassForeignStepRefused),int(Step.CanonicalMassForeignStepOutUnchanged),int(Step.ActualStepOperation)));
+
     TestTrue(TEXT("actual Step refuses reference body Birth preflight before writes"),Step.ReferenceBindingBodyRefusedDuringStep);
     TestTrue(TEXT("actual Step refuses Retirement clear before named original/reference effects"),Step.RetirementClearRefusedInStep&&Step.RetirementStepFootprintUnchanged);
     TestTrue(TEXT("direct Retirement Kind rejects genuine Step with other root/gate predicates positive"),Step.RetirementStepOtherPredicatesPositive&&Step.RetirementKindRefusedInStep);

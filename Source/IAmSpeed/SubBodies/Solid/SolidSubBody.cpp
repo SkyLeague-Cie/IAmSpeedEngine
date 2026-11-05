@@ -564,3 +564,43 @@ FMatrix USolidSubBody::ComputeWorldInvInertiaTensor() const
     }
     return FMatrix::Identity;
 }
+
+
+// Same ordered diagnostic fields shared by ordinary and canonical paths.
+#if !UE_BUILD_SHIPPING
+void USolidSubBody::AppendSolidEpisodeTailForTesting(TArray<uint8>& Out) const
+{
+        using B=Speed::FEpisodeStateBytesForTesting;
+        B::Add(Out,bIsMainSubBodySolidStorage());
+        B::Add(Out,bApplyRestForceSolidStorage());
+        B::Add(Out,EnableFakePhysicsSolidStorage());
+        B::Add(Out,bEnableConstraintOnSubBodyHitSolidStorage());
+        B::Add(Out,RestitutionSolidStorage());
+        B::Add(Out,SphereBoxRestitutionOverrideSolidStorage());
+        B::Add(Out,SphereBoxFrictionOverrideSolidStorage());
+        B::Add(Out,SphereBoxManifoldFrictionOverrideSolidStorage());
+        B::Add(Out,bUseCoupledContactImpulseSolidStorage());
+        B::Add(Out,bUsePostNormalFrictionImpulseSolidStorage());
+        B::Add(Out,bUsePersistentBilateralContactSolidStorage());
+        B::Add(Out,CoupledContactMaxLinearSpeedSolidStorage());
+        B::Add(Out,CoupledContactMaxAngularSpeedSolidStorage());
+        B::Add(Out,CoupledContactMaxAbsLocalNormalYSolidStorage());
+        B::Add(Out,StaticFrictionSolidStorage());
+        B::Add(Out,DynamicFrictionSolidStorage());
+        B::Add(Out,ImpactThresholdSolidStorage());
+        B::Add(Out,HitDampingSolidStorage());
+        B::Add(Out,InvInertiaLocalSolidStorage());
+        B::Add(Out,idxSolidStorage());
+    }
+#endif
+
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+void USolidSubBody::AppendCanonicalEpisodeStateForTesting(
+    const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,TArray<uint8>& Out,
+    Speed::NativeKinematics::FCanonicalMassAppendDiagnostics& Diagnostics) const
+{
+    // Unsupported shapes refuse before any bytes are appended.
+    (void)Operation;(void)Out;(void)Diagnostics;
+    throw Speed::Netcode::Prediction::FPrivateNativeStorageUnavailable{};
+}
+#endif

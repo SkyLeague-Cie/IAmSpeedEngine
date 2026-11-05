@@ -34,52 +34,7 @@ public:
     void AppendEpisodeStateForTesting(TArray<uint8>& Out) const override
     {
         USolidSubBody::AppendEpisodeStateForTesting(Out);
-        using B=Speed::FEpisodeStateBytesForTesting;
-        B::Add(Out,bProductionNonpenetratingSphereContactsBoxDomainStorage());
-        B::Add(Out,BoxExtentBoxDomainStorage());
-        B::Add(Out,bEdgeSupportLatchedBoxDomainStorage());
-        B::Add(Out,EdgeSupportLatchFrameBoxDomainStorage());
-        B::Add(Out,bRoofSurfaceTraversalLatchedBoxDomainStorage());
-        B::Add(Out,LastRoofSurfaceContactFrameBoxDomainStorage());
-        B::Add(Out,RoofSurfaceCompBoxDomainStorage());
-        B::Add(Out,CompositeGroundNormalBoxDomainStorage());
-        B::Add(Out,MaxHitsPerComponentPerFrameBoxDomainStorage());
-        B::Add(Out,bGroundContactStableBoxDomainStorage());
-        B::Add(Out,LastResolvedGroundHitFrameBoxDomainStorage());
-        B::Add(Out,bHasGroundContactBoxDomainStorage());
-        B::Add(Out,bFreshEdgeRecoverCandidateBoxDomainStorage());
-        B::Add(Out,StableTimeBoxDomainStorage());
-        B::Add(Out,bGroundHitFromSweepBoxDomainStorage());
-        B::Add(Out,bGroundPlaneValidBoxDomainStorage());
-        B::Add(Out,GroundPlanePointWSBoxDomainStorage());
-        B::Add(Out,GroundPlaneNBoxDomainStorage());
-        B::Add(Out,GroundPlaneDBoxDomainStorage());
-        B::Add(Out,GroundCompBoxDomainStorage());
-        B::Add(Out,EstablishedSupportSourceIdBoxDomainStorage());
-        B::Add(Out,EstablishedSupportSurfaceIdBoxDomainStorage());
-        B::Add(Out,FreshSupportClampUntilFrameBoxDomainStorage());
-        B::Add(Out,FreshSupportClampNBoxDomainStorage());
-        B::Add(Out,FreshSupportClampCompBoxDomainStorage());
-        B::Add(Out,PrevGroundNormalBoxDomainStorage());
-        B::Add(Out,bHadGroundContactPrevFrameBoxDomainStorage());
-        B::Add(Out,PrevContactNormalBoxDomainStorage());
-        B::Add(Out,bHadContactPrevFrameBoxDomainStorage());
-        B::Add(Out,MinSlopCmBoxDomainStorage());
-        B::Add(Out,LastWallOrGutterFrameBoxDomainStorage());
-        B::Add(Out,LastWallOrGutterNBoxDomainStorage());
-        B::Add(Out,LastWallOrGutterUpDotBoxDomainStorage());
-        B::Add(Out,LastResolvedSphereHitBoxDomainStorage());
-        B::Add(Out,LastResolvedSphereHitFrameBoxDomainStorage());
-        B::Array(Out,CurrentGroundContactsWSBoxDomainStorage());
-        B::Array(Out,PreviousFrameGroundContactsWSBoxDomainStorage());
-        B::Array(Out,CurrentGroundNormalsWSBoxDomainStorage());
-        B::Array(Out,PrevGroundContactsLSBoxDomainStorage());
-        B::Array(Out,LatchedEdgeContactsLSBoxDomainStorage());
-        B::Array(Out,PrevLambdaNBoxDomainStorage());
-        B::Add(Out,HitCountThisFrameBoxDomainStorage().Num());
-        TArray<TWeakObjectPtr<UPrimitiveComponent>> Keys;HitCountThisFrameBoxDomainStorage().GenerateKeyArray(Keys);
-        Keys.Sort([](const auto& A,const auto& Other){return reinterpret_cast<UPTRINT>(A.GetEvenIfUnreachable())<reinterpret_cast<UPTRINT>(Other.GetEvenIfUnreachable());});
-        for(const auto& Key:Keys){B::Add(Out,Key);B::Add(Out,HitCountThisFrameBoxDomainStorage().FindChecked(Key));}
+        AppendBoxEpisodeTailForTesting(Out);
     }
 #endif
     virtual void Initialize(ISpeedComponent* InParentComponent) override;
@@ -560,4 +515,14 @@ private:
     float LastWallOrGutterUpDot = 0.f;
     SHitResult LastResolvedSphereHit;
     int32 LastResolvedSphereHitFrame = INDEX_NONE;
+
+protected:
+#if !UE_BUILD_SHIPPING
+    void AppendBoxEpisodeTailForTesting(TArray<uint8>& Out) const;
+#endif
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+    void AppendCanonicalEpisodeStateForTesting(
+        const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,TArray<uint8>& Out,
+        Speed::NativeKinematics::FCanonicalMassAppendDiagnostics& Diagnostics) const override;
+#endif
 };

@@ -60,19 +60,7 @@ public:
     void AppendEpisodeStateForTesting(TArray<uint8>& Out) const override
     {
         USolidSubBody::AppendEpisodeStateForTesting(Out);
-        using B=Speed::FEpisodeStateBytesForTesting;
-        B::Add(Out,bProductionNonpenetratingBoxContacts);
-        B::Add(Out,RadiusSphereDomainStorage());
-        B::Add(Out,MinSlopCm);
-        B::Add(Out,SphereBoxTangentialContactArmScale);
-        B::Add(Out,SphereBoxTangentialContactArmStartSpeed);
-        B::Add(Out,SphereBoxTangentialContactArmFullSpeed);
-        B::Add(Out,SphereBoxTangentialArmMinSphereSpeed);
-        B::Add(Out,SphereBoxTangentialArmMaxSphereSpeed);
-        B::Add(Out,SphereBoxTangentialArmMinSphereAngularSpeed);
-        B::Add(Out,SphereBoxTangentialArmMaxSphereAngularSpeed);
-        B::Add(Out,SphereBoxTangentialArmMinBoxSpeed);
-        B::Add(Out,WorldStaticPenetrationDiagnostics.bEnabled);B::Add(Out,WorldStaticPenetrationDiagnostics.StartFrame);B::Add(Out,WorldStaticPenetrationDiagnostics.SweepInitialOverlapSamples);B::Add(Out,WorldStaticPenetrationDiagnostics.ProjectionInputSamples);B::Add(Out,WorldStaticPenetrationDiagnostics.ProjectionResidualSamples);B::Add(Out,WorldStaticPenetrationDiagnostics.MaximumSweepInitialOverlapCm);B::Add(Out,WorldStaticPenetrationDiagnostics.MaximumProjectionInputDepthCm);B::Add(Out,WorldStaticPenetrationDiagnostics.MaximumProjectionResidualDepthCm);B::Add(Out,WorldStaticPenetrationDiagnostics.MaximumSweepInitialOverlapFrame);B::Add(Out,WorldStaticPenetrationDiagnostics.MaximumProjectionInputFrame);B::Add(Out,WorldStaticPenetrationDiagnostics.MaximumProjectionResidualFrame);
+        AppendSphereEpisodeTailForTesting(Out);
     }
 #endif
 	virtual void Initialize(ISpeedComponent* InParentComponent) override;
@@ -205,4 +193,14 @@ protected:
 	float SphereBoxTangentialArmMaxSphereAngularSpeed = -1.0f;
 	float SphereBoxTangentialArmMinBoxSpeed = -1.0f;
 	FSphereWorldStaticPenetrationDiagnostics WorldStaticPenetrationDiagnostics;
+
+protected:
+#if !UE_BUILD_SHIPPING
+    void AppendSphereEpisodeTailForTesting(TArray<uint8>& Out) const;
+#endif
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+    void AppendCanonicalEpisodeStateForTesting(
+        const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,TArray<uint8>& Out,
+        Speed::NativeKinematics::FCanonicalMassAppendDiagnostics& Diagnostics) const override;
+#endif
 };

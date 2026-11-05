@@ -6,6 +6,7 @@
 #include "IAmSpeed/SubBodies/SSubBody.h"
 #include "IAmSpeed/Base/EpisodeStateBytesForTesting.h"
 #include "SolidSubBody.generated.h"
+namespace Speed::NativeKinematics { struct FCanonicalMassAppendDiagnostics; }
 namespace Speed::Netcode::Prediction {class FPrivateNativeOperation;}
 namespace Speed::NativeKinematics {class FBodyRead;class FBodyWrite;}
 
@@ -117,26 +118,7 @@ public:
         USSubBody::AppendEpisodeStateForTesting(Out);
         using B=Speed::FEpisodeStateBytesForTesting;
         B::Add(Out,MassSolidStorage());
-        B::Add(Out,bIsMainSubBodySolidStorage());
-        B::Add(Out,bApplyRestForceSolidStorage());
-        B::Add(Out,EnableFakePhysicsSolidStorage());
-        B::Add(Out,bEnableConstraintOnSubBodyHitSolidStorage());
-        B::Add(Out,RestitutionSolidStorage());
-        B::Add(Out,SphereBoxRestitutionOverrideSolidStorage());
-        B::Add(Out,SphereBoxFrictionOverrideSolidStorage());
-        B::Add(Out,SphereBoxManifoldFrictionOverrideSolidStorage());
-        B::Add(Out,bUseCoupledContactImpulseSolidStorage());
-        B::Add(Out,bUsePostNormalFrictionImpulseSolidStorage());
-        B::Add(Out,bUsePersistentBilateralContactSolidStorage());
-        B::Add(Out,CoupledContactMaxLinearSpeedSolidStorage());
-        B::Add(Out,CoupledContactMaxAngularSpeedSolidStorage());
-        B::Add(Out,CoupledContactMaxAbsLocalNormalYSolidStorage());
-        B::Add(Out,StaticFrictionSolidStorage());
-        B::Add(Out,DynamicFrictionSolidStorage());
-        B::Add(Out,ImpactThresholdSolidStorage());
-        B::Add(Out,HitDampingSolidStorage());
-        B::Add(Out,InvInertiaLocalSolidStorage());
-        B::Add(Out,idxSolidStorage());
+        AppendSolidEpisodeTailForTesting(Out);
     }
 #endif
 	virtual void Initialize(ISpeedComponent* InParentComponent) override;
@@ -408,4 +390,14 @@ private:
     virtual FMatrix ComputeNativeInitialInverseTensor(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation) const;
     virtual FMatrix ComputeNativeWorldInvInertiaTensor(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation) const;
 
+
+protected:
+#if !UE_BUILD_SHIPPING
+    void AppendSolidEpisodeTailForTesting(TArray<uint8>& Out) const;
+#endif
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+    virtual void AppendCanonicalEpisodeStateForTesting(
+        const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,TArray<uint8>& Out,
+        Speed::NativeKinematics::FCanonicalMassAppendDiagnostics& Diagnostics) const;
+#endif
 };

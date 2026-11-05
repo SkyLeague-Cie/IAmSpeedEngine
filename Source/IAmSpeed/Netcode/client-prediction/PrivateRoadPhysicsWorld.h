@@ -180,6 +180,7 @@ struct FPrivateRoadBirthInitializationProbe
     bool ActualBirthOperation=false,ForeignBodyRefused=false,ForeignParentRefused=false,ForeignInverseRefused=false;
     bool StepHitRefusedInBirth=false,OwnBodyUnchangedAfterRefusals=false;
     bool StepResetRefusedInBirth=false,StepResolveRefusedInBirth=false;
+    bool CanonicalMassAppendBirthRefused=false,CanonicalMassAppendBirthOutUnchanged=false,CanonicalMassAppendBirthSubjectSolid=false;
     bool FaultAfterFirstInitializerReached=false,CreateReturnedNull=false;
     // Only existing independent actual constructor/destructor counters escape.
     // No own graph, simulation, configuration, UObject or native view retained.
@@ -205,6 +206,15 @@ struct FPrivateRoadHitAcceptanceCase
 {
     FString Name;bool LegacyExpected=false,NativeExpected=false,LegacyNativeEqual=false;
 };
+// Copied actual capture values only; no native subject/operation is retained.
+struct FPrivateRoadCanonicalMassDiagnosticRow
+{
+    U64 Actor=0,Frame=0;
+    uint32 Capture=0,Wheel=0,CanonicalMassBits=0,FacadeMassBits=0;
+    int32 MassOffset=INDEX_NONE,MassBytes=0,EncodedBytes=0,OriginalEncodingBytes=0;
+    bool SourceValidated=false,EncodedMassMatches=false,OriginalEncodingMatches=false;
+    bool FacadeDistinct=false,ValuesFinite=false;
+};
 struct FPrivateRoadHitAcceptanceProbe
 {
     std::vector<FPrivateRoadHitAcceptanceCase> Cases;
@@ -212,6 +222,10 @@ struct FPrivateRoadHitAcceptanceProbe
     bool BaseBehaviorDistinguished=false,AllRefusalsBeforeWrite=false,ActualStepOperation=false;
     bool BirthInitializationRefusedDuringStep=false;
     bool BirthWheelBindingRefusedDuringStep=false;
+    std::vector<FPrivateRoadCanonicalMassDiagnosticRow> CanonicalMassDiagnosticRows;
+    FPrivateRoadCanonicalMassDiagnosticRow CanonicalMassBoxDiagnostic; // Capture/Wheel fields not applicable or emitted for Box
+    bool CanonicalMassBoxObserved=false;
+    bool CanonicalMassForeignStepRefused=false,CanonicalMassForeignStepOutUnchanged=false;
     bool ReferenceBindingBodyRefusedDuringStep=false;
     bool RetirementClearRefusedInStep=false,RetirementStepFootprintUnchanged=false;
     bool RetirementStepOtherPredicatesPositive=false,RetirementKindRefusedInStep=false;

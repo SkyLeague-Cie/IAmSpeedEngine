@@ -2259,3 +2259,38 @@ facade-distinct subsequent independent Step has its own scope. A positive native
 Mass value-command execution remains NOT_PROVED; legacy/custom results cannot
 transfer that proof. No valid bit, physics calculation, restore or lifetime guard
 is changed to make the diagnostic pass.
+
+
+### Explicit canonical Mass diagnostic path (implementation draft, controls pending)
+
+The proposed nonpublic Step diagnostic path reads Mass through the actual operation
+and subject, keeps the same prefix/field/tail ordering, and stages output locally
+before appending it to caller bytes. Legacy/reference capture stays separate. Copied
+mass/offset/encoding observations are diagnostic values, never capability or lifetime
+certificates. All other fields still use their existing partial routes. The four
+ambient Mass overrides remain unchanged and their other aliases remain open.
+
+This draft still needs the matching shape paths, actual per-subject finite distinct
+facade/canonical controls, encoded field/length and original encoding comparisons,
+and authentic phase/foreign refusals before output changes. It is not admitted for
+application or native qualification, and does not supply full-state or K restoration.
+
+
+The authored controls now retain eight real returned observations from the existing
+first-car probe: four wheel captures before its refusal attempt and four after.
+Logical actor/frame are copied from the actual retained node and driver operation;
+actor102 is NOT_OBSERVED by this control. Quiescent facade poison precedes the real
+Step, and each row requires finite distinct actual masses, exact scalar-codec span,
+full old/new encoding equality and real lengths. The old comparison intentionally
+still uses ambient Mass overrides and does not close that dependency. Authentic Birth
+and retained foreign-box Step calls use nonempty output and require refusal without
+output changes. No-operation, stale and retired capability cases stay NOT_PROVED.
+These are authored, uncompiled controls until fresh source/native qualification.
+
+
+A separate authored Box control uses the actual retained first-car hitbox, confirms
+its identity against that node, and captures it under the same genuine Step. Its
+thirteen-field marker has no wheel/capture indices; those DTO slots are not applicable
+and are not emitted. Only a returned capture sets its observed flag. This adds one
+actual supported Box path alongside the eight Wheel/Sphere-layer observations; it
+does not qualify a standalone Sphere factory, actor102, all aliases or full state.

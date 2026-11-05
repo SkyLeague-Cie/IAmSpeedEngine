@@ -1835,10 +1835,12 @@ bool USpeedWheeledComponent::ProbeNativeWheelBindingStepRefusalForDiagnostics(
  const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,
  Chaos::FSimpleWheeledVehicle* OriginalAllocation,
  TConstArrayView<TWeakObjectPtr<USWheelSubBody>> BodyBirths,
- TConstArrayView<TWeakObjectPtr<UChaosVehicleWheel>> ConfigurationBirths)
+ TConstArrayView<TWeakObjectPtr<UChaosVehicleWheel>> ConfigurationBirths,
+ TArray<Speed::NativeKinematics::FCanonicalMassAppendDiagnostics>& Observations)
 {
     namespace P=Speed::Netcode::Prediction;
     P::FPrivateNativeStorageAccess::RequireStep(Operation);
+    if(!Observations.IsEmpty())return false; // require a fresh diagnostic destination, never clear caller data
     if(!OriginalAllocation||BodyBirths.Num()!=4||ConfigurationBirths.Num()!=4
         ||!BodyBirths[0].IsValid()||!ConfigurationBirths[0].IsValid())return false;
     auto& D=P::FPrivateNativeStorageAccess::Part<FOriginalWheeledDomain>(Operation,this);
@@ -1861,7 +1863,9 @@ bool USpeedWheeledComponent::ProbeNativeWheelBindingStepRefusalForDiagnostics(
         for(int32 I=0;I<4;++I)
         {
             if(!BodyBirths[I].IsValid()||!ConfigurationBirths[I].IsValid())throw P::FPrivateNativeStorageUnavailable{};
-            BodyBirths[I].Get()->AppendEpisodeStateForTesting(Bytes);
+            const auto Captured=Speed::NativeKinematics::FSolidMassAccess::AppendCanonicalEpisodeForTesting(
+                Operation,*BodyBirths[I].Get(),Bytes);
+            Observations.Add(Captured); // only after the actual complete capture returned
             B::Add(Bytes,OriginalAllocation->Wheels[I].MassPerWheel);
             B::Add(Bytes,ConfigurationBirths[I].Get()->SuspensionMaxRaise);B::Add(Bytes,ConfigurationBirths[I].Get()->SuspensionMaxDrop);
         }

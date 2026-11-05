@@ -55,6 +55,7 @@ public:
 #if !UE_BUILD_SHIPPING
 namespace Speed { struct FCanonicalForeignStateForTesting; }
 #endif
+namespace Speed::NativeKinematics { struct FCanonicalMassAppendDiagnostics; }
 UCLASS()
 class IAMSPEED_API USpeedWheeledComponent : public UChaosWheeledVehicleMovementComponent, public ISpeedWheeledComponent
 {
@@ -953,7 +954,8 @@ private:
     bool ProbeNativeWheelBindingStepRefusalForDiagnostics(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,
         Chaos::FSimpleWheeledVehicle* OriginalAllocation,
         TConstArrayView<TWeakObjectPtr<USWheelSubBody>> BodyBirths,
-        TConstArrayView<TWeakObjectPtr<UChaosVehicleWheel>> ConfigurationBirths);
+        TConstArrayView<TWeakObjectPtr<UChaosVehicleWheel>> ConfigurationBirths,
+        TArray<Speed::NativeKinematics::FCanonicalMassAppendDiagnostics>& Observations);
 #endif
 	void ClearWheelSimulationPointers();
 	/** Latches game-thread driving inputs exactly once at a physics-frame boundary. */

@@ -1588,3 +1588,34 @@ void USphereSubBody::ResolveNativeSphereCurrentHit(const Speed::Netcode::Predict
     if(Speed::NativeKinematics::FBodyRead::CurrentHit(Operation,*this).bBlockingHit)
         ResolveCurrentHitPrvMassResponseBody(Storage,Delta,SimTime);
 }
+
+
+// Same ordered diagnostic fields shared by ordinary and canonical paths.
+#if !UE_BUILD_SHIPPING
+void USphereSubBody::AppendSphereEpisodeTailForTesting(TArray<uint8>& Out) const
+{
+        using B=Speed::FEpisodeStateBytesForTesting;
+        B::Add(Out,bProductionNonpenetratingBoxContacts);
+        B::Add(Out,RadiusSphereDomainStorage());
+        B::Add(Out,MinSlopCm);
+        B::Add(Out,SphereBoxTangentialContactArmScale);
+        B::Add(Out,SphereBoxTangentialContactArmStartSpeed);
+        B::Add(Out,SphereBoxTangentialContactArmFullSpeed);
+        B::Add(Out,SphereBoxTangentialArmMinSphereSpeed);
+        B::Add(Out,SphereBoxTangentialArmMaxSphereSpeed);
+        B::Add(Out,SphereBoxTangentialArmMinSphereAngularSpeed);
+        B::Add(Out,SphereBoxTangentialArmMaxSphereAngularSpeed);
+        B::Add(Out,SphereBoxTangentialArmMinBoxSpeed);
+        B::Add(Out,WorldStaticPenetrationDiagnostics.bEnabled);B::Add(Out,WorldStaticPenetrationDiagnostics.StartFrame);B::Add(Out,WorldStaticPenetrationDiagnostics.SweepInitialOverlapSamples);B::Add(Out,WorldStaticPenetrationDiagnostics.ProjectionInputSamples);B::Add(Out,WorldStaticPenetrationDiagnostics.ProjectionResidualSamples);B::Add(Out,WorldStaticPenetrationDiagnostics.MaximumSweepInitialOverlapCm);B::Add(Out,WorldStaticPenetrationDiagnostics.MaximumProjectionInputDepthCm);B::Add(Out,WorldStaticPenetrationDiagnostics.MaximumProjectionResidualDepthCm);B::Add(Out,WorldStaticPenetrationDiagnostics.MaximumSweepInitialOverlapFrame);B::Add(Out,WorldStaticPenetrationDiagnostics.MaximumProjectionInputFrame);B::Add(Out,WorldStaticPenetrationDiagnostics.MaximumProjectionResidualFrame);
+    }
+#endif
+
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+void USphereSubBody::AppendCanonicalEpisodeStateForTesting(
+    const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,TArray<uint8>& Out,
+    Speed::NativeKinematics::FCanonicalMassAppendDiagnostics& Diagnostics) const
+{
+    Speed::NativeKinematics::FSolidMassAccess::AppendCanonicalSolidPrefixForTesting(Operation,*this,Out,Diagnostics);
+    AppendSphereEpisodeTailForTesting(Out);
+}
+#endif

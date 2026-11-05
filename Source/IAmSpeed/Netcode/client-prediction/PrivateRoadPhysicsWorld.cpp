@@ -1,6 +1,7 @@
 #include "PrivateRoadPhysicsWorld.h"
 #include <bit>
 #include "IAmSpeed/World/Simulation/Internal/BodyContactWrite.h"
+#include "IAmSpeed/World/Simulation/Internal/SolidMassAccess.h"
 #include "IAmSpeed/World/Simulation/Internal/ComponentContactWrite.h"
 #include "Math/QuatRotationTranslationMatrix.h"
 #include "PrivateNativeOperation.h"
@@ -1495,6 +1496,15 @@ bool FPrivateRoadPhysicsWorld::ProbeBirthInitializationGuards(FImpl& I,const FPr
     catch(const FPrivateNativeStorageUnavailable&){Out.RetirementClearRefusedInBirth=true;}
     Out.RetirementBirthFootprintUnchanged=BeforeRetirementRefusal==CaptureRetirementNamed();
     if(!Out.RetirementClearRefusedInBirth||!Out.RetirementBirthFootprintUnchanged)return false;
+    auto* ActualSolid=Cast<USolidSubBody>(Body);
+    Out.CanonicalMassAppendBirthSubjectSolid=ActualSolid!=nullptr;
+    if(!ActualSolid)return false;
+    TArray<uint8> RejectedBytes;RejectedBytes.Add(0xB1);RejectedBytes.Add(0x4D);
+    const auto RejectedBefore=RejectedBytes;
+    try{(void)Speed::NativeKinematics::FSolidMassAccess::AppendCanonicalEpisodeForTesting(Operation,*ActualSolid,RejectedBytes);}
+    catch(const FPrivateNativeStorageUnavailable&){Out.CanonicalMassAppendBirthRefused=true;}
+    Out.CanonicalMassAppendBirthOutUnchanged=RejectedBytes==RejectedBefore;
+    if(!Out.CanonicalMassAppendBirthRefused||!Out.CanonicalMassAppendBirthOutUnchanged)return false;
     Out.ActualBirthOperation=true;
     return Out.ForeignBodyRefused&&Out.ForeignParentRefused&&Out.ForeignInverseRefused
         &&Out.StepHitRefusedInBirth&&Out.StepResetRefusedInBirth&&Out.StepResolveRefusedInBirth&&Out.OwnBodyUnchangedAfterRefusals;
@@ -2740,8 +2750,41 @@ bool FPrivateRoadPhysicsWorld::ProbeHitAcceptanceRetained(FImpl& I,const FPrivat
     auto& CV=FPrivateNativeStorageAccess::Part<USpeedBranchWheeledComponent::FOwnedComponentValues>(Operation,BV.ParentComponent);
     if(I.Cars.empty())return false;
     const auto& BindingNode=*I.Cars.front();
+    TArray<Speed::NativeKinematics::FCanonicalMassAppendDiagnostics> CapturedMass;
     if(!BindingNode.Component||!BindingNode.Component->ProbeNativeWheelBindingStepRefusalForDiagnostics(
-        Operation,BindingNode.OriginalNativeVehicle,BindingNode.OriginalWheelBodyBirth,BindingNode.OriginalWheelObjects))return false;
+        Operation,BindingNode.OriginalNativeVehicle,BindingNode.OriginalWheelBodyBirth,BindingNode.OriginalWheelObjects,CapturedMass))return false;
+    if(CapturedMass.Num()!=8)return false; // actual four before and four after, first car only
+    const U64 ActualFrame=I.Driver->NextPrivate(Operation);
+    for(int32 Index=0;Index<CapturedMass.Num();++Index)
+    {
+        const auto& Captured=CapturedMass[Index];FPrivateRoadCanonicalMassDiagnosticRow Row;
+        Row.Actor=BindingNode.Seed.Actor;Row.Frame=ActualFrame;
+        Row.Capture=uint32(Index/4);Row.Wheel=uint32(Index%4);
+        Row.CanonicalMassBits=std::bit_cast<uint32>(Captured.CanonicalMass);
+        Row.FacadeMassBits=std::bit_cast<uint32>(Captured.FacadeMass);
+        Row.MassOffset=Captured.MassOffset;Row.MassBytes=Captured.MassBytes;
+        Row.EncodedBytes=Captured.EncodedBytes;Row.OriginalEncodingBytes=Captured.OriginalEncodingBytes;
+        Row.SourceValidated=Captured.SourceValidated;Row.EncodedMassMatches=Captured.EncodedMassMatches;
+        Row.OriginalEncodingMatches=Captured.OriginalEncodingMatches;Row.FacadeDistinct=Captured.FacadeDistinct;Row.ValuesFinite=Captured.ValuesFinite;
+        Result.CanonicalMassDiagnosticRows.push_back(Row);
+    }
+    if(BindingNode.OriginalHitboxBirth.Get()!=Box)return false;
+    TArray<uint8> ActualBoxOutput;
+    const auto CapturedBox=Speed::NativeKinematics::FSolidMassAccess::AppendCanonicalEpisodeForTesting(Operation,*Box,ActualBoxOutput);
+    auto& BoxRow=Result.CanonicalMassBoxDiagnostic;
+    BoxRow.Actor=BindingNode.Seed.Actor;BoxRow.Frame=I.Driver->NextPrivate(Operation);
+    BoxRow.CanonicalMassBits=std::bit_cast<uint32>(CapturedBox.CanonicalMass);BoxRow.FacadeMassBits=std::bit_cast<uint32>(CapturedBox.FacadeMass);
+    BoxRow.MassOffset=CapturedBox.MassOffset;BoxRow.MassBytes=CapturedBox.MassBytes;
+    BoxRow.EncodedBytes=CapturedBox.EncodedBytes;BoxRow.OriginalEncodingBytes=CapturedBox.OriginalEncodingBytes;
+    BoxRow.SourceValidated=CapturedBox.SourceValidated;BoxRow.EncodedMassMatches=CapturedBox.EncodedMassMatches;
+    BoxRow.OriginalEncodingMatches=CapturedBox.OriginalEncodingMatches;BoxRow.FacadeDistinct=CapturedBox.FacadeDistinct;BoxRow.ValuesFinite=CapturedBox.ValuesFinite;
+    Result.CanonicalMassBoxObserved=true; // only after the actual complete fixed Box path returned
+    TArray<uint8> ForeignOutput;ForeignOutput.Add(0xCA);ForeignOutput.Add(0xFE);
+    const auto ForeignBefore=ForeignOutput;
+    try{(void)Speed::NativeKinematics::FSolidMassAccess::AppendCanonicalEpisodeForTesting(Operation,*ForeignBox,ForeignOutput);}
+    catch(const FPrivateNativeStorageUnavailable&){Result.CanonicalMassForeignStepRefused=true;}
+    Result.CanonicalMassForeignStepOutUnchanged=ForeignOutput==ForeignBefore;
+    if(!Result.CanonicalMassForeignStepRefused||!Result.CanonicalMassForeignStepOutUnchanged)return false;
     Result.BirthWheelBindingRefusedDuringStep=true; // only after real Step guard test returned true
     // Reference Birth proof never escapes its real Birth call. Exercise the
     // actual body entry's Birth-only preflight under this genuine Step instead.

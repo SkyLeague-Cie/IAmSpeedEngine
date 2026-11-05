@@ -63,49 +63,7 @@ public:
     void AppendEpisodeStateForTesting(TArray<uint8>& Out) const override
     {
         USphereSubBody::AppendEpisodeStateForTesting(Out);
-        using B=Speed::FEpisodeStateBytesForTesting;
-        B::Add(Out,WheelComponentWheelDomainStorage());
-        B::Add(Out,ChaosWheelWheelDomainStorage());
-        B::Add(Out,PWheelWheelDomainStorage());
-        B::Add(Out,PSuspensionWheelDomainStorage());
-        B::Add(Out,WheelMassWheelDomainStorage());
-        B::Add(Out,SuspensionSpringRateWheelDomainStorage());
-        B::Add(Out,SuspensionDampingCompressionRatioWheelDomainStorage());
-        B::Add(Out,SuspensionDampingReboundRatioWheelDomainStorage());
-        B::Add(Out,bUseSuspensionForceModelOverrideWheelDomainStorage());
-        B::Add(Out,bClampSuspensionForceToPositiveWheelDomainStorage());
-        B::Add(Out,bClampPositiveUntilFirstCompressionWheelDomainStorage());
-        B::Add(Out,bUseEffectiveSuspensionSweepRadiusWheelDomainStorage());
-        B::Add(Out,bUseIncreasingDisplacementAsCompressionWheelDomainStorage());
-        B::Add(Out,bUseCompressionCrossingContactImpulseWheelDomainStorage());
-        B::Add(Out,GroundForceApplicationModeWheelDomainStorage());
-        B::Add(Out,ContactImpulseApplicationModeWheelDomainStorage());
-        B::Add(Out,SuspensionStiffnessForceScaleWheelDomainStorage());
-        B::Add(Out,SuspensionStiffnessReferenceDisplacementWheelDomainStorage());
-        B::Add(Out,SuspensionPreRestCompressionDampingScaleWheelDomainStorage());
-        B::Add(Out,bClampNegativeSuspensionDisplacementWheelDomainStorage());
-        B::Add(Out,bDisableSuspensionBumpStopForceWheelDomainStorage());
-        B::Add(Out,SuspensionSpringRateCmOverrideWheelDomainStorage());
-        B::Add(Out,SuspensionCompressionDampingOverrideWheelDomainStorage());
-        B::Add(Out,SuspensionReboundDampingOverrideWheelDomainStorage());
-        B::Add(Out,SuspensionMaxRaiseOverrideWheelDomainStorage());
-        B::Add(Out,SuspensionMaxDropOverrideWheelDomainStorage());
-        B::Add(Out,ConfiguredStaticSpringCompressionWheelDomainStorage());
-        B::Add(Out,SuspensionForceRuntimeStorage());
-        B::Add(Out,bIsJumpingRuntimeStorage());
-        B::Add(Out,bJumpUnilateralSupportRuntimeStorage());
-        B::Add(Out,ConsecutiveGroundFramesRuntimeStorage());
-        B::Add(Out,SteeringAngleRuntimeStorage());
-        B::Add(Out,OmegaRuntimeStorage());
-        B::Add(Out,RollAngleRuntimeStorage());
-        B::Add(Out,bWasOnGroundPrevFrameRuntimeStorage());
-        B::Add(Out,bCountedGroundFrameRuntimeStorage());
-        B::Add(Out,bContactVelocityLockedRuntimeStorage());
-        B::Add(Out,bCrossedIntoCompressionThisFrameRuntimeStorage());
-        B::Add(Out,ForwardAxisRuntimeStorage());
-        B::Add(Out,RightAxisRuntimeStorage());
-        B::Add(Out,UpAxisRuntimeStorage());
-        B::Add(Out,RenderDataRuntimeStorage().RollRotation);B::Add(Out,RenderDataRuntimeStorage().SteerRotation);B::Add(Out,RenderDataRuntimeStorage().WorldPosition);B::Add(Out,RenderDataRuntimeStorage().RightAxis);B::Add(Out,RenderDataRuntimeStorage().UpAxis);B::Add(Out,RenderDataRuntimeStorage().ForwardAxis);B::Add(Out,RenderDataRuntimeStorage().SpringOffset);
+        AppendWheelEpisodeTailForTesting(Out);
     }
 #endif
 
@@ -400,4 +358,14 @@ private:
     template<class TAccess> void UpdateWheelKinematicsFromOwnerBody(TAccess& Storage,const SKinematic& ParentKinematic);
     void UpdateNativeWheelKinematicsFromOwner(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const SKinematic& ParentKinematic);
 
+
+protected:
+#if !UE_BUILD_SHIPPING
+    void AppendWheelEpisodeTailForTesting(TArray<uint8>& Out) const;
+#endif
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+    void AppendCanonicalEpisodeStateForTesting(
+        const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,TArray<uint8>& Out,
+        Speed::NativeKinematics::FCanonicalMassAppendDiagnostics& Diagnostics) const override;
+#endif
 };

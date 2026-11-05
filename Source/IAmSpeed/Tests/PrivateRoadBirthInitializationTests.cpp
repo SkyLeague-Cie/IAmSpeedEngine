@@ -38,6 +38,11 @@ bool FIASPrivateRoadBirthInitialization::RunTest(const FString&)
         TestTrue(*(FString(Name)+TEXT(" original named body values unchanged by refusals")),Probe.OwnBodyUnchangedAfterRefusals);
     };
     CheckBirth(TEXT("observed"),ObservedProbe);
+    TestTrue(TEXT("actual Birth append refusal keeps nonempty output unchanged"),ObservedProbe.CanonicalMassAppendBirthRefused
+        &&ObservedProbe.CanonicalMassAppendBirthOutUnchanged&&ObservedProbe.CanonicalMassAppendBirthSubjectSolid);
+    AddInfo(FString::Printf(TEXT("[PrivateRoadCanonicalMassAppendBirthRefusal] refused=%d unchanged=%d actualBirth=%d subjectSolid=%d. Genuine original Birth call and real solid subject; no capability constructed or retained."),
+        int(ObservedProbe.CanonicalMassAppendBirthRefused),int(ObservedProbe.CanonicalMassAppendBirthOutUnchanged),int(ObservedProbe.ActualBirthOperation),int(ObservedProbe.CanonicalMassAppendBirthSubjectSolid)));
+
     TestTrue(TEXT("actual Birth refuses Retirement clear before named original/reference effects"),ObservedProbe.RetirementClearRefusedInBirth&&ObservedProbe.RetirementBirthFootprintUnchanged);
     AddInfo(FString::Printf(TEXT("[PrivateRoadMassPhaseBoundary] resetRefusedInBirth=%d resolveRefusedInBirth=%d beforeWrite=%d. Genuine Birth operation; no minted diagnostic authority."),int(ObservedProbe.StepResetRefusedInBirth),int(ObservedProbe.StepResolveRefusedInBirth),int(ObservedProbe.OwnBodyUnchangedAfterRefusals)));
     TestEqual(TEXT("ten actual initializer returns for two stock cars"),ObservedProbe.InitializersReturned,uint32(10));
