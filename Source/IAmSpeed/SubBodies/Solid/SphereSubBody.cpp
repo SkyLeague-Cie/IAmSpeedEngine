@@ -84,11 +84,12 @@ USphereSubBody::USphereSubBody(const FObjectInitializer& ObjectInitializer):
     bUseEditorCompositing = true;
 }
 
-class USphereSubBody::FLegacyBirthInitializeAccess final
+class USphereSubBody::FLegacyBirthInitializeAccess
 {
     USphereSubBody& Owner;
 public:
     explicit FLegacyBirthInitializeAccess(USphereSubBody& Value):Owner(Value){}
+    virtual void CheckCallbackBoundary() const {}
     void Base(ISpeedComponent* Parent) const {Owner.USolidSubBody::Initialize(Parent);}
     decltype(auto) Parent() const {return Owner.ParentComponentBodyDomainStorage();}
     SubBodyConfig Configuration() const {return Owner.ParentComponentBodyDomainStorage()->GetSubBodyConfig(Owner);}
@@ -101,6 +102,7 @@ class USphereSubBody::FNativeBirthInitializeAccess final
     USphereSubBody& Owner;const Speed::Netcode::Prediction::FPrivateNativeOperation& Op;
     decltype(auto) Body() const {return Speed::Netcode::Prediction::FPrivateNativeStorageAccess::Part<Speed::Netcode::Prediction::FPrivateRoadSubBodyValues>(Op,&Owner);}
 public:
+    void CheckCallbackBoundary() const {}
     FNativeBirthInitializeAccess(USphereSubBody& Value,const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation):Owner(Value),Op(Operation)
     {Speed::Netcode::Prediction::FPrivateNativeStorageAccess::RequireBirth(Op);(void)Body();}
     void Base(ISpeedComponent* Parent) const {Owner.InitializeNativeSolid(Op,Parent);}
@@ -111,29 +113,61 @@ public:
     FMatrix InitialInverse() const {return Speed::NativeKinematics::FBodyRead::InitialInverseTensor(Op,&Owner);}
 };
 
+class USphereSubBody::FReferenceBirthInitializeAccess final : public FLegacyBirthInitializeAccess
+{
+    USphereSubBody& Owner;
+    const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation;
+    const Speed::Netcode::Prediction::FPrivateReferenceOwnerBirth& Proof;
+    ISpeedComponent* const RequestedParent;
+public:
+    FReferenceBirthInitializeAccess(USphereSubBody& Value,const Speed::Netcode::Prediction::FPrivateNativeOperation& Op,
+        const Speed::Netcode::Prediction::FPrivateReferenceOwnerBirth& ActualProof,ISpeedComponent* Parent)
+      :FLegacyBirthInitializeAccess(Value),Owner(Value),Operation(Op),Proof(ActualProof),RequestedParent(Parent)
+    {CheckCallbackBoundary();}
+    FReferenceBirthInitializeAccess(const FReferenceBirthInitializeAccess&)=delete;
+    FReferenceBirthInitializeAccess& operator=(const FReferenceBirthInitializeAccess&)=delete;
+    void CheckCallbackBoundary() const override
+    {Proof.RequireInitializerBody(Operation,Owner,RequestedParent);}
+    void Base(ISpeedComponent* Parent) const
+    {CheckCallbackBoundary();Owner.InitializeReferenceSolid(Operation,Proof,Parent);CheckCallbackBoundary();}
+};
+
 template<class TAccess>
 void USphereSubBody::InitializeBirthBody(TAccess& Storage,ISpeedComponent* InParentComponent)
 {
+    Storage.CheckCallbackBoundary();
 	Storage.Base(InParentComponent);
+	Storage.CheckCallbackBoundary();
     if (Storage.Parent())
     {
         SubBodyConfig Config = Storage.Configuration();
+        Storage.CheckCallbackBoundary();
         if (Config.bValid)
         {
             Storage.Radius(FMath::Max(Config.Radius, KINDA_SMALL_NUMBER));
-            Storage.InverseLocal() = Storage.InitialInverse();
+            Storage.CheckCallbackBoundary();
+            const FMatrix InitialInverse = Storage.InitialInverse();
+            Storage.CheckCallbackBoundary();
+            Storage.InverseLocal() = InitialInverse;
+            Storage.CheckCallbackBoundary();
         }
         else
         {
-            Storage.InverseLocal() = Storage.InitialInverse();
+            const FMatrix InitialInverse = Storage.InitialInverse();
+            Storage.CheckCallbackBoundary();
+            Storage.InverseLocal() = InitialInverse;
+            Storage.CheckCallbackBoundary();
         }
 	}
 }
 
 void USphereSubBody::Initialize(ISpeedComponent* InParentComponent)
-{FLegacyBirthInitializeAccess Storage(*this);InitializeBirthBody(Storage,InParentComponent);}
+{CheckOrdinaryBodyInitializationEntry();FLegacyBirthInitializeAccess Storage(*this);InitializeBirthBody(Storage,InParentComponent);}
 void USphereSubBody::InitializeNativeSphere(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,ISpeedComponent* Parent)
 {FNativeBirthInitializeAccess Storage(*this,Operation);InitializeBirthBody(Storage,Parent);}
+void USphereSubBody::InitializeReferenceSphere(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,
+    const Speed::Netcode::Prediction::FPrivateReferenceOwnerBirth& Proof,ISpeedComponent* Parent)
+{FReferenceBirthInitializeAccess Storage(*this,Operation,Proof,Parent);InitializeBirthBody(Storage,Parent);}
 
 
 void USphereSubBody::ResetForFrame(const float& Delta)

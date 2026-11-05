@@ -899,10 +899,117 @@ std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::CreateCore(s
 #if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
         if(BirthContext)
         {
-            auto& Out=BirthContext->Result;++Out.EarlyReferenceOwnerReturns;
+            // Genuine early witness and Birth operation are still on their
+            // actual factory stack, AFTER all five reference initializers and
+            // BEFORE any vehicle construction/early-abort return.
+            auto& Out=BirthContext->Result;
+            // Export actual completed work BEFORE any diagnostic can fail.
+            ++Out.EarlyReferenceOwnerReturns;
             Out.EarlyReferenceTwoNullReturns+=EarlyObservation.TwoNullEntriesReturned;
             Out.EarlyReferenceInitializers+=EarlyObservation.InitializersReturned;
             Out.EarlyReferenceBoundaryChecks+=EarlyObservation.BoundaryChecksReturned;
+            const uint32 ChecksBeforeControls=EarlyReferenceProof.DiagnosticInitializerSubjectChecks;
+            Out.ReferenceInitializerSubjectChecks+=ChecksBeforeControls;
+            auto& F=*BirthContext->ForeignRoot;
+            if(!F.AcquiredGraphStillLive()||F.Closed||F.Failed||F.Cars.empty()
+                ||F.NativeOperationIdentity->ActiveGTActualOperation)return {};
+            auto& FN=*F.Cars.front();
+            if(N.OriginalWheelBodyBirth.Num()!=4||FN.OriginalWheelBodyBirth.Num()!=4)return {};
+            auto* OwnBox=Cast<USpeedBranchBoxSubBody>(N.OriginalHitboxBirth.Get());
+            auto* OwnWheel=Cast<USpeedBranchWheelSubBody>(N.OriginalWheelBodyBirth[0].Get());
+            auto* ForeignBox=Cast<USpeedBranchBoxSubBody>(FN.OriginalHitboxBirth.Get());
+            auto* ForeignWheel=Cast<USpeedBranchWheelSubBody>(FN.OriginalWheelBodyBirth[0].Get());
+            auto* ForeignComponent=FN.ComponentWeak.Get();
+            if(!OwnBox||!OwnWheel||!ForeignBox||!ForeignWheel||!ForeignComponent)return {};
+            struct FNamedInitializerFootprint
+            {
+                TArray<uint8> OwnOriginal,OwnReference,ForeignOriginal,ForeignReference;
+                uint32 OwnBodies=0,ForeignBodies=0;
+            };
+            const auto Positive=[&]()
+            {
+                // Validator only: never rerun Initialize for a positive control.
+                EarlyReferenceProof.RequireInitializerBody(Operation,*OwnBox,C);++Out.ReferenceInitializerPositiveChecks;
+                EarlyReferenceProof.RequireInitializerBody(Operation,*OwnWheel,C);++Out.ReferenceInitializerPositiveChecks;
+            };
+            const auto Capture=[&](FNamedInitializerFootprint& Values) -> bool
+            {
+                if(OriginalComponentStorageOwner||!I.AcquiredGraphStillLive()||!F.AcquiredGraphStillLive()
+                    ||F.Closed||F.Failed||F.NativeOperationIdentity->ActiveGTActualOperation)return false;
+                FGCScopeGuard ReadNamedBirths; // copied reads only; ends before each typed attempt
+                using B=Speed::FEpisodeStateBytesForTesting;
+                const auto BodyValues=[&](TArray<uint8>& Bytes,const FPrivateRoadSubBodyValues& Body)
+                {
+                    B::Add(Bytes,Body.ParentComponent);B::Add(Bytes,Body.LocalPose);B::Add(Bytes,Body.LocalEulerRotation);
+                    B::Add(Bytes,Body.CollisionChannel);B::Add(Bytes,Body.AlwaysIgnoredComponents.GetData());
+                    B::Array(Bytes,Body.AlwaysIgnoredComponents);
+                };
+                const auto Read=[&](const auto& Node,TArray<uint8>& Original,TArray<uint8>& Reference,uint32& Count)
+                {
+                    auto* ActualActor=Node.ActorWeak.Get();auto* ActualComponent=Node.ComponentWeak.Get();
+                    if(!ActualActor||!ActualComponent||ActualActor->HasAnyFlags(RF_BeginDestroyed|RF_FinishDestroyed)
+                        ||ActualActor->IsActorBeingDestroyed()||ActualComponent->HasAnyFlags(RF_BeginDestroyed|RF_FinishDestroyed)
+                        ||ActualComponent->GetOwner()!=ActualActor||ActualComponent->UsesOriginalWheeledDomain()
+                        ||Node.OriginalWheelBodyBirth.Num()!=4)return false;
+                    auto* Box=Cast<USpeedBranchBoxSubBody>(Node.OriginalHitboxBirth.Get());
+                    if(!Box||Box->HasAnyFlags(RF_BeginDestroyed|RF_FinishDestroyed)||Box->GetOwner()!=ActualActor
+                        ||Box->GetClass()!=USpeedBranchBoxSubBody::StaticClass()||Box->OriginalBodyIdentity.Get()!=Box
+                        ||Box->UsesOriginalBodyStorage()||!Box->OwnedBodyValues||!Box->OwnedSolidValues||!Box->OwnedBoxDomain)return false;
+                    B::Add(Original,Box);BodyValues(Original,*Box->OwnedBodyValues);
+                    if(!PartialObservation::AppendSolidValues(Original,*Box->OwnedSolidValues))return false;
+                    B::Add(Original,Box->OwnedBoxDomain->BoxExtent);
+                    B::Add(Reference,Box);Box->AppendEpisodeStateForTesting(Reference);
+                    B::Add(Reference,Box->PhysicalLocalEulerRotation());B::Add(Reference,Box->AlwaysIgnoredComponentsBodyDomainStorage().GetData());++Count;
+                    for(const auto& Born:Node.OriginalWheelBodyBirth)
+                    {
+                        auto* Wheel=Cast<USpeedBranchWheelSubBody>(Born.Get());
+                        if(!Wheel||Wheel->HasAnyFlags(RF_BeginDestroyed|RF_FinishDestroyed)||Wheel->GetOwner()!=ActualActor
+                            ||Wheel->GetClass()!=USpeedBranchWheelSubBody::StaticClass()||Wheel->OriginalBodyIdentity.Get()!=Wheel
+                            ||Wheel->UsesOriginalBodyStorage()||!Wheel->OwnedBodyValues||!Wheel->OwnedSolidValues
+                            ||!Wheel->OwnedSphereDomain||!Wheel->OwnedWheelDomain)return false;
+                        B::Add(Original,Wheel);BodyValues(Original,*Wheel->OwnedBodyValues);
+                        if(!PartialObservation::AppendSolidValues(Original,*Wheel->OwnedSolidValues))return false;
+                        B::Add(Original,Wheel->OwnedSphereDomain->Radius);
+                        const auto& D=*Wheel->OwnedWheelDomain;
+                        B::Add(Original,D.WheelComponent);B::Add(Original,D.ChaosWheel);B::Add(Original,D.PWheel);B::Add(Original,D.PSuspension);B::Add(Original,D.WheelMass);
+                        B::Add(Reference,Wheel);Wheel->AppendEpisodeStateForTesting(Reference);
+                        B::Add(Reference,Wheel->PhysicalLocalEulerRotation());B::Add(Reference,Wheel->AlwaysIgnoredComponentsBodyDomainStorage().GetData());++Count;
+                    }
+                    return Count==5;
+                };
+                return Read(N,Values.OwnOriginal,Values.OwnReference,Values.OwnBodies)
+                    &&Read(FN,Values.ForeignOriginal,Values.ForeignReference,Values.ForeignBodies);
+            };
+            const auto Attempt=[&](const TCHAR* Entry,const TCHAR* Subject,const TCHAR* Parent,auto&& Call)
+            {
+                FPrivateRoadReferenceInitializerBirthCase Row;Row.Actor=N.StableId;
+                Row.Entry=Entry;Row.Subject=Subject;Row.Parent=Parent;
+                FNamedInitializerFootprint Before,After;
+                try{Positive();Row.PositiveBefore=true;}
+                catch(const FPrivateNativeStorageUnavailable&){Out.ReferenceInitializerCases.push_back(std::move(Row));return false;}
+                if(!Capture(Before)){Out.ReferenceInitializerCases.push_back(std::move(Row));return false;}
+                Row.Attempted=true;try{Call();}catch(const FPrivateNativeStorageUnavailable&){Row.Refused=true;}
+                if(!Capture(After)){Out.ReferenceInitializerCases.push_back(std::move(Row));return false;}
+                Row.OwnBodies=Before.OwnBodies;Row.ForeignBodies=Before.ForeignBodies;
+                Row.OwnOriginal=Before.OwnOriginal==After.OwnOriginal;Row.OwnReference=Before.OwnReference==After.OwnReference;
+                Row.ForeignOriginal=Before.ForeignOriginal==After.ForeignOriginal;Row.ForeignReference=Before.ForeignReference==After.ForeignReference;
+                try{Positive();Row.PositiveAfter=true;}
+                catch(const FPrivateNativeStorageUnavailable&){Out.ReferenceInitializerCases.push_back(std::move(Row));return false;}
+                const bool Good=Row.PositiveBefore&&Row.Attempted&&Row.Refused&&Row.PositiveAfter
+                    &&Row.OwnOriginal&&Row.OwnReference&&Row.ForeignOriginal&&Row.ForeignReference
+                    &&Before.OwnBodies==5&&Before.ForeignBodies==5&&After.OwnBodies==5&&After.ForeignBodies==5;
+                Out.ReferenceInitializerCases.push_back(std::move(Row));return Good;
+            };
+            // Six true typed entry calls, not just six direct validator tests.
+            const bool InitializerControls=
+                Attempt(TEXT("box"),TEXT("own"),TEXT("null"),[&](){OwnBox->InitializeReference(Operation,EarlyReferenceProof,nullptr);})
+                &&Attempt(TEXT("wheel"),TEXT("own"),TEXT("null"),[&](){OwnWheel->InitializeReference(Operation,EarlyReferenceProof,nullptr);})
+                &&Attempt(TEXT("box"),TEXT("own"),TEXT("foreign"),[&](){OwnBox->InitializeReference(Operation,EarlyReferenceProof,ForeignComponent);})
+                &&Attempt(TEXT("wheel"),TEXT("own"),TEXT("foreign"),[&](){OwnWheel->InitializeReference(Operation,EarlyReferenceProof,ForeignComponent);})
+                &&Attempt(TEXT("box"),TEXT("foreign"),TEXT("own"),[&](){ForeignBox->InitializeReference(Operation,EarlyReferenceProof,C);})
+                &&Attempt(TEXT("wheel"),TEXT("foreign"),TEXT("own"),[&](){ForeignWheel->InitializeReference(Operation,EarlyReferenceProof,C);});
+            Out.ReferenceInitializerSubjectChecks+=EarlyReferenceProof.DiagnosticInitializerSubjectChecks-ChecksBeforeControls;
+            if(!InitializerControls)return {};
             if(BirthContext->Mode==EPrivateRoadBirthProbeMode::AbortAfterEarlyReferenceOwner)
             {Out.EarlyReferenceAbortReached=true;return Refuse(Why,TEXT("diagnostic abort after actual early reference owner return before vehicle construction"));}
         }
@@ -1397,6 +1504,222 @@ std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::CreateWithBi
     Result.CreateReturnedNull=!Owner; // actual return, never a guessed drain
     return Owner;
 }
+bool FPrivateRoadPhysicsWorld::ProbeOrdinaryInitializersWithoutOperationForDiagnostics(
+    FPrivateRoadPhysicsWorld& Foreign,FPrivateRoadOrdinaryBindingNoOpProbe& Result,FString& Why)
+{
+    Result={};Why.Empty();
+    if(!IsInGameThread()||!Impl||!Foreign.Impl||OriginalComponentStorageOwner
+        ||Speed::Input::FPresentationInputScope::IsActive())
+        return Refuse(Why,TEXT("ordinary NoOp diagnostic requires actual unselected GT entry"));
+    const auto OwnRoot=Impl,ForeignRoot=Foreign.Impl;
+    if(OwnRoot.get()==ForeignRoot.get()||(!OwnRoot.owner_before(ForeignRoot)&&!ForeignRoot.owner_before(OwnRoot))
+        ||&OwnRoot->Gate==&ForeignRoot->Gate)
+        return Refuse(Why,TEXT("ordinary NoOp diagnostic refuses same-root aliases before locks"));
+    // These real call guards OUTLIVE all gate/GC scopes below. Their eventual
+    // destruction can run deferred retirement, only after those locks are gone.
+    FRetainedNativeCall OwnCall(OwnRoot),ForeignCall(ForeignRoot);
+    {
+        FGCScopeGuard NoCallbacks; // destroyed AFTER the two actual gate locks
+        std::scoped_lock Gates(OwnRoot->Gate,ForeignRoot->Gate);
+        const auto ActualNoOperation=[&]()
+        {
+            return !OriginalComponentStorageOwner&&OwnRoot->NativeOperationIdentity&&ForeignRoot->NativeOperationIdentity
+                &&!OwnRoot->NativeOperationIdentity->ActiveGTActualOperation
+                &&!ForeignRoot->NativeOperationIdentity->ActiveGTActualOperation;
+        };
+        const auto Available=[&](const std::shared_ptr<FImpl>& Graph)
+        {
+            return !Graph->Closed&&!Graph->Failed&&!Graph->RetirementRequested.load()
+                &&Graph->RetirementPhase==RetirementDraft::EPhase::Open&&Graph->NativeStorage
+                &&Graph->Access&&!Graph->Access->Retired&&Graph->AcquiredGraphStillLive()
+                &&Graph->OriginalObjectHandlesStillMatch()&&!Graph->Cars.empty();
+        };
+        if(!ActualNoOperation()||!Available(OwnRoot)||!Available(ForeignRoot))
+            return Refuse(Why,TEXT("ordinary NoOp diagnostic refuses unavailable actual owner graphs"));
+        using B=Speed::FEpisodeStateBytesForTesting;
+        struct FPopulation
+        {
+            uint32 OriginalBodies=0,ReferenceBodies=0,Hitboxes=0,WheelBodies=0;
+            uint32 Cars=0,OriginalVehicles=0,ReferenceVehicles=0,OriginalWheelSims=0,ReferenceWheelSims=0,Configurations=0,ReferenceConfigurations=0;
+            bool operator==(const FPopulation&) const=default;
+        };
+        struct FFootprint
+        {
+            TArray<uint8> Original,Reference,Facade;
+            FPopulation Population;
+        };
+        // Declared binding/setup footprint only. Read existing parts/holders;
+        // never construct a native operation, select storage or restore values.
+        const auto Vehicle=[&](TArray<uint8>& Bytes,const Chaos::FSimpleWheeledVehicle& Actual)
+        {
+            const auto ArrayIdentity=[&](const auto& Array)
+            {B::Add(Bytes,Array.GetData());B::Add(Bytes,Array.Num());};
+            B::Add(Bytes,&Actual);B::Add(Bytes,Actual.bSuspensionEnabled);B::Add(Bytes,Actual.bMechanicalSimEnabled);
+            B::Add(Bytes,Actual.bWheelFrictionEnabled);B::Add(Bytes,Actual.NumDrivenWheels);B::Add(Bytes,Actual.bLegacyWheelFrictionPosition);
+            ArrayIdentity(Actual.Engine);ArrayIdentity(Actual.Transmission);ArrayIdentity(Actual.Differential);
+            ArrayIdentity(Actual.Wheels);ArrayIdentity(Actual.Suspension);ArrayIdentity(Actual.Steering);ArrayIdentity(Actual.Aerodynamics);
+            ArrayIdentity(Actual.Aerofoils);ArrayIdentity(Actual.Thrusters);ArrayIdentity(Actual.Axles);
+            ArrayIdentity(Actual.TorqueControlSim);ArrayIdentity(Actual.TargetRotationControlSim);ArrayIdentity(Actual.StabilizeControlSim);
+            for(const auto& Wheel:Actual.Wheels)PartialObservation::AppendCheckedWheel(Bytes,Wheel);
+            for(const auto& Suspension:Actual.Suspension)PartialObservation::FCheckedSuspensionCopy(Suspension).Append(Bytes);
+        };
+        const auto InitialBody=[&](TArray<uint8>& Bytes,const FPrivateRoadSubBodyValues& Values)
+        {
+            B::Add(Bytes,Values.ParentComponent);B::Add(Bytes,Values.LocalPose);B::Add(Bytes,Values.LocalEulerRotation);
+            B::Add(Bytes,Values.CollisionChannel);B::Add(Bytes,Values.AlwaysIgnoredComponents.GetData());
+            B::Array(Bytes,Values.AlwaysIgnoredComponents);
+        };
+        const auto Capture=[&](const std::shared_ptr<FImpl>& Graph,FFootprint& Out)
+        {
+            if(!ActualNoOperation()||!Available(Graph))return false;
+            for(const auto& Node:Graph->Cars)
+            {
+                auto* Component=Node->ComponentWeak.Get();
+                if(!Component||!Node->NativeVehicleRoot||!Node->NativeVehicleRoot->Domain
+                    ||!Node->NativeConfiguration||!Node->ReferenceConfiguration||!Node->OriginalNativeSimulation
+                    ||Component->Access.lock()!=Graph->Access||Node->NativeWheelRoots.size()!=4
+                    ||Node->OriginalWheelBodyBirth.Num()!=4||Node->OriginalWheelObjects.Num()!=4)return false;
+                auto* Box=Cast<USpeedBranchBoxSubBody>(Node->OriginalHitboxBirth.Get());
+                if(!Box||Box->StorageAccess.lock()!=Graph->Access||!Box->OwnedBodyValues||!Box->OwnedSolidValues||!Box->OwnedBoxDomain
+                    ||Box->UsesOriginalBodyStorage())return false;
+                InitialBody(Out.Original,*Box->OwnedBodyValues);
+                if(!PartialObservation::AppendSolidValues(Out.Original,*Box->OwnedSolidValues))return false;
+                B::Add(Out.Original,Box->OwnedBoxDomain->BoxExtent);
+                Box->AppendEpisodeStateForTesting(Out.Reference);B::Add(Out.Reference,Box->PhysicalLocalEulerRotation());
+                B::Add(Out.Reference,Box->AlwaysIgnoredComponentsBodyDomainStorage().GetData());
+                Box->AppendEpisodeStateForTesting(Out.Facade);B::Add(Out.Facade,Box->PhysicalLocalEulerRotation());
+                B::Add(Out.Facade,Box->AlwaysIgnoredComponentsBodyDomainStorage().GetData());
+                ++Out.Population.OriginalBodies;++Out.Population.ReferenceBodies;++Out.Population.Hitboxes;
+                auto& Domain=*Node->NativeVehicleRoot->Domain;
+                auto& OriginalHolder=Node->OriginalNativeSimulation->PVehicle;
+                auto* ReferenceSimulation=static_cast<USpeedSimulation*>(Component->VehicleSimulationPT.Get());
+                if(!OriginalHolder||OriginalHolder.Get()!=Node->OriginalNativeVehicle
+                    ||Domain.VehicleSimulationPT.Get()!=Node->OriginalNativeSimulation
+                    ||!ReferenceSimulation||Component->SkySimulation!=ReferenceSimulation||!ReferenceSimulation->PVehicle)return false;
+                auto& ReferenceHolder=ReferenceSimulation->PVehicle;
+                // Actual unique holder addresses/Get values and allocations,
+                // not a raw pointer wrapped in a replacement unique owner.
+                B::Add(Out.Original,&OriginalHolder);B::Add(Out.Original,OriginalHolder.Get());
+                B::Add(Out.Original,Domain.SkySimulation);B::Add(Out.Original,Domain.VehicleSimulationPT.Get());
+                B::Array(Out.Original,Domain.WheelSubBodies);B::Array(Out.Original,Domain.Wheels);
+                Vehicle(Out.Original,*OriginalHolder);++Out.Population.OriginalVehicles;
+                B::Add(Out.Reference,&ReferenceHolder);B::Add(Out.Reference,ReferenceHolder.Get());
+                Vehicle(Out.Reference,*ReferenceHolder);++Out.Population.ReferenceVehicles;
+                B::Add(Out.Facade,Component->SkySimulation);B::Add(Out.Facade,Component->VehicleSimulationPT.Get());
+                B::Array(Out.Facade,Component->WheelSubBodies);B::Array(Out.Facade,Component->Wheels);
+                // UE private NumDrivenWheels is not observable here; do not claim its capture.
+                const auto& ActualLayout=Component->GetWheelLayoutDimensions();
+                B::Add(Out.Facade,ActualLayout.X);B::Add(Out.Facade,ActualLayout.Y);
+                for(const auto& Configuration:Component->Wheels)
+                {
+                    if(!Configuration)return false;
+                    B::Add(Out.Reference,Configuration.Get());B::Add(Out.Reference,Configuration->SuspensionMaxRaise);B::Add(Out.Reference,Configuration->SuspensionMaxDrop);
+                    ++Out.Population.ReferenceConfigurations;
+                }
+                if(!PartialObservation::AppendCheckedWheelConfig(Out.Original,Node->NativeConfiguration->Wheel)
+                    ||!PartialObservation::AppendCheckedWheelConfig(Out.Reference,Node->ReferenceConfiguration->Wheel))return false;
+                PartialObservation::AppendCheckedSuspensionConfig(Out.Original,Node->NativeConfiguration->Suspension);
+                PartialObservation::AppendCheckedSuspensionConfig(Out.Reference,Node->ReferenceConfiguration->Suspension);
+                for(int32 Index=0;Index<4;++Index)
+                {
+                    auto* Body=Cast<USpeedBranchWheelSubBody>(Node->OriginalWheelBodyBirth[Index].Get());
+                    auto* Configuration=Node->OriginalWheelObjects[Index].Get();const auto& PartRoot=Node->NativeWheelRoots[Index];
+                    if(!Body||!Configuration||!PartRoot||PartRoot->Vehicle!=Node->NativeVehicleRoot
+                        ||Body->StorageAccess.lock()!=Graph->Access||!Body->OwnedBodyValues||!Body->OwnedSolidValues
+                        ||!Body->OwnedWheelDomain||!Body->OwnedWheelRuntime||!Body->OwnedSphereDomain)return false;
+                    if(Body->UsesOriginalBodyStorage())return false;
+                    InitialBody(Out.Original,*Body->OwnedBodyValues);B::Add(Out.Original,Body->OwnedSphereDomain->Radius);
+                    Body->AppendEpisodeStateForTesting(Out.Reference);B::Add(Out.Reference,Body->PhysicalLocalEulerRotation());
+                    B::Add(Out.Reference,Body->AlwaysIgnoredComponentsBodyDomainStorage().GetData());
+                    B::Add(Out.Facade,Body->PhysicalLocalEulerRotation());B::Add(Out.Facade,Body->AlwaysIgnoredComponentsBodyDomainStorage().GetData());
+                    ++Out.Population.OriginalBodies;++Out.Population.ReferenceBodies;++Out.Population.WheelBodies;
+                    const auto& Values=*Body->OwnedWheelDomain;
+                    // Preserve real LIVE storage/allocations. Missing aliases are
+                    // not used as a confounding reason for NoOp refusal.
+                    if(OriginalHolder->Wheels.Num()<=Index||OriginalHolder->Suspension.Num()<=Index
+                        ||ReferenceHolder->Wheels.Num()<=Index||ReferenceHolder->Suspension.Num()<=Index
+                        ||Component->Wheels.Num()<=Index||Values.PWheel!=&OriginalHolder->Wheels[Index]
+                        ||Values.PSuspension!=&OriginalHolder->Suspension[Index]||Values.ChaosWheel!=Configuration
+                        ||Values.WheelComponent!=static_cast<ISpeedWheeledComponent*>(Component)
+                        ||Body->OwnedBodyValues->ParentComponent!=static_cast<ISpeedComponent*>(Component)
+                        ||Body->GetWheelSim()!=&ReferenceHolder->Wheels[Index]
+                        ||Body->GetSuspensionSim()!=&ReferenceHolder->Suspension[Index]
+                        ||Body->GetChaosWheelConfiguration()!=Component->Wheels[Index].Get())return false;
+                    B::Add(Out.Original,Values.WheelComponent);B::Add(Out.Original,Values.ChaosWheel);
+                    B::Add(Out.Original,Values.PWheel);B::Add(Out.Original,Values.PSuspension);B::Add(Out.Original,Values.WheelMass);
+                    B::Add(Out.Original,Values.SuspensionMaxRaiseOverride);B::Add(Out.Original,Values.SuspensionMaxDropOverride);
+                    B::Add(Out.Original,Body->OwnedBodyValues->ParentComponent);
+                    if(!PartialObservation::AppendSolidValues(Out.Original,*Body->OwnedSolidValues))return false;
+                    B::Add(Out.Original,Configuration);B::Add(Out.Original,Configuration->SuspensionMaxRaise);B::Add(Out.Original,Configuration->SuspensionMaxDrop);
+                    Body->AppendEpisodeStateForTesting(Out.Facade); // actual unselected facade; exact private final class
+                    if(OriginalHolder->Wheels.Num()<=Index||OriginalHolder->Suspension.Num()<=Index
+                        ||ReferenceHolder->Wheels.Num()<=Index||ReferenceHolder->Suspension.Num()<=Index)return false;
+                    ++Out.Population.OriginalWheelSims;++Out.Population.ReferenceWheelSims;++Out.Population.Configurations;
+                }
+                ++Out.Population.Cars;
+            }
+            return ActualNoOperation();
+        };
+        auto& OwnNode=*OwnRoot->Cars.front();auto& ForeignNode=*ForeignRoot->Cars.front();
+        auto* OwnComponent=OwnNode.ComponentWeak.Get();auto* OwnBody=OwnNode.OriginalWheelBodyBirth[0].Get();
+        auto* OwnBox=OwnNode.OriginalHitboxBirth.Get();auto* ForeignComponent=ForeignNode.ComponentWeak.Get();
+        if(!OwnComponent||!OwnBody||!OwnBox||!ForeignComponent)return Refuse(Why,TEXT("ordinary initializer NoOp actual subjects missing"));
+        const auto Attempt=[&](const TCHAR* Entry,const TCHAR* Argument,auto&& Call,
+            TUniquePtr<Chaos::FSimpleWheeledVehicle>* ArgumentHolder=nullptr)
+        {
+            FFootprint OwnBefore,ForeignBefore,OwnAfter,ForeignAfter;
+            if(!Capture(OwnRoot,OwnBefore)||!Capture(ForeignRoot,ForeignBefore))return false;
+            FPrivateRoadOrdinaryBindingNoOpCase Row;Row.Entry=Entry;Row.Argument=Argument;
+            const void* const HolderIdentity=ArgumentHolder;
+            const auto* const HolderValue=ArgumentHolder?ArgumentHolder->Get():nullptr;
+            Row.ArgumentHolderObserved=ArgumentHolder!=nullptr;Row.ArgumentHolderWasNonNull=HolderValue!=nullptr;
+            Row.Attempted=true;Row.NoActualOperation=ActualNoOperation();
+            try{Call();}catch(const FPrivateNativeStorageUnavailable&){Row.Refused=true;}
+            if(!Capture(OwnRoot,OwnAfter)||!Capture(ForeignRoot,ForeignAfter))
+            {Result.Cases.push_back(std::move(Row));return false;}
+            Row.NoActualOperation=Row.NoActualOperation&&ActualNoOperation();
+            Row.LiveStorageRoutes=OwnBefore.Population==OwnAfter.Population&&ForeignBefore.Population==ForeignAfter.Population;
+            Row.OwnOriginalUnchanged=OwnBefore.Original==OwnAfter.Original;Row.OwnReferenceUnchanged=OwnBefore.Reference==OwnAfter.Reference;
+            Row.OwnFacadeUnchanged=OwnBefore.Facade==OwnAfter.Facade;
+            Row.ForeignOriginalUnchanged=ForeignBefore.Original==ForeignAfter.Original;
+            Row.ForeignReferenceUnchanged=ForeignBefore.Reference==ForeignAfter.Reference;Row.ForeignFacadeUnchanged=ForeignBefore.Facade==ForeignAfter.Facade;
+            Row.OwnCars=OwnBefore.Population.Cars;Row.ForeignCars=ForeignBefore.Population.Cars;
+            Row.OriginalVehicles=OwnBefore.Population.OriginalVehicles+ForeignBefore.Population.OriginalVehicles;
+            Row.ReferenceVehicles=OwnBefore.Population.ReferenceVehicles+ForeignBefore.Population.ReferenceVehicles;
+            Row.OriginalWheelSims=OwnBefore.Population.OriginalWheelSims+ForeignBefore.Population.OriginalWheelSims;
+            Row.ReferenceWheelSims=OwnBefore.Population.ReferenceWheelSims+ForeignBefore.Population.ReferenceWheelSims;
+            Row.Configurations=OwnBefore.Population.Configurations+ForeignBefore.Population.Configurations;
+            Row.OriginalBodies=OwnBefore.Population.OriginalBodies+ForeignBefore.Population.OriginalBodies;
+            Row.ReferenceBodies=OwnBefore.Population.ReferenceBodies+ForeignBefore.Population.ReferenceBodies;
+            Row.Hitboxes=OwnBefore.Population.Hitboxes+ForeignBefore.Population.Hitboxes;
+            Row.WheelBodies=OwnBefore.Population.WheelBodies+ForeignBefore.Population.WheelBodies;
+            Row.ReferenceConfigurations=OwnBefore.Population.ReferenceConfigurations+ForeignBefore.Population.ReferenceConfigurations;
+            Row.ArgumentHolderUnchanged=ArgumentHolder&&HolderIdentity==ArgumentHolder&&HolderValue==ArgumentHolder->Get();
+            const bool Success=Row.Refused&&Row.NoActualOperation&&Row.LiveStorageRoutes&&Row.OwnOriginalUnchanged&&Row.OwnReferenceUnchanged
+                &&Row.OwnFacadeUnchanged&&Row.ForeignOriginalUnchanged&&Row.ForeignReferenceUnchanged&&Row.ForeignFacadeUnchanged
+                &&(!ArgumentHolder||Row.ArgumentHolderUnchanged);
+            Result.Cases.push_back(std::move(Row));return Success;
+        };
+        for(int32 Population=0;Population<3;++Population)
+        {
+            const TCHAR* Argument=Population==0?TEXT("null"):Population==1?TEXT("own"):TEXT("foreign");
+            ISpeedComponent* Parent=Population==0?nullptr:Population==1?static_cast<ISpeedComponent*>(OwnComponent):static_cast<ISpeedComponent*>(ForeignComponent);
+            if(!Attempt(TEXT("box-virtual"),Argument,[&](){static_cast<USSubBody*>(OwnBox)->Initialize(Parent);})
+                ||!Attempt(TEXT("box-qualified"),Argument,[&](){OwnBox->UBoxSubBody::Initialize(Parent);})
+                ||!Attempt(TEXT("box-solid"),Argument,[&](){OwnBox->USolidSubBody::Initialize(Parent);})
+                ||!Attempt(TEXT("box-base"),Argument,[&](){OwnBox->USSubBody::Initialize(Parent);})
+                ||!Attempt(TEXT("wheel-virtual"),Argument,[&](){static_cast<USSubBody*>(OwnBody)->Initialize(Parent);})
+                ||!Attempt(TEXT("wheel-qualified"),Argument,[&](){OwnBody->USWheelSubBody::Initialize(Parent);})
+                ||!Attempt(TEXT("wheel-sphere"),Argument,[&](){OwnBody->USphereSubBody::Initialize(Parent);})
+                ||!Attempt(TEXT("wheel-solid"),Argument,[&](){OwnBody->USolidSubBody::Initialize(Parent);})
+                ||!Attempt(TEXT("wheel-base"),Argument,[&](){OwnBody->USSubBody::Initialize(Parent);}))
+                return Refuse(Why,TEXT("ordinary initializer NoOp refusal/declared footprint failed; actual effects retained"));
+        }
+        Result.Returned=true;
+    }
+    return true;
+}
+
 bool FPrivateRoadPhysicsWorld::ProbeOrdinaryBindingsWithoutOperationForDiagnostics(
     FPrivateRoadPhysicsWorld& Foreign,FPrivateRoadOrdinaryBindingNoOpProbe& Result,FString& Why)
 {
@@ -2834,6 +3157,12 @@ void USpeedBranchWheelSubBody::ApplyNativeFakePhysicsOn(const Speed::Netcode::Pr
     (void)Hit;(void)DeltaTime;(void)ImpactContext;
 }
 
+void USpeedBranchBoxSubBody::CheckOrdinaryBodyInitializationEntry() const
+{throw Speed::Netcode::Prediction::FPrivateNativeStorageUnavailable{};}
+void USpeedBranchBoxSubBody::InitializeReference(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,
+    const Speed::Netcode::Prediction::FPrivateReferenceOwnerBirth& Proof,ISpeedComponent* Parent)
+{InitializeReferenceBox(Operation,Proof,Parent);}
+
 void USpeedBranchBoxSubBody::InitializeNative(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,ISpeedComponent* Parent)
 {
     using namespace Speed::Netcode::Prediction;FPrivateNativeStorageAccess::RequireBirth(Operation);
@@ -2918,6 +3247,12 @@ void USpeedBranchWheelSubBody::ValidateReferenceWheelBindingBirth(
         ||USWheelSubBody::WheelComponentWheelDomainStorage()!=WheeledParent)
         throw P::FPrivateNativeStorageUnavailable{};
 }
+
+void USpeedBranchWheelSubBody::CheckOrdinaryBodyInitializationEntry() const
+{throw Speed::Netcode::Prediction::FPrivateNativeStorageUnavailable{};}
+void USpeedBranchWheelSubBody::InitializeReference(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,
+    const Speed::Netcode::Prediction::FPrivateReferenceOwnerBirth& Proof,ISpeedComponent* Parent)
+{InitializeReferenceWheel(Operation,Proof,Parent);}
 
 void USpeedBranchWheelSubBody::InitializeNative(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,ISpeedComponent* Parent)
 {

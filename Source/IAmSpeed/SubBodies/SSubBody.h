@@ -19,7 +19,7 @@ class USWheelSubBody;
 class UCylinderSubBody;
 namespace Speed { class IStaticCollisionWorld; }
 namespace Speed::NativeKinematics { class FBodyRead; class FBodyWrite; }
-namespace Speed::Netcode::Prediction {class FPrivateNativeOperation;}
+namespace Speed::Netcode::Prediction {class FPrivateNativeOperation;class FPrivateReferenceOwnerBirth;}
 class USpeedBranchBoxSubBody;
 
 /**
@@ -46,10 +46,17 @@ private:
     friend class USpeedBranchBoxSubBody;
     class FLegacyBodyUpdateAccess;class FNativeBodyUpdateAccess;
     friend class USolidSubBody;
-    class FLegacyBirthInitializeAccess;class FNativeBirthInitializeAccess;
+    friend class USpeedWheeledComponent;
+protected:
+    // Empty for legacy/custom dispatch; final private owners refuse unconditionally.
+    virtual void CheckOrdinaryBodyInitializationEntry() const {}
+private:
+    class FLegacyBirthInitializeAccess;class FNativeBirthInitializeAccess;class FReferenceBirthInitializeAccess;
     template<class TAccess> void InitializeBirthBody(TAccess& Storage,ISpeedComponent* InParentComponent);
     void InitializeNativeBase(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,ISpeedComponent* Parent);
+    void InitializeReferenceBase(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const Speed::Netcode::Prediction::FPrivateReferenceOwnerBirth& Proof,ISpeedComponent* Parent);
     virtual void InitializeNative(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,ISpeedComponent* Parent);
+    virtual void InitializeReference(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const Speed::Netcode::Prediction::FPrivateReferenceOwnerBirth& Proof,ISpeedComponent* Parent);
     virtual void AcceptNativeHit(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation);
     virtual void ValidateNativeResetFrame(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation) const;
     virtual void ResetNativeForFrame(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const float& Delta);

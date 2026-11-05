@@ -49,11 +49,12 @@ float Speed::NativeKinematics::FSolidRestitutionPolicy::Resolve(
         return FMath::Clamp(FallbackRestitution, 0.f, 1.f);
     }
 
-class USolidSubBody::FLegacyBirthInitializeAccess final
+class USolidSubBody::FLegacyBirthInitializeAccess
 {
     USolidSubBody& Owner;
 public:
     explicit FLegacyBirthInitializeAccess(USolidSubBody& Value):Owner(Value){}
+    virtual void CheckCallbackBoundary() const {}
     void Base(ISpeedComponent* Parent) const {Owner.USSubBody::Initialize(Parent);}
     SubBodyConfig Configuration(ISpeedComponent* Parent) const {return Parent->GetSubBodyConfig(Owner);}
     FMatrix InitialInverse() const {return Owner.InitInvInertiaTensor();}
@@ -72,6 +73,7 @@ class USolidSubBody::FNativeBirthInitializeAccess final
     USolidSubBody& Owner;const Speed::Netcode::Prediction::FPrivateNativeOperation& Op;
     decltype(auto) Values() const {return Speed::Netcode::Prediction::FPrivateNativeStorageAccess::Part<Speed::Netcode::Prediction::FPrivateRoadSolidValues>(Op,&Owner);}
 public:
+    void CheckCallbackBoundary() const {}
     FNativeBirthInitializeAccess(USolidSubBody& Value,const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation):Owner(Value),Op(Operation)
     {Speed::Netcode::Prediction::FPrivateNativeStorageAccess::RequireBirth(Op);(void)Values();}
     void Base(ISpeedComponent* Parent) const {Owner.InitializeNativeBase(Op,Parent);}
@@ -88,33 +90,69 @@ public:
     decltype(auto) InverseLocal() const {return (Values().InvInertiaLocal);}
 };
 
+class USolidSubBody::FReferenceBirthInitializeAccess final : public FLegacyBirthInitializeAccess
+{
+    USolidSubBody& Owner;
+    const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation;
+    const Speed::Netcode::Prediction::FPrivateReferenceOwnerBirth& Proof;
+    ISpeedComponent* const RequestedParent;
+public:
+    FReferenceBirthInitializeAccess(USolidSubBody& Value,const Speed::Netcode::Prediction::FPrivateNativeOperation& Op,
+        const Speed::Netcode::Prediction::FPrivateReferenceOwnerBirth& ActualProof,ISpeedComponent* Parent)
+      :FLegacyBirthInitializeAccess(Value),Owner(Value),Operation(Op),Proof(ActualProof),RequestedParent(Parent)
+    {CheckCallbackBoundary();}
+    FReferenceBirthInitializeAccess(const FReferenceBirthInitializeAccess&)=delete;
+    FReferenceBirthInitializeAccess& operator=(const FReferenceBirthInitializeAccess&)=delete;
+    void CheckCallbackBoundary() const override
+    {Proof.RequireInitializerBody(Operation,Owner,RequestedParent);}
+    void Base(ISpeedComponent* Parent) const
+    {CheckCallbackBoundary();Owner.InitializeReferenceBase(Operation,Proof,Parent);CheckCallbackBoundary();}
+};
+
 template<class TAccess>
 void USolidSubBody::InitializeBirthBody(TAccess& Storage,ISpeedComponent* InParentComponent)
 {
+    Storage.CheckCallbackBoundary();
 	Storage.Base(InParentComponent);
+	Storage.CheckCallbackBoundary();
 
 	if (InParentComponent)
 	{
 		SubBodyConfig Config = Storage.Configuration(InParentComponent);
+		Storage.CheckCallbackBoundary();
         if (Config.bValid)
         {
             Storage.Mass() = Config.Mass;
+            Storage.CheckCallbackBoundary();
             Storage.Restitution() = Config.Restitution;
+            Storage.CheckCallbackBoundary();
             Storage.StaticFriction() = Config.StaticFriction;
+            Storage.CheckCallbackBoundary();
             Storage.DynamicFriction() = Config.DynamicFriction;
+            Storage.CheckCallbackBoundary();
             Storage.ImpactThreshold() = Config.ImpactThreshold;
+            Storage.CheckCallbackBoundary();
             Storage.IsMain() = Config.bIsMainSubBody;
+            Storage.CheckCallbackBoundary();
             Storage.EnableFake() = Config.bEnableFakePhysics;
+            Storage.CheckCallbackBoundary();
             Storage.HitDamping() = FMath::Clamp(Config.HitDamping, 0.f, 1.f);
+            Storage.CheckCallbackBoundary();
         }
-		Storage.InverseLocal() = Storage.InitialInverse();
+		const FMatrix InitialInverse = Storage.InitialInverse();
+		Storage.CheckCallbackBoundary();
+		Storage.InverseLocal() = InitialInverse;
+		Storage.CheckCallbackBoundary();
 	}
 }
 
 void USolidSubBody::Initialize(ISpeedComponent* InParentComponent)
-{FLegacyBirthInitializeAccess Storage(*this);InitializeBirthBody(Storage,InParentComponent);}
+{CheckOrdinaryBodyInitializationEntry();FLegacyBirthInitializeAccess Storage(*this);InitializeBirthBody(Storage,InParentComponent);}
 void USolidSubBody::InitializeNativeSolid(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,ISpeedComponent* Parent)
 {FNativeBirthInitializeAccess Storage(*this,Operation);InitializeBirthBody(Storage,Parent);}
+void USolidSubBody::InitializeReferenceSolid(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,
+    const Speed::Netcode::Prediction::FPrivateReferenceOwnerBirth& Proof,ISpeedComponent* Parent)
+{FReferenceBirthInitializeAccess Storage(*this,Operation,Proof,Parent);InitializeBirthBody(Storage,Parent);}
 FMatrix USolidSubBody::ComputeNativeInitialInverseTensor(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation) const
 {(void)Operation;throw Speed::Netcode::Prediction::FPrivateNativeStorageUnavailable{};}
 

@@ -131,6 +131,14 @@ struct FPrivateRoadRetirementForeignProbe
 };
 
 enum class EPrivateRoadBirthProbeMode : uint8 { Observe,FailAfterFirstInitializer,ProbeFirstOwnerAndAbort,AbortAfterEarlyReferenceOwner };
+struct FPrivateRoadReferenceInitializerBirthCase
+{
+    uint64 Actor=0;
+    FString Entry,Subject,Parent;
+    uint32 OwnBodies=0,ForeignBodies=0;
+    bool PositiveBefore=false,Attempted=false,Refused=false,PositiveAfter=false;
+    bool OwnOriginal=false,OwnReference=false,ForeignOriginal=false,ForeignReference=false;
+};
 struct FPrivateRoadBirthInitializationProbe
 {
     // Diagnostic VALUES only: entered/returned stages and actual pose API results.
@@ -142,6 +150,8 @@ struct FPrivateRoadBirthInitializationProbe
     FRotator FirstOwnerActorRotationReadback=FRotator::ZeroRotator;
     uint32 EarlyReferenceOwnerReturns=0,EarlyReferenceTwoNullReturns=0,EarlyReferenceInitializers=0,EarlyReferenceBoundaryChecks=0;
     uint32 EarlyReferenceGuardRefusals=0;
+    uint32 ReferenceInitializerSubjectChecks=0,ReferenceInitializerPositiveChecks=0;
+    std::vector<FPrivateRoadReferenceInitializerBirthCase> ReferenceInitializerCases;
     bool EarlyReferenceRefusalsBeforeWrite=true,EarlyReferenceAbortReached=false;
     bool RetirementBirthOtherPredicatesPositive=false,RetirementKindRefusedInBirth=false;
     uint32 InitializersReturned=0; // SECOND pass, after native vehicle/shape authoring
@@ -173,6 +183,7 @@ struct FPrivateRoadOrdinaryBindingNoOpCase
 {
     FString Entry,Argument;
     uint32 OwnCars=0,ForeignCars=0,OriginalVehicles=0,ReferenceVehicles=0,OriginalWheelSims=0,ReferenceWheelSims=0,Configurations=0,ReferenceConfigurations=0;
+    uint32 OriginalBodies=0,ReferenceBodies=0,Hitboxes=0,WheelBodies=0; // actual initializer diagnostics only
     bool Attempted=false,Refused=false,NoActualOperation=false,LiveStorageRoutes=false;
     bool OwnOriginalUnchanged=false,OwnReferenceUnchanged=false,OwnFacadeUnchanged=false;
     bool ForeignOriginalUnchanged=false,ForeignReferenceUnchanged=false,ForeignFacadeUnchanged=false;
@@ -264,6 +275,8 @@ public:
     std::vector<FNativeConfigurationLifetimeValues> ReadNativeConfigurationLifetimeForDiagnostics() const;
 #if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
     // Fixed actual ordinary entries, invoked with no native operation or storage selection.
+    bool ProbeOrdinaryInitializersWithoutOperationForDiagnostics(FPrivateRoadPhysicsWorld& Foreign,
+        FPrivateRoadOrdinaryBindingNoOpProbe& Result,FString& Why);
     bool ProbeOrdinaryBindingsWithoutOperationForDiagnostics(FPrivateRoadPhysicsWorld& Foreign,
         FPrivateRoadOrdinaryBindingNoOpProbe& Result,FString& Why);
     std::shared_ptr<const FPrivateRoadRetirementBindingTrace> CaptureRetirementBindingObserverForDiagnostics();

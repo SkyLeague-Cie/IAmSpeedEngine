@@ -310,11 +310,12 @@ USWheelSubBody::USWheelSubBody(const FObjectInitializer& ObjectInitializer):
     Speed::NativeKinematics::FSolidMassAccess::Write(*this,WheelMassWheelDomainStorage());
 }
 
-class USWheelSubBody::FLegacyBirthInitializeAccess final
+class USWheelSubBody::FLegacyBirthInitializeAccess
 {
     USWheelSubBody& Owner;
 public:
     explicit FLegacyBirthInitializeAccess(USWheelSubBody& Value):Owner(Value){}
+    virtual void CheckCallbackBoundary() const {}
     void Base(ISpeedComponent* Parent) const {Owner.USphereSubBody::Initialize(Parent);}
     decltype(auto) Parent() const {return Owner.ParentComponentBodyDomainStorage();}
     WheelSubBodyConfig Configuration() const {return Owner.WheelComponentWheelDomainStorage()->GetWheelSubBodyConfig(Owner);}
@@ -334,6 +335,7 @@ class USWheelSubBody::FNativeBirthInitializeAccess final
     USWheelSubBody& Owner;const Speed::Netcode::Prediction::FPrivateNativeOperation& Op;
     decltype(auto) Values() const {return Speed::Netcode::Prediction::FPrivateNativeStorageAccess::Part<Speed::Netcode::Prediction::FPrivateRoadWheelDomain>(Op,&Owner);}
 public:
+    void CheckCallbackBoundary() const {}
     FNativeBirthInitializeAccess(USWheelSubBody& Value,const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation):Owner(Value),Op(Operation)
     {Speed::Netcode::Prediction::FPrivateNativeStorageAccess::RequireBirth(Op);(void)Values();}
     void Base(ISpeedComponent* Parent) const {Owner.InitializeNativeSphere(Op,Parent);}
@@ -351,38 +353,75 @@ public:
     decltype(auto) WheelMass() const {return (Values().WheelMass);}
 };
 
+class USWheelSubBody::FReferenceBirthInitializeAccess final : public FLegacyBirthInitializeAccess
+{
+    USWheelSubBody& Owner;
+    const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation;
+    const Speed::Netcode::Prediction::FPrivateReferenceOwnerBirth& Proof;
+    ISpeedComponent* const RequestedParent;
+public:
+    FReferenceBirthInitializeAccess(USWheelSubBody& Value,const Speed::Netcode::Prediction::FPrivateNativeOperation& Op,
+        const Speed::Netcode::Prediction::FPrivateReferenceOwnerBirth& ActualProof,ISpeedComponent* Parent)
+      :FLegacyBirthInitializeAccess(Value),Owner(Value),Operation(Op),Proof(ActualProof),RequestedParent(Parent)
+    {CheckCallbackBoundary();}
+    FReferenceBirthInitializeAccess(const FReferenceBirthInitializeAccess&)=delete;
+    FReferenceBirthInitializeAccess& operator=(const FReferenceBirthInitializeAccess&)=delete;
+    void CheckCallbackBoundary() const override
+    {Proof.RequireInitializerBody(Operation,Owner,RequestedParent);}
+    void Base(ISpeedComponent* Parent) const
+    {CheckCallbackBoundary();Owner.InitializeReferenceSphere(Operation,Proof,Parent);CheckCallbackBoundary();}
+};
+
 template<class TAccess>
 void USWheelSubBody::InitializeBirthBody(TAccess& Storage,ISpeedComponent* InParentComponent)
 {
+    Storage.CheckCallbackBoundary();
 	Storage.Base(InParentComponent);
+	Storage.CheckCallbackBoundary();
 	if (InParentComponent)
 	{
 		Storage.Parent() = InParentComponent;
+		Storage.CheckCallbackBoundary();
 		Storage.WheelComponent() = static_cast<ISpeedWheeledComponent*>(InParentComponent);
+		Storage.CheckCallbackBoundary();
 
 		if (Storage.WheelComponent())
 		{
 			WheelSubBodyConfig Config = Storage.Configuration();
+			Storage.CheckCallbackBoundary();
             if (Config.bValid)
             {
                 Storage.Index(Config.WheelIndex);
+                Storage.CheckCallbackBoundary();
                 Storage.ChaosWheel() = Config.ChaosWheel;
+                Storage.CheckCallbackBoundary();
                 Storage.Wheel() = Config.PWheel;
+                Storage.CheckCallbackBoundary();
                 Storage.Suspension() = Config.PSuspension;
+                Storage.CheckCallbackBoundary();
                 // keep consistency with radius and mass
                 Storage.Radius(Storage.Wheel()->GetEffectiveRadius());
+                Storage.CheckCallbackBoundary();
                 Storage.Wheel()->SetMassPerWheel(Storage.WheelMass());
+                Storage.CheckCallbackBoundary();
                 Storage.Mass(Storage.WheelMass());
-                Storage.InverseLocal() = Storage.InitialInverse();
+                Storage.CheckCallbackBoundary();
+                const FMatrix InitialInverse = Storage.InitialInverse();
+                Storage.CheckCallbackBoundary();
+                Storage.InverseLocal() = InitialInverse;
+                Storage.CheckCallbackBoundary();
             }
 		}
 	}
 }
 
 void USWheelSubBody::Initialize(ISpeedComponent* InParentComponent)
-{FLegacyBirthInitializeAccess Storage(*this);InitializeBirthBody(Storage,InParentComponent);}
+{CheckOrdinaryBodyInitializationEntry();FLegacyBirthInitializeAccess Storage(*this);InitializeBirthBody(Storage,InParentComponent);}
 void USWheelSubBody::InitializeNativeWheel(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,ISpeedComponent* Parent)
 {FNativeBirthInitializeAccess Storage(*this,Operation);InitializeBirthBody(Storage,Parent);}
+void USWheelSubBody::InitializeReferenceWheel(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,
+    const Speed::Netcode::Prediction::FPrivateReferenceOwnerBirth& Proof,ISpeedComponent* Parent)
+{FReferenceBirthInitializeAccess Storage(*this,Operation,Proof,Parent);InitializeBirthBody(Storage,Parent);}
 
 
 

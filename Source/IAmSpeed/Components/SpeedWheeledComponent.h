@@ -857,6 +857,10 @@ private:
     // Engine tick/registration path; the private factory supplies real captured
     // actor pose and explicitly registers its original bridge separately.
     class FLegacyOwnerBirthAccess;class FNativeOwnerBirthAccess;class FReferenceOwnerBirthAccess;
+    friend class Speed::Netcode::Prediction::FPrivateReferenceOwnerBirth;
+    void ValidateReferenceInitializerBody(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,
+        const Speed::Netcode::Prediction::FPrivateReferenceOwnerBirth& Proof,const USSubBody& Subject,ISpeedComponent* Parent);
+
     struct FReferenceOwnerBirthObservation
     {
         uint32 BoundaryChecksReturned=0,TwoNullEntriesReturned=0,InitializersReturned=0;

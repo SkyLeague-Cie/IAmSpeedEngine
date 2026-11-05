@@ -2113,3 +2113,46 @@ subclass falsely admitted into a final private graph. The ReadWheels TView alrea
 uses an index iterator and does not retain an element borrow across Initialize;
 the initial broader suspicion was withdrawn after its implementation was read.
 All proposed controls still require fresh C++/UHT and native execution.
+
+
+### Typed early reference initializer boundary (candidate131, native NOT_RUN)
+
+The actual early reference owner now proposes a distinct call-scoped initializer
+route through Box/Solid/SubBody and Wheel/Sphere/Solid/SubBody. It reuses each
+existing numerical program and legacy reference backing, rather than substituting
+the original Owned/Part initializer. The genuine factory root, active Birth,
+component/actor/world/bridge and captured body weak births are checked before
+the first parent write and across real configuration/inverse callbacks. Each
+inverse callback returns one copied matrix; validation precedes reacquiring and
+writing its destination. Ordinary Initialize entries check an empty default hook
+first; final private bodies unconditionally refuse, including null and explicitly
+base-qualified calls. Four Mass overrides and restoration guards are unchanged.
+
+Draft native controls include27 true NoOp attempts on fixed private subjects:
+nine virtual/qualified Box/Wheel/base forms with null/own/foreign parents. Two
+actual retained graphs, absence of any operation and live routes are required;
+six declared original/reference/facade footprints also observe vehicle allocations.
+Separately, six typed refusals per actual actor execute after the genuine early
+owner returns and before vehicle construction/early abort. Own validator positives
+run before and after each refusal without reinitializing. Four copied buffers
+cover five own and five foreign named bodies, their identity/parent/pose/Euler,
+ignored arrays, solid/inertia and Box/Sphere/Wheel values. These four typed buffers
+do not independently cover all pointed Chaos state: PWheel identity is recorded,
+but a change confined to its pointed SetMassPerWheel state is not certified by
+them. Ordinary NoOp allocation observations do not transfer to the typed controls.
+Actual completed initializer/check counters are exported before diagnostic failure;
+an empty or rejected capture cannot become a zero-divergence success.
+
+All new C++/UHT and native controls remain NOT_RUN until the exact new tuple is
+built and admitted. Planned typed rows are6 early-abort,6 original-abort and12
+normal, with strict run/actor/entry/subject/parent identity and report/stdout checks.
+Step/Retirement of this strictly early witness, isolated mixed-backend rejection
+and inverse-callback invalidation on the exact final private class remain NOT_PROVED;
+no witness is retained/reconstructed and no fake private subclass is admitted.
+
+These child guards do not close ordinary parent SetOwner or InitializeBoundSubBodies,
+which write before reaching children. Arbitrary targets, Chaos-qualified lifecycle,
+complete causal state/source-lifetime, full network initial sync/default-closed
+CanMove with agreed activation frame, authoritative-K restore and localized replay
+with two rendered playable clients on the product dedicated server remain OPEN.
+The current correction still replays from birth. Prior FAIL/UNKNOWN remain intact.

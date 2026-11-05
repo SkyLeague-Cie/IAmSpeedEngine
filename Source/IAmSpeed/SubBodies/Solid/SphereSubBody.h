@@ -44,11 +44,12 @@ private:
     template<class TAccess> void ResolveHitVsSphereMassResponseBody(TAccess& Storage,USphereSubBody& OtherSphere, const float& delta, const float& SimTime);
     void ResolveNativeSphereCurrentHit(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const float& Delta,const float& SimTime);
     friend class USWheelSubBody;friend class USpeedBranchWheelSubBody;
-    class FLegacyBirthInitializeAccess;class FNativeBirthInitializeAccess;
+    class FLegacyBirthInitializeAccess;class FNativeBirthInitializeAccess;class FReferenceBirthInitializeAccess;
     class FLegacyInitialInertiaAccess;class FNativeInitialInertiaAccess;
     template<class TAccess> void InitializeBirthBody(TAccess& Storage,ISpeedComponent* InParentComponent);
     template<class TAccess> FMatrix InitialInverseTensorBody(TAccess& Storage) const;
     void InitializeNativeSphere(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,ISpeedComponent* Parent);
+    void InitializeReferenceSphere(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const Speed::Netcode::Prediction::FPrivateReferenceOwnerBirth& Proof,ISpeedComponent* Parent);
     FMatrix InitialNativeInverseTensor(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation) const;
 
 	

@@ -49,6 +49,13 @@ class FPrivateReferenceOwnerBirth final
 {
     friend class FPrivateRoadPhysicsWorld;
     friend class ::USpeedWheeledComponent;
+    friend class ::USSubBody;friend class ::USolidSubBody;friend class ::USphereSubBody;
+    friend class ::UBoxSubBody;friend class ::USWheelSubBody;
+    void RequireInitializerBody(const FPrivateNativeOperation&,const USSubBody&,ISpeedComponent*) const;
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+    mutable uint32 DiagnosticInitializerSubjectChecks=0; // actual successful checks only, no permission
+#endif
+
     const std::shared_ptr<void> ActualRoot;
     const TWeakObjectPtr<UWorld> World;
     const TWeakObjectPtr<USpeedWorldSubsystem> Bridge;
@@ -318,6 +325,7 @@ private:
     std::weak_ptr<Speed::Netcode::Prediction::FPrivateRoadAccess> StorageAccess;
     std::shared_ptr<Speed::Netcode::Prediction::FPrivateRoadSubBodyValues> OwnedBodyValues;
     bool UsesOriginalBodyStorage() const;
+    friend class USpeedWheeledComponent;
     TWeakObjectPtr<USSubBody> OriginalBodyIdentity; // private, copied once by actual birth owner
     TWeakObjectPtr<USSubBody> GetPhysicsWeakIdentity() const override;
 #if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
@@ -502,6 +510,9 @@ protected:
 
 private:
     void InitializeNative(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,ISpeedComponent* Parent) override;
+    void CheckOrdinaryBodyInitializationEntry() const override;
+    void InitializeReference(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const Speed::Netcode::Prediction::FPrivateReferenceOwnerBirth& Proof,ISpeedComponent* Parent) override;
+
     FMatrix ComputeNativeInitialInverseTensor(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation) const override;
     void AcceptNativeHit(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation) override;
     void ValidateNativeResetFrame(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation) const override;
@@ -778,6 +789,9 @@ public:
 
 private:
     void InitializeNative(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,ISpeedComponent* Parent) override;
+    void CheckOrdinaryBodyInitializationEntry() const override;
+    void InitializeReference(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const Speed::Netcode::Prediction::FPrivateReferenceOwnerBirth& Proof,ISpeedComponent* Parent) override;
+
     FMatrix ComputeNativeInitialInverseTensor(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation) const override;
     void AcceptNativeHit(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation) override;
     void ValidateNativeResetFrame(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation) const override;

@@ -390,9 +390,10 @@ protected:
 private:
     friend class USpeedBranchWheelSubBody;
     class FLegacyWheelUpdateAccess;class FNativeWheelUpdateAccess;
-    class FLegacyBirthInitializeAccess;class FNativeBirthInitializeAccess;
+    class FLegacyBirthInitializeAccess;class FNativeBirthInitializeAccess;class FReferenceBirthInitializeAccess;
     template<class TAccess> void InitializeBirthBody(TAccess& Storage,ISpeedComponent* InParentComponent);
     void InitializeNativeWheel(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,ISpeedComponent* Parent);
+    void InitializeReferenceWheel(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const Speed::Netcode::Prediction::FPrivateReferenceOwnerBirth& Proof,ISpeedComponent* Parent);
     class FLegacyWheelHitAccess;class FNativeWheelHitAccess;
     template<class TAccess> void AcceptWheelHitBody(TAccess& Storage);
     void AcceptNativeWheelHit(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation);

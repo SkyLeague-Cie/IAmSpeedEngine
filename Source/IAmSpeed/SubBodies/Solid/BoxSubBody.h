@@ -293,9 +293,10 @@ private:
     FMatrix ComputeNativeChassisLocalInvInertiaTensor(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation) const;
     class FLegacyBoxHitAccess;class FNativeBoxHitAccess;class FLegacyRepeatedContactAccess;
     class FLegacyInitialInertiaAccess;class FNativeInitialInertiaAccess;
-    class FLegacyBirthInitializeAccess;class FNativeBirthInitializeAccess;
+    class FLegacyBirthInitializeAccess;class FNativeBirthInitializeAccess;class FReferenceBirthInitializeAccess;
     template<class TAccess> void InitializeBirthBody(TAccess& Storage,ISpeedComponent* InParentComponent);
     void InitializeNativeBox(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,ISpeedComponent* Parent);
+    void InitializeReferenceBox(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const Speed::Netcode::Prediction::FPrivateReferenceOwnerBirth& Proof,ISpeedComponent* Parent);
     template<class TAccess> FMatrix InitialInverseTensorBody(TAccess& Storage) const;
     FMatrix InitialNativeInverseTensor(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation) const;
     template<class TAccess> void AcceptBoxHitBody(TAccess& Storage);

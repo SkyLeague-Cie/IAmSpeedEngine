@@ -57,11 +57,12 @@ void USSubBody::OnRegister()
     Super::OnRegister();
 }
 
-class USSubBody::FLegacyBirthInitializeAccess final
+class USSubBody::FLegacyBirthInitializeAccess
 {
     USSubBody& Owner;
 public:
     explicit FLegacyBirthInitializeAccess(USSubBody& Value):Owner(Value){}
+    virtual void CheckCallbackBoundary() const {}
     decltype(auto) Parent() const {return Owner.ParentComponentBodyDomainStorage();}
     SubBodyConfig Configuration(ISpeedComponent* Parent) const {return Parent->GetSubBodyConfig(Owner);}
     void LocalOffset(const FVector& Value) const {Owner.SetPhysicalLocalOffset(Value);}
@@ -75,6 +76,7 @@ class USSubBody::FNativeBirthInitializeAccess final
     USSubBody& Owner;const Speed::Netcode::Prediction::FPrivateNativeOperation& Op;
     decltype(auto) Values() const {return Speed::Netcode::Prediction::FPrivateNativeStorageAccess::Part<Speed::Netcode::Prediction::FPrivateRoadSubBodyValues>(Op,&Owner);}
 public:
+    void CheckCallbackBoundary() const {}
     FNativeBirthInitializeAccess(USSubBody& Value,const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation):Owner(Value),Op(Operation)
     {Speed::Netcode::Prediction::FPrivateNativeStorageAccess::RequireBirth(Op);(void)Values();}
     decltype(auto) Parent() const {return (Values().ParentComponent);}
@@ -86,18 +88,41 @@ public:
     decltype(auto) AlwaysIgnored() const {return (Values().AlwaysIgnoredComponents);}
 };
 
+class USSubBody::FReferenceBirthInitializeAccess final : public FLegacyBirthInitializeAccess
+{
+    USSubBody& Owner;
+    const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation;
+    const Speed::Netcode::Prediction::FPrivateReferenceOwnerBirth& Proof;
+    ISpeedComponent* const RequestedParent;
+public:
+    FReferenceBirthInitializeAccess(USSubBody& Value,const Speed::Netcode::Prediction::FPrivateNativeOperation& Op,
+        const Speed::Netcode::Prediction::FPrivateReferenceOwnerBirth& ActualProof,ISpeedComponent* Parent)
+      :FLegacyBirthInitializeAccess(Value),Owner(Value),Operation(Op),Proof(ActualProof),RequestedParent(Parent)
+    {CheckCallbackBoundary();}
+    FReferenceBirthInitializeAccess(const FReferenceBirthInitializeAccess&)=delete;
+    FReferenceBirthInitializeAccess& operator=(const FReferenceBirthInitializeAccess&)=delete;
+    void CheckCallbackBoundary() const override
+    {Proof.RequireInitializerBody(Operation,Owner,RequestedParent);}
+};
+
 template<class TAccess>
 void USSubBody::InitializeBirthBody(TAccess& Storage,ISpeedComponent* InParentComponent)
 {
+    Storage.CheckCallbackBoundary();
 	Storage.Parent() = InParentComponent;
+	Storage.CheckCallbackBoundary();
     if (Storage.Parent())
     {
 		SubBodyConfig Config = Storage.Configuration(Storage.Parent());
+		Storage.CheckCallbackBoundary();
         if (Config.bValid)
         {
             Storage.LocalOffset(Config.LocalOffset);
+            Storage.CheckCallbackBoundary();
             Storage.LocalRotation(Config.LocalRotation);
+            Storage.CheckCallbackBoundary();
             Storage.CollisionChannel() = Config.CollisionChannel;
+            Storage.CheckCallbackBoundary();
         }
         
         for (USSubBody* SubBody: Storage.SubBodies())
@@ -105,17 +130,25 @@ void USSubBody::InitializeBirthBody(TAccess& Storage,ISpeedComponent* InParentCo
             if (SubBody)
             {
                 Storage.AlwaysIgnored().AddUnique(SubBody);
+                Storage.CheckCallbackBoundary();
             }
 		}
     }
 }
 
 void USSubBody::Initialize(ISpeedComponent* InParentComponent)
-{FLegacyBirthInitializeAccess Storage(*this);InitializeBirthBody(Storage,InParentComponent);}
+{CheckOrdinaryBodyInitializationEntry();FLegacyBirthInitializeAccess Storage(*this);InitializeBirthBody(Storage,InParentComponent);}
 void USSubBody::InitializeNativeBase(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,ISpeedComponent* Parent)
 {FNativeBirthInitializeAccess Storage(*this,Operation);InitializeBirthBody(Storage,Parent);}
+void USSubBody::InitializeReferenceBase(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,
+    const Speed::Netcode::Prediction::FPrivateReferenceOwnerBirth& Proof,ISpeedComponent* Parent)
+{FReferenceBirthInitializeAccess Storage(*this,Operation,Proof,Parent);InitializeBirthBody(Storage,Parent);}
 void USSubBody::InitializeNative(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,ISpeedComponent* Parent)
 {(void)Operation;(void)Parent;throw Speed::Netcode::Prediction::FPrivateNativeStorageUnavailable{};}
+void USSubBody::InitializeReference(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,
+    const Speed::Netcode::Prediction::FPrivateReferenceOwnerBirth& Proof,ISpeedComponent* Parent)
+{(void)Operation;(void)Proof;(void)Parent;throw Speed::Netcode::Prediction::FPrivateNativeStorageUnavailable{};}
+
 
 
 void USSubBody::ResetForFrame(const float& Delta)

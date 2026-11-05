@@ -644,7 +644,11 @@ public:
     }
     void Initialize(USSubBody* Body) const
     {
-        FLegacyOwnerBirthAccess::Initialize(Body);
+        // Legacy Initialize already checked these two boundaries. Keep that
+        // real observation order while the child now uses its typed route.
+        CheckCallbackBoundary();
+        Body->InitializeReference(Operation,Proof,&Owner);
+        CheckCallbackBoundary();
 #if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
         if(Observation)++Observation->InitializersReturned;
 #endif
@@ -819,6 +823,43 @@ void USpeedWheeledComponent::ResolveFixedCenterOfMassFromConfiguration()
     FLegacyOwnerBirthAccess Storage(*this);ResolveFixedCenterOfMassBody(Storage);
 }
 
+
+void Speed::Netcode::Prediction::FPrivateReferenceOwnerBirth::RequireInitializerBody(
+    const FPrivateNativeOperation& Operation,const USSubBody& Subject,ISpeedComponent* Parent) const
+{
+    FPrivateNativeStorageAccess::RequireBirthRoot(Operation,ActualRoot);
+    auto* ActualComponent=Component.Get();
+    if(!ActualComponent||ActualComponent->HasAnyFlags(RF_BeginDestroyed|RF_FinishDestroyed))
+        throw FPrivateNativeStorageUnavailable{};
+    ActualComponent->ValidateReferenceInitializerBody(Operation,*this,Subject,Parent);
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+    ++DiagnosticInitializerSubjectChecks;
+#endif
+}
+void USpeedWheeledComponent::ValidateReferenceInitializerBody(
+    const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,
+    const Speed::Netcode::Prediction::FPrivateReferenceOwnerBirth& Proof,const USSubBody& Subject,ISpeedComponent* Parent)
+{
+    using namespace Speed::Netcode::Prediction;
+    FReferenceOwnerBirthAccess Check(*this,Operation,Proof,Proof.Actor.Get(),nullptr);
+    if(Parent!=static_cast<ISpeedComponent*>(this))throw FPrivateNativeStorageUnavailable{};
+    bool Match=false;
+    if(Proof.Hitbox.Get()==&Subject)
+    {
+        const auto& Body=static_cast<const USpeedBranchBoxSubBody&>(Subject);
+        if(Body.UsesOriginalBodyStorage())throw FPrivateNativeStorageUnavailable{};
+        Match=true;
+    }
+    for(const auto& Born:Proof.Bodies)
+    {
+        if(Born.Get()!=&Subject)continue;
+        const auto& Body=static_cast<const USpeedBranchWheelSubBody&>(Subject);
+        if(Body.UsesOriginalBodyStorage())throw FPrivateNativeStorageUnavailable{};
+        Match=true;
+    }
+    if(!Match)throw FPrivateNativeStorageUnavailable{};
+    Check.CheckCallbackBoundary();
+}
 
 template<class TAccess>
 void USpeedWheeledComponent::SetOwnerBody(TAccess& Storage,AActor* NewOwner)

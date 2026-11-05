@@ -401,9 +401,10 @@ private:
     // Separate explicit native dispatch. Old public/protected virtual APIs stay
     // legacy; no public context or routing scope can issue this Operation.
     friend class USphereSubBody;friend class UBoxSubBody;friend class USpeedBranchBoxSubBody;
-    class FLegacyBirthInitializeAccess;class FNativeBirthInitializeAccess;
+    class FLegacyBirthInitializeAccess;class FNativeBirthInitializeAccess;class FReferenceBirthInitializeAccess;
     template<class TAccess> void InitializeBirthBody(TAccess& Storage,ISpeedComponent* InParentComponent);
     void InitializeNativeSolid(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,ISpeedComponent* Parent);
+    void InitializeReferenceSolid(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const Speed::Netcode::Prediction::FPrivateReferenceOwnerBirth& Proof,ISpeedComponent* Parent);
     virtual FMatrix ComputeNativeInitialInverseTensor(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation) const;
     virtual FMatrix ComputeNativeWorldInvInertiaTensor(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation) const;
 

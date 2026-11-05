@@ -20,11 +20,28 @@ bool FIASPrivateRoadFirstOwnerBirthTraversal::RunTest(const FString&)
         Seed.Remote.OwnerPeer=4;Seed.Remote.ServerPeer=5;Seed.Remote.SourceProducer=6+Index;Seed.Remote.SourceKind=0;Seed.Remote.Contract[0]=7;
         Seed.Initial.Location=FVector(0,Index?1000:-1000,45);Seeds.push_back(Seed);
     }
+    const auto CheckTypedInitializers=[&](const TCHAR* Run,const P::FPrivateRoadBirthInitializationProbe& Probe,size_t Expected)
+    {
+        for(const auto& Row:Probe.ReferenceInitializerCases)
+        {
+            AddInfo(FString::Printf(TEXT("[PrivateRoadTypedReferenceInitializerCase] run=%s actor=%llu entry=%s subject=%s parent=%s positiveBefore=%d attempted=%d refused=%d positiveAfter=%d ownOriginal=%d ownReference=%d foreignOriginal=%d foreignReference=%d ownBodies=%u foreignBodies=%u. Actual early Birth witness; ten named bodies only, no complete scene/lifetime proof."),
+                Run,Row.Actor,*Row.Entry,*Row.Subject,*Row.Parent,int(Row.PositiveBefore),int(Row.Attempted),int(Row.Refused),int(Row.PositiveAfter),
+                int(Row.OwnOriginal),int(Row.OwnReference),int(Row.ForeignOriginal),int(Row.ForeignReference),Row.OwnBodies,Row.ForeignBodies));
+            TestTrue(TEXT("typed real refusal preserves named original/reference bodies with positive validator controls"),Row.PositiveBefore&&Row.Attempted&&Row.Refused&&Row.PositiveAfter
+                &&Row.OwnOriginal&&Row.OwnReference&&Row.ForeignOriginal&&Row.ForeignReference&&Row.OwnBodies==5&&Row.ForeignBodies==5&&Row.Actor!=0);
+        }
+        AddInfo(FString::Printf(TEXT("[PrivateRoadTypedReferenceInitializers] run=%s rows=%u typedInitializers=%u validatorReturns=%u positiveChecks=%u. Step/Retirement, isolated mixed backend and private-final inverse invalidation NOT_PROVED; no witness retention or reconstruction."),
+            Run,uint32(Probe.ReferenceInitializerCases.size()),Probe.EarlyReferenceInitializers,Probe.ReferenceInitializerSubjectChecks,Probe.ReferenceInitializerPositiveChecks));
+        TestEqual(TEXT("all actual typed initializer attempts exported including early abort"),Probe.ReferenceInitializerCases.size(),Expected);
+        TestTrue(TEXT("actual successful subject validator returns are populated"),Probe.ReferenceInitializerSubjectChecks>0);
+        TestEqual(TEXT("two positive subjects before and after each refusal"),Probe.ReferenceInitializerPositiveChecks,uint32(Expected*4));
+    };
     FString Why;auto Foreign=P::FPrivateRoadPhysicsWorld::Create(Seeds,Why);
     if(!TestTrue(*FString::Printf(TEXT("actual independent foreign graph: %s"),*Why),bool(Foreign)))return false;
     P::FPrivateRoadBirthInitializationProbe EarlyAbort;
     auto EarlyAborted=P::FPrivateRoadPhysicsWorld::CreateWithBirthInitializationProbeForDiagnostics(
         Seeds,*Foreign,P::EPrivateRoadBirthProbeMode::AbortAfterEarlyReferenceOwner,EarlyAbort,Why);
+    CheckTypedInitializers(TEXT("early-abort"),EarlyAbort,size_t(6));
     TestFalse(TEXT("real early reference diagnostic returns no owner"),bool(EarlyAborted));
     TestTrue(TEXT("actual early owner returned before explicit partial-birth abort"),EarlyAbort.CreateReturnedNull&&EarlyAbort.EarlyReferenceAbortReached);
     TestEqual(TEXT("one early owner actually returned"),EarlyAbort.EarlyReferenceOwnerReturns,uint32(1));
@@ -56,6 +73,7 @@ bool FIASPrivateRoadFirstOwnerBirthTraversal::RunTest(const FString&)
     P::FPrivateRoadBirthInitializationProbe Abort;
     auto Aborted=P::FPrivateRoadPhysicsWorld::CreateWithBirthInitializationProbeForDiagnostics(
         Seeds,*Foreign,P::EPrivateRoadBirthProbeMode::ProbeFirstOwnerAndAbort,Abort,Why);
+    CheckTypedInitializers(TEXT("original-abort"),Abort,size_t(6));
     AddInfo(FString::Printf(TEXT("[PrivateRoadFirstOwnerBirthAbortAttempt] null=%d stage=%s probeEntered=%d probeReturned=%d probeSucceeded=%d locationApi=%d rotationApi=%d location=%s rotation=%s why=%s"),
         int(Abort.CreateReturnedNull),*Abort.FirstOwnerLastStage,int(Abort.FirstOwnerProbeCallEntered),int(Abort.FirstOwnerProbeCallReturned),
         int(Abort.FirstOwnerProbeSucceeded),int(Abort.FirstOwnerActorLocationSet),int(Abort.FirstOwnerActorRotationSet),
@@ -87,6 +105,7 @@ bool FIASPrivateRoadFirstOwnerBirthTraversal::RunTest(const FString&)
     P::FPrivateRoadBirthInitializationProbe Normal;
     auto Own=P::FPrivateRoadPhysicsWorld::CreateWithBirthInitializationProbeForDiagnostics(
         Seeds,*Foreign,P::EPrivateRoadBirthProbeMode::Observe,Normal,Why);
+    CheckTypedInitializers(TEXT("normal"),Normal,size_t(12));
     if(!TestTrue(*FString::Printf(TEXT("normal actual original construction: %s"),*Why),bool(Own)))return false;
     TestEqual(TEXT("normal two reference owner entries returned"),Normal.EarlyReferenceOwnerReturns,uint32(2));
     TestEqual(TEXT("normal eight exact two-null entries returned"),Normal.EarlyReferenceTwoNullReturns,uint32(8));
