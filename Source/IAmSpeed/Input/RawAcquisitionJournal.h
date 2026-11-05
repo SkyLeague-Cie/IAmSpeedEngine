@@ -1,6 +1,7 @@
 #pragma once
 
 #include "InputProducerV2.h"
+#include "DesktopPublicationValidation.h"
 #include <mutex>
 #include <limits>
 #include <thread>
@@ -8,6 +9,14 @@
 
 namespace Speed::Input::V2
 {
+// Values-only display metadata. It never participates in raw-state
+// admission, device selection, physical mapping, frame values or hashes.
+enum class ERawPadFamily : std::uint8_t { Unknown, PlayStation, Xbox };
+constexpr ERawPadFamily RawPadFamilyFromVendor(std::uint16_t VendorId) noexcept
+{
+    return VendorId==0x054c?ERawPadFamily::PlayStation
+        :(VendorId==0x045e?ERawPadFamily::Xbox:ERawPadFamily::Unknown);
+}
 // Acquisition order is independent of simulation and presentation clocks.
 // DeviceId is a collision-free registry index owned by the platform session.
 struct FAcquiredRawState
@@ -17,7 +26,38 @@ struct FAcquiredRawState
 	ERawDeviceKind Kind = ERawDeviceKind::Keyboard;
 	bool FreshBaseline = false;
 	FCanonicalRawState State;
+    ERawPadFamily PadFamily=ERawPadFamily::Unknown; // Not copied into a physical FRawInputSample.
+    bool HasSelectedDevice=true; // UI admission provenance only; never copied into FRawInputSample/ACK.
+    // Exact acquisition observation receipt, consumed only by a composing
+    // backend's arbiter. Never a physical edge or a fresh-resume acknowledgement.
+    bool SelectedByActivity=false;
+    std::shared_ptr<const FDesktopPublication> DesktopPublication;
 };
+
+inline bool HasValidDesktopProvenance(const FAcquiredRawState& R)
+{
+    if(R.Kind!=ERawDeviceKind::Desktop||!R.DesktopPublication
+        ||!ValidateDesktopPublication(*R.DesktopPublication))return false;
+    const auto& P=*R.DesktopPublication;
+    if(R.State.Count!=P.Sample.FinalState.size()||R.State.Count>R.State.Values.size())return false;
+    for(std::size_t I=0;I<R.State.Count;++I)
+        if(!(R.State.Values[I].Control==P.Sample.FinalState[I].Control)
+            ||R.State.Values[I].Value!=P.Sample.FinalState[I].Value)return false;
+    return R.HasSelectedDevice==!P.Baseline.Members.empty();
+}
+inline std::optional<FAcquiredRawState> MakeDesktopAcquiredState(
+    std::shared_ptr<const FDesktopPublication> Publication,std::uint64_t Sequence,
+    FDeviceGeneration Generation,bool FreshBaseline)
+{
+    if(!Publication||!ValidateDesktopPublication(*Publication)||!Sequence||!Generation.Value)return {};
+    FAcquiredRawState R;R.Kind=ERawDeviceKind::Desktop;R.DesktopPublication=std::move(Publication);
+    R.DeviceId=R.DesktopPublication->Baseline.ProducerId;R.Sequence=Sequence;R.Generation=Generation;
+    R.FreshBaseline=FreshBaseline;R.HasSelectedDevice=!R.DesktopPublication->Baseline.Members.empty();
+    R.State.Count=R.DesktopPublication->Sample.FinalState.size();
+    std::copy(R.DesktopPublication->Sample.FinalState.begin(),R.DesktopPublication->Sample.FinalState.end(),R.State.Values.begin());
+    return HasValidDesktopProvenance(R)?std::optional<FAcquiredRawState>(std::move(R)):std::nullopt;
+}
+
 struct FRawAcquisitionBatch
 {
 	std::array<FAcquiredRawState, 64> Readings{};
@@ -115,7 +155,9 @@ public:
 				const auto& R = Batch.Readings[I];
 				// Desktop needs its atomic provenance + lifecycle envelope; the old
 				// readings-only journal must not silently strip those fields.
-				if (R.Kind == ERawDeviceKind::Desktop || !R.DeviceId || !R.Generation.Value || !R.Sequence || !R.State.IsValid(R.Kind)
+				if ((R.Kind==ERawDeviceKind::Desktop?!HasValidDesktopProvenance(R):bool(R.DesktopPublication))
+                    || !R.DeviceId || !R.Generation.Value || !R.Sequence
+                    || (R.Kind!=ERawDeviceKind::Desktop&&!R.State.IsValid(R.Kind))
 					|| (Previous && (Previous->Sequence == std::numeric_limits<std::uint64_t>::max()
 						|| R.Sequence != Previous->Sequence + 1))) { FrozenInvalid = true; return false; }
 				const bool Same = Previous && SameDevice(*Previous, R);
@@ -132,13 +174,23 @@ public:
 					else
 					{
 						if (!Prepared.Latest || !SameDevice(*Prepared.Latest, R)) { FrozenInvalid = true; return false; }
-						for (std::size_t J = 0; J < R.State.Count; ++J)
-							if (Prepared.Latest->State.Values[J].Value != R.State.Values[J].Value)
-							{
-								if (Prepared.ChangeCount == Prepared.Changes.size()) { FrozenInvalid = true; return false; }
-								Prepared.Changes[Prepared.ChangeCount++] = {R.State.Values[J], {}, R.Sequence};
-							}
-						Prepared.Latest = R;
+                        if(R.Kind==ERawDeviceKind::Desktop)
+                        {
+                            if(Prepared.DesktopPublications.size()==Capacity){FrozenInvalid=true;return false;}
+                            Prepared.DesktopPublications.push_back(R.DesktopPublication);
+                            for(const auto& Change:R.DesktopPublication->Sample.Changes)
+                            {
+                                if(Prepared.ChangeCount==Prepared.Changes.size()){FrozenInvalid=true;return false;}
+                                Prepared.Changes[Prepared.ChangeCount++]=Change;
+                            }
+                        }
+                        else for (std::size_t J = 0; J < R.State.Count; ++J)
+                            if (Prepared.Latest->State.Values[J].Value != R.State.Values[J].Value)
+                            {
+                                if (Prepared.ChangeCount == Prepared.Changes.size()) { FrozenInvalid = true; return false; }
+                                Prepared.Changes[Prepared.ChangeCount++] = {R.State.Values[J], {}, R.Sequence};
+                            }
+                        Prepared.Latest = R;
 					}
 				}
 				Previous = R;
@@ -147,7 +199,7 @@ public:
 			if (Frozen)
 				for (std::size_t I = 0; I < Batch.Count; ++I)
 					if (Batch.Readings[I].FreshBaseline) FrozenInvalid = true;
-			Physical = Prepared; LastAcquired = Previous; ResumeReady = Ready; RequiresFresh = false;
+			Physical = std::move(Prepared); LastAcquired = Previous; ResumeReady = Ready; RequiresFresh = false;
 			for (std::size_t I = 0; I < Batch.Count; ++I) History[(++Serial) % Capacity] = Batch.Readings[I];
 			return true;
 		}
@@ -205,7 +257,15 @@ private:
 		Result.DeviceId = R.DeviceId; Result.Generation = R.Generation; Result.Kind = R.Kind;
 		Result.Sequence = DeliverySequence + 1;
 		Result.Status = Physical.Baseline ? ERawSampleStatus::Resync : ERawSampleStatus::Valid;
-		Result.FinalState.assign(R.State.Values.begin(), R.State.Values.begin() + R.State.Count);
+        Result.FinalState.assign(R.State.Values.begin(), R.State.Values.begin() + R.State.Count);
+        if(R.Kind==ERawDeviceKind::Desktop)
+        {
+            if(!HasValidDesktopProvenance(R))return {};
+            auto Ingress=std::make_shared<FDesktopFrameIngress>();Ingress->Latest=R.DesktopPublication;
+            if(Physical.Baseline)Ingress->Publications.push_back(R.DesktopPublication);
+            else Ingress->Publications=Physical.DesktopPublications;
+            Result.DesktopIngress=std::move(Ingress);
+        }
 		if (!Physical.Baseline)
 		{
 			Result.Changes.reserve(Physical.ChangeCount);
@@ -215,10 +275,11 @@ private:
 				Result.Changes.push_back(Change);
 			}
 		}
-		if (!Result.IsValid()) return {};
+        if (!Result.IsValid()&&!(Result.Kind==ERawDeviceKind::Desktop&&Result.Status==ERawSampleStatus::Resync
+            &&Result.DesktopIngress&&Result.DesktopIngress->Latest->RequiresLifecycleEnvelope&&Result.FinalState.empty()))return {};
 		// Do not discard edges after a baseline: Reset cannot contain transitions,
 		// so those real later readings belong to the next physical consumption.
-		if (Physical.Baseline) Physical.Baseline.reset(); else Physical.ChangeCount = 0;
+		if (Physical.Baseline) Physical.Baseline.reset(); else {Physical.ChangeCount = 0;Physical.DesktopPublications.clear();}
 		++DeliverySequence; Exhausted = Frame == std::numeric_limits<FFrameNumber>::max();
 		if (!Exhausted) ++NextFrame;
 		return Result;
@@ -320,6 +381,7 @@ private:
 		std::optional<FAcquiredRawState> Baseline, Latest;
 		std::array<FRawChange, FRawInputSample::MaxChanges> Changes{};
 		std::size_t ChangeCount = 0;
+        std::vector<std::shared_ptr<const FDesktopPublication>> DesktopPublications;
 	};
 	mutable std::mutex Gate;
 	std::recursive_mutex PollWindowGate;

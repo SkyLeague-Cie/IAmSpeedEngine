@@ -36,14 +36,19 @@ public:
 		std::optional<FGameInputSelectedSource::FRawReadGapDiagnostic> ReadGap;
 		std::optional<FGameInputSelectedSource::FRawReadRejectDiagnostic> ReadReject;
 	};
-	FGameInputRawAcquisition(std::unique_ptr<FGameInputSelectedSource> InSource,
-		std::shared_ptr<V2::FRawAcquisitionJournal> InJournal)
-		: Source(std::move(InSource)), Journal(std::move(InJournal)) {}
+    FGameInputRawAcquisition(std::unique_ptr<FGameInputSelectedSource> InSource,
+        std::shared_ptr<V2::FRawAcquisitionJournal> InJournal,bool InDesktop=false)
+        :Source(std::move(InSource)),DesktopRequested(InDesktop),Journal(std::move(InJournal))
+    {
+        if(DesktopRequested&&Source&&Journal&&Source->EnableDesktopPolicy(Journal->BeginAcquisition().Session))
+            Desktop=Source->CreateDesktopCompanion(Journal->BeginAcquisition().Session);
+    }
 	ERawPumpResult Pump() override
 	{
 		if (FPresentationInputScope::IsActive()) return ERawPumpResult::Rejected;
 		std::lock_guard<std::mutex> Lock(Gate);
-		if (Closed || !Source || !Journal) return ERawPumpResult::Closed;
+        if(Closed||!Source||!Journal)return ERawPumpResult::Closed;
+        if(DesktopRequested&&!Desktop)return ERawPumpResult::Rejected;
 		const auto Caller = std::this_thread::get_id();
 		if (Owner && *Owner != Caller) return ERawPumpResult::Rejected;
 		Owner = Caller;
@@ -55,12 +60,24 @@ public:
 		const auto Ticket = Journal->BeginAcquisition();
 		if (Journal->NeedsFreshResume() && !Source->RequestFreshRawReading())
 			return Neutralize(Ticket, ENeutralizeCause::FreshResumeReadRejected, ESinkReject::None);
-		bool HadData = false;
-		ESinkReject SinkReject = ESinkReject::None;
+        bool HadData=false,DesktopChosen=false,DesktopClaim=false;
+        FGameInputDesktopSource::FPreparation DesktopPrepared;
+        if(Desktop)
+        {
+            DesktopPrepared=Desktop->Prepare(DesktopNeedsFresh||Journal->NeedsFreshResume());
+            auto Candidate=DesktopPrepared.Prepared?DesktopPrepared.Prepared->Inspect():LastDesktopPublication;
+            if(DesktopPrepared.Status==FGameInputDesktopSource::EStatus::Unavailable
+                ||DesktopPrepared.Status==FGameInputDesktopSource::EStatus::Rejected)Candidate.reset();
+            if(!Source->SetDesktopCandidate(Candidate,DesktopPrepared.Prepared&&DesktopPrepared.Prepared->MouseActivity()))
+                return Neutralize(Ticket,ENeutralizeCause::PollRawRejected,ESinkReject::Canonicalization);
+        }
+        ESinkReject SinkReject = ESinkReject::None;
 		const bool Accepted = Source->PollRaw(++Tick, [&](const FGameInputSelectedSource::FSelectedRawBatch& Batch) noexcept
-		{
-			if (!Batch.Ticket)
-			{
+        {
+            if(Batch.DesktopSelected)
+            {DesktopChosen=true;DesktopClaim=Batch.SelectedByActivity;return true;}
+            if (!Batch.Ticket)
+            {
 				// Automatic selection can have no owner until activity or an
 				// explicitly configured startup device supplies a real reading.
 				// The first neutral baseline has no missing commands to invalidate.
@@ -94,7 +111,12 @@ public:
 				R.DeviceId = Id; R.Generation = {NewGeneration}; R.Sequence = Sequence + I + 1;
 				R.Kind = Batch.Ticket->Kind == EDeviceKind::Keyboard ? V2::ERawDeviceKind::Keyboard : V2::ERawDeviceKind::Gamepad;
 				R.TimestampMicroseconds = Batch.Readings.States[I].TimestampMicroseconds;
+                R.PadFamily=R.Kind==V2::ERawDeviceKind::Gamepad
+                    ?V2::RawPadFamilyFromVendor(Batch.VendorId):V2::ERawPadFamily::Unknown;
 				R.FreshBaseline = Fresh && I == 0;
+                // One receipt per selected batch, after its actual ordered
+                // readings. Do not duplicate activity when replaying history.
+                R.SelectedByActivity = Batch.SelectedByActivity && I + 1 == Prepared.Count;
 				if (!Canonicalize(Batch.Readings.States[I], R.Kind, R.State))
 				{ SinkReject = ESinkReject::Canonicalization; return false; }
 			}
@@ -104,8 +126,65 @@ public:
 			LastState = Prepared.Readings[Prepared.Count - 1]; Neutral = false; HadData = true;
 			return true;
 		});
-		if (!Accepted) return Neutralize(Ticket, ENeutralizeCause::PollRawRejected, SinkReject);
-		return HadData ? ERawPumpResult::Installed : ERawPumpResult::NoChange;
+        if(!Accepted)return Neutralize(Ticket,ENeutralizeCause::PollRawRejected,SinkReject);
+        const bool DesktopHandover=DesktopChosen&&(Neutral||!LastState
+            ||LastState->Kind!=V2::ERawDeviceKind::Desktop||Journal->NeedsFreshResume());
+        if(DesktopHandover&&(!DesktopPrepared.Prepared||!DesktopPrepared.Prepared->Inspect()->RequiresLifecycleEnvelope))
+        {
+            // The private collector may have warmed behind a pad. Its Poll
+            // publication proves activity, but is not a fresh public baseline.
+            // Fetch real current SDK states after selection; never relabel it.
+            const auto Decision=DesktopPrepared.Prepared?DesktopPrepared.Prepared->Inspect():LastDesktopPublication;
+            DesktopPrepared=Desktop->Prepare(true);
+            if(!DesktopPrepared.Prepared||!DesktopPrepared.Prepared->Inspect()->RequiresLifecycleEnvelope)
+            {
+                DesktopNeedsFresh=true;Source->SetDesktopCandidate({},false);
+                return Neutralize(Ticket,ENeutralizeCause::FreshResumeReadRejected,ESinkReject::Canonicalization);
+            }
+            const auto Fresh=DesktopPrepared.Prepared->Inspect();
+            if(Decision&&!(Decision->Baseline.Members==Fresh->Baseline.Members))
+            {
+                // A hotplug changed the participant after the activity claim.
+                // Consume the new inventory privately; its next policy decision
+                // must select this exact lifetime before public installation.
+                if(Desktop->Commit(*DesktopPrepared.Prepared,[]() noexcept{return true;}))
+                {LastDesktopPublication=Fresh;DesktopNeedsFresh=false;Source->SetDesktopCandidate(Fresh,false);}
+                else {DesktopNeedsFresh=true;Source->SetDesktopCandidate({},false);}
+                return HadData?ERawPumpResult::Installed:ERawPumpResult::NoChange;
+            }
+            if(!Source->SetDesktopCandidate(Fresh,false))
+                return Neutralize(Ticket,ENeutralizeCause::FreshResumeReadRejected,ESinkReject::Canonicalization);
+        }
+        // Collector.Commit owns the catalogue fence. Never call it inside
+        // Source.PollRaw's CommitRaw callback, which owns that same mailbox.
+        if(DesktopPrepared.Prepared)
+        {
+            const auto Publication=DesktopPrepared.Prepared->Inspect();
+            if(DesktopChosen)
+            {
+                const bool Fresh=Neutral||!LastState||LastState->Kind!=V2::ERawDeviceKind::Desktop
+                    ||Publication->RequiresLifecycleEnvelope||Journal->NeedsFreshResume();
+                if(Sequence==UINT64_MAX||(Fresh&&Generation==UINT64_MAX))return ERawPumpResult::Rejected;
+                auto State=V2::MakeDesktopAcquiredState(Publication,Sequence+1,{Generation+(Fresh?1:0)},Fresh);
+                if(!State)return Neutralize(Ticket,ENeutralizeCause::PollRawRejected,ESinkReject::Canonicalization);
+                State->SelectedByActivity=DesktopClaim;
+                V2::FRawAcquisitionBatch Batch;Batch.Count=1;Batch.Readings[0]=*State;
+                if(!Desktop->Commit(*DesktopPrepared.Prepared,[&]() noexcept{return Journal->Publish(Ticket,Batch);}))
+                    return Neutralize(Ticket,ENeutralizeCause::PollRawRejected,ESinkReject::JournalPublish);
+                Sequence=State->Sequence;Generation=State->Generation.Value;LastState=*State;
+                LastTicket.reset();Neutral=false;HadData=true;DesktopNeedsFresh=false;LastDesktopPublication=Publication;
+            }
+            else if(Desktop->Commit(*DesktopPrepared.Prepared,[]() noexcept{return true;}))
+            {
+                // Real desktop observations remain private while the pad owns
+                // gameplay. Consuming a suppressed claim prevents later replay.
+                LastDesktopPublication=Publication;DesktopNeedsFresh=false;
+            }
+            else {DesktopNeedsFresh=true;Source->SetDesktopCandidate({},false);}
+        }
+        else if(DesktopChosen&&(Neutral||!LastState||LastState->Kind!=V2::ERawDeviceKind::Desktop||Journal->NeedsFreshResume()))
+            DesktopNeedsFresh=true; // Next Pump must obtain a genuinely fresh OS snapshot.
+        return HadData?ERawPumpResult::Installed:ERawPumpResult::NoChange;
 	}
 	std::optional<FNeutralizeDiagnostic> TakeNeutralizeDiagnostic()
 	{
@@ -146,12 +225,18 @@ public:
         std::lock_guard<std::mutex> Lock(Gate);
         return Source ? Source->ReadFailureDiagnostics() : FGameInputFailureDiagnostics{};
     }
+    std::optional<V2::FNativeInputAvailability> ReadNativeAvailabilityDiagnostic() override
+    {
+        std::lock_guard<std::mutex> Lock(Gate);
+        return Source ? std::optional<V2::FNativeInputAvailability>(Source->ReadNativeAvailabilityDiagnostic()) : std::nullopt;
+    }
 	bool Close() override
 	{
 		std::lock_guard<std::mutex> Lock(Gate);
-		Closed = true;
-		if (Journal) Journal->Close();
-		return !Source || Source->Shutdown();
+        Closed=true;Journal->Close();
+        if(Desktop&&!Desktop->Close())return false;
+        Desktop.reset();
+        return !Source||Source->Shutdown();
 	}
 private:
 	bool InstallNeutral(V2::FAcquisitionTicket Ticket) noexcept
@@ -160,6 +245,9 @@ private:
 			|| Generation == std::numeric_limits<std::uint64_t>::max()) return false;
 		Prepared.Count = 1; auto& R = Prepared.Readings[0]; R = LastState.value_or(V2::FAcquiredRawState{});
 		R.DeviceId = FDeviceDiscovery::Capacity + 1; // Reserved neutral source, never a real registry index.
+        R.PadFamily=V2::ERawPadFamily::Unknown; // No real selected device owns this neutral source.
+        R.HasSelectedDevice=false;
+        R.SelectedByActivity=false;
 		R.Generation = {Generation + 1}; R.Sequence = Sequence + 1; R.FreshBaseline = true;
 		if (!R.State.Count)
 		{
@@ -182,7 +270,14 @@ private:
 			Journal->Invalidate(), Source->TakeRawReadGapDiagnostic(),
 			Cause == ENeutralizeCause::PollRawRejected ? Source->TakeRawReadRejectDiagnostic()
 				: std::optional<FGameInputSelectedSource::FRawReadRejectDiagnostic>{}};
-		return InstallNeutral(Ticket) ? ERawPumpResult::Neutralized : ERawPumpResult::Rejected;
+        if(LastState&&LastState->Kind==V2::ERawDeviceKind::Desktop)
+        {
+            // Invalidate already fenced the old held state. A typed Desktop
+            // cannot be cloned into a no-owner report with stale provenance.
+            Neutral=true;LastTicket.reset();DesktopNeedsFresh=true;
+            return ERawPumpResult::Neutralized;
+        }
+        return InstallNeutral(Ticket)?ERawPumpResult::Neutralized:ERawPumpResult::Rejected;
 	}
 	std::uint64_t DeviceIndex(const FDeviceId& Id) noexcept
 	{
@@ -193,7 +288,10 @@ private:
 	static bool SameTicket(const FDeviceSelection& A, const FDeviceSelection& B) noexcept
 	{ return A.Device.Id == B.Device.Id && A.Device.Revision == B.Device.Revision && A.Kind == B.Kind && A.Generation == B.Generation; }
 	std::mutex Gate;
-	std::unique_ptr<FGameInputSelectedSource> Source;
+    std::unique_ptr<FGameInputSelectedSource> Source;
+    std::unique_ptr<FGameInputDesktopSource> Desktop;
+    std::shared_ptr<const V2::FDesktopPublication> LastDesktopPublication;
+    bool DesktopRequested=false,DesktopNeedsFresh=true;
 	std::shared_ptr<V2::FRawAcquisitionJournal> Journal;
 	std::optional<std::thread::id> Owner;
 	V2::FRawAcquisitionBatch Prepared;
