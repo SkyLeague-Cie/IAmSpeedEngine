@@ -80,7 +80,21 @@ public:
     FNativeBirthInitializeAccess(USolidSubBody& Value,const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation):Owner(Value),Op(Operation)
     {Speed::Netcode::Prediction::FPrivateNativeStorageAccess::RequireBirth(Op);(void)Values();}
     void Base(ISpeedComponent* Parent) const {Owner.InitializeNativeBase(Op,Parent);}
-    SubBodyConfig Configuration(ISpeedComponent* Parent) const {return Speed::NativeKinematics::FComponentRead::BirthSubBodyConfiguration(Op,*Parent,Owner);}
+    SubBodyConfig Configuration(ISpeedComponent* Parent) const
+    {
+        // Observe the one actual completed configuration return, not an assumed
+        // valid path. A thrown access produces no completed-return observation.
+        const SubBodyConfig Result=Speed::NativeKinematics::FComponentRead::BirthSubBodyConfiguration(Op,*Parent,Owner);
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+        auto& Destination=Values();
+        if(Destination.DiagnosticBirthMassConfigReturns==MAX_uint32
+            ||(Result.bValid&&Destination.DiagnosticBirthMassValidConfigReturns==MAX_uint32))
+            throw Speed::Netcode::Prediction::FPrivateNativeStorageUnavailable{};
+        ++Destination.DiagnosticBirthMassConfigReturns;
+        if(Result.bValid)++Destination.DiagnosticBirthMassValidConfigReturns;
+#endif
+        return Result;
+    }
     FMatrix InitialInverse() const {return Speed::NativeKinematics::FBodyRead::InitialInverseTensor(Op,&Owner);}
     void Mass(float Value) const
     {

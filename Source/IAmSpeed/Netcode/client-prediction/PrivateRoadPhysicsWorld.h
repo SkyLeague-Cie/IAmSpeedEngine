@@ -66,10 +66,11 @@ struct FPrivateRoadActorFrame
     uint8 PublicContactPredicateMatches=0;
     // Declared PARTIAL observation only. Missing is UNKNOWN, never zero/full.
 #if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
-    bool BirthMassValueStoresAvailable=false,BirthMassValueStoresMatch=false;
+    bool BirthMassConfigurationAvailable=false,BirthMassConfigurationBypassObserved=false;
     bool BirthMassFacadeDistinct=false;
     uint32 BirthMassBodyCount=0;
     uint64 BirthMassValueReturns=0;
+    uint64 BirthMassConfigReturns=0,BirthMassValidConfigReturns=0;
 #endif
     bool NativePartialValuesAvailable=false;
     CommonState::FSleepValues NativeSleep;

@@ -2241,3 +2241,21 @@ real native parts per actor from the next genuine Step against an independent wo
 These are authored controls until fresh compilation and native execution. Missing
 observations fail; no counter or one-frame equality proves full contact routing,
 hidden state, lifetime, network synchronization or localized K resimulation.
+
+
+### Corrected native configuration-bypass diagnostic (authored, fresh native required)
+
+The sealed native Birth configuration reader returns the actual default-invalid
+configuration. Consequently the shared initializer's valid-config Mass command is
+not reached by that profile. Source136's proposed positive-store expectation was
+inapplicable; build131 failed compilation first and ran no native tests. Preserve
+that failure and do not convert the unexecuted positive branch into coverage.
+
+The corrected diagnostic counts the single actual completed configuration return
+and its actual valid bit independently from actual Mass stores. Each retained body
+must have observed configuration returns, zero valid returns and zero config Mass
+stores to establish CONFIG_BYPASS_OBSERVED. Missing calls fail this control. The
+facade-distinct subsequent independent Step has its own scope. A positive native
+Mass value-command execution remains NOT_PROVED; legacy/custom results cannot
+transfer that proof. No valid bit, physics calculation, restore or lifetime guard
+is changed to make the diagnostic pass.

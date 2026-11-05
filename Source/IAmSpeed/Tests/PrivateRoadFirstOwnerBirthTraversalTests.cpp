@@ -138,16 +138,23 @@ bool FIASPrivateRoadFirstOwnerBirthTraversal::RunTest(const FString&)
         const auto* B=Y->Physics.PresentationBodies.FindByPredicate([&](const auto& V){return V.StableId==Y->Actors[Index].NativeStableId;});
         if(!A||!B)return false;
         const auto& M=X->Actors[Index];const auto& Control=Y->Actors[Index];
-        TestTrue(TEXT("actual native Birth value-store observations available"),M.BirthMassValueStoresAvailable&&Control.BirthMassValueStoresAvailable);
+        TestTrue(TEXT("actual native configuration observations available"),M.BirthMassConfigurationAvailable&&Control.BirthMassConfigurationAvailable);
         TestEqual(TEXT("five real original body parts observed per actor"),M.BirthMassBodyCount,uint32(5));
         TestEqual(TEXT("five independent control body parts observed"),Control.BirthMassBodyCount,uint32(5));
-        TestTrue(TEXT("actual writes returned with exact requested destination bits"),M.BirthMassValueStoresMatch&&Control.BirthMassValueStoresMatch);
-        TestTrue(TEXT("each real body stored at least once and at most the two real initializer traversals"),
-            M.BirthMassValueReturns>=5&&M.BirthMassValueReturns<=10&&Control.BirthMassValueReturns>=5&&Control.BirthMassValueReturns<=10);
+        TestTrue(TEXT("each real body returned an actual invalid configuration and bypassed the config mass store"),
+            M.BirthMassConfigurationBypassObserved&&Control.BirthMassConfigurationBypassObserved);
+        TestTrue(TEXT("actual completed configuration calls are present, not a missing observation"),
+            M.BirthMassConfigReturns>=5&&Control.BirthMassConfigReturns>=5);
+        TestEqual(TEXT("actual own valid configuration returns"),M.BirthMassValidConfigReturns,uint64(0));
+        TestEqual(TEXT("actual control valid configuration returns"),Control.BirthMassValidConfigReturns,uint64(0));
+        TestEqual(TEXT("actual own native config-mass stores bypassed"),M.BirthMassValueReturns,uint64(0));
+        TestEqual(TEXT("actual control native config-mass stores bypassed"),Control.BirthMassValueReturns,uint64(0));
         TestTrue(TEXT("actual facade mass differs while original backing is retained"),M.BirthMassFacadeDistinct);
-        AddInfo(FString::Printf(TEXT("[PrivateRoadBirthMassValueStore] actor=%llu frame=%llu bodies=%u writes=%llu available=%d stored=%d facadeDistinct=%d controlBodies=%u controlWrites=%llu controlAvailable=%d controlStored=%d. Actual typed native Birth value stores and one subsequent real independent Step; diagnostic counters and five retained original bodies per actor only. Four Mass overrides and other reference/lifetime paths remain open."),
-            M.Actor,X->Frame,M.BirthMassBodyCount,M.BirthMassValueReturns,int(M.BirthMassValueStoresAvailable),int(M.BirthMassValueStoresMatch),
-            int(M.BirthMassFacadeDistinct),Control.BirthMassBodyCount,Control.BirthMassValueReturns,int(Control.BirthMassValueStoresAvailable),int(Control.BirthMassValueStoresMatch)));
+        AddInfo(FString::Printf(TEXT("[PrivateRoadBirthMassConfigurationBypass] actor=%llu frame=%llu bodies=%u configReturns=%llu validReturns=%llu writes=%llu available=%d bypassed=%d facadeDistinct=%d controlBodies=%u controlConfigReturns=%llu controlValidReturns=%llu controlWrites=%llu controlAvailable=%d controlBypassed=%d. Actual returned-invalid configuration bypass only; native positive Mass value command remains NOT_PROVED, four Mass overrides and lifetime paths remain open."),
+            M.Actor,X->Frame,M.BirthMassBodyCount,M.BirthMassConfigReturns,M.BirthMassValidConfigReturns,M.BirthMassValueReturns,
+            int(M.BirthMassConfigurationAvailable),int(M.BirthMassConfigurationBypassObserved),int(M.BirthMassFacadeDistinct),
+            Control.BirthMassBodyCount,Control.BirthMassConfigReturns,Control.BirthMassValidConfigReturns,Control.BirthMassValueReturns,
+            int(Control.BirthMassConfigurationAvailable),int(Control.BirthMassConfigurationBypassObserved)));
         const auto& K=A->COMState;const auto& L=B->COMState;
         TestTrue(TEXT("independent canonical six-field COM parity after normal complete constructor"),K.Location==L.Location&&K.Velocity==L.Velocity
             &&K.Acceleration==L.Acceleration&&K.Rotation==L.Rotation&&K.AngularVelocity==L.AngularVelocity&&K.AngularAcceleration==L.AngularAcceleration);

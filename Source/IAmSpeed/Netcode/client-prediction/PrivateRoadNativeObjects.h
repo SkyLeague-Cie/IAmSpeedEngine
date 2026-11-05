@@ -250,6 +250,7 @@ struct FPrivateRoadSolidValues
     // Actual immediate native Birth mass-store return observations only. These
     // never authorize access or certify complete physical/lifetime state.
     uint32 DiagnosticBirthMassValueReturns=0;
+    uint32 DiagnosticBirthMassConfigReturns=0,DiagnosticBirthMassValidConfigReturns=0;
     uint32 DiagnosticBirthMassRequestedBits=0,DiagnosticBirthMassObservedBits=0;
 #endif
 };

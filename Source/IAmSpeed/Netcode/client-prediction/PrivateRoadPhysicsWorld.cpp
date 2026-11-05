@@ -1752,7 +1752,7 @@ bool FPrivateRoadPhysicsWorld::PoisonFacadeMassForValueCommandDiagnostics(FStrin
     std::vector<FTarget> Targets;Targets.reserve(I.Cars.size()*5);
     auto Add=[&](auto* Body,const FPrivateRoadSolidValues& Values)
     {
-        if(!Body||Body->OwnedSolidValues.get()!=&Values||!Values.DiagnosticBirthMassValueReturns
+        if(!Body||Body->OwnedSolidValues.get()!=&Values
             ||!FMath::IsFinite(Values.Mass)||Values.Mass<=0)return false;
         const float Poison=Values.Mass*2.f+1.f;
         if(!FMath::IsFinite(Poison)||Poison<=0||Poison==Values.Mass)return false;
@@ -1760,15 +1760,15 @@ bool FPrivateRoadPhysicsWorld::PoisonFacadeMassForValueCommandDiagnostics(FStrin
     };
     for(const auto& N:I.Cars)
     {
-        if(!N->NativeBoxRoot||N->NativeWheelRoots.size()!=4||N->OriginalWheelBodyBirth.Num()!=4)
+        if(!N->NativeBoxRoot||!std::get<1>(N->NativeBoxRoot->Parts)||N->NativeWheelRoots.size()!=4||N->OriginalWheelBodyBirth.Num()!=4)
             return Refuse(Why,TEXT("facade mass diagnostic missing original body roots"));
         auto* Box=Cast<USpeedBranchBoxSubBody>(N->OriginalHitboxBirth.Get());
-        if(!Add(Box,std::get<1>(N->NativeBoxRoot->Parts)))return Refuse(Why,TEXT("facade mass box identity/value unavailable"));
+        if(!Add(Box,*std::get<1>(N->NativeBoxRoot->Parts)))return Refuse(Why,TEXT("facade mass box identity/value unavailable"));
         for(int32 Index=0;Index<4;++Index)
         {
-            if(!N->NativeWheelRoots[Index])return Refuse(Why,TEXT("facade mass wheel allocation unavailable"));
+            if(!N->NativeWheelRoots[Index]||!std::get<1>(N->NativeWheelRoots[Index]->Parts))return Refuse(Why,TEXT("facade mass wheel allocation unavailable"));
             auto* Wheel=Cast<USpeedBranchWheelSubBody>(N->OriginalWheelBodyBirth[Index].Get());
-            if(!Add(Wheel,std::get<1>(N->NativeWheelRoots[Index]->Parts)))
+            if(!Add(Wheel,*std::get<1>(N->NativeWheelRoots[Index]->Parts)))
                 return Refuse(Why,TEXT("facade mass wheel identity/value unavailable"));
         }
     }
@@ -2625,31 +2625,33 @@ bool FPrivateRoadPhysicsWorld::StepRetained(const std::shared_ptr<FImpl>& Root,c
         Observation.NativeSolidInitializationWitness=N->SolidInitializationWitness;
         // Values copied from the actual retained native parts under this real
         // canonical Step. Availability is separate from every partial-state flag.
-        Observation.BirthMassValueStoresAvailable=bool(N->NativeBoxRoot)&&N->NativeWheelRoots.size()==4
+        Observation.BirthMassConfigurationAvailable=bool(N->NativeBoxRoot)&&bool(std::get<1>(N->NativeBoxRoot->Parts))&&N->NativeWheelRoots.size()==4
             &&N->OriginalWheelBodyBirth.Num()==4;
-        Observation.BirthMassValueStoresMatch=true;Observation.BirthMassFacadeDistinct=true;
+        Observation.BirthMassConfigurationBypassObserved=true;Observation.BirthMassFacadeDistinct=true;
         auto ObserveMassStore=[&](const FPrivateRoadSolidValues& Values,const USolidSubBody* Body)
         {
             if(!Body)return false;
             ++Observation.BirthMassBodyCount;
             Observation.BirthMassValueReturns+=Values.DiagnosticBirthMassValueReturns;
-            Observation.BirthMassValueStoresMatch=Observation.BirthMassValueStoresMatch
-                &&Values.DiagnosticBirthMassValueReturns>=1&&Values.DiagnosticBirthMassValueReturns<=2
-                &&Values.DiagnosticBirthMassRequestedBits==Values.DiagnosticBirthMassObservedBits
-                &&Values.DiagnosticBirthMassObservedBits==std::bit_cast<uint32>(Values.Mass);
+            Observation.BirthMassConfigReturns+=Values.DiagnosticBirthMassConfigReturns;
+            Observation.BirthMassValidConfigReturns+=Values.DiagnosticBirthMassValidConfigReturns;
+            Observation.BirthMassConfigurationBypassObserved=Observation.BirthMassConfigurationBypassObserved
+                &&Values.DiagnosticBirthMassConfigReturns>0
+                &&Values.DiagnosticBirthMassValidConfigReturns==0
+                &&Values.DiagnosticBirthMassValueReturns==0;
             const float FacadeMass=Body->GetMass();
             Observation.BirthMassFacadeDistinct=Observation.BirthMassFacadeDistinct
                 &&FMath::IsFinite(FacadeMass)&&FacadeMass!=Values.Mass;
             return true;
         };
-        if(Observation.BirthMassValueStoresAvailable)
+        if(Observation.BirthMassConfigurationAvailable)
         {
-            if(!ObserveMassStore(std::get<1>(N->NativeBoxRoot->Parts),N->OriginalHitboxBirth.Get()))
-                Observation.BirthMassValueStoresAvailable=false;
-            for(int32 Index=0;Index<4&&Observation.BirthMassValueStoresAvailable;++Index)
-                if(!N->NativeWheelRoots[Index]||!ObserveMassStore(std::get<1>(N->NativeWheelRoots[Index]->Parts),
-                    N->OriginalWheelBodyBirth[Index].Get()))Observation.BirthMassValueStoresAvailable=false;
-            if(Observation.BirthMassBodyCount!=5)Observation.BirthMassValueStoresAvailable=false;
+            if(!ObserveMassStore(*std::get<1>(N->NativeBoxRoot->Parts),N->OriginalHitboxBirth.Get()))
+                Observation.BirthMassConfigurationAvailable=false;
+            for(int32 Index=0;Index<4&&Observation.BirthMassConfigurationAvailable;++Index)
+                if(!N->NativeWheelRoots[Index]||!std::get<1>(N->NativeWheelRoots[Index]->Parts)||!ObserveMassStore(*std::get<1>(N->NativeWheelRoots[Index]->Parts),
+                    N->OriginalWheelBodyBirth[Index].Get()))Observation.BirthMassConfigurationAvailable=false;
+            if(Observation.BirthMassBodyCount!=5)Observation.BirthMassConfigurationAvailable=false;
         }
         if(N->Component->CopyActualCacheDiagnosticValues(Observation.NativeSleep,Observation.NativeQuantization))
             PartialObservation::FNativeWheelCapture::Capture(*N->Component,N->Seed.Actor,N->Seed.Incarnation,
