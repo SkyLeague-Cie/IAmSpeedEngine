@@ -858,6 +858,10 @@ private:
     // actor pose and explicitly registers its original bridge separately.
     class FLegacyOwnerBirthAccess;class FNativeOwnerBirthAccess;class FReferenceOwnerBirthAccess;
     friend class Speed::Netcode::Prediction::FPrivateReferenceOwnerBirth;
+    // Existing component authorization executes the unchanged root validator;
+    // this static hop requires no component lookup or live UObject.
+    static void RequireReferenceInitializerBirthRoot(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,
+        const Speed::Netcode::Prediction::FPrivateReferenceOwnerBirth& Proof);
     void ValidateReferenceInitializerBody(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,
         const Speed::Netcode::Prediction::FPrivateReferenceOwnerBirth& Proof,const USSubBody& Subject,ISpeedComponent* Parent);
 

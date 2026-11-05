@@ -824,10 +824,17 @@ void USpeedWheeledComponent::ResolveFixedCenterOfMassFromConfiguration()
 }
 
 
+void USpeedWheeledComponent::RequireReferenceInitializerBirthRoot(
+    const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,
+    const Speed::Netcode::Prediction::FPrivateReferenceOwnerBirth& Proof)
+{
+    Speed::Netcode::Prediction::FPrivateNativeStorageAccess::RequireBirthRoot(Operation,Proof.ActualRoot);
+}
+
 void Speed::Netcode::Prediction::FPrivateReferenceOwnerBirth::RequireInitializerBody(
     const FPrivateNativeOperation& Operation,const USSubBody& Subject,ISpeedComponent* Parent) const
 {
-    FPrivateNativeStorageAccess::RequireBirthRoot(Operation,ActualRoot);
+    USpeedWheeledComponent::RequireReferenceInitializerBirthRoot(Operation,*this);
     auto* ActualComponent=Component.Get();
     if(!ActualComponent||ActualComponent->HasAnyFlags(RF_BeginDestroyed|RF_FinishDestroyed))
         throw FPrivateNativeStorageUnavailable{};

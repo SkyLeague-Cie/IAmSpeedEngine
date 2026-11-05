@@ -2156,3 +2156,13 @@ complete causal state/source-lifetime, full network initial sync/default-closed
 CanMove with agreed activation frame, authoritative-K restore and localized replay
 with two rendered playable clients on the product dedicated server remain OPEN.
 The current correction still replays from birth. Prior FAIL/UNKNOWN remain intact.
+
+
+Candidate132 repairs the actual compile125 C2248: the closed early witness had
+called the private root validator from a nonfriend class. Its first instruction
+now calls a private static USpeedWheeledComponent helper, an existing authorized
+friend, which executes the same RequireBirthRoot with that witness's ActualRoot.
+This occurs before Component.Get, flags or any UObject dereference. No StorageAccess
+friendship, TLS/public permission, root predicate, numerical program or test
+expectation is relaxed. Compile125 remains FAIL6 and native125 NOT_RUN; candidate132
+requires a distinct compilation and fresh native validation, with no prior PASS.
