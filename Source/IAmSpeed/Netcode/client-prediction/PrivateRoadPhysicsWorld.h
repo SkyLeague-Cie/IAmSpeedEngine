@@ -168,6 +168,21 @@ struct FPrivateRoadBirthInitializationProbe
     // No own graph, simulation, configuration, UObject or native view retained.
     std::vector<std::shared_ptr<const FNativeConfigurationLifetimeTrace>> LifetimeObservers;
 };
+// Copied observations of actual refusal attempts only. No native view/permission escapes.
+struct FPrivateRoadOrdinaryBindingNoOpCase
+{
+    FString Entry,Argument;
+    uint32 OwnCars=0,ForeignCars=0,OriginalVehicles=0,ReferenceVehicles=0,OriginalWheelSims=0,ReferenceWheelSims=0,Configurations=0,ReferenceConfigurations=0;
+    bool Attempted=false,Refused=false,NoActualOperation=false,LiveStorageRoutes=false;
+    bool OwnOriginalUnchanged=false,OwnReferenceUnchanged=false,OwnFacadeUnchanged=false;
+    bool ForeignOriginalUnchanged=false,ForeignReferenceUnchanged=false,ForeignFacadeUnchanged=false;
+    bool ArgumentHolderObserved=false,ArgumentHolderWasNonNull=false,ArgumentHolderUnchanged=false;
+};
+struct FPrivateRoadOrdinaryBindingNoOpProbe
+{
+    std::vector<FPrivateRoadOrdinaryBindingNoOpCase> Cases;
+    bool Returned=false;
+};
 struct FPrivateRoadHitAcceptanceCase
 {
     FString Name;bool LegacyExpected=false,NativeExpected=false,LegacyNativeEqual=false;
@@ -248,6 +263,9 @@ public:
     // Immutable actual C++ return-site values; no source/lifetime exclusion or lease follows.
     std::vector<FNativeConfigurationLifetimeValues> ReadNativeConfigurationLifetimeForDiagnostics() const;
 #if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+    // Fixed actual ordinary entries, invoked with no native operation or storage selection.
+    bool ProbeOrdinaryBindingsWithoutOperationForDiagnostics(FPrivateRoadPhysicsWorld& Foreign,
+        FPrivateRoadOrdinaryBindingNoOpProbe& Result,FString& Why);
     std::shared_ptr<const FPrivateRoadRetirementBindingTrace> CaptureRetirementBindingObserverForDiagnostics();
     bool CloseWithForeignRetirementBindingProbeForDiagnostics(FPrivateRoadPhysicsWorld& Foreign,FPrivateRoadRetirementForeignProbe& Result);
     struct FOriginalWorldReadProbe {bool Admitted=false,SameOriginal=false;};

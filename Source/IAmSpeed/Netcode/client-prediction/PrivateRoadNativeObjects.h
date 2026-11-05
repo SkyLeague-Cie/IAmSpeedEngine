@@ -562,6 +562,7 @@ private:
     float& PublicSolid_ImpactThresholdStorage() override { return ImpactThreshold; }
     const float& PublicSolid_HitDampingStorage() const override { return HitDamping; }
     float& PublicSolid_HitDampingStorage() override { return HitDamping; }
+    void CheckOrdinaryWheelBindingEntry() const override;
     void ApplyPublicChaosWheel(UChaosVehicleWheel* Value) override;
     void ApplyPublicWheelSim(Chaos::FSimpleWheelSim* Value) override;
     void ApplyPublicSuspensionSim(Chaos::FSimpleSuspensionSim* Value) override;
@@ -807,6 +808,7 @@ class IAMSPEED_API USpeedBranchWheeledComponent final : public USpeedWheeledComp
     friend class Speed::NativeKinematics::FComponentRead;
     friend class Speed::NativeKinematics::FComponentWrite;
     std::weak_ptr<Speed::Netcode::Prediction::FPrivateRoadAccess> Access;
+    void CheckOrdinaryComponentBindingEntry() const override;
     bool HasIsolatedNativeConstruction() const;
     bool ReadOriginalLegacyGameModePresence() const override;
 

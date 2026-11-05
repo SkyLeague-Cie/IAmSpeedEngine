@@ -1866,6 +1866,7 @@ float USWheelSubBody::GetRollAngle() const
 
 void USWheelSubBody::SetChaosWheelForPhysics(UChaosVehicleWheel* InChaosWheel)
 {
+    CheckOrdinaryWheelBindingEntry();
     ChaosWheelWheelDomainStorage() = InChaosWheel;
     if (ChaosWheelWheelDomainStorage() && SuspensionMaxRaiseOverrideWheelDomainStorage() >= 0.0f
         && SuspensionMaxDropOverrideWheelDomainStorage() >= 0.0f)
@@ -1881,6 +1882,7 @@ void USWheelSubBody::SetChaosWheel(UChaosVehicleWheel* InChaosWheel)
 
 void USWheelSubBody::SetWheelSimForPhysics(Chaos::FSimpleWheelSim* InPWheel)
 {
+    CheckOrdinaryWheelBindingEntry();
 	PWheelWheelDomainStorage() = InPWheel;
 	if (!PWheelWheelDomainStorage())
 	{
@@ -1896,6 +1898,7 @@ void USWheelSubBody::SetWheelSim(Chaos::FSimpleWheelSim* InPWheel)
 
 void USWheelSubBody::SetSuspensionSimForPhysics(Chaos::FSimpleSuspensionSim* InPSuspension)
 {
+    CheckOrdinaryWheelBindingEntry();
     PSuspensionWheelDomainStorage() = InPSuspension;
 	// Print parameters for debug
 	// UE_LOG(WheelSubBodyLog, Warning, TEXT("WheelSubBody %d Suspension parameters: MaxLength= %.2f, SpringRate= %.2f, CompressionDamping= %.2f, ReboundDamping= %.2f"),

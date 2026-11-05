@@ -43,6 +43,29 @@ bool FIASPrivateRoadWheelSimulationBindings::RunTest(const FString&)
     TestTrue(TEXT("reference both Raise/Drop override predicates retained"),Birth.ReferenceBindingOverridePredicatesMatch);
     TestEqual(TEXT("two actual original bindings compared around their real calls"),Birth.OriginalBindingReferenceComparisons,uint32(2));
     TestTrue(TEXT("both actual original bindings keep reference values unchanged"),Birth.OriginalBindingKeepsReference);
+    P::FPrivateRoadOrdinaryBindingNoOpProbe NoOp;
+    const bool NoOpReturned=Own->ProbeOrdinaryBindingsWithoutOperationForDiagnostics(*Foreign,NoOp,Why);
+    // This caller is outside all actual retained roots/gates/GC guards. Native
+    // diagnostics never invoke test logging/assertion callbacks under their locks.
+    for(const auto& Row:NoOp.Cases)
+    {
+        AddInfo(FString::Printf(TEXT("[PrivateRoadOrdinaryBindingNoOpCase] entry=%s argument=%s attempted=%d refused=%d noActualOperation=%d liveStorageRoutes=%d ownOriginal=%d ownReference=%d ownFacade=%d foreignOriginal=%d foreignReference=%d foreignFacade=%d ownCars=%u foreignCars=%u originalVehicles=%u referenceVehicles=%u originalWheelSims=%u referenceWheelSims=%u configurations=%u referenceConfigurations=%u holderObserved=%d holderWasNonNull=%d holderUnchanged=%d. Actual retained owners and per-entry declared binding/setup footprints only; no snapshot restoration, operation permission or complete lease."),
+            *Row.Entry,*Row.Argument,int(Row.Attempted),int(Row.Refused),int(Row.NoActualOperation),int(Row.LiveStorageRoutes),
+            int(Row.OwnOriginalUnchanged),int(Row.OwnReferenceUnchanged),int(Row.OwnFacadeUnchanged),int(Row.ForeignOriginalUnchanged),int(Row.ForeignReferenceUnchanged),int(Row.ForeignFacadeUnchanged),
+            Row.OwnCars,Row.ForeignCars,Row.OriginalVehicles,Row.ReferenceVehicles,Row.OriginalWheelSims,Row.ReferenceWheelSims,Row.Configurations,Row.ReferenceConfigurations,
+            int(Row.ArgumentHolderObserved),int(Row.ArgumentHolderWasNonNull),int(Row.ArgumentHolderUnchanged)));
+        TestTrue(TEXT("actual ordinary refusal precedes declared own/reference/facade/foreign effects"),Row.Attempted&&Row.Refused&&Row.NoActualOperation&&Row.LiveStorageRoutes
+            &&Row.OwnOriginalUnchanged&&Row.OwnReferenceUnchanged&&Row.OwnFacadeUnchanged&&Row.ForeignOriginalUnchanged&&Row.ForeignReferenceUnchanged&&Row.ForeignFacadeUnchanged);
+        TestEqual(TEXT("actual own car population"),Row.OwnCars,uint32(2));TestEqual(TEXT("actual foreign car population"),Row.ForeignCars,uint32(2));
+        TestEqual(TEXT("actual original vehicle population"),Row.OriginalVehicles,uint32(4));TestEqual(TEXT("actual reference vehicle population"),Row.ReferenceVehicles,uint32(4));
+        TestEqual(TEXT("actual original wheel population"),Row.OriginalWheelSims,uint32(16));TestEqual(TEXT("actual reference wheel population"),Row.ReferenceWheelSims,uint32(16));
+        TestEqual(TEXT("actual original configurations"),Row.Configurations,uint32(16));TestEqual(TEXT("actual reference configurations"),Row.ReferenceConfigurations,uint32(16));
+        if(Row.Entry==TEXT("IAS-setup"))TestTrue(TEXT("actual Setup unique holder identity/Get remains unchanged"),Row.ArgumentHolderObserved&&Row.ArgumentHolderUnchanged
+            &&Row.ArgumentHolderWasNonNull==(Row.Argument!=TEXT("null")));
+        else TestFalse(TEXT("no invented Setup holder observation for other entries"),Row.ArgumentHolderObserved);
+    }
+    TestEqual(TEXT("all seventeen real ordinary entry attempts observed"),NoOp.Cases.size(),size_t(17));
+    if(!TestTrue(*FString::Printf(TEXT("actual NoOp entry diagnostic returned: %s"),*Why),NoOpReturned&&NoOp.Returned))return false;
     std::array<Consumed::FActionPolicy,ActionCount> Actions{};
     Actions[0]={true,true,false,255};Actions[1]={true,true,false,255};Actions[2]={true,true,true,127};
     P::FRemoteRequestHistory HA(Seeds[0].Remote,Actions,256,512),HB(Seeds[1].Remote,Actions,256,512);
@@ -80,7 +103,7 @@ bool FIASPrivateRoadWheelSimulationBindings::RunTest(const FString&)
     AddInfo(FString::Printf(TEXT("[PrivateRoadWheelSimulationBindings] factoryReturns=%u positiveReturns=%u birthRefusals=%u beforeWrite=%d positiveValues=%d overridePredicates=%d actualStepRefusesBirth=%d. Real allocated original binding fixtures and named cleanup only; no full-state/source/lifetime restoration or connected client/server qualification."),
         Birth.WheelBindingFactoryReturns,Birth.WheelBindingPositiveEntryReturns,Birth.WheelBindingGuardRefusals,
         int(Birth.WheelBindingAllRefusalsBeforeWrite),int(Birth.WheelBindingPositiveValuesMatch),int(Birth.WheelBindingOverridePredicatesMatch),int(Step.BirthWheelBindingRefusedDuringStep)));
-    AddInfo(FString::Printf(TEXT("[PrivateRoadReferenceWheelBirth] factoryReturns=%u positiveReturns=%u birthRefusals=%u beforeWrite=%d referenceValuesOriginalUnchanged=%d overridePredicates=%d originalCompared=%u originalKeepsReference=%d actualStepRefusesReferenceBody=%d. Only actual reference Birth and named fixture effects; ordinary ambient binders, arbitrary public targets, retirement population closure, fourMass, source/lifetime/state/K remain OPEN."),
+    AddInfo(FString::Printf(TEXT("[PrivateRoadReferenceWheelBirth] factoryReturns=%u positiveReturns=%u birthRefusals=%u beforeWrite=%d referenceValuesOriginalUnchanged=%d overridePredicates=%d originalCompared=%u originalKeepsReference=%d actualStepRefusesReferenceBody=%d. Only actual reference Birth and named fixture effects; ordinary family controls are scoped separately; arbitrary public targets, parent SetOwner, independent initializer, retirement population closure, fourMass, source/lifetime/state/K remain OPEN."),
         Birth.ReferenceBindingFactoryReturns,Birth.ReferenceBindingPositiveReturns,Birth.ReferenceBindingGuardRefusals,
         int(Birth.ReferenceBindingBeforeWrite),int(Birth.ReferenceBindingValuesMatch),int(Birth.ReferenceBindingOverridePredicatesMatch),Birth.OriginalBindingReferenceComparisons,int(Birth.OriginalBindingKeepsReference),int(Step.ReferenceBindingBodyRefusedDuringStep)));
     return !HasAnyErrors();

@@ -78,6 +78,45 @@ bool FIASLegacyWheelSimulationBindings::RunTest(const FString&)
     Parent->BindWheelSimulationPointers(&Full);
     TestTrue(TEXT("missing config index leaves prior configuration while binding actual sims"),B->GetChaosWheelConfiguration()==CB.Get()
         &&B->GetWheelSim()==&Full.Wheels[1]&&B->GetSuspensionSim()==&Full.Suspension[1]);
+    uint32 ActualNoargReturns=0,ActualSetupReturns=0;
+    SetBodies(false);SetConfigurations(true);Parent->BindWheelSimulationPointers(&Full);
+    Parent->BindWheelSimulationPointers();++ActualNoargReturns; // actual null SkySimulation path
+    TestTrue(TEXT("default ordinary noarg binding returns and clears both sims"),!A->GetWheelSim()&&!B->GetWheelSim()&&!C->GetWheelSim()
+        &&!A->GetSuspensionSim()&&!B->GetSuspensionSim()&&!C->GetSuspensionSim()&&A->GetChaosWheelConfiguration()==CA.Get());
+    // A matching nonempty real recipe avoids the known incomplete-binding
+    // warning. All creation and mutation below belong to this legacy fixture.
+    TStrongObjectPtr<UIASBindingSetupFixtureChaosWheel> SetupA(NewObject<UIASBindingSetupFixtureChaosWheel>(Actor));
+    TStrongObjectPtr<UIASBindingSetupFixtureChaosWheel> SetupB(NewObject<UIASBindingSetupFixtureChaosWheel>(Actor));
+    TStrongObjectPtr<UIASBindingSetupFixtureChaosWheel> SetupC(NewObject<UIASBindingSetupFixtureChaosWheel>(Actor));
+    if(!SetupA.Get()||!SetupB.Get()||!SetupC.Get())return false;
+    SetBodies(false);Parent->WheelsWheeledDomainStorage()={SetupA.Get(),SetupB.Get(),SetupC.Get()};
+    const FVector SetupOffsets[]={FVector(100,-50,-20),FVector(-100,-50,-20),FVector(0,50,-20)};
+    Parent->WheelSetupsWheeledDomainStorage().SetNum(3);
+    for(int32 Index=0;Index<3;++Index)
+    {
+        auto& Setup=Parent->WheelSetupsWheeledDomainStorage()[Index];
+        Setup.WheelClass=UIASBindingSetupFixtureChaosWheel::StaticClass();Setup.BoneName=NAME_None;Setup.AdditionalOffset=SetupOffsets[Index];
+    }
+    A->SetLocalOffset(SetupOffsets[0]);B->SetLocalOffset(SetupOffsets[1]);C->SetLocalOffset(SetupOffsets[2]);
+    Parent->Mass=1200.f;Parent->PhysMassWheeledDomainStorage()=1200.f;
+    // REAL IAS creation -> UE creation supplies its real output container and
+    // native allocation. No fake holder or output pointer is installed.
+    auto ActualSetupVehicle=Parent->CreatePhysicsVehicle();
+    if(!TestTrue(TEXT("real legacy vehicle/output creation returned"),bool(ActualSetupVehicle)))return false;
+    Parent->SetupVehicle(ActualSetupVehicle);++ActualSetupReturns;
+    TestTrue(TEXT("legacy/default IAS Setup executes real Super with matching nonempty arrays"),ActualSetupVehicle->Wheels.Num()==3
+        &&ActualSetupVehicle->Suspension.Num()==3&&ActualSetupVehicle->Aerodynamics.Num()==1&&ActualSetupVehicle->Steering.Num()==1);
+    TestTrue(TEXT("actual IAS Setup completed all three ordinary bindings"),A->GetWheelSim()==&ActualSetupVehicle->Wheels[0]
+        &&B->GetWheelSim()==&ActualSetupVehicle->Wheels[1]&&C->GetWheelSim()==&ActualSetupVehicle->Wheels[2]
+        &&A->GetSuspensionSim()==&ActualSetupVehicle->Suspension[0]&&B->GetSuspensionSim()==&ActualSetupVehicle->Suspension[1]
+        &&C->GetSuspensionSim()==&ActualSetupVehicle->Suspension[2]&&A->GetChaosWheelConfiguration()==SetupA.Get()
+        &&B->GetChaosWheelConfiguration()==SetupB.Get()&&C->GetChaosWheelConfiguration()==SetupC.Get()
+        &&A->Idx()==0&&B->Idx()==1&&C->Idx()==2&&ActualSetupVehicle->Wheels[0].MassPerWheel==27.f
+        &&ActualSetupVehicle->Wheels[1].MassPerWheel==31.f&&ActualSetupVehicle->Wheels[2].MassPerWheel==39.f);
+    AddInfo(FString::Printf(TEXT("[LegacyOrdinaryBindingEntryPositives] noargReturns=%u setupReturns=%u setupWheels=%d setupSuspensions=%d setupAerodynamics=%d setupSteering=%d nullSetupValid=0. Real default hook and actual IAS->UE creation/Setup/matching three-wheel bindings; not full source/lifetime or registered Chaos lifecycle qualification."),
+        ActualNoargReturns,ActualSetupReturns,ActualSetupVehicle->Wheels.Num(),ActualSetupVehicle->Suspension.Num(),ActualSetupVehicle->Aerodynamics.Num(),ActualSetupVehicle->Steering.Num()));
+    Parent->ClearWheelSimulationPointers(); // actual allocation is STILL live
+    for(auto* Body:{A.Get(),B.Get(),C.Get()})Body->SetChaosWheel(nullptr);
     TestFalse(TEXT("legacy fixture remains unregistered"),Parent->IsRegistered());
     AddInfo(TEXT("[LegacyWheelSimulationBindings] scenarios=5 complete=1 clearKeepsConfig=1 nullVehicleClear=1 partialMin3NullBodyTail=1 missingConfigurationIndex=1 meaningfulMassesAndBothOverridePredicates=1. Real authored legacy fixtures only; not native lifetime/state or network qualification."));
     return !HasAnyErrors();

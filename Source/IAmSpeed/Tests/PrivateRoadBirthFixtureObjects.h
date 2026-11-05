@@ -6,6 +6,7 @@
 #include "IAmSpeed/SubBodies/Solid/SWheelSubBody.h"
 #include "IAmSpeed/SubBodies/Configs/SubBodyConfig.h"
 #include "IAmSpeed/SubBodies/Configs/WheelSubBodyConfig.h"
+#include "ChaosVehicleWheel.h"
 #include <memory>
 #include <functional>
 #include "PrivateRoadBirthFixtureObjects.generated.h"
@@ -30,6 +31,15 @@ struct FIASBirthFixtureTrace
         Matrix.M[0][0]=double(Inverse.Num()+11); // distinguish actual virtual calls
         Inverse.Add({Mass,Shape,Matrix});return Matrix;
     }
+};
+// Actual legacy-only configuration CDO, separate from the native sealed graph
+// and from the globally shared UChaosVehicleWheel default configuration cache.
+UCLASS(Transient,NotBlueprintable)
+class UIASBindingSetupFixtureChaosWheel final : public UChaosVehicleWheel
+{
+    GENERATED_BODY()
+public:
+    explicit UIASBindingSetupFixtureChaosWheel(const FObjectInitializer& Initializer=FObjectInitializer::Get()):Super(Initializer){}
 };
 UCLASS(Transient,NotBlueprintable)
 class UIASBirthFixtureComponent final : public USpeedWheeledComponent

@@ -59,6 +59,8 @@ UCLASS()
 class IAMSPEED_API USpeedWheeledComponent : public UChaosWheeledVehicleMovementComponent, public ISpeedWheeledComponent
 {
 	GENERATED_BODY()
+    // Ordinary binding family only; no operation, source/lifetime or restoration permission.
+    virtual void CheckOrdinaryComponentBindingEntry() const {}
     virtual const FVector& PublicPhysCOMView() const { return BasePhysicsStateStorage().Kinematic.Location; }
     virtual const FVector& PublicPhysLocalCOMView() const { return CenterOfMassWheeledDomainStorage(); }
     friend class USpeedBranchWheeledComponent;

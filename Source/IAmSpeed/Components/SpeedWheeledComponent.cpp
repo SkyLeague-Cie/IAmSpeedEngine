@@ -1142,6 +1142,7 @@ bool USpeedWheeledComponent::ValidateSimulationBindings(FString& OutReason) cons
 
 void USpeedWheeledComponent::SetupVehicle(TUniquePtr<Chaos::FSimpleWheeledVehicle>& PVehicle)
 {
+    CheckOrdinaryComponentBindingEntry();
 	Super::SetupVehicle(PVehicle);
 	SetupSpeedSuspension(PVehicle);
 	// This is the first lifecycle point where the newly constructed vehicle
@@ -1153,6 +1154,7 @@ void USpeedWheeledComponent::SetupVehicle(TUniquePtr<Chaos::FSimpleWheeledVehicl
 
 void USpeedWheeledComponent::BindWheelSimulationPointers()
 {
+    CheckOrdinaryComponentBindingEntry();
 	BindWheelSimulationPointers(
 		SkySimulationWheeledDomainStorage() && SkySimulationWheeledDomainStorage()->PVehicle
 			? SkySimulationWheeledDomainStorage()->PVehicle.Get()
@@ -1627,6 +1629,7 @@ void USpeedWheeledComponent::BindWheelSimulationPointersBody(TAccess& Storage,Ch
 void USpeedWheeledComponent::BindWheelSimulationPointers(
 	Chaos::FSimpleWheeledVehicle* PVehicle)
 {
+    CheckOrdinaryComponentBindingEntry();
     FLegacyWheelBindingAccess Storage(*this);
     BindWheelSimulationPointersBody(Storage,PVehicle);
 }
@@ -1823,6 +1826,7 @@ bool USpeedWheeledComponent::ProbeNativeWheelBindingStepRefusalForDiagnostics(
 
 void USpeedWheeledComponent::ClearWheelSimulationPointers()
 {
+    CheckOrdinaryComponentBindingEntry();
 	for (USWheelSubBody* WheelSubBody : ReadWheelSubBodiesForPhysics())
 	{
 		if (!WheelSubBody)

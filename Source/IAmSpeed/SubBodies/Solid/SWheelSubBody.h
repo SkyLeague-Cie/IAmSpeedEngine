@@ -39,6 +39,8 @@ class IAMSPEED_API USWheelSubBody : public USphereSubBody
     GENERATED_UCLASS_BODY()
 private:
     friend class Speed::NativeKinematics::FWheelBindingAccess;
+    // Legacy/default hook is empty. A sealed private owner refuses ordinary physical binding entries.
+    virtual void CheckOrdinaryWheelBindingEntry() const {}
     void SetChaosWheelForPhysics(UChaosVehicleWheel* InChaosWheel);
     void SetWheelSimForPhysics(Chaos::FSimpleWheelSim* InPWheel);
     void SetSuspensionSimForPhysics(Chaos::FSimpleSuspensionSim* InPSuspension);
