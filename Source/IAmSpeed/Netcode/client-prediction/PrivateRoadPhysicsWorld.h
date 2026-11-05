@@ -128,6 +128,10 @@ struct FPrivateRoadBirthInitializationProbe
     uint32 WheelBindingFactoryReturns=0,WheelBindingGuardRefusals=0,WheelBindingPositiveEntryReturns=0;
     bool WheelBindingProbeReturned=false,WheelBindingAllRefusalsBeforeWrite=false;
     bool WheelBindingPositiveValuesMatch=false,WheelBindingOverridePredicatesMatch=false;
+    uint32 ReferenceBindingFactoryReturns=0,ReferenceBindingGuardRefusals=0,ReferenceBindingPositiveReturns=0;
+    bool ReferenceBindingProbeReturned=false,ReferenceBindingBeforeWrite=false;
+    bool ReferenceBindingValuesMatch=false,ReferenceBindingOverridePredicatesMatch=false;
+    uint32 OriginalBindingReferenceComparisons=0;bool OriginalBindingKeepsReference=false;
 
     bool ActualBirthOperation=false,ForeignBodyRefused=false,ForeignParentRefused=false,ForeignInverseRefused=false;
     bool StepHitRefusedInBirth=false,OwnBodyUnchangedAfterRefusals=false;
@@ -148,6 +152,7 @@ struct FPrivateRoadHitAcceptanceProbe
     bool BaseBehaviorDistinguished=false,AllRefusalsBeforeWrite=false,ActualStepOperation=false;
     bool BirthInitializationRefusedDuringStep=false;
     bool BirthWheelBindingRefusedDuringStep=false;
+    bool ReferenceBindingBodyRefusedDuringStep=false;
     bool BirthOwnerTraversalRefusedDuringStep=false;
     uint32 MassBoundaryRefusals=0,MassLegacyResetReturns=0,MassNativeResetReturns=0,MassNoHitResolveReturns=0;
     bool MassRefusalsBeforeWrite=false,MassResetLegacyNativeEqual=false,MassResetDistinctBoxWheel=false,MassNoHitUnchanged=false;

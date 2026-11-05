@@ -18,7 +18,7 @@ namespace Speed::Replay { class FFieldWriter; }
 
 #include "IAmSpeed/World/Simulation/NativeEpochStorageRoute.h"
 #include "SpeedWheeledComponent.generated.h"
-namespace Speed::Netcode::Prediction {class FPrivateRoadPhysicsWorld;class FPrivateNativeOperation;}
+namespace Speed::Netcode::Prediction {class FPrivateRoadPhysicsWorld;class FPrivateNativeOperation;class FPrivateReferenceWheelBindingBirth;}
 namespace Speed::NativeKinematics {class FComponentRead;}
 class USpeedBranchWheeledComponent;
 
@@ -898,8 +898,13 @@ private:
 	// across physics-state teardown/recreation.
 	void BindWheelSimulationPointers();
 	void BindWheelSimulationPointers(Chaos::FSimpleWheeledVehicle* PVehicle);
-    class FLegacyWheelBindingAccess;class FNativeWheelBindingAccess;
+    class FLegacyWheelBindingAccess;class FNativeWheelBindingAccess;class FReferenceWheelBindingAccess;
     template<class TAccess> void BindWheelSimulationPointersBody(TAccess& Storage,Chaos::FSimpleWheeledVehicle* PVehicle);
+    void BindReferenceWheelSimulationPointersBirth(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,
+        const Speed::Netcode::Prediction::FPrivateReferenceWheelBindingBirth& Proof,
+        Chaos::FSimpleWheeledVehicle* RequestedVehicle,
+        TConstArrayView<TWeakObjectPtr<USWheelSubBody>> RequestedBodies,
+        TConstArrayView<TWeakObjectPtr<UChaosVehicleWheel>> RequestedConfigurations);
     void BindNativeWheelSimulationPointersBirth(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,
         Chaos::FSimpleWheeledVehicle* OriginalAllocation,
         TConstArrayView<TWeakObjectPtr<USWheelSubBody>> ActualBodyBirths,
@@ -912,6 +917,12 @@ private:
         uint32 Refusals=0,PositiveEntryReturns=0;
         bool AllRefusalsBeforeWrite=false,PositiveValuesMatch=false,OverridePredicatesMatch=false;
     };
+    bool ProbeReferenceWheelBindingsBirthForDiagnostics(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,
+        const Speed::Netcode::Prediction::FPrivateReferenceWheelBindingBirth& Proof,
+        USpeedWheeledComponent& ForeignComponent,USWheelSubBody* ForeignBody,
+        Chaos::FSimpleWheeledVehicle* ForeignVehicle,Chaos::FSimpleWheelSim* ForeignWheel,
+        Chaos::FSimpleSuspensionSim* ForeignSuspension,UChaosVehicleWheel* ForeignConfiguration,
+        FNativeWheelBindingDiagnostics& Out);
     bool ProbeNativeWheelBindingsBirthForDiagnostics(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,
         Chaos::FSimpleWheeledVehicle* OriginalAllocation,
         TConstArrayView<TWeakObjectPtr<USWheelSubBody>> BodyBirths,

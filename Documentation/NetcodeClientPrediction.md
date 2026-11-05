@@ -1977,3 +1977,44 @@ still copies full values and remains quadratic in finite first-forward frames.
 Native tests, real serialized size/time, network and egress remain NOT_RUN on124.
 No complete physical/configuration state, lease, activation or localized K
 restoration follows from equality of these declared slots.
+
+
+### Reference wheel binding Birth proof (candidate125 draft)
+
+The private factory retains the actual reference allocation, simulation and
+wheel/suspension array identities before Init transfers unique ownership. A
+private stack witness ties these observations to the actual retained root,
+component/actor and real body/configuration births. The reference binding entry
+checks that the transferred allocation is still owned by the reference cells,
+not the original backend of the same component, and validates the entire roster
+before any index, pointer, pointed configuration or simulator/mass write. The
+existing shared binding program runs in its existing order through fixed facade
+hooks after those checks. Generic ordinary/legacy entries remain compatible.
+
+This is a draft with native tests NOT_RUN and exact review pending. It does not
+close the four ordinary Mass aliases, public Chaos-qualified SetupVehicle,
+remaining retirement population evidence, complete state/source/lifetime,
+initial network CanMove synchronization, authoritative K restore or localized
+resimulation. Earlier124/118 native results do not qualify this candidate.
+
+
+Candidate125 adds draft real-factory diagnostics for reference Birth: sixteen
+foreign/mixed-backend/late-roster/target/index/parent refusals with distinct named
+fixture sentinels, a nondefault reference binding positive, and an actual Step
+rejection at the reference body Birth preflight. These tests are NOT_RUN until
+the exact candidate is applied, built and executed under its own admission.
+The scoped proof expires at Birth; no absent/noOp or foreign live Birth-operation
+native coverage is fabricated. Retirement clears and original root disconnection
+remain separate existing paths with their population evidence still OPEN.
+
+Candidate125 R03 additionally compares actual reference binding values before
+and after each real original binding call (including its existing diagnostics),
+and refuses reference proof if either element allocation aliases the original
+backend. Both-direction isolation tests remain NOT_RUN on this new candidate.
+
+Candidate125 R04 corrects the positive reference control: before/after binding
+it also compares the named original solid index/mass, all three original wheel
+binding pointers, original simulator mass and original configuration travel,
+plus the named foreign target mass/travel. This can expose an accidental double
+write even when reference results are correct. No whole hidden-state claim.
+The earlier incomplete positive footprint is retained in draft R02/R03 history.

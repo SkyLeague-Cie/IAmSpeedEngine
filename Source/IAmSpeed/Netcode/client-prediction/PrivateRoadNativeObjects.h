@@ -42,6 +42,45 @@ public:
     FPrivateRoadBirthIdentities& operator=(FPrivateRoadBirthIdentities&&)=delete;
 };
 
+// Birth-call-scoped witness of the real REFERENCE allocation made by the factory.
+// Private construction only; not an Op issuer, source/lifetime lease or snapshot.
+namespace RetirementDraft {struct FVehicleConfiguration;}
+class FPrivateReferenceWheelBindingBirth final
+{
+    friend class FPrivateRoadPhysicsWorld;
+    friend class ::USpeedWheeledComponent;
+    const std::shared_ptr<void> ActualRoot;
+    const TWeakObjectPtr<AActor> Actor;
+    const TWeakObjectPtr<USpeedWheeledComponent> Component;
+    Chaos::FSimpleWheeledVehicle* const Vehicle;
+    const void* const Simulation;
+    const Chaos::FSimpleWheelSim* const WheelBase;
+    const Chaos::FSimpleSuspensionSim* const SuspensionBase;
+    const int32 WheelCount,SuspensionCount;
+    const std::shared_ptr<RetirementDraft::FVehicleConfiguration> Configuration;
+    const TArray<TWeakObjectPtr<USWheelSubBody>> Bodies;
+    const TArray<TWeakObjectPtr<UChaosVehicleWheel>> Configurations;
+    FPrivateReferenceWheelBindingBirth(const std::shared_ptr<void>& Root,
+        const TWeakObjectPtr<AActor>& ActualActor,
+        const TWeakObjectPtr<USpeedWheeledComponent>& ActualComponent,
+        Chaos::FSimpleWheeledVehicle* AllocationBeforeInit,const void* SimulationBeforeInit,
+        const Chaos::FSimpleWheelSim* WheelsBeforeInit,int32 NumWheelsBeforeInit,
+        const Chaos::FSimpleSuspensionSim* SuspensionBeforeInit,int32 NumSuspensionBeforeInit,
+        const std::shared_ptr<RetirementDraft::FVehicleConfiguration>& ActualConfiguration,
+        const TArray<TWeakObjectPtr<USWheelSubBody>>& ActualBodyBirths,
+        const TArray<TWeakObjectPtr<UChaosVehicleWheel>>& ActualConfigurationBirths)
+      :ActualRoot(Root),Actor(ActualActor),Component(ActualComponent),Vehicle(AllocationBeforeInit),
+       Simulation(SimulationBeforeInit),WheelBase(WheelsBeforeInit),SuspensionBase(SuspensionBeforeInit),
+       WheelCount(NumWheelsBeforeInit),SuspensionCount(NumSuspensionBeforeInit),
+       Configuration(ActualConfiguration),Bodies(ActualBodyBirths),Configurations(ActualConfigurationBirths) {}
+public:
+    ~FPrivateReferenceWheelBindingBirth()=default;
+    FPrivateReferenceWheelBindingBirth(const FPrivateReferenceWheelBindingBirth&)=delete;
+    FPrivateReferenceWheelBindingBirth& operator=(const FPrivateReferenceWheelBindingBirth&)=delete;
+    FPrivateReferenceWheelBindingBirth(FPrivateReferenceWheelBindingBirth&&)=delete;
+    FPrivateReferenceWheelBindingBirth& operator=(FPrivateReferenceWheelBindingBirth&&)=delete;
+};
+
 // Seven declared value blocks only. Shape configuration, parent/registry,
 // ignored/external lists, solid/wheel/suspension extra state remain separate.
 struct FPrivateRoadSubBodyValues
@@ -688,6 +727,18 @@ private:
 
 public:
     explicit USpeedBranchWheelSubBody(const FObjectInitializer& Initializer=FObjectInitializer::Get());
+    // Read-only proof of this actual original-map subject's REFERENCE parent.
+    // No view/issuer; Birth phase and actual owner map required before reads.
+    void ValidateReferenceWheelBindingBirth(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,
+        const ISpeedComponent* Parent,const ISpeedWheeledComponent* WheeledParent) const;
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+    struct FReferenceBindingFixtureValues
+    {float Mass,Raise,Drop;ISpeedComponent* Parent;ISpeedWheeledComponent* WheelParent;};
+    FReferenceBindingFixtureValues ReadReferenceBindingFixtureForDiagnostics(
+        const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation) const;
+    void WriteReferenceBindingFixtureForDiagnostics(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,
+        const FReferenceBindingFixtureValues& Values);
+#endif
 
 private:
     void InitializeNative(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,ISpeedComponent* Parent) override;

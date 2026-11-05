@@ -33,6 +33,15 @@ bool FIASPrivateRoadWheelSimulationBindings::RunTest(const FString&)
     TestTrue(TEXT("all named actual target/config/simulator values unchanged by refusals"),Birth.WheelBindingAllRefusalsBeforeWrite);
     TestTrue(TEXT("positive real mass/index/pointer values match"),Birth.WheelBindingPositiveValuesMatch);
     TestTrue(TEXT("both Raise/Drop override predicates retained"),Birth.WheelBindingOverridePredicatesMatch);
+    TestEqual(TEXT("two actual reference factory entries returned"),Birth.ReferenceBindingFactoryReturns,uint32(2));
+    TestEqual(TEXT("sixteen actual reference foreign/mixed/late guards refused"),Birth.ReferenceBindingGuardRefusals,uint32(16));
+    TestEqual(TEXT("one actual nondefault reference entry returned"),Birth.ReferenceBindingPositiveReturns,uint32(1));
+    TestTrue(TEXT("actual reference binding probe returned"),Birth.ReferenceBindingProbeReturned);
+    TestTrue(TEXT("reference guards refuse before index/pointer/config/target mass writes"),Birth.ReferenceBindingBeforeWrite);
+    TestTrue(TEXT("reference values match and actual original parts/simulator remain unchanged"),Birth.ReferenceBindingValuesMatch);
+    TestTrue(TEXT("reference both Raise/Drop override predicates retained"),Birth.ReferenceBindingOverridePredicatesMatch);
+    TestEqual(TEXT("two actual original bindings compared around their real calls"),Birth.OriginalBindingReferenceComparisons,uint32(2));
+    TestTrue(TEXT("both actual original bindings keep reference values unchanged"),Birth.OriginalBindingKeepsReference);
     std::array<Consumed::FActionPolicy,ActionCount> Actions{};
     Actions[0]={true,true,false,255};Actions[1]={true,true,false,255};Actions[2]={true,true,true,127};
     P::FRemoteRequestHistory HA(Seeds[0].Remote,Actions,256,512),HB(Seeds[1].Remote,Actions,256,512);
@@ -48,6 +57,7 @@ bool FIASPrivateRoadWheelSimulationBindings::RunTest(const FString&)
     P::FPrivateRoadHitAcceptanceProbe Step;
     if(!TestTrue(*FString::Printf(TEXT("real Step phase entry: %s"),*Why),Own->StepWithHitAcceptanceProbeForDiagnostics(Requests,false,*Foreign,Step,Why)))return false;
     TestTrue(TEXT("actual Step refuses Birth-only binding before target writes"),Step.BirthWheelBindingRefusedDuringStep);
+    TestTrue(TEXT("actual Step refuses reference body Birth preflight before writes"),Step.ReferenceBindingBodyRefusedDuringStep);
     if(!TestTrue(TEXT("independent reference still advances"),Foreign->Step(Requests,false,Why)))return false;
     const auto A=Own->ReadLatest(),B=Foreign->ReadLatest();
     if(!TestTrue(TEXT("real frame-zero publications"),A&&B&&A->Frame==0&&B->Frame==0&&A->Actors.size()==2&&B->Actors.size()==2))return false;
@@ -64,6 +74,9 @@ bool FIASPrivateRoadWheelSimulationBindings::RunTest(const FString&)
     AddInfo(FString::Printf(TEXT("[PrivateRoadWheelSimulationBindings] factoryReturns=%u positiveReturns=%u birthRefusals=%u beforeWrite=%d positiveValues=%d overridePredicates=%d actualStepRefusesBirth=%d. Real allocated original binding fixtures and named cleanup only; no full-state/source/lifetime restoration or connected client/server qualification."),
         Birth.WheelBindingFactoryReturns,Birth.WheelBindingPositiveEntryReturns,Birth.WheelBindingGuardRefusals,
         int(Birth.WheelBindingAllRefusalsBeforeWrite),int(Birth.WheelBindingPositiveValuesMatch),int(Birth.WheelBindingOverridePredicatesMatch),int(Step.BirthWheelBindingRefusedDuringStep)));
+    AddInfo(FString::Printf(TEXT("[PrivateRoadReferenceWheelBirth] factoryReturns=%u positiveReturns=%u birthRefusals=%u beforeWrite=%d referenceValuesOriginalUnchanged=%d overridePredicates=%d originalCompared=%u originalKeepsReference=%d actualStepRefusesReferenceBody=%d. Only actual reference Birth and named fixture effects; ordinary ambient binders, arbitrary public targets, retirement population closure, fourMass, source/lifetime/state/K remain OPEN."),
+        Birth.ReferenceBindingFactoryReturns,Birth.ReferenceBindingPositiveReturns,Birth.ReferenceBindingGuardRefusals,
+        int(Birth.ReferenceBindingBeforeWrite),int(Birth.ReferenceBindingValuesMatch),int(Birth.ReferenceBindingOverridePredicatesMatch),Birth.OriginalBindingReferenceComparisons,int(Birth.OriginalBindingKeepsReference),int(Step.ReferenceBindingBodyRefusedDuringStep)));
     return !HasAnyErrors();
 }
 #endif

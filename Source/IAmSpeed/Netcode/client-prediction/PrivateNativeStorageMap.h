@@ -121,6 +121,13 @@ class FPrivateNativeStorageAccess final
         if(Operation.Kind!=FPrivateNativeOperation::EKind::Birth
             ||!Operation.HasExactRootAndGate(Operation.Identity))throw FPrivateNativeStorageUnavailable{};
     }
+    static void RequireBirthRoot(const FPrivateNativeOperation& Operation,const std::shared_ptr<void>& ActualRoot)
+    {
+        RequireBirth(Operation);
+        if(!ActualRoot||Operation.Root.get()!=ActualRoot.get()
+            ||Operation.Root.owner_before(ActualRoot)||ActualRoot.owner_before(Operation.Root))
+            throw FPrivateNativeStorageUnavailable{};
+    }
     static void RequireStep(const FPrivateNativeOperation& Operation)
     {
         if(Operation.Kind!=FPrivateNativeOperation::EKind::Step
