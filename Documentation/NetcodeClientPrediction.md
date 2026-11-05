@@ -2223,3 +2223,21 @@ UObjects through twenty original and twenty reference body domains; this differs
 from the ten-body scope of typed early initializer refusals. Pending-list copies
 and named membership are partial observations. PublishedStableId is copied only
 from original component storage; no facade back-reference equality is inferred.
+
+
+### Immediate solid Birth mass value command (authored, fresh native required)
+
+The shared solid initializer passes its copied configuration mass into an immediate
+value store. Legacy/reference assignment keeps its original virtual destination and
+order; native assignment validates the same actual operation/part and consumes the
+destination inside the call. No mass reference returns to the shared initializer.
+Other property references, the four ambient Mass overrides and complete source/lifetime
+exclusion remain open. No restore guard or physical arithmetic/tolerance is relaxed.
+
+Development diagnostics count only actual completed native Birth mass stores and copy
+the requested/stored scalar bits. The real first-owner test poisons actual private
+facade masses at a quiescent entry, retains unchanged original backing, and reads five
+real native parts per actor from the next genuine Step against an independent world.
+These are authored controls until fresh compilation and native execution. Missing
+observations fail; no counter or one-frame equality proves full contact routing,
+hidden state, lifetime, network synchronization or localized K resimulation.

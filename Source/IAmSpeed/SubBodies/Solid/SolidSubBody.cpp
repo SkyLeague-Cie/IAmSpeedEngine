@@ -2,6 +2,9 @@
 
 
 #include "SolidSubBody.h"
+#include <bit>
+#include <type_traits>
+#include <utility>
 #include "IAmSpeed/Netcode/client-prediction/PrivateRoadNativeObjects.h"
 #include "IAmSpeed/Netcode/client-prediction/PrivateNativeStorageMap.h"
 #include "IAmSpeed/World/Simulation/Internal/SolidPropertiesAccess.h"
@@ -58,7 +61,7 @@ public:
     void Base(ISpeedComponent* Parent) const {Owner.USSubBody::Initialize(Parent);}
     SubBodyConfig Configuration(ISpeedComponent* Parent) const {return Parent->GetSubBodyConfig(Owner);}
     FMatrix InitialInverse() const {return Owner.InitInvInertiaTensor();}
-    decltype(auto) Mass() const {return Owner.MassSolidStorage();}
+    void Mass(float Value) const {Owner.MassSolidStorage()=Value;}
     decltype(auto) Restitution() const {return Owner.RestitutionSolidStorage();}
     decltype(auto) StaticFriction() const {return Owner.StaticFrictionSolidStorage();}
     decltype(auto) DynamicFriction() const {return Owner.DynamicFrictionSolidStorage();}
@@ -79,7 +82,25 @@ public:
     void Base(ISpeedComponent* Parent) const {Owner.InitializeNativeBase(Op,Parent);}
     SubBodyConfig Configuration(ISpeedComponent* Parent) const {return Speed::NativeKinematics::FComponentRead::BirthSubBodyConfiguration(Op,*Parent,Owner);}
     FMatrix InitialInverse() const {return Speed::NativeKinematics::FBodyRead::InitialInverseTensor(Op,&Owner);}
-    decltype(auto) Mass() const {return (Values().Mass);}
+    void Mass(float Value) const
+    {
+        // A value command consumes the real destination inside this call. No
+        // canonical mass reference is returned across the next callback check.
+        auto& Destination=Values();
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+        if(Destination.DiagnosticBirthMassValueReturns==MAX_uint32)
+            throw Speed::Netcode::Prediction::FPrivateNativeStorageUnavailable{};
+#endif
+        Destination.Mass=Value;
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+        const uint32 Requested=std::bit_cast<uint32>(Value);
+        const uint32 Observed=std::bit_cast<uint32>(Destination.Mass);
+        if(Requested!=Observed)throw Speed::Netcode::Prediction::FPrivateNativeStorageUnavailable{};
+        ++Destination.DiagnosticBirthMassValueReturns;
+        Destination.DiagnosticBirthMassRequestedBits=Requested;
+        Destination.DiagnosticBirthMassObservedBits=Observed;
+#endif
+    }
     decltype(auto) Restitution() const {return (Values().Restitution);}
     decltype(auto) StaticFriction() const {return (Values().StaticFriction);}
     decltype(auto) DynamicFriction() const {return (Values().DynamicFriction);}
@@ -122,7 +143,7 @@ void USolidSubBody::InitializeBirthBody(TAccess& Storage,ISpeedComponent* InPare
 		Storage.CheckCallbackBoundary();
         if (Config.bValid)
         {
-            Storage.Mass() = Config.Mass;
+            Storage.Mass(Config.Mass);
             Storage.CheckCallbackBoundary();
             Storage.Restitution() = Config.Restitution;
             Storage.CheckCallbackBoundary();
@@ -149,7 +170,10 @@ void USolidSubBody::InitializeBirthBody(TAccess& Storage,ISpeedComponent* InPare
 void USolidSubBody::Initialize(ISpeedComponent* InParentComponent)
 {CheckOrdinaryBodyInitializationEntry();FLegacyBirthInitializeAccess Storage(*this);InitializeBirthBody(Storage,InParentComponent);}
 void USolidSubBody::InitializeNativeSolid(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,ISpeedComponent* Parent)
-{FNativeBirthInitializeAccess Storage(*this,Operation);InitializeBirthBody(Storage,Parent);}
+{
+    static_assert(std::is_void_v<decltype(std::declval<const FNativeBirthInitializeAccess&>().Mass(0.0f))>);
+    FNativeBirthInitializeAccess Storage(*this,Operation);InitializeBirthBody(Storage,Parent);
+}
 void USolidSubBody::InitializeReferenceSolid(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,
     const Speed::Netcode::Prediction::FPrivateReferenceOwnerBirth& Proof,ISpeedComponent* Parent)
 {FReferenceBirthInitializeAccess Storage(*this,Operation,Proof,Parent);InitializeBirthBody(Storage,Parent);}

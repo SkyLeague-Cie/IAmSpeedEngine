@@ -65,6 +65,12 @@ struct FPrivateRoadActorFrame
     uint8 PublicContactPredicateChecks=0;
     uint8 PublicContactPredicateMatches=0;
     // Declared PARTIAL observation only. Missing is UNKNOWN, never zero/full.
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+    bool BirthMassValueStoresAvailable=false,BirthMassValueStoresMatch=false;
+    bool BirthMassFacadeDistinct=false;
+    uint32 BirthMassBodyCount=0;
+    uint64 BirthMassValueReturns=0;
+#endif
     bool NativePartialValuesAvailable=false;
     CommonState::FSleepValues NativeSleep;
     CommonState::FQuantizationValues NativeQuantization;
@@ -277,6 +283,9 @@ public:
     // Fixed actual ordinary entries, invoked with no native operation or storage selection.
     bool ProbeOrdinaryInitializersWithoutOperationForDiagnostics(FPrivateRoadPhysicsWorld& Foreign,
         FPrivateRoadOrdinaryBindingNoOpProbe& Result,FString& Why);
+    // Mutates only actual facade mass values at a quiescent diagnostic entry;
+    // compares the same canonical backing before/after, never restores it.
+    bool PoisonFacadeMassForValueCommandDiagnostics(FString& Why);
     bool ProbeOrdinaryParentInitializationWithoutOperationForDiagnostics(FPrivateRoadPhysicsWorld& Foreign,
         FPrivateRoadOrdinaryBindingNoOpProbe& Result,FString& Why);
     bool ProbeOrdinaryBindingsWithoutOperationForDiagnostics(FPrivateRoadPhysicsWorld& Foreign,

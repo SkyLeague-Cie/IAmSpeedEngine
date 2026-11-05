@@ -246,6 +246,12 @@ struct FPrivateRoadSolidValues
     float HitDamping=1.0f;
     FMatrix InvInertiaLocal=FMatrix::Identity;
     int idx=-1;
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+    // Actual immediate native Birth mass-store return observations only. These
+    // never authorize access or certify complete physical/lifetime state.
+    uint32 DiagnosticBirthMassValueReturns=0;
+    uint32 DiagnosticBirthMassRequestedBits=0,DiagnosticBirthMassObservedBits=0;
+#endif
 };
 // Declared runtime values only, not configuration or a complete wheel checkpoint.
 struct FPrivateRoadWheelRuntimeValues

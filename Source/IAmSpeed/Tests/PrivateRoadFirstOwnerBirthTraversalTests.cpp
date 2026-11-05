@@ -126,6 +126,8 @@ bool FIASPrivateRoadFirstOwnerBirthTraversal::RunTest(const FString&)
     };
     if(HA.Confirm(5,Packet(0)).Status!=EResult::Accepted||HB.Confirm(5,Packet(1)).Status!=EResult::Accepted)return false;
     std::vector<P::FPrivateRoadRequest> Requests={{101,3,HA.Predict(0)},{102,3,HB.Predict(0)}};
+    if(!TestTrue(*FString::Printf(TEXT("actual facade-only poison before real Step: %s"),*Why),
+        Own->PoisonFacadeMassForValueCommandDiagnostics(Why)))return false;
     P::FPrivateRoadHitAcceptanceProbe Step;
     if(!Own->StepWithHitAcceptanceProbeForDiagnostics(Requests,false,*Foreign,Step,Why)||!Foreign->Step(Requests,false,Why))return false;
     TestTrue(TEXT("real Step refuses the Birth-only WHOLE first owner traversal before writes"),Step.BirthOwnerTraversalRefusedDuringStep);
@@ -134,7 +136,19 @@ bool FIASPrivateRoadFirstOwnerBirthTraversal::RunTest(const FString&)
     {
         const auto* A=X->Physics.PresentationBodies.FindByPredicate([&](const auto& V){return V.StableId==X->Actors[Index].NativeStableId;});
         const auto* B=Y->Physics.PresentationBodies.FindByPredicate([&](const auto& V){return V.StableId==Y->Actors[Index].NativeStableId;});
-        if(!A||!B)return false;const auto& K=A->COMState;const auto& L=B->COMState;
+        if(!A||!B)return false;
+        const auto& M=X->Actors[Index];const auto& Control=Y->Actors[Index];
+        TestTrue(TEXT("actual native Birth value-store observations available"),M.BirthMassValueStoresAvailable&&Control.BirthMassValueStoresAvailable);
+        TestEqual(TEXT("five real original body parts observed per actor"),M.BirthMassBodyCount,uint32(5));
+        TestEqual(TEXT("five independent control body parts observed"),Control.BirthMassBodyCount,uint32(5));
+        TestTrue(TEXT("actual writes returned with exact requested destination bits"),M.BirthMassValueStoresMatch&&Control.BirthMassValueStoresMatch);
+        TestTrue(TEXT("each real body stored at least once and at most the two real initializer traversals"),
+            M.BirthMassValueReturns>=5&&M.BirthMassValueReturns<=10&&Control.BirthMassValueReturns>=5&&Control.BirthMassValueReturns<=10);
+        TestTrue(TEXT("actual facade mass differs while original backing is retained"),M.BirthMassFacadeDistinct);
+        AddInfo(FString::Printf(TEXT("[PrivateRoadBirthMassValueStore] actor=%llu frame=%llu bodies=%u writes=%llu available=%d stored=%d facadeDistinct=%d controlBodies=%u controlWrites=%llu controlAvailable=%d controlStored=%d. Actual typed native Birth value stores and one subsequent real independent Step; diagnostic counters and five retained original bodies per actor only. Four Mass overrides and other reference/lifetime paths remain open."),
+            M.Actor,X->Frame,M.BirthMassBodyCount,M.BirthMassValueReturns,int(M.BirthMassValueStoresAvailable),int(M.BirthMassValueStoresMatch),
+            int(M.BirthMassFacadeDistinct),Control.BirthMassBodyCount,Control.BirthMassValueReturns,int(Control.BirthMassValueStoresAvailable),int(Control.BirthMassValueStoresMatch)));
+        const auto& K=A->COMState;const auto& L=B->COMState;
         TestTrue(TEXT("independent canonical six-field COM parity after normal complete constructor"),K.Location==L.Location&&K.Velocity==L.Velocity
             &&K.Acceleration==L.Acceleration&&K.Rotation==L.Rotation&&K.AngularVelocity==L.AngularVelocity&&K.AngularAcceleration==L.AngularAcceleration);
     }
