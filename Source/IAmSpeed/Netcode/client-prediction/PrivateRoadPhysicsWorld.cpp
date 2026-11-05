@@ -994,7 +994,9 @@ std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::CreateCore(s
             };
             const auto Attempt=[&](const TCHAR* Entry,const TCHAR* Subject,const TCHAR* Parent,auto&& Call)
             {
-                FPrivateRoadReferenceInitializerBirthCase Row;Row.Actor=N.StableId;
+                // Logical identity is validated in the retained seed before these Birth calls.
+                // The physical registry StableId is legitimately assigned only later.
+                FPrivateRoadReferenceInitializerBirthCase Row;Row.Actor=N.Seed.Actor;
                 Row.Entry=Entry;Row.Subject=Subject;Row.Parent=Parent;
                 FNamedInitializerFootprint Before,After;
                 try{Positive();Row.PositiveBefore=true;}

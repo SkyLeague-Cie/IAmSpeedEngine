@@ -2179,3 +2179,19 @@ overrides, test expectations and the closed restore guard are unchanged.
 Compilation and native tests on this distinct tuple are still required. Build125
 and126 remain FAIL; prior native124 results do not qualify this change. Full state,
 source/lifetime exclusion, network activation and localized rollback remain open.
+
+### Early typed diagnostic actor identity correction (native validation pending)
+
+Actual source133/native127 recorded63 successful tests and one failed test with
+24 errors. All24 typed early rows reported successful positive controls, refusals
+and unchanged named buffers, but actor=0: the diagnostic read the physical registry
+StableId before its later legitimate assignment. This remains a failed suite;
+the next pending test was not run, and actor identity is not retrospectively fixed.
+
+The distinct correction reads N.Seed.Actor, the genuine logical actor identifier
+validated and retained before creation and early Birth controls. It does not
+assign/register physical StableId early, invent an identity, remap old measurements
+or relax Row.Actor!=0 or the strict per-actor checks. Physical creation, order,
+programs, guards, four Mass overrides and the restore guard remain unchanged.
+Fresh native execution must observe the corrected binding on the new tuple;
+full-state/source-lifetime, CanMove, K and playable multiplayer gates remain open.
