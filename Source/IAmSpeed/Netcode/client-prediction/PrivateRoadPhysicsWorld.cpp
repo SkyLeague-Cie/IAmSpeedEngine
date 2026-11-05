@@ -952,20 +952,20 @@ std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::CreateCore(s
             {
                 Wheel->StorageAccess=I.Access;I.OriginalWheelsWeak.Add(Wheel);
                 if(!FacadeTopologyStillMatches()||!Wheel->OwnedBodyValues||!Wheel->OwnedSolidValues||!Wheel->OwnedWheelRuntime||!Wheel->OwnedWheelDomain||!Wheel->OwnedSphereDomain)return false;
-                auto Root=std::make_shared<FImpl::FCar::FWheelRoot>(N.NativeVehicleRoot,std::move(Wheel->OwnedBodyValues),std::move(Wheel->OwnedSolidValues),std::move(Wheel->OwnedWheelRuntime),std::move(Wheel->OwnedWheelDomain),std::move(Wheel->OwnedSphereDomain));
-                Wheel->OwnedBodyValues=RetirementDraft::AliasBodyPart<0>(Root);
-                Wheel->OwnedSolidValues=RetirementDraft::AliasBodyPart<1>(Root);
-                Wheel->OwnedWheelRuntime=RetirementDraft::AliasBodyPart<2>(Root);
-                Wheel->OwnedWheelDomain=RetirementDraft::AliasBodyPart<3>(Root);
-                Wheel->OwnedSphereDomain=RetirementDraft::AliasBodyPart<4>(Root);
-                N.NativeWheelRoots.push_back(Root);I.NativeCppKeepAlive.push_back(Root);
+                auto WheelAllocationRoot=std::make_shared<FImpl::FCar::FWheelRoot>(N.NativeVehicleRoot,std::move(Wheel->OwnedBodyValues),std::move(Wheel->OwnedSolidValues),std::move(Wheel->OwnedWheelRuntime),std::move(Wheel->OwnedWheelDomain),std::move(Wheel->OwnedSphereDomain));
+                Wheel->OwnedBodyValues=RetirementDraft::AliasBodyPart<0>(WheelAllocationRoot);
+                Wheel->OwnedSolidValues=RetirementDraft::AliasBodyPart<1>(WheelAllocationRoot);
+                Wheel->OwnedWheelRuntime=RetirementDraft::AliasBodyPart<2>(WheelAllocationRoot);
+                Wheel->OwnedWheelDomain=RetirementDraft::AliasBodyPart<3>(WheelAllocationRoot);
+                Wheel->OwnedSphereDomain=RetirementDraft::AliasBodyPart<4>(WheelAllocationRoot);
+                N.NativeWheelRoots.push_back(WheelAllocationRoot);I.NativeCppKeepAlive.push_back(WheelAllocationRoot);
                 const auto BindWheel=[&](const void* Subject)
                 {
-                    return Bind(Subject,RetirementDraft::AliasBodyPart<0>(Root))
-                        &&Bind(Subject,RetirementDraft::AliasBodyPart<1>(Root))
-                        &&Bind(Subject,RetirementDraft::AliasBodyPart<2>(Root))
-                        &&Bind(Subject,RetirementDraft::AliasBodyPart<3>(Root))
-                        &&Bind(Subject,RetirementDraft::AliasBodyPart<4>(Root));
+                    return Bind(Subject,RetirementDraft::AliasBodyPart<0>(WheelAllocationRoot))
+                        &&Bind(Subject,RetirementDraft::AliasBodyPart<1>(WheelAllocationRoot))
+                        &&Bind(Subject,RetirementDraft::AliasBodyPart<2>(WheelAllocationRoot))
+                        &&Bind(Subject,RetirementDraft::AliasBodyPart<3>(WheelAllocationRoot))
+                        &&Bind(Subject,RetirementDraft::AliasBodyPart<4>(WheelAllocationRoot));
                 };
                 if(!BindWheel(Wheel)||!BindWheel(static_cast<USWheelSubBody*>(Wheel))
                     ||!BindWheel(static_cast<USphereSubBody*>(Wheel))
