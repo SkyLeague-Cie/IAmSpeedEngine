@@ -2071,3 +2071,45 @@ serial/this/flags and the captured birth root against its genuine retained FImpl
 allocation/control block before the validator control. The foreign fixture has
 both a different allocation and control block. It does not independently prove
 same-address/different-control-block rejection; that narrower case stays untested.
+
+
+Source127 proposed EARLY reference owner migration (not yet native qualified).
+The actual factory early SetOwner call uses a distinct call-scoped Birth witness
+of the retained FImpl and its preexisting actor/component/five-body weak births.
+There is no vehicle allocation at this point. The original legacy SetOwner,
+first-owner and child arithmetic bodies are shared; the reference access checks
+its real roster at callback boundaries and issues exactly two facade null writes
+per wheel, keeping configuration. Null-to-null calls are not positive clears.
+The initializer itself remains unchanged and OPEN, including its independent
+binding/radius/mass/inverse writes. Four Mass overrides are unchanged.
+
+This lot deliberately stops before permanent ordinary physical-leaf and whole
+Bind/Clear/Setup refusal. The actual early call must first be independently
+reviewed and tested on its exact tuple. Ordinary parent SetOwner, base-qualified
+IAS/Chaos lifecycle, public arbitrary targets and other ambient channels remain
+OPEN. Genuine NoOp controls for later refusal are not claimed by calls inside
+actual operations. The new direct Retirement validator phase controls check all
+other actual root/controlblock/mutex/active-operation predicates before invoking
+it under real Birth/Step; previous whole-leaf refusals remain separate results.
+No hidden-state/source/lifetime lease, network CanMove closure, authoritative K
+restore, localized rollback or two rendered playable clients is certified.
+
+127 R02 adds the actual captured world/bridge weak births to the early witness
+and checks the real world and returned subsystem before registration. The legacy
+first-owner oracle now invokes the actual ordinary SetOwner with real actor pose
+APIs and custom body callbacks. NoOp binder controls remain deferred with the
+permanent refusals. R01's uncompiled proposed footprint used unsupported composite
+codecs; R02 uses named six-field values and the existing explicit array codec.
+No R01 native result existed or is claimed.
+
+127 R04 fixes the R03 shared children TArray iterator crossing virtual Update:
+Origin is still computed once, cardinality captured once and each index resolved
+fresh through its access before the next callback, preserving order/arithmetic.
+The real custom wheel fixture reallocates the parent's actual TArray while its
+old allocation remains live, keeps exactly the same pointer roster and observes
+different GetData; subsequent actual custom updates must return in the same order.
+This exercises the shared algorithm through genuine custom dispatch, not a custom
+subclass falsely admitted into a final private graph. The ReadWheels TView already
+uses an index iterator and does not retain an element borrow across Initialize;
+the initial broader suspicion was withdrawn after its implementation was read.
+All proposed controls still require fresh C++/UHT and native execution.

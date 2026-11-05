@@ -512,11 +512,16 @@ void USpeedWheeledComponent::OnRegister()
     }
 }
 
-class USpeedWheeledComponent::FLegacyOwnerBirthAccess final
+class USpeedWheeledComponent::FLegacyOwnerBirthAccess
 {
     USpeedWheeledComponent& Owner;
 public:
     explicit FLegacyOwnerBirthAccess(USpeedWheeledComponent& Value):Owner(Value){}
+    virtual void CheckCallbackBoundary() const {}
+    bool SuppressesLocalPhysics() const {return Speed::Netcode::PresentationClient::SuppressesLocalPhysics(Owner.GetWorld());}
+    void AssignOwner(AActor* Actor) const {Owner.SpeedCarOwnerWheeledDomainStorage()=Cast<ASpeedCar>(Actor);}
+    void CheckWorld(UWorld*) const {}
+    void CheckSubsystem(USpeedWorldSubsystem*) const {}
     decltype(auto) COM() const {return (Owner.CenterOfMassWheeledDomainStorage());}
     decltype(auto) COMOverride() const {return (Owner.CenterOfMassOverrideWheeledDomainStorage());}
     decltype(auto) EnableCOMOverride() const {return (Owner.bEnableCenterOfMassOverrideWheeledDomainStorage());}
@@ -528,11 +533,141 @@ public:
     UBoxSubBody* ReadHitbox() const {return Owner.ReadHitboxForPhysics().Get();}
     auto ReadWheels() const {return Owner.ReadWheelSubBodiesForPhysics();}
     void BindInitial() const {Owner.BindWheelSimulationPointers();}
-    void Initialize(USSubBody* Body) const {Body->Initialize(&Owner);}
+    void Initialize(USSubBody* Body) const
+    {CheckCallbackBoundary();Body->Initialize(&Owner);CheckCallbackBoundary();}
     void AfterInitializers() const {}
-    FMatrix ChassisTensor() const {return ReadHitbox()->ComputeChassisLocalInvInertiaTensor();}
+    FMatrix ChassisTensor() const
+    {CheckCallbackBoundary();auto V=ReadHitbox()->ComputeChassisLocalInvInertiaTensor();CheckCallbackBoundary();return V;}
     decltype(auto) ChassisInverse() const {return (Owner.CarLocalInvIWheeledDomainStorage());}
     void UpdateChildren() const {Owner.UpdateSubBodiesKinematics();}
+};
+
+// Reuses the real legacy owner/initializer program. The proof is required at
+// entry and rechecked across its real callbacks; it is not a lifetime lease.
+class USpeedWheeledComponent::FReferenceOwnerBirthAccess final : public FLegacyOwnerBirthAccess
+{
+    using FProof=Speed::Netcode::Prediction::FPrivateReferenceOwnerBirth;
+    USpeedWheeledComponent& Owner;
+    const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation;
+    const FProof& Proof;
+    AActor* const RequestedActor;
+    FReferenceOwnerBirthObservation* const Observation;
+public:
+    FReferenceOwnerBirthAccess(USpeedWheeledComponent& Value,
+        const Speed::Netcode::Prediction::FPrivateNativeOperation& Op,
+        const FProof& ActualProof,AActor* ActualActor,FReferenceOwnerBirthObservation* Out)
+      :FLegacyOwnerBirthAccess(Value),Owner(Value),Operation(Op),Proof(ActualProof),
+       RequestedActor(ActualActor),Observation(Out) {CheckCallbackBoundary();}
+    FReferenceOwnerBirthAccess(const FReferenceOwnerBirthAccess&)=delete;
+    FReferenceOwnerBirthAccess& operator=(const FReferenceOwnerBirthAccess&)=delete;
+    FReferenceOwnerBirthAccess(FReferenceOwnerBirthAccess&&)=delete;
+    FReferenceOwnerBirthAccess& operator=(FReferenceOwnerBirthAccess&&)=delete;
+    void CheckCallbackBoundary() const override
+    {
+        namespace P=Speed::Netcode::Prediction;
+        P::FPrivateNativeStorageAccess::RequireBirthRoot(Operation,Proof.ActualRoot);
+        // Resolve captured serials before dereference. The original table has
+        // component metadata at this phase, but NOT the wheel parts yet.
+        if(Proof.Component.Get()!=&Owner||!Proof.Actor.IsValid()
+            ||RequestedActor!=Proof.Actor.Get()
+            ||!Proof.World.IsValid()||!Proof.Bridge.IsValid()
+            ||Proof.World.Get()->bIsTearingDown
+            ||Proof.World.Get()->HasAnyFlags(RF_BeginDestroyed|RF_FinishDestroyed)
+            ||Proof.Bridge.Get()->HasAnyFlags(RF_BeginDestroyed|RF_FinishDestroyed)
+            ||Owner.GetWorld()!=Proof.World.Get()||Proof.Bridge.Get()->GetWorld()!=Proof.World.Get()
+            ||!Proof.Hitbox.IsValid()
+            ||Proof.Bodies.Num()!=4||Owner.HasAnyFlags(RF_BeginDestroyed|RF_FinishDestroyed)
+            ||RequestedActor->HasAnyFlags(RF_BeginDestroyed|RF_FinishDestroyed)
+            ||RequestedActor->IsActorBeingDestroyed()||Owner.GetOwner()!=RequestedActor
+            ||Owner.GetClass()!=USpeedBranchWheeledComponent::StaticClass()
+            ||Owner.UsesOriginalWheeledDomain()||Owner.SkySimulation||Owner.VehicleSimulationPT
+            ||!Owner.Wheels.IsEmpty()||Owner.SubBodies.Num()!=5
+            ||Owner.SubBodies[0]!=Proof.Hitbox.Get()
+            ||(Owner.HitboxSubBody&&!Speed::NativeObjectRead::MatchesOriginalBirth(Owner.HitboxSubBody,Proof.Hitbox))
+            ||(!Owner.WheelSubBodies.IsEmpty()&&Owner.WheelSubBodies.Num()!=4))
+            throw P::FPrivateNativeStorageUnavailable{};
+        const auto& Original=P::FPrivateNativeStorageAccess::Part<FOriginalWheeledDomain>(Operation,&Owner);
+        const auto& Births=P::FPrivateNativeStorageAccess::Part<P::FPrivateRoadBirthIdentities>(Operation,&Owner);
+        if(Births.Actor!=Proof.Actor||Births.Component!=Proof.Component||Births.Hitbox!=Proof.Hitbox
+            ||Births.WheelBodies!=Proof.Bodies||Original.SkySimulation||Original.VehicleSimulationPT
+            ||Proof.Hitbox.Get()->HasAnyFlags(RF_BeginDestroyed|RF_FinishDestroyed)
+            ||Proof.Hitbox.Get()->GetClass()!=USpeedBranchBoxSubBody::StaticClass()
+            ||Proof.Hitbox.Get()->GetOwner()!=RequestedActor)
+            throw P::FPrivateNativeStorageUnavailable{};
+        for(int32 Index=0;Index<4;++Index)
+        {
+            auto* Body=Proof.Bodies[Index].Get();
+            if(!Body||Body->HasAnyFlags(RF_BeginDestroyed|RF_FinishDestroyed)
+                ||Body->GetClass()!=USpeedBranchWheelSubBody::StaticClass()
+                ||Body->GetOwner()!=RequestedActor||Owner.SubBodies[Index+1]!=Body
+                ||(!Owner.WheelSubBodies.IsEmpty()
+                    &&!Speed::NativeObjectRead::MatchesOriginalBirth(Owner.WheelSubBodies[Index],Proof.Bodies[Index])))
+                throw P::FPrivateNativeStorageUnavailable{};
+        }
+        const auto* Hitbox=Proof.Hitbox.Get();
+        if(Hitbox->GetParentComponent()&&Hitbox->GetParentComponent()!=static_cast<ISpeedComponent*>(&Owner))
+            throw P::FPrivateNativeStorageUnavailable{};
+        for(const auto& Born:Proof.Bodies)
+        {
+            auto* Body=Born.Get();
+            if(!Body||(Body->GetParentComponent()&&Body->GetParentComponent()!=static_cast<ISpeedComponent*>(&Owner)))
+                throw P::FPrivateNativeStorageUnavailable{};
+        }
+        // Re-resolve at the end as well. No FGCScopeGuard spans callbacks.
+        if(Proof.Component.Get()!=&Owner||Proof.Actor.Get()!=RequestedActor||!Proof.Hitbox.IsValid())
+            throw P::FPrivateNativeStorageUnavailable{};
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+        if(Observation)++Observation->BoundaryChecksReturned;
+#endif
+    }
+    void CheckWorld(UWorld* World) const
+    {CheckCallbackBoundary();if(World!=Proof.World.Get())throw Speed::Netcode::Prediction::FPrivateNativeStorageUnavailable{};}
+    void CheckSubsystem(USpeedWorldSubsystem* Bridge) const
+    {CheckCallbackBoundary();if(Bridge!=Proof.Bridge.Get())throw Speed::Netcode::Prediction::FPrivateNativeStorageUnavailable{};}
+    void BindInitial() const
+    {
+        CheckCallbackBoundary();
+        for(const auto& Born:Proof.Bodies)
+        {
+            CheckCallbackBoundary();
+            auto* Body=static_cast<USpeedBranchWheelSubBody*>(Born.Get());
+            const auto* ConfigurationBefore=Body->GetChaosWheelConfiguration();
+            CheckCallbackBoundary();
+            Body->ClearReferenceWheelBindingsAtOwnerBirth(Operation);
+            if(Body->GetChaosWheelConfiguration()!=ConfigurationBefore)
+                throw Speed::Netcode::Prediction::FPrivateNativeStorageUnavailable{};
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+            if(Observation)++Observation->TwoNullEntriesReturned;
+#endif
+            CheckCallbackBoundary();
+        }
+    }
+    void Initialize(USSubBody* Body) const
+    {
+        FLegacyOwnerBirthAccess::Initialize(Body);
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+        if(Observation)++Observation->InitializersReturned;
+#endif
+    }
+    void UpdateChildren() const
+    {
+        // The existing children body is shared too: its Origin computation and
+        // virtual child updates keep their original order. Only the boundary
+        // checker differs; no second numerical child program is introduced.
+        class FChildren final
+        {
+            const FReferenceOwnerBirthAccess& Access;
+        public:
+            explicit FChildren(const FReferenceOwnerBirthAccess& Value):Access(Value){}
+            SKinematic Origin() const
+            {Access.CheckCallbackBoundary();auto V=Speed::NativeKinematics::FComponentRead::Origin(Access.Owner);Access.CheckCallbackBoundary();return V;}
+            const TArray<USSubBody*>& SubBodies() const
+            {Access.CheckCallbackBoundary();return Access.Owner.SubBodies;}
+            void Update(USSubBody* Body,const SKinematic& Parent) const
+            {Access.CheckCallbackBoundary();Body->UpdateKinematicsFromOwner(Parent);Access.CheckCallbackBoundary();}
+        } Children(*this);
+        Owner.UpdateSubBodiesKinematicsBody(Children);
+    }
 };
 
 class USpeedWheeledComponent::FNativeOwnerBirthAccess final
@@ -613,6 +748,7 @@ public:
     FNativeOwnerBirthAccess& operator=(const FNativeOwnerBirthAccess&)=delete;
     FNativeOwnerBirthAccess(FNativeOwnerBirthAccess&&)=delete;
     FNativeOwnerBirthAccess& operator=(FNativeOwnerBirthAccess&&)=delete;
+    void CheckCallbackBoundary() const {} // existing explicit original entries validate their own parts
     void SetActor() const {Domain().SpeedCarOwner=Cast<ASpeedCar>(Births.Actor.Get());}
     decltype(auto) COM() const {return (Domain().CenterOfMass);}
     decltype(auto) COMOverride() const {return (Domain().CenterOfMassOverride);}
@@ -684,35 +820,58 @@ void USpeedWheeledComponent::ResolveFixedCenterOfMassFromConfiguration()
 }
 
 
+template<class TAccess>
+void USpeedWheeledComponent::SetOwnerBody(TAccess& Storage,AActor* NewOwner)
+{
+    Storage.CheckCallbackBoundary();
+    if (Storage.SuppressesLocalPhysics()) return;
+    Storage.CheckCallbackBoundary();
+    if (NewOwner == nullptr) return;
+    Storage.AssignOwner(NewOwner);
+    ResolveFixedCenterOfMassBody(Storage);
+    Storage.CheckCallbackBoundary();
+    const auto Rotation=NewOwner->GetActorRotation().Quaternion();
+    Storage.CheckCallbackBoundary();
+    SetPhysRotation(Rotation);
+    Storage.CheckCallbackBoundary();
+    const auto Location=NewOwner->GetActorLocation();
+    Storage.CheckCallbackBoundary();
+    SetPhysLocation(Location);
+    Storage.CheckCallbackBoundary();
+    InitializeBoundSubBodiesForPhysicalOwnerBody(Storage);
+    Storage.CheckCallbackBoundary();
+    SetAsyncPhysicsTickEnabled(true);
+    Storage.CheckCallbackBoundary();
+    if (UWorld* World = GetWorld())
+    {
+        Storage.CheckWorld(World);
+        if (USpeedWorldSubsystem* SpeedWorldSubsystem = World->GetSubsystem<USpeedWorldSubsystem>())
+        {
+            Storage.CheckSubsystem(SpeedWorldSubsystem);
+            SpeedWorldSubsystem->RegisterSpeedComponent(this);
+            Storage.CheckCallbackBoundary();
+        }
+    }
+    Storage.CheckCallbackBoundary();
+}
 void USpeedWheeledComponent::SetOwner(AActor* NewOwner)
 {
-	if (Speed::Netcode::PresentationClient::SuppressesLocalPhysics(GetWorld())) return;
-	if (NewOwner == nullptr)
-	{
-		return;
-	}
-	SpeedCarOwnerWheeledDomainStorage() = Cast<ASpeedCar>(NewOwner);
-	ResolveFixedCenterOfMassFromConfiguration();
-	SetPhysRotation(NewOwner->GetActorRotation().Quaternion());
-	SetPhysLocation(NewOwner->GetActorLocation());	// init sub-bodies
-	InitializeBoundSubBodiesForPhysicalOwner();
-
-	// start physics thread
-	SetAsyncPhysicsTickEnabled(true);
-	// Register in SpeedWorldSubsystem
-	if (UWorld* World = GetWorld())
-	{
-		if (USpeedWorldSubsystem* SpeedWorldSubsystem = World->GetSubsystem<USpeedWorldSubsystem>())
-		{
-			SpeedWorldSubsystem->RegisterSpeedComponent(this);
-		}
-	}
+    FLegacyOwnerBirthAccess Storage(*this);SetOwnerBody(Storage,NewOwner);
+}
+void USpeedWheeledComponent::InitializeReferenceOwnerBirth(
+    const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,
+    const Speed::Netcode::Prediction::FPrivateReferenceOwnerBirth& Proof,
+    AActor* ActualActor,FReferenceOwnerBirthObservation* Observation)
+{
+    FReferenceOwnerBirthAccess Storage(*this,Operation,Proof,ActualActor,Observation);
+    SetOwnerBody(Storage,ActualActor);
 }
 
 
 template<class TAccess>
 void USpeedWheeledComponent::InitializeBoundSubBodiesForPhysicalOwnerBody(TAccess& Storage)
 {
+    Storage.CheckCallbackBoundary();
     if (Storage.Bodies().Num() > 0)
     {
         Storage.Hitbox() = Storage.AsBox(Storage.Bodies()[0]);
@@ -725,7 +884,9 @@ void USpeedWheeledComponent::InitializeBoundSubBodiesForPhysicalOwnerBody(TAcces
             Storage.Wheels().Add(WheelSubBody);
         }
     }
+    Storage.CheckCallbackBoundary();
     Storage.BindInitial();
+    Storage.CheckCallbackBoundary();
     Storage.Initialize(Storage.ReadHitbox());
     for (auto WheelSubBody : Storage.ReadWheels())
     {
@@ -733,7 +894,9 @@ void USpeedWheeledComponent::InitializeBoundSubBodiesForPhysicalOwnerBody(TAcces
     }
     Storage.AfterInitializers(); // fixed diagnostic hook only; ordinary/prod no-op
     Storage.ChassisInverse() = Storage.ChassisTensor();
+    Storage.CheckCallbackBoundary();
     Storage.UpdateChildren();
+    Storage.CheckCallbackBoundary();
 }
 void USpeedWheeledComponent::InitializeBoundSubBodiesForPhysicalOwner()
 {

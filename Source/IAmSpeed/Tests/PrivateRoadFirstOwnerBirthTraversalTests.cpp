@@ -22,6 +22,30 @@ bool FIASPrivateRoadFirstOwnerBirthTraversal::RunTest(const FString&)
     }
     FString Why;auto Foreign=P::FPrivateRoadPhysicsWorld::Create(Seeds,Why);
     if(!TestTrue(*FString::Printf(TEXT("actual independent foreign graph: %s"),*Why),bool(Foreign)))return false;
+    P::FPrivateRoadBirthInitializationProbe EarlyAbort;
+    auto EarlyAborted=P::FPrivateRoadPhysicsWorld::CreateWithBirthInitializationProbeForDiagnostics(
+        Seeds,*Foreign,P::EPrivateRoadBirthProbeMode::AbortAfterEarlyReferenceOwner,EarlyAbort,Why);
+    TestFalse(TEXT("real early reference diagnostic returns no owner"),bool(EarlyAborted));
+    TestTrue(TEXT("actual early owner returned before explicit partial-birth abort"),EarlyAbort.CreateReturnedNull&&EarlyAbort.EarlyReferenceAbortReached);
+    TestEqual(TEXT("one early owner actually returned"),EarlyAbort.EarlyReferenceOwnerReturns,uint32(1));
+    TestEqual(TEXT("four two-null leaves returned; not non-null transition counts"),EarlyAbort.EarlyReferenceTwoNullReturns,uint32(4));
+    TestEqual(TEXT("five actual facade initializers returned"),EarlyAbort.EarlyReferenceInitializers,uint32(5));
+    TestEqual(TEXT("three invalid actor/component early entries refused"),EarlyAbort.EarlyReferenceGuardRefusals,uint32(3));
+    TestTrue(TEXT("early refusals keep named own/reference/original and foreign owner targets"),EarlyAbort.EarlyReferenceRefusalsBeforeWrite);
+    TestTrue(TEXT("real callback-boundary checks returned"),EarlyAbort.EarlyReferenceBoundaryChecks>0);
+    uint64 EarlyNativeConstructors=0;
+    TestEqual(TEXT("four actual configuration observers retained after pre-vehicle abort"),EarlyAbort.LifetimeObservers.size(),size_t(4));
+    for(const auto& Trace:EarlyAbort.LifetimeObservers)
+    {
+        if(!Trace)return false;const auto V=Trace->Read();EarlyNativeConstructors+=V.NativeConstructionReturns;
+        TestEqual(TEXT("pre-vehicle abort has no native destructor invented"),V.NativeBaseDestructionReturns,V.NativeConstructionReturns);
+        TestEqual(TEXT("actual preexisting configuration destructor returned"),V.ConfigurationDestructionEntries,uint64(1));
+        TestFalse(TEXT("configuration did not precede actual native destructor return"),V.ConfigurationDestructionBeforeNativeReturn);
+    }
+    TestEqual(TEXT("neither reference nor original vehicle was constructed"),EarlyNativeConstructors,uint64(0));
+    AddInfo(FString::Printf(TEXT("[PrivateRoadEarlyReferenceOwnerAbort] ownerReturns=%u twoNullReturns=%u initializers=%u boundaryChecks=%u refusals=%u beforeWrite=%d nativeConstructors=%llu. Two-null returns include null-to-null; no transition or lifetime completeness claim."),
+        EarlyAbort.EarlyReferenceOwnerReturns,EarlyAbort.EarlyReferenceTwoNullReturns,EarlyAbort.EarlyReferenceInitializers,
+        EarlyAbort.EarlyReferenceBoundaryChecks,EarlyAbort.EarlyReferenceGuardRefusals,int(EarlyAbort.EarlyReferenceRefusalsBeforeWrite),EarlyNativeConstructors));
     P::FPrivateRoadBirthInitializationProbe Abort;
     auto Aborted=P::FPrivateRoadPhysicsWorld::CreateWithBirthInitializationProbeForDiagnostics(
         Seeds,*Foreign,P::EPrivateRoadBirthProbeMode::ProbeFirstOwnerAndAbort,Abort,Why);
@@ -57,6 +81,11 @@ bool FIASPrivateRoadFirstOwnerBirthTraversal::RunTest(const FString&)
     auto Own=P::FPrivateRoadPhysicsWorld::CreateWithBirthInitializationProbeForDiagnostics(
         Seeds,*Foreign,P::EPrivateRoadBirthProbeMode::Observe,Normal,Why);
     if(!TestTrue(*FString::Printf(TEXT("normal actual original construction: %s"),*Why),bool(Own)))return false;
+    TestEqual(TEXT("normal two reference owner entries returned"),Normal.EarlyReferenceOwnerReturns,uint32(2));
+    TestEqual(TEXT("normal eight exact two-null entries returned"),Normal.EarlyReferenceTwoNullReturns,uint32(8));
+    TestEqual(TEXT("normal ten reference first initializers returned"),Normal.EarlyReferenceInitializers,uint32(10));
+    TestEqual(TEXT("normal six invalid early requests refused"),Normal.EarlyReferenceGuardRefusals,uint32(6));
+    TestTrue(TEXT("normal invalid early requests unchanged before effects"),Normal.EarlyReferenceRefusalsBeforeWrite);
     TestEqual(TEXT("normal first five per actor actually returned"),Normal.FirstOwnerInitializersReturned,uint32(10));
     TestEqual(TEXT("normal SECOND five per actor still execute after vehicle binding/authored offsets"),Normal.InitializersReturned,uint32(10));
     std::array<Consumed::FActionPolicy,ActionCount> Actions{};
@@ -83,6 +112,9 @@ bool FIASPrivateRoadFirstOwnerBirthTraversal::RunTest(const FString&)
         TestTrue(TEXT("independent canonical six-field COM parity after normal complete constructor"),K.Location==L.Location&&K.Velocity==L.Velocity
             &&K.Acceleration==L.Acceleration&&K.Rotation==L.Rotation&&K.AngularVelocity==L.AngularVelocity&&K.AngularAcceleration==L.AngularAcceleration);
     }
+    AddInfo(FString::Printf(TEXT("[PrivateRoadEarlyReferenceOwnerNormal] ownerReturns=%u twoNullReturns=%u initializers=%u boundaryChecks=%u refusals=%u beforeWrite=%d. Existing default/custom owner arithmetic and callback order shared; ordinary binder family, parent SetOwner, initializer/fourMass/full state/K/playable remain OPEN."),
+        Normal.EarlyReferenceOwnerReturns,Normal.EarlyReferenceTwoNullReturns,Normal.EarlyReferenceInitializers,
+        Normal.EarlyReferenceBoundaryChecks,Normal.EarlyReferenceGuardRefusals,int(Normal.EarlyReferenceRefusalsBeforeWrite)));
     TestTrue(TEXT("both real owners close"),Own->Close()&&Foreign->Close());
     AddInfo(FString::Printf(TEXT("[PrivateRoadFirstOwnerBirthTraversal] firstNormal=%u secondNormal=%u firstAbort=%u secondAbort=%u nullParents=%u birthRefusals=%u beforeWrite=%d nonzeroPoseCOM=%d clearKeepsConfig=%d storedChassisTensor=%d distinguishesRecompute=%d children=%d earlyAbortCtorReturns=%llu actualStepRefusesBirth=%d. Actual allocated first-owner fixtures and normal/aborting lifetime returns only; no full causal state/source/lifetime lease or connected restoration qualification."),
         Normal.FirstOwnerInitializersReturned,Normal.InitializersReturned,Abort.FirstOwnerInitializersReturned,Abort.InitializersReturned,Abort.FirstOwnerInitialNullParents,

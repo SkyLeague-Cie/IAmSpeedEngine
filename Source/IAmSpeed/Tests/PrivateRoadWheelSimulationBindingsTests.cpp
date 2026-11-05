@@ -30,6 +30,7 @@ bool FIASPrivateRoadWheelSimulationBindings::RunTest(const FString&)
     TestEqual(TEXT("one positive nondefault original binding entry returned"),Birth.WheelBindingPositiveEntryReturns,uint32(1));
     TestEqual(TEXT("all eight actual Birth foreign/late invalid guards refused"),Birth.WheelBindingGuardRefusals,uint32(8));
     TestTrue(TEXT("real native Binding probe returned"),Birth.WheelBindingProbeReturned);
+    TestTrue(TEXT("direct Retirement Kind rejects genuine Birth with other root/gate predicates positive"),Birth.RetirementBirthOtherPredicatesPositive&&Birth.RetirementKindRefusedInBirth);
     TestTrue(TEXT("all named actual target/config/simulator values unchanged by refusals"),Birth.WheelBindingAllRefusalsBeforeWrite);
     TestTrue(TEXT("positive real mass/index/pointer values match"),Birth.WheelBindingPositiveValuesMatch);
     TestTrue(TEXT("both Raise/Drop override predicates retained"),Birth.WheelBindingOverridePredicatesMatch);
@@ -59,6 +60,9 @@ bool FIASPrivateRoadWheelSimulationBindings::RunTest(const FString&)
     TestTrue(TEXT("actual Step refuses Birth-only binding before target writes"),Step.BirthWheelBindingRefusedDuringStep);
     TestTrue(TEXT("actual Step refuses reference body Birth preflight before writes"),Step.ReferenceBindingBodyRefusedDuringStep);
     TestTrue(TEXT("actual Step refuses Retirement clear before named original/reference effects"),Step.RetirementClearRefusedInStep&&Step.RetirementStepFootprintUnchanged);
+    TestTrue(TEXT("direct Retirement Kind rejects genuine Step with other root/gate predicates positive"),Step.RetirementStepOtherPredicatesPositive&&Step.RetirementKindRefusedInStep);
+    AddInfo(FString::Printf(TEXT("[PrivateRoadRetirementKindIsolation] birthOtherPredicates=%d birthRefused=%d stepOtherPredicates=%d stepRefused=%d. Direct validator; no StorageAccess reset or leaf confound."),
+        int(Birth.RetirementBirthOtherPredicatesPositive),int(Birth.RetirementKindRefusedInBirth),int(Step.RetirementStepOtherPredicatesPositive),int(Step.RetirementKindRefusedInStep)));
     AddInfo(FString::Printf(TEXT("[PrivateRoadRetirementStepBoundary] refused=%d beforeWrite=%d"),int(Step.RetirementClearRefusedInStep),int(Step.RetirementStepFootprintUnchanged)));
     if(!TestTrue(TEXT("independent reference still advances"),Foreign->Step(Requests,false,Why)))return false;
     const auto A=Own->ReadLatest(),B=Foreign->ReadLatest();

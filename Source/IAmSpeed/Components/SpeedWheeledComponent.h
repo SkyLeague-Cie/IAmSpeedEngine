@@ -18,7 +18,7 @@ namespace Speed::Replay { class FFieldWriter; }
 
 #include "IAmSpeed/World/Simulation/NativeEpochStorageRoute.h"
 #include "SpeedWheeledComponent.generated.h"
-namespace Speed::Netcode::Prediction {class FPrivateRoadPhysicsWorld;class FPrivateNativeOperation;class FPrivateReferenceWheelBindingBirth;}
+namespace Speed::Netcode::Prediction {class FPrivateRoadPhysicsWorld;class FPrivateNativeOperation;class FPrivateReferenceWheelBindingBirth;class FPrivateReferenceOwnerBirth;}
 namespace Speed::NativeKinematics {class FComponentRead;}
 class USpeedBranchWheeledComponent;
 
@@ -854,7 +854,15 @@ private:
     // Shared value/body operation only. The public facade retains its original
     // Engine tick/registration path; the private factory supplies real captured
     // actor pose and explicitly registers its original bridge separately.
-    class FLegacyOwnerBirthAccess;class FNativeOwnerBirthAccess;
+    class FLegacyOwnerBirthAccess;class FNativeOwnerBirthAccess;class FReferenceOwnerBirthAccess;
+    struct FReferenceOwnerBirthObservation
+    {
+        uint32 BoundaryChecksReturned=0,TwoNullEntriesReturned=0,InitializersReturned=0;
+    };
+    template<class TAccess> void SetOwnerBody(TAccess& Storage,AActor* NewOwner);
+    void InitializeReferenceOwnerBirth(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,
+        const Speed::Netcode::Prediction::FPrivateReferenceOwnerBirth& Proof,AActor* ActualActor,
+        FReferenceOwnerBirthObservation* Observation=nullptr);
     struct FNativeOwnerBirthObservation
     {
         enum class EMode : uint8 { CountOnly,StoredTensorFixtureAndAbort };

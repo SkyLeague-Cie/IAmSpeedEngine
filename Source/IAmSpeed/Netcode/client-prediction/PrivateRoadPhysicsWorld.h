@@ -130,7 +130,7 @@ struct FPrivateRoadRetirementForeignProbe
     // A foreign Retirement leaf call with StorageAccess already reset is NOT_PROVED.
 };
 
-enum class EPrivateRoadBirthProbeMode : uint8 { Observe,FailAfterFirstInitializer,ProbeFirstOwnerAndAbort };
+enum class EPrivateRoadBirthProbeMode : uint8 { Observe,FailAfterFirstInitializer,ProbeFirstOwnerAndAbort,AbortAfterEarlyReferenceOwner };
 struct FPrivateRoadBirthInitializationProbe
 {
     // Diagnostic VALUES only: entered/returned stages and actual pose API results.
@@ -140,6 +140,10 @@ struct FPrivateRoadBirthInitializationProbe
     bool FirstOwnerActorLocationSet=false,FirstOwnerActorRotationSet=false;
     FVector FirstOwnerActorLocationReadback=FVector::ZeroVector;
     FRotator FirstOwnerActorRotationReadback=FRotator::ZeroRotator;
+    uint32 EarlyReferenceOwnerReturns=0,EarlyReferenceTwoNullReturns=0,EarlyReferenceInitializers=0,EarlyReferenceBoundaryChecks=0;
+    uint32 EarlyReferenceGuardRefusals=0;
+    bool EarlyReferenceRefusalsBeforeWrite=true,EarlyReferenceAbortReached=false;
+    bool RetirementBirthOtherPredicatesPositive=false,RetirementKindRefusedInBirth=false;
     uint32 InitializersReturned=0; // SECOND pass, after native vehicle/shape authoring
     uint32 FirstOwnerInitializersReturned=0,FirstOwnerInitialNullParents=0,FirstOwnerGuardRefusals=0;
     bool FirstOwnerProbeReturned=false,FirstOwnerAbortReached=false,FirstOwnerAllRefusalsBeforeWrite=false;
@@ -177,6 +181,7 @@ struct FPrivateRoadHitAcceptanceProbe
     bool BirthWheelBindingRefusedDuringStep=false;
     bool ReferenceBindingBodyRefusedDuringStep=false;
     bool RetirementClearRefusedInStep=false,RetirementStepFootprintUnchanged=false;
+    bool RetirementStepOtherPredicatesPositive=false,RetirementKindRefusedInStep=false;
     bool BirthOwnerTraversalRefusedDuringStep=false;
     uint32 MassBoundaryRefusals=0,MassLegacyResetReturns=0,MassNativeResetReturns=0,MassNoHitResolveReturns=0;
     bool MassRefusalsBeforeWrite=false,MassResetLegacyNativeEqual=false,MassResetDistinctBoxWheel=false,MassNoHitUnchanged=false;

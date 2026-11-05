@@ -7,6 +7,7 @@
 #include "IAmSpeed/SubBodies/Configs/SubBodyConfig.h"
 #include "IAmSpeed/SubBodies/Configs/WheelSubBodyConfig.h"
 #include <memory>
+#include <functional>
 #include "PrivateRoadBirthFixtureObjects.generated.h"
 
 // Private real UCLASS fixtures. They are never admitted into the sealed native
@@ -20,6 +21,9 @@ struct FIASBirthFixtureTrace
     TArray<FString> Events;
     TArray<FIASBirthFixtureInverseObservation> Inverse;
     uint32 SubBodyQueries=0,WheelQueries=0;
+    uint32 ChildUpdateReturns=0;
+    TArray<const USSubBody*> ChildUpdateOrder;
+    std::function<void()> AfterChildUpdate; // actual custom virtual callback fixture, never private permission
     FMatrix Observe(float Mass,const FVector& Shape)
     {
         Events.Add(TEXT("inverse"));FMatrix Matrix=FMatrix::Identity;
@@ -41,6 +45,18 @@ public:
     WheelSubBodyConfig GetWheelSubBodyConfig(const USWheelSubBody&) const override
     {if(Trace){++Trace->WheelQueries;Trace->Events.Add(TEXT("wheel"));}return WheelConfig;}
     void SetBodiesForFixture(USSubBody* Body){SubBodiesWheeledDomainStorage().Reset();if(Body)SubBodiesWheeledDomainStorage().Add(Body);}
+    bool ReallocateSameBodyRosterForFixture()
+    {
+        auto& Current=SubBodiesWheeledDomainStorage();
+        // Allocate the replacement while the previous allocation is LIVE, so
+        // different GetData is observed rather than guessed from Num/capacity.
+        const auto* Before=Current.GetData();
+        TArray<USSubBody*> Replacement=Current;
+        const auto* ReplacementData=Replacement.GetData();
+        const bool DifferentSameValues=Before&&ReplacementData&&Before!=ReplacementData&&Replacement==Current;
+        Current=MoveTemp(Replacement);
+        return DifferentSameValues&&Current.GetData()==ReplacementData&&Current.GetData()!=Before;
+    }
 };
 UCLASS(Transient,NotBlueprintable)
 class UIASBirthFixtureBox final : public UBoxSubBody
@@ -77,6 +93,15 @@ class UIASBirthFixtureWheel final : public USWheelSubBody
 public:
     explicit UIASBirthFixtureWheel(const FObjectInitializer& Initializer=FObjectInitializer::Get()):Super(Initializer){}
     std::shared_ptr<FIASBirthFixtureTrace> Trace;
+    void UpdateKinematicsFromOwner(const SKinematic& Parent) override
+    {
+        Super::UpdateKinematicsFromOwner(Parent);
+        if(Trace)
+        {
+            ++Trace->ChildUpdateReturns;Trace->ChildUpdateOrder.Add(this);
+            if(Trace->AfterChildUpdate)Trace->AfterChildUpdate();
+        }
+    }
     FMatrix ReadInverseForFixture() const {return InvInertiaLocalSolidStorage();}
     float ReadMassForFixture() const {return MassSolidStorage();}
     // Actual ordinary legacy fixture value COPY only. This final test class

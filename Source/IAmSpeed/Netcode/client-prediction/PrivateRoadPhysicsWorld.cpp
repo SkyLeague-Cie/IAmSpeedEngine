@@ -845,7 +845,67 @@ std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::CreateCore(s
                 return Refuse(Why,TEXT("first owner fixture actual actor rotation remained zero"));
         }
 #endif
-        C->SetOwner(N.Actor);
+        const FPrivateReferenceOwnerBirth EarlyReferenceProof(Root,I.OriginalWorldWeak,I.OriginalBridgeWeak,N.ActorWeak,N.ComponentWeak,
+            N.OriginalHitboxBirth,N.OriginalWheelBodyBirth);
+        USpeedWheeledComponent::FReferenceOwnerBirthObservation EarlyObservation;
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+        if(BirthContext)
+        {
+            auto& F=*BirthContext->ForeignRoot;
+            if(!F.AcquiredGraphStillLive()||F.Closed||F.Failed||F.Cars.empty()
+                ||F.NativeOperationIdentity->ActiveGTActualOperation)return false;
+            auto* ForeignComponent=F.Cars.front()->Component;
+            auto* ForeignActor=F.Cars.front()->Actor;
+            if(!ForeignComponent||!ForeignActor)return false;
+            const auto CaptureNamedOwnerTargets=[&]() {
+                TArray<uint8> Bytes;using B=Speed::FEpisodeStateBytesForTesting;
+                for(const auto* Target:{static_cast<USpeedWheeledComponent*>(C),static_cast<USpeedWheeledComponent*>(ForeignComponent)})
+                {
+                    B::Add(Bytes,Target->SpeedCarOwner);B::Add(Bytes,Target->CenterOfMass);
+                    B::Add(Bytes,Target->CenterOfMassOverride);B::Add(Bytes,Target->bEnableCenterOfMassOverride);
+                    const auto& K=Target->BasePhysicsState.Kinematic;
+                    B::Add(Bytes,K.Location);B::Add(Bytes,K.Rotation);B::Add(Bytes,K.Velocity);
+                    B::Add(Bytes,K.AngularVelocity);B::Add(Bytes,K.Acceleration);B::Add(Bytes,K.AngularAcceleration);
+                    B::Add(Bytes,Target->CarLocalInvI);
+                    B::Add(Bytes,Target->HitboxSubBody);B::Array(Bytes,Target->WheelSubBodies);
+                    B::Array(Bytes,Target->SubBodies);
+                    for(const auto* Body:Target->SubBodies)if(const auto* Wheel=Cast<USWheelSubBody>(Body))
+                    {B::Add(Bytes,Wheel->GetWheelSim());B::Add(Bytes,Wheel->GetSuspensionSim());B::Add(Bytes,Wheel->GetChaosWheelConfiguration());}
+                    const auto& Original=*Target->OriginalWheeledDomain;
+                    B::Add(Bytes,Original.SpeedCarOwner);B::Add(Bytes,Original.CenterOfMass);
+                    B::Add(Bytes,Original.CenterOfMassOverride);B::Add(Bytes,Original.bEnableCenterOfMassOverride);
+                    B::Add(Bytes,Original.CarLocalInvI);B::Add(Bytes,Original.HitboxSubBody);
+                    B::Array(Bytes,Original.WheelSubBodies);B::Array(Bytes,Original.SubBodies);
+                }
+                return Bytes;
+            };
+            for(int32 Case=0;Case<3;++Case)
+            {
+                const auto Before=CaptureNamedOwnerTargets();bool Refused=false;
+                try {
+                    if(Case==0)C->InitializeReferenceOwnerBirth(Operation,EarlyReferenceProof,nullptr);
+                    if(Case==1)C->InitializeReferenceOwnerBirth(Operation,EarlyReferenceProof,ForeignActor);
+                    if(Case==2)ForeignComponent->InitializeReferenceOwnerBirth(Operation,EarlyReferenceProof,N.Actor);
+                } catch(const FPrivateNativeStorageUnavailable&){Refused=true;}
+                if(Refused)++BirthContext->Result.EarlyReferenceGuardRefusals;
+                BirthContext->Result.EarlyReferenceRefusalsBeforeWrite=BirthContext->Result.EarlyReferenceRefusalsBeforeWrite
+                    &&Refused&&Before==CaptureNamedOwnerTargets();
+                if(!BirthContext->Result.EarlyReferenceRefusalsBeforeWrite)return false;
+            }
+        }
+#endif
+        C->InitializeReferenceOwnerBirth(Operation,EarlyReferenceProof,N.Actor,&EarlyObservation);
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+        if(BirthContext)
+        {
+            auto& Out=BirthContext->Result;++Out.EarlyReferenceOwnerReturns;
+            Out.EarlyReferenceTwoNullReturns+=EarlyObservation.TwoNullEntriesReturned;
+            Out.EarlyReferenceInitializers+=EarlyObservation.InitializersReturned;
+            Out.EarlyReferenceBoundaryChecks+=EarlyObservation.BoundaryChecksReturned;
+            if(BirthContext->Mode==EPrivateRoadBirthProbeMode::AbortAfterEarlyReferenceOwner)
+            {Out.EarlyReferenceAbortReached=true;return Refuse(Why,TEXT("diagnostic abort after actual early reference owner return before vehicle construction"));}
+        }
+#endif
 #if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
         if(BirthContext&&BirthContext->Mode==EPrivateRoadBirthProbeMode::ProbeFirstOwnerAndAbort)
             BirthContext->Result.FirstOwnerLastStage=TEXT("reference-owner-call-returned");
@@ -1298,6 +1358,15 @@ bool FPrivateRoadPhysicsWorld::ProbeBirthInitializationGuards(FImpl& I,const FPr
         return Bytes;
     };
     const auto BeforeRetirementRefusal=CaptureRetirementNamed();
+    const auto ActualBirthRoot=RetireWheel->OriginalOwnerRoot.lock();
+    Out.RetirementBirthOtherPredicatesPositive=Operation.Kind==FPrivateNativeOperation::EKind::Birth
+        &&Operation.HasExactRootAndGate(Operation.Identity)&&ActualBirthRoot
+        &&Operation.Root.get()==ActualBirthRoot.get()&&!Operation.Root.owner_before(ActualBirthRoot)
+        &&!ActualBirthRoot.owner_before(Operation.Root);
+    if(!Out.RetirementBirthOtherPredicatesPositive)return false;
+    try{FPrivateNativeStorageAccess::RequireRetirementRoot(Operation,ActualBirthRoot);}
+    catch(const FPrivateNativeStorageUnavailable&){Out.RetirementKindRefusedInBirth=true;}
+    if(!Out.RetirementKindRefusedInBirth||BeforeRetirementRefusal!=CaptureRetirementNamed())return false;
     try{RetireWheel->ClearReferenceWheelBindingsAtRetirement(Operation);}
     catch(const FPrivateNativeStorageUnavailable&){Out.RetirementClearRefusedInBirth=true;}
     Out.RetirementBirthFootprintUnchanged=BeforeRetirementRefusal==CaptureRetirementNamed();
@@ -1312,7 +1381,7 @@ std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::CreateWithBi
 {
     Result={};Why.Empty();
     if(!IsInGameThread()||OriginalComponentStorageOwner||Speed::Input::FPresentationInputScope::IsActive()
-        ||(Mode!=EPrivateRoadBirthProbeMode::Observe&&Mode!=EPrivateRoadBirthProbeMode::FailAfterFirstInitializer&&Mode!=EPrivateRoadBirthProbeMode::ProbeFirstOwnerAndAbort))
+        ||(Mode!=EPrivateRoadBirthProbeMode::Observe&&Mode!=EPrivateRoadBirthProbeMode::FailAfterFirstInitializer&&Mode!=EPrivateRoadBirthProbeMode::ProbeFirstOwnerAndAbort&&Mode!=EPrivateRoadBirthProbeMode::AbortAfterEarlyReferenceOwner))
     {Refuse(Why,TEXT("native birth diagnostic requires a valid GT test mode"));return {};}
     FRetainedNativeCall ForeignCall(Foreign.Impl);
     if(!ForeignCall.Root||ForeignCall.Root->Closed||ForeignCall.Root->Failed
@@ -1818,6 +1887,15 @@ bool FPrivateRoadPhysicsWorld::ProbeHitAcceptanceRetained(FImpl& I,const FPrivat
         return Bytes;
     };
     const auto BeforeRetirementRefusal=CaptureRetirementNamed();
+    const auto ActualBirthRoot=Wheel->OriginalOwnerRoot.lock();
+    Result.RetirementStepOtherPredicatesPositive=Operation.Kind==FPrivateNativeOperation::EKind::Step
+        &&Operation.HasExactRootAndGate(Operation.Identity)&&ActualBirthRoot
+        &&Operation.Root.get()==ActualBirthRoot.get()&&!Operation.Root.owner_before(ActualBirthRoot)
+        &&!ActualBirthRoot.owner_before(Operation.Root);
+    if(!Result.RetirementStepOtherPredicatesPositive)return false;
+    try{FPrivateNativeStorageAccess::RequireRetirementRoot(Operation,ActualBirthRoot);}
+    catch(const FPrivateNativeStorageUnavailable&){Result.RetirementKindRefusedInStep=true;}
+    if(!Result.RetirementKindRefusedInStep||BeforeRetirementRefusal!=CaptureRetirementNamed())return false;
     try{Wheel->ClearReferenceWheelBindingsAtRetirement(Operation);}
     catch(const FPrivateNativeStorageUnavailable&){Result.RetirementClearRefusedInStep=true;}
     Result.RetirementStepFootprintUnchanged=BeforeRetirementRefusal==CaptureRetirementNamed();
@@ -2605,6 +2683,18 @@ void USpeedBranchWheelSubBody::WriteReferenceBindingFixtureForDiagnostics(
     USWheelSubBody::WheelComponentWheelDomainStorage()=Values.WheelParent;
 }
 #endif
+
+void USpeedBranchWheelSubBody::ClearReferenceWheelBindingsAtOwnerBirth(
+ const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation)
+{
+    namespace P=Speed::Netcode::Prediction;
+    P::FPrivateNativeStorageAccess::RequireBirthRoot(Operation,OriginalOwnerRoot.lock());
+    if(OriginalBodyIdentity.Get()!=this||HasAnyFlags(RF_BeginDestroyed|RF_FinishDestroyed)
+        ||!StorageAccess.expired())throw P::FPrivateNativeStorageUnavailable{};
+    // EXACTLY two early facade fields, no configuration clear, index or target
+    // writes. This phase precedes real wheel storage-table registration.
+    PWheel=nullptr;PSuspension=nullptr;
+}
 
 void USpeedBranchWheelSubBody::ClearReferenceWheelBindingsAtRetirement(
  const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation)

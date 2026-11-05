@@ -1,6 +1,7 @@
 #if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
 #include "IAmSpeed/Tests/PrivateRoadBirthFixtureObjects.h"
 #include "Engine/World.h"
+#include "Components/SceneComponent.h"
 #include "GameFramework/Actor.h"
 #include "Misc/AutomationTest.h"
 #include "Misc/ScopeExit.h"
@@ -20,6 +21,8 @@ bool FIASLegacyFirstOwnerBirthTraversal::RunTest(const FString&)
     if(!TestNotNull(TEXT("actual legacy fixture world"),World))return false;
     ON_SCOPE_EXIT{World->DestroyWorld(false);};
     auto* Actor=World->SpawnActor<AActor>();if(!Actor)return false;
+    TStrongObjectPtr<USceneComponent> ActualRoot(NewObject<USceneComponent>(Actor));
+    if(!ActualRoot.Get())return false;Actor->SetRootComponent(ActualRoot.Get());
     TStrongObjectPtr<UIASBirthFixtureComponent> Parent(NewObject<UIASBirthFixtureComponent>(Actor));
     TStrongObjectPtr<UIASBirthFixtureBox> Box(NewObject<UIASBirthFixtureBox>(Actor));
     TStrongObjectPtr<UIASBirthFixtureWheel> A(NewObject<UIASBirthFixtureWheel>(Actor)),C(NewObject<UIASBirthFixtureWheel>(Actor));
@@ -43,9 +46,26 @@ bool FIASLegacyFirstOwnerBirthTraversal::RunTest(const FString&)
         Parent->CenterOfMassOverrideWheeledDomainStorage()=Override?FVector(7,-11,5):FVector::ZeroVector;
         Parent->bEnableCenterOfMassOverrideWheeledDomainStorage()=false;
         A->SetChaosWheel(CA.Get());C->SetChaosWheel(CC.Get());A->SetWheelSim(&SA);C->SetWheelSim(&SC);A->SetSuspensionSim(&UA);C->SetSuspensionSim(&UC);
-        Parent->ResolveFixedCenterOfMassFromConfiguration();
-        Parent->SetPhysRotation(ActorRotation);Parent->SetPhysLocation(ActorLocation);
-        Parent->InitializeBoundSubBodiesForPhysicalOwner(); // actual shared ordinary body, no native operation
+        TestTrue(TEXT("actual legacy actor location API returned"),Actor->SetActorLocation(ActorLocation));
+        TestTrue(TEXT("actual legacy actor rotation API returned"),Actor->SetActorRotation(ActorRotation));
+        uint32 RealReallocations=0;bool DifferentAllocationSameRoster=false;
+        Trace->AfterChildUpdate=[&]() {
+            if(RealReallocations==0)
+            {
+                DifferentAllocationSameRoster=Parent->ReallocateSameBodyRosterForFixture();
+                ++RealReallocations;
+            }
+        };
+        Parent->SetOwner(Actor); // REAL ordinary SetOwner/shared program, no native operation
+        Trace->AfterChildUpdate=nullptr; // callback never escapes these actual owner calls
+        TestEqual(TEXT("one real custom child callback reallocated the parent list"),RealReallocations,uint32(1));
+        TestTrue(TEXT("actual old/new allocations differ with identical live roster"),DifferentAllocationSameRoster);
+        TestEqual(TEXT("both real custom child updates returned after the reallocation"),Trace->ChildUpdateReturns,uint32(2));
+        TestTrue(TEXT("custom child update order unchanged after parent reallocation"),Trace->ChildUpdateOrder.Num()==2
+            &&Trace->ChildUpdateOrder[0]==A.Get()&&Trace->ChildUpdateOrder[1]==C.Get());
+        AddInfo(FString::Printf(TEXT("[LegacyFirstOwnerChildArrayReallocation] case=%d reallocationCalls=%u differentAllocationSameRoster=%d childReturns=%u. Real custom virtual callback tests shared traversal; no private exact-class callback or lifetime lease is fabricated."),
+            Override,RealReallocations,int(DifferentAllocationSameRoster),Trace->ChildUpdateReturns));
+        Parent->SetAsyncPhysicsTickEnabled(false);
         const FVector ExpectedCOM=Override?FVector(7,-11,5):FVector(13,17,-2);
         TestTrue(TEXT("override precedence / zero override fallback unchanged"),Parent->CenterOfMassWheeledDomainStorage()==ExpectedCOM
             &&Parent->CenterOfMassOverrideWheeledDomainStorage()==ExpectedCOM&&Parent->bEnableCenterOfMassOverrideWheeledDomainStorage());
@@ -88,7 +108,7 @@ bool FIASLegacyFirstOwnerBirthTraversal::RunTest(const FString&)
     TestTrue(TEXT("real legacy wheel distinguishes base-only velocity shortcut"),LegacyOrderDistinguished);
     AddInfo(FString::Printf(TEXT("[LegacyFirstOwnerChildArithmetic] actualUpdates=%u orderDistinguished=%d"),ActualLegacyUpdates,int(LegacyOrderDistinguished)));
     TestFalse(TEXT("authored fixture remains unregistered"),Parent->IsRegistered());
-    AddInfo(TEXT("[LegacyFirstOwnerBirthTraversal] cases=2 customBodiesEach=3 subbodyQueriesEachCase=9 wheelQueriesEachCase=2 inverseCallsEachCase=6 nonzeroCOMPose=1 rotatedStoredTensor=1 clearKeepsConfig=1 orderedPartialRoster=1. Real legacy helper/custom dispatch fixtures; ordinary SetOwner source/tick/register order remains unchanged, no native lease or network claim."));
+    AddInfo(TEXT("[LegacyFirstOwnerBirthTraversal] cases=2 customBodiesEach=3 subbodyQueriesEachCase=9 wheelQueriesEachCase=2 inverseCallsEachCase=6 nonzeroCOMPose=1 rotatedStoredTensor=1 clearKeepsConfig=1 orderedPartialRoster=1. Real ordinary SetOwner/default/custom dispatch fixtures with actor pose APIs and shared tick/register order; no native lease or network claim."));
     return !HasAnyErrors();
 }
 #endif

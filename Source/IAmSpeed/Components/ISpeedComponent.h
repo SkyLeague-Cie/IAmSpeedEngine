@@ -479,7 +479,23 @@ private:
     template<class TAccess> void AddPhysForceBatchAtPointsBody(TAccess& Storage,const TArray<FVector>& Forces,const TArray<FVector>& WorldPoints,const USolidSubBody* SubBody);
     void AddPhysForceBatchAtPointsNative(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const TArray<FVector>& Forces,const TArray<FVector>& WorldPoints,const USolidSubBody* SubBody);
     class FLegacyChildrenUpdateAccess;class FNativeChildrenUpdateAccess;
-    template<class TAccess> void UpdateSubBodiesKinematicsBody(TAccess& Storage);
+protected:
+    // Same shared arithmetic/order; access supplies actual callback validation.
+    template<class TAccess> void UpdateSubBodiesKinematicsBody(TAccess& Storage)
+    {
+        // Every child observes the same parent state; derive origin from COM once.
+        const SKinematic OriginState = Storage.Origin();
+        const int32 NumBodies = Storage.SubBodies().Num();
+        for (int32 Index=0;Index<NumBodies;++Index)
+        {
+            // Resolve this index again after each actual child callback. The
+            // checked reference access revalidates cardinality/weak roster;
+            // no TArray iterator or element borrow survives Update.
+            USSubBody* SubBody = Storage.SubBodies()[Index];
+            Storage.Update(SubBody,OriginState);
+        }
+    }
+private:
     void UpdateSubBodiesKinematicsNative(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation);
     class FLegacyImpulseAccess;class FNativeImpulseAccess;
     template<class TAccess> void AddPhysImpulseAtPointBody(TAccess& Storage,const FVector& Impulse,const FVector& Point,const USolidSubBody* SubBody);

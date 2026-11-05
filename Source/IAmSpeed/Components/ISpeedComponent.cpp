@@ -396,16 +396,6 @@ public:
     const TArray<USSubBody*>& SubBodies() const {return Speed::NativeKinematics::FComponentRead::SubBodies(Operation,Owner);}
     void Update(USSubBody* Body,const SKinematic& Parent) const {Speed::NativeKinematics::FBodyWrite::UpdateFromOwner(Operation,Body,Parent);}
 };
-template<class TAccess>
-void ISpeedComponent::UpdateSubBodiesKinematicsBody(TAccess& Storage)
-{
-    // Every child observes the same parent state; derive origin from COM once.
-    const SKinematic OriginState = Storage.Origin();
-    for (USSubBody* SubBody : Storage.SubBodies())
-    {
-        Storage.Update(SubBody,OriginState);
-    }
-}
 void ISpeedComponent::UpdateSubBodiesKinematics()
 {
     FLegacyChildrenUpdateAccess Storage(*this);UpdateSubBodiesKinematicsBody(Storage);

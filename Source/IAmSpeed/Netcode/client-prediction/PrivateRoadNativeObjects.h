@@ -9,6 +9,7 @@
 #include "PrivateRoadNativeObjects.generated.h"
 namespace Speed::Netcode::Prediction { struct FPrivateRoadAccess;class FPrivateRoadPhysicsWorld;class FPrivateNativeOperation; }
 namespace Speed::CommonState {struct FSleepValues;struct FQuantizationValues;}
+class USpeedWorldSubsystem;
 namespace Speed::Netcode::Prediction
 {
 // Actual original birth identities only; no physical-state capture, completeness
@@ -40,6 +41,36 @@ public:
     FPrivateRoadBirthIdentities& operator=(const FPrivateRoadBirthIdentities&)=delete;
     FPrivateRoadBirthIdentities(FPrivateRoadBirthIdentities&&)=delete;
     FPrivateRoadBirthIdentities& operator=(FPrivateRoadBirthIdentities&&)=delete;
+};
+
+// Call-scoped EARLY reference owner witness. It contains actual pre-vehicle
+// weak births and the retained factory root, never a late vehicle allocation.
+class FPrivateReferenceOwnerBirth final
+{
+    friend class FPrivateRoadPhysicsWorld;
+    friend class ::USpeedWheeledComponent;
+    const std::shared_ptr<void> ActualRoot;
+    const TWeakObjectPtr<UWorld> World;
+    const TWeakObjectPtr<USpeedWorldSubsystem> Bridge;
+    const TWeakObjectPtr<AActor> Actor;
+    const TWeakObjectPtr<USpeedWheeledComponent> Component;
+    const TWeakObjectPtr<UBoxSubBody> Hitbox;
+    const TArray<TWeakObjectPtr<USWheelSubBody>> Bodies;
+    FPrivateReferenceOwnerBirth(const std::shared_ptr<void>& Root,
+        const TWeakObjectPtr<UWorld>& WorldBirth,
+        const TWeakObjectPtr<USpeedWorldSubsystem>& BridgeBirth,
+        const TWeakObjectPtr<AActor>& ActorBirth,
+        const TWeakObjectPtr<USpeedWheeledComponent>& ComponentBirth,
+        const TWeakObjectPtr<UBoxSubBody>& HitboxBirth,
+        const TArray<TWeakObjectPtr<USWheelSubBody>>& BodyBirths)
+      :ActualRoot(Root),World(WorldBirth),Bridge(BridgeBirth),Actor(ActorBirth),Component(ComponentBirth),
+       Hitbox(HitboxBirth),Bodies(BodyBirths) {}
+public:
+    ~FPrivateReferenceOwnerBirth()=default;
+    FPrivateReferenceOwnerBirth(const FPrivateReferenceOwnerBirth&)=delete;
+    FPrivateReferenceOwnerBirth& operator=(const FPrivateReferenceOwnerBirth&)=delete;
+    FPrivateReferenceOwnerBirth(FPrivateReferenceOwnerBirth&&)=delete;
+    FPrivateReferenceOwnerBirth& operator=(FPrivateReferenceOwnerBirth&&)=delete;
 };
 
 // Birth-call-scoped witness of the real REFERENCE allocation made by the factory.
@@ -545,6 +576,8 @@ private:
     bool UsesOriginalBodyStorage() const;
     TWeakObjectPtr<USSubBody> OriginalBodyIdentity; // private, copied once by actual birth owner
     std::weak_ptr<void> OriginalOwnerRoot; // actual FImpl/control block, captured once with body birth
+    friend class USpeedWheeledComponent;
+    void ClearReferenceWheelBindingsAtOwnerBirth(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation);
     void ClearReferenceWheelBindingsAtRetirement(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation);
     TWeakObjectPtr<USSubBody> GetPhysicsWeakIdentity() const override;
 #if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
