@@ -2195,3 +2195,31 @@ or relax Row.Actor!=0 or the strict per-actor checks. Physical creation, order,
 programs, guards, four Mass overrides and the restore guard remain unchanged.
 Fresh native execution must observe the corrected binding on the new tuple;
 full-state/source-lifetime, CanMove, K and playable multiplayer gates remain open.
+
+### Prospective ordinary parent initializer entry controls (unqualified draft)
+
+The private final wheeled component refuses ordinary SetOwner and ordinary
+InitializeBoundSubBodiesForPhysicalOwner at their first entry, before constructing
+legacy access or the shared numerical program. Legacy/custom empty-default dispatch
+and genuine typed reference/original factory programs remain unchanged.
+Seven native attempts are authored: virtual and explicitly base-qualified SetOwner
+with null/own/foreign actual actors, plus InitializeBound with no argument. Each
+attempt reads the retained own/foreign owners with no actual operation and compares
+six declared original/reference/facade buffers. Named component owner, COM settings,
+six kinematics, chassis matrix, child arrays and the existing initializer/binding
+footprint are included. Actual pending lists are copied under their real locks;
+those locks end before attempts and test callbacks. Const FindStableId reads only
+named membership; it never registers, applies, rebuilds or advances a frame.
+
+This draft has zero native executions. Registry membership is partial, the private
+UE async scheduling bit is UNCAPTURED, and pointed Chaos/full state/source/lifetime
+and restoration remain open. No value is substituted for unavailable observation.
+Existing positive legacy/custom and typed factory controls must run freshly, along
+with independent same-frame input comparisons. Guards do not certify a complete
+lease or authorize K restoration/two-client network acceptance.
+
+The parent NoOp fixture observes four actual components and twenty distinct body
+UObjects through twenty original and twenty reference body domains; this differs
+from the ten-body scope of typed early initializer refusals. Pending-list copies
+and named membership are partial observations. PublishedStableId is copied only
+from original component storage; no facade back-reference equality is inferred.

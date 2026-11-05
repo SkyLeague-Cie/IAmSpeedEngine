@@ -904,6 +904,7 @@ void USpeedWheeledComponent::SetOwnerBody(TAccess& Storage,AActor* NewOwner)
 }
 void USpeedWheeledComponent::SetOwner(AActor* NewOwner)
 {
+    CheckOrdinaryOwnerInitializationEntry();
     FLegacyOwnerBirthAccess Storage(*this);SetOwnerBody(Storage,NewOwner);
 }
 void USpeedWheeledComponent::InitializeReferenceOwnerBirth(
@@ -948,6 +949,7 @@ void USpeedWheeledComponent::InitializeBoundSubBodiesForPhysicalOwnerBody(TAcces
 }
 void USpeedWheeledComponent::InitializeBoundSubBodiesForPhysicalOwner()
 {
+    CheckOrdinaryOwnerInitializationEntry();
     FLegacyOwnerBirthAccess Storage(*this);InitializeBoundSubBodiesForPhysicalOwnerBody(Storage);
 }
 void USpeedWheeledComponent::InitializeOriginalOwnerFromCapturedPose(

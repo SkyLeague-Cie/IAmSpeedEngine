@@ -277,6 +277,8 @@ public:
     // Fixed actual ordinary entries, invoked with no native operation or storage selection.
     bool ProbeOrdinaryInitializersWithoutOperationForDiagnostics(FPrivateRoadPhysicsWorld& Foreign,
         FPrivateRoadOrdinaryBindingNoOpProbe& Result,FString& Why);
+    bool ProbeOrdinaryParentInitializationWithoutOperationForDiagnostics(FPrivateRoadPhysicsWorld& Foreign,
+        FPrivateRoadOrdinaryBindingNoOpProbe& Result,FString& Why);
     bool ProbeOrdinaryBindingsWithoutOperationForDiagnostics(FPrivateRoadPhysicsWorld& Foreign,
         FPrivateRoadOrdinaryBindingNoOpProbe& Result,FString& Why);
     std::shared_ptr<const FPrivateRoadRetirementBindingTrace> CaptureRetirementBindingObserverForDiagnostics();

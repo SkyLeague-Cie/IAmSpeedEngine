@@ -823,6 +823,7 @@ class IAMSPEED_API USpeedBranchWheeledComponent final : public USpeedWheeledComp
     friend class Speed::NativeKinematics::FComponentWrite;
     std::weak_ptr<Speed::Netcode::Prediction::FPrivateRoadAccess> Access;
     void CheckOrdinaryComponentBindingEntry() const override;
+    void CheckOrdinaryOwnerInitializationEntry() const override;
     bool HasIsolatedNativeConstruction() const;
     bool ReadOriginalLegacyGameModePresence() const override;
 
