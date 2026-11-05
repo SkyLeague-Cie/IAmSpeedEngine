@@ -58,6 +58,8 @@ bool FIASPrivateRoadWheelSimulationBindings::RunTest(const FString&)
     if(!TestTrue(*FString::Printf(TEXT("real Step phase entry: %s"),*Why),Own->StepWithHitAcceptanceProbeForDiagnostics(Requests,false,*Foreign,Step,Why)))return false;
     TestTrue(TEXT("actual Step refuses Birth-only binding before target writes"),Step.BirthWheelBindingRefusedDuringStep);
     TestTrue(TEXT("actual Step refuses reference body Birth preflight before writes"),Step.ReferenceBindingBodyRefusedDuringStep);
+    TestTrue(TEXT("actual Step refuses Retirement clear before named original/reference effects"),Step.RetirementClearRefusedInStep&&Step.RetirementStepFootprintUnchanged);
+    AddInfo(FString::Printf(TEXT("[PrivateRoadRetirementStepBoundary] refused=%d beforeWrite=%d"),int(Step.RetirementClearRefusedInStep),int(Step.RetirementStepFootprintUnchanged)));
     if(!TestTrue(TEXT("independent reference still advances"),Foreign->Step(Requests,false,Why)))return false;
     const auto A=Own->ReadLatest(),B=Foreign->ReadLatest();
     if(!TestTrue(TEXT("real frame-zero publications"),A&&B&&A->Frame==0&&B->Frame==0&&A->Actors.size()==2&&B->Actors.size()==2))return false;

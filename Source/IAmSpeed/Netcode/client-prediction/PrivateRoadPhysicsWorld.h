@@ -109,6 +109,27 @@ struct FPrivateRoadPublication
     std::vector<FPrivateRoadActorFrame> Actors;
 };
 #if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+// Diagnostic counter values only. This allocation retains no graph, UObject,
+// configuration, operation, callback or native binding view.
+struct FPrivateRoadRetirementBindingTrace
+{
+    uint32 WorldDestroyReturns=0,WeakVisited=0,WeakUnresolved=0,GarbageFlagSkips=0;
+    uint32 LiveResolved=0,FacadeClearReturns=0,OriginalPointerTriplesCompared=0;
+    uint32 OriginalWheelDisconnectReturns=0,CloseReturns=0;
+    uint32 AnyFacadeBindingPresentBefore=0,FacadeWheelPresentBefore=0,FacadeSuspensionPresentBefore=0,FacadeConfigurationPresentBefore=0;
+    uint32 FacadeWheelNullAfter=0,FacadeSuspensionNullAfter=0,FacadeConfigurationNullAfter=0;
+    uint32 FacadeWheelChangedFromPresent=0,FacadeSuspensionChangedFromPresent=0,FacadeConfigurationChangedFromPresent=0;
+    bool FacadeClearsKeptOriginalPointers=true; // positive requires compared>0
+};
+struct FPrivateRoadRetirementForeignProbe
+{
+    uint32 ActualRetirementCalls=0,OwnRootValidationReturns=0;
+    uint32 NamedFacadeSubjectsObserved=0,NamedWeakUnresolved=0,NamedGarbageFlagSkips=0;
+    bool ForeignRootValidatorRefused=false,NamedFootprintUnchanged=false;
+    // This isolates the Root validator, not the foreign leaf's later preconditions.
+    // A foreign Retirement leaf call with StorageAccess already reset is NOT_PROVED.
+};
+
 enum class EPrivateRoadBirthProbeMode : uint8 { Observe,FailAfterFirstInitializer,ProbeFirstOwnerAndAbort };
 struct FPrivateRoadBirthInitializationProbe
 {
@@ -133,6 +154,8 @@ struct FPrivateRoadBirthInitializationProbe
     bool ReferenceBindingValuesMatch=false,ReferenceBindingOverridePredicatesMatch=false;
     uint32 OriginalBindingReferenceComparisons=0;bool OriginalBindingKeepsReference=false;
 
+    std::shared_ptr<const FPrivateRoadRetirementBindingTrace> RetirementObserver;
+    bool RetirementClearRefusedInBirth=false,RetirementBirthFootprintUnchanged=false;
     bool ActualBirthOperation=false,ForeignBodyRefused=false,ForeignParentRefused=false,ForeignInverseRefused=false;
     bool StepHitRefusedInBirth=false,OwnBodyUnchangedAfterRefusals=false;
     bool StepResetRefusedInBirth=false,StepResolveRefusedInBirth=false;
@@ -153,6 +176,7 @@ struct FPrivateRoadHitAcceptanceProbe
     bool BirthInitializationRefusedDuringStep=false;
     bool BirthWheelBindingRefusedDuringStep=false;
     bool ReferenceBindingBodyRefusedDuringStep=false;
+    bool RetirementClearRefusedInStep=false,RetirementStepFootprintUnchanged=false;
     bool BirthOwnerTraversalRefusedDuringStep=false;
     uint32 MassBoundaryRefusals=0,MassLegacyResetReturns=0,MassNativeResetReturns=0,MassNoHitResolveReturns=0;
     bool MassRefusalsBeforeWrite=false,MassResetLegacyNativeEqual=false,MassResetDistinctBoxWheel=false,MassNoHitUnchanged=false;
@@ -185,7 +209,14 @@ class IAMSPEED_API FPrivateRoadPhysicsWorld final
         );
     static bool ReleaseInitialPublicationRetained(const std::shared_ptr<FImpl>& Root,const std::shared_ptr<const FPrivateRoadPublication>& Baseline,FString& Why);
     static std::vector<FNativeConfigurationLifetimeValues> ReadNativeConfigurationLifetimeRetained(const std::shared_ptr<FImpl>& Root);
-    static bool CloseRetained(const std::shared_ptr<FImpl>& Root);
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+    struct FRetirementBindingDiagnosticContext;
+#endif
+    static bool CloseRetained(const std::shared_ptr<FImpl>& Root
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+        ,FRetirementBindingDiagnosticContext* RetirementContext=nullptr
+#endif
+        );
 #if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
     struct FBirthInitializationDiagnosticContext;
     static bool ProbeBirthInitializationGuards(FImpl& I,const FPrivateNativeOperation& Operation,
@@ -212,6 +243,8 @@ public:
     // Immutable actual C++ return-site values; no source/lifetime exclusion or lease follows.
     std::vector<FNativeConfigurationLifetimeValues> ReadNativeConfigurationLifetimeForDiagnostics() const;
 #if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+    std::shared_ptr<const FPrivateRoadRetirementBindingTrace> CaptureRetirementBindingObserverForDiagnostics();
+    bool CloseWithForeignRetirementBindingProbeForDiagnostics(FPrivateRoadPhysicsWorld& Foreign,FPrivateRoadRetirementForeignProbe& Result);
     struct FOriginalWorldReadProbe {bool Admitted=false,SameOriginal=false;};
     // Fixed test-only observations/fault injection in the same real factory.
     // A failure mode can only abort; it never grants an operation or lease.

@@ -38,6 +38,7 @@ bool FIASPrivateRoadBirthInitialization::RunTest(const FString&)
         TestTrue(*(FString(Name)+TEXT(" original named body values unchanged by refusals")),Probe.OwnBodyUnchangedAfterRefusals);
     };
     CheckBirth(TEXT("observed"),ObservedProbe);
+    TestTrue(TEXT("actual Birth refuses Retirement clear before named original/reference effects"),ObservedProbe.RetirementClearRefusedInBirth&&ObservedProbe.RetirementBirthFootprintUnchanged);
     AddInfo(FString::Printf(TEXT("[PrivateRoadMassPhaseBoundary] resetRefusedInBirth=%d resolveRefusedInBirth=%d beforeWrite=%d. Genuine Birth operation; no minted diagnostic authority."),int(ObservedProbe.StepResetRefusedInBirth),int(ObservedProbe.StepResolveRefusedInBirth),int(ObservedProbe.OwnBodyUnchangedAfterRefusals)));
     TestEqual(TEXT("ten actual initializer returns for two stock cars"),ObservedProbe.InitializersReturned,uint32(10));
     TestFalse(TEXT("observation does not force factory failure"),ObservedProbe.FaultAfterFirstInitializerReached||ObservedProbe.CreateReturnedNull);
@@ -75,6 +76,7 @@ bool FIASPrivateRoadBirthInitialization::RunTest(const FString&)
         Seeds,*Foreign,P::EPrivateRoadBirthProbeMode::FailAfterFirstInitializer,AbortedProbe,Why);
     TestFalse(TEXT("forced late factory abort actually returns no owner"),bool(Aborted));
     CheckBirth(TEXT("late abort"),AbortedProbe);
+    TestTrue(TEXT("aborted Birth still refuses Retirement clear before effects"),AbortedProbe.RetirementClearRefusedInBirth&&AbortedProbe.RetirementBirthFootprintUnchanged);
     TestTrue(TEXT("failure point follows one actual returned initializer"),AbortedProbe.FaultAfterFirstInitializerReached&&AbortedProbe.CreateReturnedNull);
     TestEqual(TEXT("one of five first-car initializers actually returned"),AbortedProbe.InitializersReturned,uint32(1));
     TestEqual(TEXT("only genuine preexisting native/config trace objects retained"),AbortedProbe.LifetimeObservers.size(),size_t(4));
@@ -90,7 +92,27 @@ bool FIASPrivateRoadBirthInitialization::RunTest(const FString&)
     TestTrue(TEXT("late abort followed real native construction"),ActualConstructors>0);
     Requests={{101,3,HA.Predict(1)},{102,3,HB.Predict(1)}};
     TestTrue(TEXT("foreign graph remains usable after other graph abort"),Foreign->Step(Requests,false,Why));
-    TestTrue(TEXT("observed and foreign original owners close"),Observed->Close()&&Foreign->Close());
+    const auto CheckActualRetirement=[&](const TCHAR* Scenario,const std::shared_ptr<const P::FPrivateRoadRetirementBindingTrace>& Trace) {
+        if(!TestTrue(TEXT("independent actual retirement counter allocation"),bool(Trace)))return;
+        TestTrue(TEXT("real Close returned after actual world callback"),Trace->CloseReturns==1&&Trace->WorldDestroyReturns==1);
+        TestTrue(TEXT("actual live survivors cleared; allskip is not positive"),Trace->LiveResolved>0&&Trace->FacadeClearReturns==Trace->LiveResolved);
+        TestTrue(TEXT("positive has a real facade pointer present before clear"),Trace->AnyFacadeBindingPresentBefore>0);
+        TestTrue(TEXT("three actual facade cells are null after each returned clear"),Trace->FacadeWheelNullAfter==Trace->FacadeClearReturns&&Trace->FacadeSuspensionNullAfter==Trace->FacadeClearReturns&&Trace->FacadeConfigurationNullAfter==Trace->FacadeClearReturns);
+        TestTrue(TEXT("actual nonnull to null transitions match per-field observed presence"),Trace->FacadeWheelChangedFromPresent==Trace->FacadeWheelPresentBefore&&Trace->FacadeSuspensionChangedFromPresent==Trace->FacadeSuspensionPresentBefore&&Trace->FacadeConfigurationChangedFromPresent==Trace->FacadeConfigurationPresentBefore);
+        AddInfo(FString::Printf(TEXT("[PrivateRoadRetirementFacadeEffects] scenario=%s anyBefore=%u wheelBefore=%u suspensionBefore=%u configurationBefore=%u wheelNullAfter=%u suspensionNullAfter=%u configurationNullAfter=%u wheelChanged=%u suspensionChanged=%u configurationChanged=%u"),Scenario,Trace->AnyFacadeBindingPresentBefore,Trace->FacadeWheelPresentBefore,Trace->FacadeSuspensionPresentBefore,Trace->FacadeConfigurationPresentBefore,Trace->FacadeWheelNullAfter,Trace->FacadeSuspensionNullAfter,Trace->FacadeConfigurationNullAfter,Trace->FacadeWheelChangedFromPresent,Trace->FacadeSuspensionChangedFromPresent,Trace->FacadeConfigurationChangedFromPresent));
+        TestEqual(TEXT("actual weak population partitions"),Trace->WeakVisited,Trace->WeakUnresolved+Trace->GarbageFlagSkips+Trace->LiveResolved);
+        TestTrue(TEXT("facade clears kept named original triples before later disconnection"),Trace->OriginalPointerTriplesCompared>0&&Trace->FacadeClearsKeptOriginalPointers);
+        TestEqual(TEXT("separate retained original wheel roots actually disconnected"),Trace->OriginalWheelDisconnectReturns,Trace->OriginalPointerTriplesCompared);
+        AddInfo(FString::Printf(TEXT("[PrivateRoadRetirementBindings] scenario=%s visited=%u unresolved=%u flagged=%u live=%u cleared=%u originalCompared=%u originalKept=%d disconnected=%u worldReturned=%u closeReturned=%u"),Scenario,Trace->WeakVisited,Trace->WeakUnresolved,Trace->GarbageFlagSkips,Trace->LiveResolved,Trace->FacadeClearReturns,Trace->OriginalPointerTriplesCompared,int(Trace->FacadeClearsKeptOriginalPointers),Trace->OriginalWheelDisconnectReturns,Trace->WorldDestroyReturns,Trace->CloseReturns));
+    };
+    CheckActualRetirement(TEXT("partial-birth"),AbortedProbe.RetirementObserver);
+    const auto NormalObserver=Observed->CaptureRetirementBindingObserverForDiagnostics();
+    P::FPrivateRoadRetirementForeignProbe ForeignRetirement;
+    TestTrue(TEXT("observed owner closes with actual Retirement foreign-root refusal"),Observed->CloseWithForeignRetirementBindingProbeForDiagnostics(*Foreign,ForeignRetirement));
+    TestTrue(TEXT("actual Retirement Root validator accepts own and refuses actual foreign allocation before named pointer effects"),ForeignRetirement.OwnRootValidationReturns==1&&ForeignRetirement.ActualRetirementCalls==1&&ForeignRetirement.ForeignRootValidatorRefused&&ForeignRetirement.NamedFootprintUnchanged);
+    CheckActualRetirement(TEXT("normal"),NormalObserver);
+    TestTrue(TEXT("independent foreign original owner closes"),Foreign->Close());
+    AddInfo(FString::Printf(TEXT("[PrivateRoadRetirementBoundary] birthRefused=%d birthBeforeWrite=%d ownRootValidationReturns=%u foreignRetirementCalls=%u foreignRootValidatorRefused=%d foreignBeforeWrite=%d namedFacadeObserved=%u namedUnresolved=%u namedFlagged=%u foreignLeafProof=0"),int(ObservedProbe.RetirementClearRefusedInBirth),int(ObservedProbe.RetirementBirthFootprintUnchanged),ForeignRetirement.OwnRootValidationReturns,ForeignRetirement.ActualRetirementCalls,int(ForeignRetirement.ForeignRootValidatorRefused),int(ForeignRetirement.NamedFootprintUnchanged),ForeignRetirement.NamedFacadeSubjectsObserved,ForeignRetirement.NamedWeakUnresolved,ForeignRetirement.NamedGarbageFlagSkips));
     AddInfo(FString::Printf(TEXT("[PrivateRoadBirthInitialization] observedInitializers=%u abortedInitializers=%u actualNativeCtorReturns=%llu birthForeignGuards=4 actualStepRejectsBirth=1 lateAbortReturned=1. Partial reinitialization on an allocated first-car graph only; not earlier allocation failures, complete causal state/source/lifetime coverage, restoration or a connected match."),ObservedProbe.InitializersReturned,AbortedProbe.InitializersReturned,ActualConstructors));
     return !HasAnyErrors();
 }

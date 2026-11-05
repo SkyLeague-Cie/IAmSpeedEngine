@@ -128,6 +128,14 @@ class FPrivateNativeStorageAccess final
             ||Operation.Root.owner_before(ActualRoot)||ActualRoot.owner_before(Operation.Root))
             throw FPrivateNativeStorageUnavailable{};
     }
+    static void RequireRetirementRoot(const FPrivateNativeOperation& Operation,const std::shared_ptr<void>& ActualBirthRoot)
+    {
+        if(Operation.Kind!=FPrivateNativeOperation::EKind::Retirement
+            ||!Operation.HasExactRootAndGate(Operation.Identity)
+            ||!ActualBirthRoot||Operation.Root.get()!=ActualBirthRoot.get()
+            ||Operation.Root.owner_before(ActualBirthRoot)||ActualBirthRoot.owner_before(Operation.Root))
+            throw FPrivateNativeStorageUnavailable{};
+    }
     static void RequireStep(const FPrivateNativeOperation& Operation)
     {
         if(Operation.Kind!=FPrivateNativeOperation::EKind::Step

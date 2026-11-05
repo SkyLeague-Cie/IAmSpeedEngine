@@ -2018,3 +2018,56 @@ binding pointers, original simulator mass and original configuration travel,
 plus the named foreign target mass/travel. This can expose an accidental double
 write even when reference results are correct. No whole hidden-state claim.
 The earlier incomplete positive footprint is retained in draft R02/R03 history.
+
+
+### Actual Retirement facade clear boundary (candidate126, not native qualified)
+
+The factory now proposes capturing the actual weak FImpl owner allocation and
+control block with each real original body identity, once and before wheel
+enrollment. The private Retirement clear validates the genuine stack operation,
+owned mutex and active owner against that captured root. It avoids the storage
+table lookup that deliberately rejects Retirement during an incomplete Birth;
+the registration guard stays unchanged. After real world callbacks return and
+the body weak serial/garbage flags resolve, StorageAccess resets before three
+fixed direct facade pointer null assignments. Original retained C++ wheel
+domains disconnect later, separately, with configurations alive through actual
+native destructors. No caller target, mass/config write or TLS grant is added.
+
+Draft native controls count actual weak visits, unresolved subjects, flag skips,
+live survivors and clear returns separately from original root disconnects.
+Normal/partial-birth/last-wrapper tests require nonzero genuine clear returns;
+cleanup callbacks invalidate real wheel subjects and report whichever skip
+branch actually runs. Absent flag/unresolved populations are not certified.
+Actual Birth/Step must refuse the leaf before the named pointer footprint changes.
+Under a real Retirement operation, the Root validator must first accept its own
+actual root and refuse a real foreign root. This isolates the validator from
+the foreign leaf's still-live StorageAccess precondition; foreign-leaf rejection
+with all later preconditions satisfied remains NOT_PROVED. These new controls are NOT_RUN until a new
+exact tuple is applied, built, admitted and executed;125/119 results do not pass126.
+
+Ordinary physical bindings remain OPEN. The real early reference SetOwner calls
+FLegacyOwnerBirthAccess::BindInitial before the later125 reference vehicle witness;
+its no-vehicle Clear makes two ordinary nulls (wheel and suspension). Retirement
+and the ordinary tail make three. A leaf-only refusal also follows SetIndex in
+the whole binder. Future closure must migrate that real early Birth oracle and
+guard the entire ordinary entry before getters/logs/index/effects; a permissive
+null/type/TLS exception is not a replacement. Four Mass aliases, arbitrary public
+targets, explicit Chaos-qualified SetupVehicle, complete state/source/lifetime,
+initial network CanMove synchronization, authoritative K and localized rollback
+with two rendered playable clients and a dedicated server remain unqualified.
+
+Candidate126 R03 preserves three R02 review findings: the foreign leaf test was
+masked by its unreset StorageAccess, positive counters did not observe actual
+facade effects, and a postcallback footprint read omitted garbage-flag checks.
+The new positive records each facade field's actual pre-clear presence, null
+after return and nonnull-to-null transitions. At least one real present field
+is required; a zero-present field does not acquire positive transition coverage.
+Each postcallback diagnostic weak subject also resolves its garbage flags;
+unresolved/flagged populations are counted and omitted from value reads, never
+represented as null pointer values. Original pointer comparison remains separate.
+
+Candidate126 R04 explicitly checks the foreign subject's stored original weak
+serial/this/flags and the captured birth root against its genuine retained FImpl
+allocation/control block before the validator control. The foreign fixture has
+both a different allocation and control block. It does not independently prove
+same-address/different-control-block rejection; that narrower case stays untested.

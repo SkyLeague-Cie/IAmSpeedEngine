@@ -144,11 +144,21 @@ bool FIASPrivateRoadLastWrapperRelease::RunTest(const FString&)
         if(!TestTrue(TEXT("actual native component enumerated"),Component!=nullptr))return false;
         const auto Traces=Owner->CaptureNativeConfigurationLifetimeObserversForDiagnostics();
         if(!TestTrue(TEXT("original and reference actual native constructors returned"),ActualNativeConfigurationIsLive(Traces)))return false;
-        int32 CleanupCalls=0;bool NativeLiveAtCleanup=false;
+        const auto RetirementObserver=Owner->CaptureRetirementBindingObserverForDiagnostics();
+        const auto& ActualWheelsForCleanup=Component->GetWheelSubBodies();
+        if(!TestEqual(TEXT("four actual wheel subjects before cleanup"),ActualWheelsForCleanup.Num(),4))return false;
+        TWeakObjectPtr<USWheelSubBody> WheelToInvalidate(ActualWheelsForCleanup[0].Get());
+        int32 CleanupCalls=0;bool NativeLiveAtCleanup=false;int32 ActualInvalidationCalls=0;
         const auto Cleanup=FWorldDelegates::OnWorldCleanup.AddLambda([&](UWorld* World,bool,bool)
         {
             if(!IsInGameThread()||World!=TargetWorld)return;
             ++CleanupCalls;NativeLiveAtCleanup=ActualNativeConfigurationIsLive(Traces);
+            if(auto* Wheel=WheelToInvalidate.Get()) {
+                // Real target/callback, never a forced diagnostic count. These
+                // APIs may resolve into different actual skip populations.
+                if(ThrowFromActualLog)Wheel->ConditionalBeginDestroy();else Wheel->MarkAsGarbage();
+                ++ActualInvalidationCalls;
+            }
         });
         ON_SCOPE_EXIT{FWorldDelegates::OnWorldCleanup.Remove(Cleanup);};
         std::array<Consumed::FActionPolicy,ActionCount> Actions{};
@@ -192,6 +202,11 @@ bool FIASPrivateRoadLastWrapperRelease::RunTest(const FString&)
         auto* Entry=Owner.get();Device.Armed=true;
         const bool Returned=Entry->Step(Requests,false,Why);
         Device.Armed=false;
+        // A skipped garbage/BeginDestroyed UObject can legitimately retain its
+        // original C++ aliases/configuration until real GC. Observe that GC
+        // return separately; never invent destruction during the earlier Close.
+        CollectGarbage(RF_NoFlags);
+        AddInfo(TEXT("[PrivateRoadRetirementPostCloseGC] actualReturns=1"));
         TestTrue(TEXT("Step returned the actual expected result after callback"),Returned!=ThrowFromActualLog);
         TestEqual(TEXT("actual supported GLog callback executed once"),Device.Calls,1);
         TestTrue(TEXT("real callback deleted last wrapper"),!Owner);
@@ -210,6 +225,20 @@ bool FIASPrivateRoadLastWrapperRelease::RunTest(const FString&)
         TestEqual(TEXT("all four actual reference/facade WheelSim reads succeeded AFTER wrapper deletion and GC"),Device.ActualReferenceWheelReads,4);
         TestEqual(TEXT("real native world cleanup callback executed exactly once"),CleanupCalls,1);
         TestTrue(TEXT("actual configurations still live during original world cleanup callback"),NativeLiveAtCleanup);
+        TestEqual(TEXT("one actual cleanup callback invalidation returned"),ActualInvalidationCalls,1);
+        if(!TestTrue(TEXT("retained counter values survive last wrapper without retaining graph"),bool(RetirementObserver)))return false;
+        const auto& RT=*RetirementObserver;
+        TestTrue(TEXT("real deferred Close and world callback returned"),RT.CloseReturns==1&&RT.WorldDestroyReturns==1);
+        TestTrue(TEXT("actual skipped subject is measured; branch identity is not invented"),RT.WeakUnresolved+RT.GarbageFlagSkips>0);
+        TestTrue(TEXT("remaining real live subjects actually cleared"),RT.LiveResolved>0&&RT.FacadeClearReturns==RT.LiveResolved);
+        TestTrue(TEXT("last-wrapper positive has actual facade pointer presence before clear"),RT.AnyFacadeBindingPresentBefore>0);
+        TestTrue(TEXT("last-wrapper actual three facade cells null after returned clears"),RT.FacadeWheelNullAfter==RT.FacadeClearReturns&&RT.FacadeSuspensionNullAfter==RT.FacadeClearReturns&&RT.FacadeConfigurationNullAfter==RT.FacadeClearReturns);
+        TestTrue(TEXT("last-wrapper observed field transitions remain distinct"),RT.FacadeWheelChangedFromPresent==RT.FacadeWheelPresentBefore&&RT.FacadeSuspensionChangedFromPresent==RT.FacadeSuspensionPresentBefore&&RT.FacadeConfigurationChangedFromPresent==RT.FacadeConfigurationPresentBefore);
+        AddInfo(FString::Printf(TEXT("[PrivateRoadRetirementLastWrapperEffects] throw=%d anyBefore=%u wheelBefore=%u suspensionBefore=%u configurationBefore=%u wheelNullAfter=%u suspensionNullAfter=%u configurationNullAfter=%u wheelChanged=%u suspensionChanged=%u configurationChanged=%u"),int(ThrowFromActualLog),RT.AnyFacadeBindingPresentBefore,RT.FacadeWheelPresentBefore,RT.FacadeSuspensionPresentBefore,RT.FacadeConfigurationPresentBefore,RT.FacadeWheelNullAfter,RT.FacadeSuspensionNullAfter,RT.FacadeConfigurationNullAfter,RT.FacadeWheelChangedFromPresent,RT.FacadeSuspensionChangedFromPresent,RT.FacadeConfigurationChangedFromPresent));
+        TestEqual(TEXT("actual last-wrapper weak population partitions"),RT.WeakVisited,RT.WeakUnresolved+RT.GarbageFlagSkips+RT.LiveResolved);
+        TestTrue(TEXT("clearing facade preserved actual original pointer triples"),RT.OriginalPointerTriplesCompared==4&&RT.FacadeClearsKeptOriginalPointers);
+        TestEqual(TEXT("separate original retained wheel disconnection returns"),RT.OriginalWheelDisconnectReturns,uint32(4));
+        AddInfo(FString::Printf(TEXT("[PrivateRoadRetirementLastWrapper] throw=%d visited=%u unresolved=%u flagged=%u live=%u cleared=%u originalCompared=%u originalKept=%d disconnected=%u worldReturned=%u closeReturned=%u invalidationCalls=%d"),int(ThrowFromActualLog),RT.WeakVisited,RT.WeakUnresolved,RT.GarbageFlagSkips,RT.LiveResolved,RT.FacadeClearReturns,RT.OriginalPointerTriplesCompared,int(RT.FacadeClearsKeptOriginalPointers),RT.OriginalWheelDisconnectReturns,RT.WorldDestroyReturns,RT.CloseReturns,ActualInvalidationCalls));
         TestTrue(TEXT("both actual native destructors returned before actual config destructors, exactly once"),ActualNativeConfigurationWasRetiredOnce(Traces));
         TestTrue(TEXT("retained immutable startup value survives independently"),Baseline->Frame==0&&!Baseline->Actors.empty()&&!Baseline->Actors[0].CanMove);
         if(ThrowFromActualLog)TestTrue(TEXT("real callback exception was retained as a failed physical operation"),Why.Contains(TEXT("diagnostic callback exception")));

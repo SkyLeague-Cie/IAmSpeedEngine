@@ -262,6 +262,9 @@ FReferenceSimulation RetiringReferenceSimulation;
     std::vector<std::unique_ptr<FCar>> Cars;
     std::shared_ptr<FPrivateRoadAccess> Access=std::make_shared<FPrivateRoadAccess>();
     std::unique_ptr<Speed::NativeEpoch::FDiagnosticOutbox> Diagnostics;
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+    std::shared_ptr<FPrivateRoadRetirementBindingTrace> RetirementBindingTrace=std::make_shared<FPrivateRoadRetirementBindingTrace>();
+#endif
     mutable std::mutex Gate;
     std::shared_ptr<const FPrivateNativeGraphIdentity> NativeOperationIdentity;
     std::shared_ptr<FPrivateNativeStorageMap> NativeStorage;
@@ -535,6 +538,9 @@ std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::CreateCore(s
     auto Owner=std::unique_ptr<FPrivateRoadPhysicsWorld>(new FPrivateRoadPhysicsWorld);
     auto& I=*Owner->Impl;
     const auto Root=Owner->Impl;
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+    if(BirthContext)BirthContext->Result.RetirementObserver=I.RetirementBindingTrace;
+#endif
     std::unique_lock BirthLock(I.Gate,std::try_to_lock);
     if(!BirthLock.owns_lock()){Refuse(Why,TEXT("native birth owner gate unavailable"));return {};}
     FPrivateNativeOperation Operation(Root,I.NativeOperationIdentity,I.NativeStorage,FPrivateNativeOperation::EKind::Birth,std::move(BirthLock));
@@ -768,7 +774,11 @@ std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::CreateCore(s
             {
                 auto* Wheel=Cast<USpeedBranchWheelSubBody>(N.OriginalWheelBodyBirth[Index].Get());
                 if(!Wheel)return {};
+                // Never overwrite a prior birth, including an expired weak serial.
+                if(!Wheel->OriginalBodyIdentity.IsExplicitlyNull()||!Wheel->OriginalOwnerRoot.expired())return {};
+                FPrivateNativeStorageAccess::RequireBirthRoot(Operation,Root);
                 Wheel->OriginalBodyIdentity=N.OriginalWheelBodyBirth[Index];
+                Wheel->OriginalOwnerRoot=Root; // true FImpl, BEFORE later FWheelRoot local shadows Root
             }
         }
         N.NativeVehicleRoot=std::make_shared<FImpl::FCar::FVehicleRoot>(N.NativeConfiguration,C->OriginalWheeledDomain);
@@ -1278,6 +1288,20 @@ bool FPrivateRoadPhysicsWorld::ProbeBirthInitializationGuards(FImpl& I,const FPr
         if(Case==4)Out.StepResetRefusedInBirth=Refused;
         if(Case==5)Out.StepResolveRefusedInBirth=Refused;
     }
+    if(I.OriginalWheelsWeak.IsEmpty())return false;
+    auto* RetireWheel=I.OriginalWheelsWeak[0].Get();if(!RetireWheel)return false;
+    const auto CaptureRetirementNamed=[&]() {
+        TArray<uint8> Bytes;using B=Speed::FEpisodeStateBytesForTesting;
+        const auto& V=FPrivateNativeStorageAccess::Part<const FPrivateRoadWheelDomain>(Operation,RetireWheel);
+        B::Add(Bytes,V.PWheel);B::Add(Bytes,V.PSuspension);B::Add(Bytes,V.ChaosWheel);
+        B::Add(Bytes,RetireWheel->GetWheelSim());B::Add(Bytes,RetireWheel->GetSuspensionSim());B::Add(Bytes,RetireWheel->GetChaosWheelConfiguration());
+        return Bytes;
+    };
+    const auto BeforeRetirementRefusal=CaptureRetirementNamed();
+    try{RetireWheel->ClearReferenceWheelBindingsAtRetirement(Operation);}
+    catch(const FPrivateNativeStorageUnavailable&){Out.RetirementClearRefusedInBirth=true;}
+    Out.RetirementBirthFootprintUnchanged=BeforeRetirementRefusal==CaptureRetirementNamed();
+    if(!Out.RetirementClearRefusedInBirth||!Out.RetirementBirthFootprintUnchanged)return false;
     Out.ActualBirthOperation=true;
     return Out.ForeignBodyRefused&&Out.ForeignParentRefused&&Out.ForeignInverseRefused
         &&Out.StepHitRefusedInBirth&&Out.StepResetRefusedInBirth&&Out.StepResolveRefusedInBirth&&Out.OwnBodyUnchangedAfterRefusals;
@@ -1786,6 +1810,18 @@ bool FPrivateRoadPhysicsWorld::ProbeHitAcceptanceRetained(FImpl& I,const FPrivat
     Result.ReferenceBindingBodyRefusedDuringStep=ReferenceBodyRefused&&ReferenceWheelBefore==Wheel->GetWheelSim()
         &&ReferenceMassBefore==Wheel->GetMass()&&ReferenceIndexBefore==Wheel->Idx();
     if(!Result.ReferenceBindingBodyRefusedDuringStep)return false;
+    const auto CaptureRetirementNamed=[&]() {
+        TArray<uint8> Bytes;using B=Speed::FEpisodeStateBytesForTesting;
+        const auto& V=FPrivateNativeStorageAccess::Part<const FPrivateRoadWheelDomain>(Operation,Wheel);
+        B::Add(Bytes,V.PWheel);B::Add(Bytes,V.PSuspension);B::Add(Bytes,V.ChaosWheel);
+        B::Add(Bytes,Wheel->GetWheelSim());B::Add(Bytes,Wheel->GetSuspensionSim());B::Add(Bytes,Wheel->GetChaosWheelConfiguration());
+        return Bytes;
+    };
+    const auto BeforeRetirementRefusal=CaptureRetirementNamed();
+    try{Wheel->ClearReferenceWheelBindingsAtRetirement(Operation);}
+    catch(const FPrivateNativeStorageUnavailable&){Result.RetirementClearRefusedInStep=true;}
+    Result.RetirementStepFootprintUnchanged=BeforeRetirementRefusal==CaptureRetirementNamed();
+    if(!Result.RetirementClearRefusedInStep||!Result.RetirementStepFootprintUnchanged)return false;
     if(!BindingNode.Component->ProbeNativeFirstOwnerStepRefusalForDiagnostics(Operation,BindingNode.Actor,
         BindingNode.OriginalHitboxBirth,BindingNode.OriginalWheelBodyBirth,BindingNode.OriginalWheelObjects))return false;
     Result.BirthOwnerTraversalRefusedDuringStep=true;
@@ -2195,7 +2231,42 @@ FPrivateRoadPhysicsWorld::FOriginalWorldReadProbe FPrivateRoadPhysicsWorld::Obse
 }
 #endif
 
-bool FPrivateRoadPhysicsWorld::CloseRetained(const std::shared_ptr<FImpl>& Root)
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+struct FPrivateRoadPhysicsWorld::FRetirementBindingDiagnosticContext
+{
+    const std::shared_ptr<FImpl> ForeignRoot; // actual retained call, does not escape
+    FPrivateRoadRetirementForeignProbe& Result;
+};
+std::shared_ptr<const FPrivateRoadRetirementBindingTrace>
+FPrivateRoadPhysicsWorld::CaptureRetirementBindingObserverForDiagnostics()
+{
+    if(!IsInGameThread())return {};
+    FRetainedNativeCall Call(Impl);
+    const auto& I=*Call.Root;
+    if(I.NativeOperationIdentity->ActiveGTActualOperation)return {};
+    std::unique_lock Lock(I.Gate,std::try_to_lock);
+    if(!Lock.owns_lock())return {};
+    return I.RetirementBindingTrace; // standalone counters, not graph retention
+}
+bool FPrivateRoadPhysicsWorld::CloseWithForeignRetirementBindingProbeForDiagnostics(
+ FPrivateRoadPhysicsWorld& Foreign,FPrivateRoadRetirementForeignProbe& Result)
+{
+    Result={};
+    if(!IsInGameThread()||OriginalComponentStorageOwner||this==&Foreign)return false;
+    FRetainedNativeCall Call(Impl),ForeignCall(Foreign.Impl);
+    if(!Call.Root||!ForeignCall.Root||ForeignCall.Root->Closed||ForeignCall.Root->Failed
+        ||ForeignCall.Root->NativeOperationIdentity->ActiveGTActualOperation
+        ||!ForeignCall.Root->AcquiredGraphStillLive()||ForeignCall.Root->OriginalWheelsWeak.IsEmpty())return false;
+    FRetirementBindingDiagnosticContext Context{ForeignCall.Root,Result};
+    return CloseRetained(Call.Root,&Context);
+}
+#endif
+
+bool FPrivateRoadPhysicsWorld::CloseRetained(const std::shared_ptr<FImpl>& Root
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+    ,FRetirementBindingDiagnosticContext* RetirementContext
+#endif
+    )
 {
     using RetirementDraft::EPhase;
     if(!IsInGameThread()||OriginalComponentStorageOwner)return false;
@@ -2256,17 +2327,107 @@ bool FPrivateRoadPhysicsWorld::CloseRetained(const std::shared_ptr<FImpl>& Root)
             I.RetirementPhase=EPhase::WorldCallbacksEntered;
             World->DestroyWorld(false); // NO FGCScopeGuard around real callbacks
             I.RetirementPhase=EPhase::WorldCallbacksReturned; // actual returned call
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+            ++I.RetirementBindingTrace->WorldDestroyReturns;
+#endif
         } // null original weak identity means no world was ever constructed
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+        // Values-only named original pointer triples; no additional root owner
+        // is retained across the later actual native/configuration destructors.
+        std::vector<std::array<const void*,3>> OriginalPointersBeforeDetach;
+        for(const auto& N:I.Cars)for(const auto& W:N->NativeWheelRoots) {
+            if(!W||!std::get<3>(W->Parts))return Interrupt();
+            const auto& V=*std::get<3>(W->Parts);
+            OriginalPointersBeforeDetach.push_back({V.PWheel,V.PSuspension,V.ChaosWheel});
+        }
+        if(RetirementContext) {
+            FGCScopeGuard NegativeSubjectsOnly; // no callbacks/destructors here
+            auto& F=*RetirementContext->ForeignRoot;
+            if(F.NativeOperationIdentity->ActiveGTActualOperation||F.Closed||F.Failed||F.RetirementRequested.load()||!F.AcquiredGraphStillLive()||F.OriginalWheelsWeak.IsEmpty())return Interrupt();
+            std::unique_lock ForeignReadLock(F.Gate,std::try_to_lock);if(!ForeignReadLock.owns_lock())return Interrupt();
+            auto* ForeignWheel=F.OriginalWheelsWeak[0].Get();
+            if(!ForeignWheel||ForeignWheel->OriginalBodyIdentity.Get()!=ForeignWheel||ForeignWheel->HasAnyFlags(RF_BeginDestroyed|RF_FinishDestroyed))return Interrupt();
+            const auto CaptureNamedBothRoots=[&]() {
+                TArray<uint8> Bytes;using B=Speed::FEpisodeStateBytesForTesting;
+                uint32 Observed=0,Unresolved=0,Flagged=0,GraphIndex=0;
+                for(const auto* Graph:{&I,&F}) {
+                    B::Add(Bytes,GraphIndex++);
+                    for(const auto& N:Graph->Cars)for(const auto& W:N->NativeWheelRoots) {
+                        const auto& V=*std::get<3>(W->Parts);
+                        B::Add(Bytes,V.PWheel);B::Add(Bytes,V.PSuspension);B::Add(Bytes,V.ChaosWheel);
+                    }
+                    uint32 SubjectIndex=0;
+                    for(const auto& Weak:Graph->OriginalWheelsWeak) {
+                        const auto Index=SubjectIndex++;
+                        const auto* W=Weak.Get();if(!W){++Unresolved;continue;}
+                        if(W->HasAnyFlags(RF_BeginDestroyed|RF_FinishDestroyed)){++Flagged;continue;}
+                        ++Observed;B::Add(Bytes,Index);
+                        B::Add(Bytes,W->GetWheelSim());B::Add(Bytes,W->GetSuspensionSim());B::Add(Bytes,W->GetChaosWheelConfiguration());
+                    }
+                }
+                // Skipped subjects have no invented null pointer values.
+                return std::make_tuple(Bytes,Observed,Unresolved,Flagged);
+            };
+            const auto Before=CaptureNamedBothRoots();
+            // Isolate the genuine validator: a foreign leaf call would also
+            // refuse because foreign StorageAccess has not reset, masking Root.
+            FPrivateNativeStorageAccess::RequireRetirementRoot(Operation,Root);
+            ++RetirementContext->Result.OwnRootValidationReturns;
+            const auto ForeignBirthRoot=ForeignWheel->OriginalOwnerRoot.lock();
+            if(!ForeignBirthRoot||ForeignBirthRoot.get()!=RetirementContext->ForeignRoot.get()
+                ||ForeignBirthRoot.owner_before(RetirementContext->ForeignRoot)
+                ||RetirementContext->ForeignRoot.owner_before(ForeignBirthRoot))return Interrupt();
+            ++RetirementContext->Result.ActualRetirementCalls;
+            try{FPrivateNativeStorageAccess::RequireRetirementRoot(Operation,ForeignBirthRoot);}
+            catch(const FPrivateNativeStorageUnavailable&){RetirementContext->Result.ForeignRootValidatorRefused=true;}
+            const auto After=CaptureNamedBothRoots();
+            RetirementContext->Result.NamedFacadeSubjectsObserved=std::get<1>(After);
+            RetirementContext->Result.NamedWeakUnresolved=std::get<2>(After);
+            RetirementContext->Result.NamedGarbageFlagSkips=std::get<3>(After);
+            RetirementContext->Result.NamedFootprintUnchanged=Before==After;
+            if(!RetirementContext->Result.ForeignRootValidatorRefused||!RetirementContext->Result.NamedFootprintUnchanged)return Interrupt();
+        }
+#endif
         // Never reuse World/raw I.Driver/raw N.Component after this point.
         // Weak identity/serial + garbage flags resolve each actual survivor.
         {
             FGCScopeGuard DetachOnly;
-            for(const auto& Weak:I.OriginalWheelsWeak)if(auto* W=Weak.Get()) {
-                if(W->HasAnyFlags(RF_BeginDestroyed|RF_FinishDestroyed))continue;
+            for(const auto& Weak:I.OriginalWheelsWeak) {
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+                ++I.RetirementBindingTrace->WeakVisited;
+#endif
+                auto* W=Weak.Get();
+                if(!W) {
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+                    ++I.RetirementBindingTrace->WeakUnresolved;
+#endif
+                    continue;
+                }
+                if(W->HasAnyFlags(RF_BeginDestroyed|RF_FinishDestroyed)) {
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+                    ++I.RetirementBindingTrace->GarbageFlagSkips;
+#endif
+                    continue;
+                }
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+                ++I.RetirementBindingTrace->LiveResolved;
+#endif
                 W->StorageAccess.reset();
-                // These null paths in b22 are assignments/short-circuit only;
-                // re-review if their implementations change.
-                Speed::NativeKinematics::FWheelBindingAccess::BindWheel(*W,nullptr);Speed::NativeKinematics::FWheelBindingAccess::BindSuspension(*W,nullptr);Speed::NativeKinematics::FWheelBindingAccess::BindChaosWheel(*W,nullptr);
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+                // Real direct facade cells observed AFTER callbacks/reset.
+                // A present configuration alone does not prove wheel/suspension changes.
+                const bool HadWheel=W->PWheel!=nullptr,HadSuspension=W->PSuspension!=nullptr,HadConfiguration=W->ChaosWheel!=nullptr;
+                auto& Trace=*I.RetirementBindingTrace;
+                Trace.AnyFacadeBindingPresentBefore+=HadWheel||HadSuspension||HadConfiguration;
+                Trace.FacadeWheelPresentBefore+=HadWheel;Trace.FacadeSuspensionPresentBefore+=HadSuspension;Trace.FacadeConfigurationPresentBefore+=HadConfiguration;
+#endif
+                W->ClearReferenceWheelBindingsAtRetirement(Operation);
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+                ++Trace.FacadeClearReturns;
+                const bool WheelNull=W->PWheel==nullptr,SuspensionNull=W->PSuspension==nullptr,ConfigurationNull=W->ChaosWheel==nullptr;
+                Trace.FacadeWheelNullAfter+=WheelNull;Trace.FacadeSuspensionNullAfter+=SuspensionNull;Trace.FacadeConfigurationNullAfter+=ConfigurationNull;
+                Trace.FacadeWheelChangedFromPresent+=HadWheel&&WheelNull;Trace.FacadeSuspensionChangedFromPresent+=HadSuspension&&SuspensionNull;Trace.FacadeConfigurationChangedFromPresent+=HadConfiguration&&ConfigurationNull;
+#endif
                 W->OwnedBodyValues.reset();W->OwnedSolidValues.reset();
                 W->OwnedWheelRuntime.reset();W->OwnedWheelDomain.reset();W->OwnedSphereDomain.reset();
             }
@@ -2301,6 +2462,18 @@ bool FPrivateRoadPhysicsWorld::CloseRetained(const std::shared_ptr<FImpl>& Root)
                 }
             }
         }
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+        size_t OriginalOrdinal=0;
+        for(const auto& N:I.Cars)for(const auto& W:N->NativeWheelRoots) {
+            const auto& V=*std::get<3>(W->Parts);
+            const std::array<const void*,3> After{V.PWheel,V.PSuspension,V.ChaosWheel};
+            if(OriginalOrdinal>=OriginalPointersBeforeDetach.size())return Interrupt();
+            I.RetirementBindingTrace->FacadeClearsKeptOriginalPointers&=OriginalPointersBeforeDetach[OriginalOrdinal++]==After;
+            ++I.RetirementBindingTrace->OriginalPointerTriplesCompared;
+        }
+        if(OriginalOrdinal!=OriginalPointersBeforeDetach.size())return Interrupt();
+        OriginalPointersBeforeDetach.clear();
+#endif
         I.RetirementPhase=EPhase::SurvivingFacadesDetached;
         // Concrete typed walk: no UObject read, raw old component, world query,
         // reset helper or synthetic drain boolean participates in this phase.
@@ -2310,8 +2483,12 @@ bool FPrivateRoadPhysicsWorld::CloseRetained(const std::shared_ptr<FImpl>& Root)
                 if(N->NativeBoxRoot||!N->NativeWheelRoots.empty())return Interrupt();
                 continue; // this actual car had not reached native domain birth
             }
-            for(auto& W:N->NativeWheelRoots)
+            for(auto& W:N->NativeWheelRoots) {
                 if(!W||!RetirementDraft::DisconnectWheelRoot(*W,N->NativeVehicleRoot))return Interrupt();
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+                ++I.RetirementBindingTrace->OriginalWheelDisconnectReturns;
+#endif
+            }
             if(N->NativeBoxRoot&&!RetirementDraft::DisconnectBoxRoot(*N->NativeBoxRoot,N->NativeVehicleRoot))return Interrupt();
         }
         for(auto& N:I.Cars) {
@@ -2330,6 +2507,9 @@ bool FPrivateRoadPhysicsWorld::CloseRetained(const std::shared_ptr<FImpl>& Root)
         I.Closed=true; // only AFTER real return, detachment, native release
         I.RetirementPhase=EPhase::Retired;
         I.NativeOperationIdentity->Retired.store(true); // only after actual full phased Close returned its native releases
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+        ++I.RetirementBindingTrace->CloseReturns;
+#endif
         return true; // finite synchronous profile only, NOT full native/source lease
     } catch(...) {return Interrupt();}
 }
@@ -2425,6 +2605,20 @@ void USpeedBranchWheelSubBody::WriteReferenceBindingFixtureForDiagnostics(
     USWheelSubBody::WheelComponentWheelDomainStorage()=Values.WheelParent;
 }
 #endif
+
+void USpeedBranchWheelSubBody::ClearReferenceWheelBindingsAtRetirement(
+ const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation)
+{
+    namespace P=Speed::Netcode::Prediction;
+    // OriginalOwnerRoot was captured once from the real FImpl at body birth.
+    // No lookup of an incompletely registered native storage table is needed.
+    const auto ActualBirthRoot=OriginalOwnerRoot.lock();
+    P::FPrivateNativeStorageAccess::RequireRetirementRoot(Operation,ActualBirthRoot);
+    if(OriginalBodyIdentity.Get()!=this||HasAnyFlags(RF_BeginDestroyed|RF_FinishDestroyed)
+        ||!StorageAccess.expired())throw P::FPrivateNativeStorageUnavailable{};
+    // Exact facade cells, old order. Never a routed getter or pointed write.
+    PWheel=nullptr;PSuspension=nullptr;ChaosWheel=nullptr;
+}
 
 void USpeedBranchWheelSubBody::ValidateReferenceWheelBindingBirth(
  const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,

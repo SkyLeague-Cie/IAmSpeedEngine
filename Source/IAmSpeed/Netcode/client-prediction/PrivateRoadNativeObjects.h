@@ -544,6 +544,8 @@ private:
     std::shared_ptr<Speed::Netcode::Prediction::FPrivateRoadSubBodyValues> OwnedBodyValues;
     bool UsesOriginalBodyStorage() const;
     TWeakObjectPtr<USSubBody> OriginalBodyIdentity; // private, copied once by actual birth owner
+    std::weak_ptr<void> OriginalOwnerRoot; // actual FImpl/control block, captured once with body birth
+    void ClearReferenceWheelBindingsAtRetirement(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation);
     TWeakObjectPtr<USSubBody> GetPhysicsWeakIdentity() const override;
 #if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
     Speed::Netcode::Prediction::FPrivateRoadSolidValues ReadLegacySolidDiagnosticValues() const;
