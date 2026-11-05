@@ -1925,3 +1925,35 @@ guard is changed. Build115 exited6 with natural dual drains and clean audits;
 QA and native tests did not run. The failed114 and115 builds are retained.
 A distinct fresh build and native run are required; earlier119 successes do
 not qualify source122 or the still-pending mass-response controls.
+
+
+### Observed consumed-input prefixes at first forward publication (candidate123)
+
+The predicted session can copy its actual live immutable publication and the
+same graph's full retained observed-input prefix0..F together under its GT Gate.
+Graph adoption swaps physical histories, so concatenating earlier first-forward
+records would not reconstruct the input history used by a later adopted graph.
+The copy is bounded, value-only and carries actual kernel lifetime and completed
+adoption count. It includes every action slot's Requested, Before and Applied,
+active mask, filter values and observed CanMove/frozen/countdown/startup values.
+Declared settings bytes remain only the existing declared subset. Actual reset
+evidence is read from retained raw frames or actual received packets; speculative
+holds have unknown reset evidence, serialized as null rather than invented false.
+Request-origin metadata stays distinct from consumed-command-v2 producer origins.
+
+The finite network probe captures this copy before its pulse correction and
+records server inputs from each actual completed server Step/publication before
+the packet-history push. Full payloads are emitted outside physics; no hash is
+treated as equality. Missing, duplicate, rejected and overflow observations stay
+explicitly UNKNOWN. Offline comparisons must separately report observed-value
+prefix equality, origin metadata equality and role/origin consistency, with
+reset-evidence unknown explicit. Equal observed values do not qualify equality
+of Device evidence, the causal baseline, hidden state, source/lifetime or K.
+
+The native regression is extended around real staging/adoption, preserved old
+copies, nonzero camera slots beyond the old three-axis trace, actual reset and
+unknown speculative reset, finite overflow and closed/unstarted sessions. These
+changes and their network reports are NOT_RUN until a distinct reviewed native
+tuple is compiled/executed. Added observation can change wall scheduling; new
+network outcomes and egress counters must be measured rather than imported.
+The four mass channels, restoration guards and physical programs are unchanged.

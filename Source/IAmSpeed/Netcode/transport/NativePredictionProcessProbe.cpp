@@ -154,17 +154,139 @@ std::optional<P::FPrivateRoadObservedFrame> ReadObservation(const std::vector<st
 // this record. Authority slots come from real original-server observations.
 // Missing frames stay explicit; these are not a full-session maximum unless
 // every one of the finite 240 frames was actually observed in both graphs.
+// Full bounded value payloads, not hashes pretending to prove input equality.
+// These values never enter physics, ingress, egress, ACK or restoration paths.
+void WriteConsumedValues(std::ostream& S,const Speed::Input::FActionValues& Values)
+{
+    S<<'[';for(size_t A=0;A<ActionCount;++A){if(A)S<<',';S<<Values[A];}S<<']';
+}
+void WriteConsumedFrame(std::ostream& S,const P::FPrivateRoadObservedInputFrame& Frame)
+{
+    S<<"{\"frame\":"<<Frame.Frame<<",\"local_kernel_lifetime\":"<<Frame.LocalKernelLifetime
+        <<",\"awaiting_initial_publication\":"<<(Frame.AwaitingInitialPublication?"true":"false")
+        <<",\"declared_settings_identity\":[";
+    for(size_t N=0;N<Frame.DeclaredSettingsIdentity.size();++N){if(N)S<<',';S<<unsigned(Frame.DeclaredSettingsIdentity[N]);}
+    S<<"],\"actors\":[";
+    bool First=true;
+    for(const auto& A:Frame.Actors)
+    {
+        if(!First)S<<',';First=false;
+        S<<"{\"actor\":"<<A.Actor<<",\"incarnation\":"<<A.Incarnation
+            <<",\"request_origin\":"<<unsigned(A.Origin)
+            <<",\"origin_evidence_known\":"<<(A.OriginEvidenceKnown?"true":"false")
+            <<",\"origin_evidence_consistent\":";
+        if(A.OriginEvidenceKnown)S<<(A.OriginEvidenceConsistent?"true":"false");else S<<"null";
+        S<<",\"expected_role\":";
+        if(A.RoleKnown)S<<unsigned(A.ExpectedRole);else S<<"null";
+        S<<",\"role_origin_consistent\":";
+        if(A.RoleKnown&&A.OriginEvidenceKnown)S<<(P::PrivateRoadObservedRoleOriginConsistent(A)?"true":"false");else S<<"null";
+        S<<",\"reset_evidence_known\":"<<(A.ResetEvidenceKnown?"true":"false")<<",\"actual_reset\":";
+        if(A.ResetEvidenceKnown)S<<(A.ActualReset?"true":"false");else S<<"null";
+        S<<",\"requested\":";
+        WriteConsumedValues(S,A.Requested);S<<",\"before\":";WriteConsumedValues(S,A.Before);
+        S<<",\"applied\":";WriteConsumedValues(S,A.Applied);
+        S<<",\"active_mask\":"<<A.ActiveMask<<",\"filter_next\":"<<A.Filter.Next
+            <<",\"filter_active_mask\":"<<A.Filter.ActiveMask<<",\"filter_applied\":";
+        WriteConsumedValues(S,A.Filter.Applied);
+        S<<",\"can_move\":"<<(A.CanMove?"true":"false")<<",\"frozen\":"<<(A.Frozen?"true":"false")
+            <<",\"countdown_frames\":"<<A.CountdownFrames<<'}';
+    }
+    S<<"]}";
+}
+const char* ConsumedPrefixStatus(P::EPrivateRoadInputPrefixCopy Status)
+{
+    switch(Status)
+    {
+    case P::EPrivateRoadInputPrefixCopy::CompleteObservedPrefix:return "complete_observed_prefix";
+    case P::EPrivateRoadInputPrefixCopy::Missing:return "unknown_missing";
+    case P::EPrivateRoadInputPrefixCopy::Rejected:return "unknown_rejected";
+    case P::EPrivateRoadInputPrefixCopy::Overflow:return "unknown_overflow";
+    default:return "unknown_unavailable";
+    }
+}
+void WriteConsumedPrefix(std::ostream& S,const P::FPrivateRoadObservedInputPrefix* Prefix)
+{
+    const auto Status=Prefix?Prefix->Status:P::EPrivateRoadInputPrefixCopy::Unavailable;
+    const bool Complete=Status==P::EPrivateRoadInputPrefixCopy::CompleteObservedPrefix;
+    S<<"{\"status\":\""<<ConsumedPrefixStatus(Status)<<"\",\"completed_graph_adoptions\":";
+    if(Complete)S<<Prefix->CompletedGraphAdoptions;else S<<"null";
+    S<<",\"publication_frame\":";
+    if(Prefix&&Prefix->Publication)S<<Prefix->Publication->Frame;else S<<"null";
+    S<<",\"local_kernel_lifetime\":";
+    if(Prefix&&Prefix->Publication)S<<Prefix->Publication->LocalKernelLifetime;else S<<"null";
+    S<<",\"first_frame\":"<<(Complete?"0":"null")<<",\"prefix\":";
+    if(Complete)
+    {
+        S<<'[';bool First=true;
+        for(const auto& Frame:Prefix->Prefix){if(!First)S<<',';First=false;WriteConsumedFrame(S,Frame);}S<<']';
+    }
+    else S<<"null";
+    S<<'}';
+}
+struct FActualServerConsumedInputTrace
+{
+    std::array<std::optional<P::FPrivateRoadObservedInputFrame>,Frames> Captured;
+    std::array<bool,Frames> Attempted{},Duplicate{};
+    bool Overflow=false,OriginalSeedRolesKnown=false;
+    struct FRole {U64 Actor=0,Incarnation=0;P::EBranchFilterRole Value=P::EBranchFilterRole::RemoteRequests;};
+    std::vector<FRole> OriginalSeedRoles;
+    void CaptureOriginalSeedRoles(const std::vector<P::FPrivateRoadCarSeed>& Seeds)
+    {
+        OriginalSeedRoles.clear();OriginalSeedRolesKnown=false;
+        if(Seeds.empty()||Seeds.size()>16)return;
+        for(const auto& Seed:Seeds)
+        {
+            if(!Seed.Actor||!Seed.Incarnation||Seed.Role>P::EBranchFilterRole::RemoteRequests)return;
+            for(const auto& Existing:OriginalSeedRoles)if(Existing.Actor==Seed.Actor)return;
+            OriginalSeedRoles.push_back({Seed.Actor,Seed.Incarnation,Seed.Role});
+        }
+        OriginalSeedRolesKnown=true;
+    }
+    void Capture(const P::FPrivateRoadPublication& Actual)
+    {
+        if(Actual.Frame>=Frames){Overflow=true;return;}
+        const auto N=size_t(Actual.Frame);
+        if(Attempted[N]){Duplicate[N]=true;return;}
+        Attempted[N]=true;
+        Captured[N]=P::CopyPrivateRoadConsumedInputFrameForDiagnostics(Actual);
+        if(Captured[N]&&OriginalSeedRolesKnown)for(auto& A:Captured[N]->Actors)
+            for(const auto& Role:OriginalSeedRoles)if(Role.Actor==A.Actor&&Role.Incarnation==A.Incarnation)
+            {
+                A.ExpectedRole=Role.Value;
+                A.RoleKnown=Role.Value==P::EBranchFilterRole::LocalDevice||Role.Value==P::EBranchFilterRole::RemoteRequests;
+            }
+    }
+    void Write(std::ostream& S) const
+    {
+        S<<",\"server_consumed_input_history\":{\"scope\":\"actual_original_step_publications_observed_inputs_only\","
+            <<"\"action_slots\":"<<ActionCount<<",\"expected_frames\":"<<Frames
+            <<",\"overflow\":"<<(Overflow?"true":"false")
+            <<",\"original_seed_roles_known\":"<<(OriginalSeedRolesKnown?"true":"false")
+            <<",\"full_causal_state\":false,\"raw_device_evidence_compared\":false,\"frames\":[";
+        for(size_t N=0;N<Frames;++N)
+        {
+            if(N)S<<',';
+            const char* Status=Duplicate[N]?"unknown_duplicate":!Attempted[N]?"unknown_missing":!Captured[N]?"unknown_rejected_or_unavailable":"observed";
+            S<<"{\"frame\":"<<N<<",\"status\":\""<<Status<<"\",\"publication\":";
+            if(Captured[N])WriteConsumedFrame(S,*Captured[N]);else S<<"null";
+            S<<'}';
+        }
+        S<<"]}";
+    }
+};
+
 struct FFirstForwardKinematicTrace
 {
     struct FFrame
     {
         std::vector<std::uint8_t> Local,Authority;
         std::array<std::array<int16,3>,2> Requested{},Applied{};
+        std::optional<P::FPrivateRoadObservedInputPrefix> ConsumedPrefix;
     };
     std::array<FFrame,Frames> History;
-    bool CaptureLocal(const P::FPrivateRoadPublication& Actual)
+    bool CaptureLocal(const P::FPrivateRoadPublication& Actual,P::FPrivateRoadObservedInputPrefix Consumed)
     {
-        if(Actual.Frame>=Frames||Actual.Actors.size()!=2)return false;
+        if(Actual.Frame>=Frames||Actual.Actors.size()!=2||Consumed.Publication.get()!=&Actual)return false;
         auto& Slot=History[size_t(Actual.Frame)];if(!Slot.Local.empty())return false;
         for(unsigned A=0;A<2;++A)
         {
@@ -174,7 +296,7 @@ struct FFirstForwardKinematicTrace
             {Slot.Requested[A][Action]=Actor.Input->Requested[Action];Slot.Applied[A][Action]=Actor.Input->Applied[Action];}
         }
         auto Bytes=Observe(Actual);if(!ReadObservation(Bytes))return false;
-        Slot.Local=std::move(Bytes);return true;
+        Slot.Local=std::move(Bytes);Slot.ConsumedPrefix=std::move(Consumed);return true;
     }
     bool CaptureAuthority(U64 Frame,const std::vector<std::uint8_t>& Bytes)
     {
@@ -219,10 +341,19 @@ struct FFirstForwardKinematicTrace
                     <<",\"angular_velocity_rad_s\":"<<Error.AngularVelocity<<",\"angular_acceleration_rad_s2\":"<<Error.AngularAcceleration<<'}';
             }
         }
+        S<<"]}";
+        S<<",\"first_forward_consumed_input_histories\":{\"scope\":\"actual_same_graph_observed_input_prefix_at_first_forward\","
+            <<"\"action_slots\":"<<ActionCount<<",\"expected_frames\":"<<Frames
+            <<",\"full_causal_state\":false,\"raw_device_evidence_compared\":false,\"samples\":[";
+        for(size_t N=0;N<Frames;++N)
+        {
+            if(N)S<<',';S<<"{\"frame\":"<<N<<",\"capture\":";
+            WriteConsumedPrefix(S,History[N].ConsumedPrefix?&*History[N].ConsumedPrefix:nullptr);S<<'}';
+        }
         S<<"]}";return bool(S);
     }
 };
-bool WriteResult(const FNativePredictionProbeOptions& O,U64 Through,U64 Corrections,double MaximumError,bool Equal,bool InitialSynchronized,U64 OwnerAuthorityCount,U64 RemoteAuthorityCount,U64 ActualVehicleContactFrames,const FLocalSessionEgressCounters& Egress,const FFirstForwardKinematicTrace* Trace=nullptr,const FAuthorityInputJournal* Journal=nullptr,const std::array<U64,2>& RetainedObservationFrames={})
+bool WriteResult(const FNativePredictionProbeOptions& O,U64 Through,U64 Corrections,double MaximumError,bool Equal,bool InitialSynchronized,U64 OwnerAuthorityCount,U64 RemoteAuthorityCount,U64 ActualVehicleContactFrames,const FLocalSessionEgressCounters& Egress,const FFirstForwardKinematicTrace* Trace=nullptr,const FAuthorityInputJournal* Journal=nullptr,const std::array<U64,2>& RetainedObservationFrames={},const FActualServerConsumedInputTrace* ServerConsumed=nullptr)
 {
     if(!InitialSynchronized||OwnerAuthorityCount!=Frames||RemoteAuthorityCount!=Frames
         ||(O.Scenario==ENativeProbeScenario::InteractingInputFixture&&!ActualVehicleContactFrames))return false;
@@ -257,6 +388,7 @@ bool WriteResult(const FNativePredictionProbeOptions& O,U64 Through,U64 Correcti
     S<<",\"native_observation_retention\":{\"scope\":\"observable_value_journal_only_no_restore_or_source_lease\",\"retry_records\":"<<O.ObservationRetryRecordLimit
         <<",\"retained_frames\":["<<RetainedObservationFrames[0]<<','<<RetainedObservationFrames[1]<<"],\"retention_ack_is_physical_consumption\":false,\"complete_physical_state\":false}";
     if(Trace&&(!Journal||!Trace->Write(S,O.Launcher.SelfPeer==PeerA?101:102,*Journal)))return false;
+    if(ServerConsumed)ServerConsumed->Write(S);
     S<<"}\n";
     S.close();if(!S)return false;std::error_code Error;std::filesystem::rename(Temp,Path,Error);return !Error;
 }
@@ -337,6 +469,7 @@ FNativeProbeTask MakeNativePredictionProbeTask(FNativePredictionProbeOptions O,s
         std::array<Consumed::FActionPolicy,ActionCount> Actions{};Actions[0]={true,true,false,255};Actions[1]={true,true,false,255};Actions[2]={true,true,true,127};
         P::FRemoteRequestHistory HA(Binding(0),Actions,512,512),HB(Binding(1),Actions,512,512);
         std::unique_ptr<P::FPrivateRoadPhysicsWorld> World;std::vector<FPacket> History[2];
+        FActualServerConsumedInputTrace ServerConsumed;
         // Independent delivery retention for each original client and each actor.
         bool AuthorityAck[2][2][Frames]{};
         std::unique_ptr<Observation::FJournal> NativeObservations;
@@ -402,7 +535,11 @@ FNativeProbeTask MakeNativePredictionProbeTask(FNativePredictionProbeOptions O,s
                 else co_return Fail(__LINE__);
             }
             Phase=TEXT("server-physics");
-            if(HelloSeen[0]&&HelloSeen[1]&&!World){World=P::FPrivateRoadPhysicsWorld::Create(Seeds(Server,O.Scenario),Why);if(!World)co_return Fail(__LINE__);}
+            if(HelloSeen[0]&&HelloSeen[1]&&!World)
+            {
+                auto OriginalSeeds=Seeds(Server,O.Scenario);ServerConsumed.CaptureOriginalSeedRoles(OriginalSeeds);
+                World=P::FPrivateRoadPhysicsWorld::Create(std::move(OriginalSeeds),Why);if(!World)co_return Fail(__LINE__);
+            }
             if(World&&Next==1&&!Started&&StartupAck[0]&&StartupAck[1])
             {
                 Phase=TEXT("server-start-activation");
@@ -423,6 +560,7 @@ FNativeProbeTask MakeNativePredictionProbeTask(FNativePredictionProbeOptions O,s
                     if(!World->Step({{101,3,HA.Predict(Next)},{102,3,HB.Predict(Next)}},false,Why))co_return Fail(__LINE__);
                     auto Actual=World->ReadLatest();
                     if(!Actual||Actual->Frame!=Next||!ActualConsumedPacket(*Actual,A->Packet)||!ActualConsumedPacket(*Actual,B->Packet))co_return Fail(__LINE__);
+                    ServerConsumed.Capture(*Actual); // actual Step/publication, before packet journal push
                     History[0].push_back(A->Packet);History[1].push_back(B->Packet);
                     LastObservation=Observe(*Actual);if(LastObservation.empty())co_return Fail(__LINE__);
                     if(NativeObservations)
@@ -470,7 +608,7 @@ FNativeProbeTask MakeNativePredictionProbeTask(FNativePredictionProbeOptions O,s
                 &&(!NativeObservations||(ObservationRetainedCounts[0]==Frames&&ObservationRetainedCounts[1]==Frames)))
             {
                 const auto FinalNative=World->ReadLatest();if(!FinalNative)co_return Fail(__LINE__);
-                if(!World->Close()||!WriteResult(O,Frames-1,0,0,true,Started,Frames,Frames,FinalNative->VehicleContactFrameCount,Channel->ReadEgressCounters(),nullptr,nullptr,ObservationRetainedCounts))co_return Fail(__LINE__);
+                if(!World->Close()||!WriteResult(O,Frames-1,0,0,true,Started,Frames,Frames,FinalNative->VehicleContactFrameCount,Channel->ReadEgressCounters(),nullptr,nullptr,ObservationRetainedCounts,&ServerConsumed))co_return Fail(__LINE__);
                 while(std::chrono::steady_clock::now()<Deadline)
                 {
                     // Destroy file/temporary values before giving the GT back.
@@ -602,8 +740,9 @@ FNativeProbeTask MakeNativePredictionProbeTask(FNativePredictionProbeOptions O,s
         {
             auto S=Next==0?Baseline:Sample(Own,Next,Contract,O.Scenario);
             if(!Client->AdvanceLocal(S.Local,Why))co_return Fail(__LINE__);
-            const auto FirstForward=Client->ReadLatest();
-            if(!FirstForward||FirstForward->Frame!=Next||!KinematicTrace.CaptureLocal(*FirstForward))co_return Fail(__LINE__);
+            auto ConsumedPrefix=Client->CaptureConsumedInputPrefixForDiagnostics(Frames);
+            const auto FirstForward=ConsumedPrefix.Publication;
+            if(!FirstForward||FirstForward->Frame!=Next||!KinematicTrace.CaptureLocal(*FirstForward,std::move(ConsumedPrefix)))co_return Fail(__LINE__);
             if(Next)
             {
                 if(OriginalOwnerPackets.size()!=Next||Outbox.Queue(S.Packet)!=EResult::Accepted)co_return Fail(__LINE__);

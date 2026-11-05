@@ -1,5 +1,7 @@
 #pragma once
 #include "PrivateRoadPhysicsWorld.h"
+#include <optional>
+#include <vector>
 
 namespace Speed::Netcode::Prediction
 {
@@ -31,6 +33,52 @@ struct FPrivateRoadPoseComparison
     U64 Frame=0;
     std::vector<FPrivateRoadPoseError> Actors;
 };
+// Diagnostic value copies from actual completed publications only. Complete
+// below means the finite observed INPUT prefix, never complete causal state.
+enum class EPrivateRoadInputPrefixCopy : uint8
+{ Unavailable,CompleteObservedPrefix,Missing,Rejected,Overflow };
+struct FPrivateRoadObservedActorInput
+{
+    U64 Actor=0,Incarnation=0;
+    Speed::Input::FActionValues Requested{},Before{},Applied{};
+    uint32 ActiveMask=0;
+    EBranchRequestOrigin Origin=EBranchRequestOrigin::SpeculativeHoldRequest;
+    bool OriginEvidenceKnown=false,OriginEvidenceConsistent=false;
+    bool ResetEvidenceKnown=false,ActualReset=false;
+    bool RoleKnown=false;
+    EBranchFilterRole ExpectedRole=EBranchFilterRole::RemoteRequests;
+    FBranchFilterState Filter;
+    bool CanMove=false,Frozen=false;
+    uint16 CountdownFrames=0;
+    bool operator==(const FPrivateRoadObservedActorInput&) const = default;
+};
+inline bool PrivateRoadObservedRoleOriginConsistent(const FPrivateRoadObservedActorInput& A)
+{
+    if(!A.RoleKnown||!A.OriginEvidenceKnown||!A.OriginEvidenceConsistent)return false;
+    if(A.ExpectedRole==EBranchFilterRole::LocalDevice)return A.Origin==EBranchRequestOrigin::RetainedLocalDevice;
+    return A.ExpectedRole==EBranchFilterRole::RemoteRequests
+        &&(A.Origin==EBranchRequestOrigin::ReceivedAuthorityRequest||A.Origin==EBranchRequestOrigin::SpeculativeHoldRequest);
+}
+struct FPrivateRoadObservedInputFrame
+{
+    U64 Frame=0,LocalKernelLifetime=0;
+    bool AwaitingInitialPublication=false;
+    std::vector<uint8> DeclaredSettingsIdentity; // declared slots only
+    std::vector<FPrivateRoadObservedActorInput> Actors;
+    bool operator==(const FPrivateRoadObservedInputFrame&) const = default;
+};
+struct FPrivateRoadObservedInputPrefix
+{
+    EPrivateRoadInputPrefixCopy Status=EPrivateRoadInputPrefixCopy::Unavailable;
+    U64 CompletedGraphAdoptions=0;
+    // This is the SAME already-public immutable value publication selected
+    // under Gate as Prefix. It exposes no native object/address or operation.
+    std::shared_ptr<const FPrivateRoadPublication> Publication;
+    std::vector<FPrivateRoadObservedInputFrame> Prefix;
+};
+IAMSPEED_API std::optional<FPrivateRoadObservedInputFrame>
+    CopyPrivateRoadConsumedInputFrameForDiagnostics(const FPrivateRoadPublication& Publication);
+
 // Experimental actual native prediction owner, finite retained history from
 // original birth. Reconciliation constructs a NEW graph from its original
 // seeds, replays genuine retained local frames and corrected remote requests,
@@ -55,6 +103,9 @@ public:
     bool ReleaseInitialPublication(FString& Why);
     bool AdvanceLocal(std::shared_ptr<const BranchV2::FInputFrame> OriginalFrame,FString& Why);
     EPrivateRoadCorrection AdvanceCorrection(U64 MaximumFramesThisPulse,FString& Why);
+    // Bounded values-only input observation. UNKNOWN never grants equality,
+    // restoration, source/lifetime authority or a raw Device receipt.
+    FPrivateRoadObservedInputPrefix CaptureConsumedInputPrefixForDiagnostics(U64 MaximumFramesToCopy) const;
     std::shared_ptr<const FPrivateRoadPublication> ReadLatest() const noexcept;
     std::optional<FPrivateRoadCorrectionWitness> ReadLastCorrection() const;
     // Read-only exact historical comparison against ACTUAL retained native

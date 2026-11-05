@@ -56,11 +56,21 @@ bool FIASPrivateRoadLateInputReconciliation::RunTest(const FString&)
     {
         V::FInputFrameData D;D.ConsumptionFrame=N;D.SourceSequence=N+1;D.DeviceGeneration={Generation};
         D.Producer=Seeds[0].Local;D.StreamEpoch=Seeds[0].LocalEpoch;D.Reset=N==0&&FirstReset;
-        D.Values[0]=128;D.ActiveMask=1;return std::make_shared<const V::FInputFrame>(Contract,D);
+        D.Values[0]=128;D.ActiveMask=1|(1u<<5)|(1u<<6);
+        D.Values[5]=static_cast<int16>((N%2?1:-1)*int(Contract->Find(Speed::Input::FActionId(5))->Quantization));
+        D.Values[6]=static_cast<int16>((N%3?1:-1)*int(Contract->Find(Speed::Input::FActionId(6))->Quantization));
+        return std::make_shared<const V::FInputFrame>(Contract,D);
     };
+    const auto* YawContract=Contract->Find(Speed::Input::FActionId(5));
+    const auto* PitchContract=Contract->Find(Speed::Input::FActionId(6));
+    if(!YawContract||!PitchContract||!YawContract->Quantization||!PitchContract->Quantization)return false;
     FString Why;auto Client=P::FPrivateRoadPredictionSession::Create(Seeds,512,Why);
     if(!TestTrue(*FString::Printf(TEXT("real native prediction owner: %s"),*Why),bool(Client)))return false;
     auto Reference=P::FPrivateRoadPhysicsWorld::Create(Seeds,Why);if(!Reference)return false;
+    const auto UnstartedPrefix=Client->CaptureConsumedInputPrefixForDiagnostics(512);
+    const bool UnstartedUnknown=UnstartedPrefix.Status==P::EPrivateRoadInputPrefixCopy::Unavailable
+        &&!UnstartedPrefix.Publication&&UnstartedPrefix.Prefix.empty();
+    TestTrue(TEXT("unstarted input history is UNKNOWN with no numeric prefix"),UnstartedUnknown);
     std::array<Consumed::FActionPolicy,ActionCount> Actions{};Actions[0]={true,true,false,255};Actions[1]={true,true,false,255};Actions[2]={true,true,true,127};
     P::FRemoteRequestHistory Known(Seeds[1].Remote,Actions,256,512);
     const auto Late8=Packet(8,192,0,0);
@@ -102,6 +112,28 @@ bool FIASPrivateRoadLateInputReconciliation::RunTest(const FString&)
         if(!TestTrue(*FString::Printf(TEXT("native forward step %llu: %s"),N,*Why),Step(N)))return false;
     }
     const auto Original=Client->ReadLatest(),Authority90=Reference->ReadLatest();
+    const auto OriginalPrefix=Client->CaptureConsumedInputPrefixForDiagnostics(512);
+    if(!TestTrue(TEXT("actual first-forward graph and full input prefix captured together"),
+        OriginalPrefix.Status==P::EPrivateRoadInputPrefixCopy::CompleteObservedPrefix
+        &&OriginalPrefix.Publication==Original&&OriginalPrefix.Prefix.size()==91
+        &&OriginalPrefix.CompletedGraphAdoptions==0))return false;
+    const auto BoundedOut=Client->CaptureConsumedInputPrefixForDiagnostics(90);
+    const bool OverflowUnknown=BoundedOut.Status==P::EPrivateRoadInputPrefixCopy::Overflow
+        &&BoundedOut.Publication==Original&&BoundedOut.Prefix.empty();
+    TestTrue(TEXT("bounded overflow is UNKNOWN, never empty-equal or zero divergence"),OverflowUnknown);
+    const bool CameraSlotsObserved=OriginalPrefix.Prefix[0].Actors[0].Requested[5]!=0
+        &&OriginalPrefix.Prefix[0].Actors[0].Requested[6]!=0;
+    TestTrue(TEXT("actual camera slots beyond the old three-axis trace are retained"),CameraSlotsObserved);
+    auto EditedValueCopy=OriginalPrefix;EditedValueCopy.Prefix[0].Actors[0].Requested[5]=0;
+    TestTrue(TEXT("editing copied values cannot mutate retained native input history"),
+        Client->CaptureConsumedInputPrefixForDiagnostics(512).Prefix==OriginalPrefix.Prefix
+        &&Client->ReadLatest()==Original);
+    const bool HoldResetUnknown=!OriginalPrefix.Prefix[30].Actors[1].ResetEvidenceKnown;
+    const bool ActualResetCaptured=OriginalPrefix.Prefix[0].Actors[0].ResetEvidenceKnown
+        &&OriginalPrefix.Prefix[0].Actors[0].ActualReset;
+    TestTrue(TEXT("actual raw reset is captured and speculative reset remains UNKNOWN"),ActualResetCaptured&&HoldResetUnknown);
+    for(const auto& F:OriginalPrefix.Prefix)for(const auto& X:F.Actors)
+        TestTrue(TEXT("actual role, origin and evidence agree without normalizing them"),P::PrivateRoadObservedRoleOriginConsistent(X));
     if(!Original||!Authority90||!Pose(*Original,102)||!Pose(*Authority90,102))return false;
     const double BeforeError=FVector::Dist(Pose(*Original,102)->COMState.Location,Pose(*Authority90,102)->COMState.Location);
     if(!TestTrue(TEXT("wrong held remote request creates measured same-frame native divergence"),BeforeError>1))return false;
@@ -117,6 +149,11 @@ bool FIASPrivateRoadLateInputReconciliation::RunTest(const FString&)
     auto Status=Client->AdvanceCorrection(7,Why);
     if(!TestTrue(TEXT("bounded correction stages a genuine new physical graph"),Status==P::EPrivateRoadCorrection::Replaying))return false;
     TestTrue(TEXT("staged replay is invisible; old immutable publication remains live"),Client->ReadLatest()==Original);
+    const auto DuringStagedPrefix=Client->CaptureConsumedInputPrefixForDiagnostics(512);
+    TestTrue(TEXT("copy never observes an incomplete staged graph in place of the live prefix"),
+        DuringStagedPrefix.Status==P::EPrivateRoadInputPrefixCopy::CompleteObservedPrefix
+        &&DuringStagedPrefix.Publication==Original&&DuringStagedPrefix.Prefix==OriginalPrefix.Prefix
+        &&DuringStagedPrefix.CompletedGraphAdoptions==0);
     U64 Last=90;
     for(U64 Pulse=1;Pulse<=64&&Status==P::EPrivateRoadCorrection::Replaying;++Pulse)
     {
@@ -143,11 +180,30 @@ bool FIASPrivateRoadLateInputReconciliation::RunTest(const FString&)
     TestTrue(TEXT("adoption replaces coherent native history; original frame60 observation now matches"),HistoricalCorrected.Frame==60&&HistoricalCorrected.Status==P::EPrivateRoadPoseComparison::Equal);
     TestTrue(TEXT("latest actual authority-input frame also matches without frame retiming"),Client->CompareObservedKinematics(Observe(*Expected)).Status==P::EPrivateRoadPoseComparison::Equal);
     const auto Witness=Client->ReadLastCorrection();
+    const auto AdoptedPrefix=Client->CaptureConsumedInputPrefixForDiagnostics(512);
+    const bool ActualAdoptedPrefix=AdoptedPrefix.Status==P::EPrivateRoadInputPrefixCopy::CompleteObservedPrefix
+        &&AdoptedPrefix.Publication==Corrected&&AdoptedPrefix.Prefix.size()==Last+1
+        &&AdoptedPrefix.CompletedGraphAdoptions==1
+        &&AdoptedPrefix.Prefix[30].Actors[1].Requested[0]==0
+        &&AdoptedPrefix.Prefix[30].Actors[1].Requested[1]==255
+        &&OriginalPrefix.Prefix[30].Actors[1].Requested[0]==255
+        &&OriginalPrefix.Prefix[30].Actors[1].Requested[1]==0;
+    TestTrue(TEXT("actual adoption replaces the full prefix, without concatenating first-forward history"),ActualAdoptedPrefix);
+    for(const auto& F:AdoptedPrefix.Prefix)
+        TestTrue(TEXT("every captured historical frame belongs to the adopted graph"),F.LocalKernelLifetime==Corrected->LocalKernelLifetime);
+    TestTrue(TEXT("read-only input capture keeps actual adopted publication unchanged"),Client->ReadLatest()==Corrected);
     TestTrue(TEXT("actual reconciliation records native change and complete replay count"),Witness&&Witness->FirstInvalidated==8&&Witness->ReplayedFrames==Last+1&&Witness->ThroughFrame==Last&&Witness->MaximumPositionChange>1&&Witness->Corrections==1);
     TestTrue(TEXT("received authority is retained across adoption"),Client->ConfirmRemote(5,Late60).Status==EResult::Duplicate);
     TestTrue(TEXT("old immutable historical prediction remains unchanged"),Original->Frame==90&&Original->LocalKernelLifetime!=Corrected->LocalKernelLifetime);
     TestTrue(TEXT("real graphs close on owner"),Client->Close()&&Reference->Close());CollectGarbage(RF_NoFlags,true);
     TestTrue(TEXT("corrected values survive actual graph retirement"),Corrected->Frame==Last);
+    const auto ClosedPrefix=Client->CaptureConsumedInputPrefixForDiagnostics(512);
+    const bool ClosedUnknown=ClosedPrefix.Status==P::EPrivateRoadInputPrefixCopy::Unavailable
+        &&!ClosedPrefix.Publication&&ClosedPrefix.Prefix.empty();
+    TestTrue(TEXT("closed graph cannot claim an observed input prefix"),ClosedUnknown);
+    AddInfo(FString::Printf(TEXT("[NativeObservedInputPrefix] before=%llu after=%llu actionSlots=%u actualAdoption=%d oldCopyImmutable=%d cameraSlots=%d actualReset=%d speculativeResetUnknown=%d overflowUnknown=%d unstartedUnknown=%d closedUnknown=%d fullCausalState=0 restoreK=0"),
+        uint64(OriginalPrefix.Prefix.size()),uint64(AdoptedPrefix.Prefix.size()),unsigned(ActionCount),ActualAdoptedPrefix,
+        OriginalPrefix.Prefix[30].Actors[1].Requested[0]==255,CameraSlotsObserved,ActualResetCaptured,HoldResetUnknown,OverflowUnknown,UnstartedUnknown,ClosedUnknown));
     AddInfo(FString::Printf(TEXT("[NativeLateInputReconciliation] BeforePositionError=%.9g CorrectedFrame=%llu ReplayFrames=%llu ExactKinematics=1 NativeGraphs=REAL Correction=FRESH_ORIGIN_RECONSTRUCTION NetworkAuthentication=NOT_QUALIFIED CompleteSnapshotRestore=NOT_QUALIFIED"),BeforeError,Last,Witness?Witness->ReplayedFrames:0));
     return !HasAnyErrors();
 }

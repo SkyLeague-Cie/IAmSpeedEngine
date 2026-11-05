@@ -297,4 +297,96 @@ bool FPrivateRoadPredictionSession::Close()
     if(I.Staged&&!I.Staged->Close())return false;if(I.Live&&!I.Live->Close())return false;
     I.Closed=true;I.Published.store({});I.Staged.reset();I.Live.reset();I.StagedHistories.clear();I.Histories.clear();I.StagedPhysicalHistory.clear();I.PhysicalHistory.clear();return true;
 }
+
+std::optional<FPrivateRoadObservedInputFrame>
+CopyPrivateRoadConsumedInputFrameForDiagnostics(const FPrivateRoadPublication& Publication)
+{
+    // No native graph dereference, callbacks, ingress, egress or mutation. A
+    // failed copy has no numeric payload; it is not an all-zero observation.
+    try
+    {
+        if(!Publication.LocalKernelLifetime||Publication.Actors.empty()||Publication.Actors.size()>16
+            ||Publication.DeclaredSettingsIdentity.size()>4096)return {};
+        FPrivateRoadObservedInputFrame Out;
+        Out.Frame=Publication.Frame;Out.LocalKernelLifetime=Publication.LocalKernelLifetime;
+        Out.AwaitingInitialPublication=Publication.AwaitingInitialPublication;
+        Out.DeclaredSettingsIdentity=Publication.DeclaredSettingsIdentity;
+        U64 PreviousActor=0;
+        for(const auto& A:Publication.Actors)
+        {
+            if(!A.Actor||A.Actor<=PreviousActor||!A.Incarnation||!A.Input
+                ||A.Input->Frame!=Publication.Frame)return {};
+            PreviousActor=A.Actor;
+            FPrivateRoadObservedActorInput V;
+            V.Actor=A.Actor;V.Incarnation=A.Incarnation;
+            V.Requested=A.Input->Requested;V.Before=A.Input->Before;V.Applied=A.Input->Applied;
+            V.ActiveMask=A.Input->ActiveMask;V.Origin=A.Input->Origin;V.Filter=A.Filter;
+            if(const auto* Raw=std::get_if<std::shared_ptr<const BranchV2::FInputFrame>>(&A.Input->Evidence);Raw&&*Raw)
+            {
+                const auto& D=(*Raw)->GetData();V.OriginEvidenceKnown=V.ResetEvidenceKnown=true;
+                V.ActualReset=D.Reset;
+                V.OriginEvidenceConsistent=V.Origin==EBranchRequestOrigin::RetainedLocalDevice&&D.ConsumptionFrame==Publication.Frame;
+            }
+            else if(const auto* Wire=std::get_if<std::shared_ptr<const FPacket>>(&A.Input->Evidence);Wire&&*Wire)
+            {
+                V.OriginEvidenceKnown=V.ResetEvidenceKnown=true;V.ActualReset=(*Wire)->Input.Reset;
+                V.OriginEvidenceConsistent=V.Origin==EBranchRequestOrigin::ReceivedAuthorityRequest
+                    &&(*Wire)->Frame==Publication.Frame&&(*Wire)->Actor==A.Actor&&(*Wire)->Incarnation==A.Incarnation;
+            }
+            else if(const auto* Hold=std::get_if<FSpeculativeRequest>(&A.Input->Evidence))
+            {
+                V.OriginEvidenceKnown=true;
+                V.OriginEvidenceConsistent=V.Origin==EBranchRequestOrigin::SpeculativeHoldRequest&&Hold->Frame==Publication.Frame;
+                // Speculation has no raw reset evidence. Never reconstruct it
+                // from Origin, applied values, active masks or held requests.
+            }
+            V.CanMove=A.CanMove;V.Frozen=A.Frozen;V.CountdownFrames=A.CountdownFrames;
+            Out.Actors.push_back(std::move(V));
+        }
+        return Out;
+    }
+    catch(...) {return {};}
+}
+FPrivateRoadObservedInputPrefix FPrivateRoadPredictionSession::CaptureConsumedInputPrefixForDiagnostics(U64 MaximumFramesToCopy) const
+{
+    FPrivateRoadObservedInputPrefix Out;
+    // Retain existing immutable publication semantics even on UNKNOWN. No
+    // history is claimed unless all checks under the actual Gate succeed.
+    Out.Publication=Impl->Published.load();
+    if(!IsInGameThread()||Speed::Input::FPresentationInputScope::IsActive())return Out;
+    auto& I=*Impl;std::unique_lock Lock(I.Gate,std::try_to_lock);
+    if(!Lock.owns_lock()||I.Closed||I.Failed||!I.Live)return Out;
+    Out.Publication=I.Published.load();Out.CompletedGraphAdoptions=I.CorrectionCount;
+    if(!Out.Publication)return Out;
+    if(!MaximumFramesToCopy||MaximumFramesToCopy>4096||Out.Publication->Frame>=MaximumFramesToCopy)
+    {Out.Status=EPrivateRoadInputPrefixCopy::Overflow;return Out;}
+    if(I.PhysicalHistory.size()!=Out.Publication->Frame+1||I.PhysicalHistory.empty()
+        ||I.PhysicalHistory.back()!=Out.Publication||I.Live->ReadLatest()!=Out.Publication)
+    {Out.Status=EPrivateRoadInputPrefixCopy::Missing;return Out;}
+    try
+    {
+        std::vector<FPrivateRoadObservedInputFrame> Values;Values.reserve(I.PhysicalHistory.size());
+        for(size_t N=0;N<I.PhysicalHistory.size();++N)
+        {
+            const auto& Actual=I.PhysicalHistory[N];
+            if(!Actual||Actual->Frame!=N||Actual->LocalKernelLifetime!=Out.Publication->LocalKernelLifetime)
+            {Out.Status=EPrivateRoadInputPrefixCopy::Missing;return Out;}
+            auto Frame=CopyPrivateRoadConsumedInputFrameForDiagnostics(*Actual);
+            if(!Frame||Frame->Actors.size()!=I.Seeds.size())
+            {Out.Status=EPrivateRoadInputPrefixCopy::Rejected;return Out;}
+            for(size_t A=0;A<I.Seeds.size();++A)
+            {
+                if(Frame->Actors[A].Actor!=I.Seeds[A].Actor||Frame->Actors[A].Incarnation!=I.Seeds[A].Incarnation)
+                {Out.Status=EPrivateRoadInputPrefixCopy::Rejected;return Out;}
+                Frame->Actors[A].ExpectedRole=I.Seeds[A].Role;
+                Frame->Actors[A].RoleKnown=I.Seeds[A].Role==EBranchFilterRole::LocalDevice||I.Seeds[A].Role==EBranchFilterRole::RemoteRequests;
+            }
+            Values.push_back(std::move(*Frame));
+        }
+        Out.Prefix=std::move(Values);Out.Status=EPrivateRoadInputPrefixCopy::CompleteObservedPrefix;
+    }
+    catch(...) {Out.Prefix.clear();Out.Status=EPrivateRoadInputPrefixCopy::Unavailable;}
+    return Out;
+}
+
 }
