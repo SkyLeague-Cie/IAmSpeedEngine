@@ -24,6 +24,9 @@
 #include "IAmSpeed/Components/SafeNetworkPhysicsComponent.h"
 #include "ChaosVehicleWheel.h"
 #include "HAL/IConsoleManager.h"
+#include "HAL/PlatformTime.h"
+#include "Misc/CommandLine.h"
+#include "Misc/Parse.h"
 #include "UObject/UnrealType.h"
 #include "Misc/ScopeLock.h"
 #include "EngineUtils.h"
@@ -1012,6 +1015,14 @@ void USpeedWheeledComponent::JoinInputWorkerBeforeStorageDestruction()
 			}
 			// Orphan/scenario owners still bound to the actor must close on their
 			// worker. Resume then requires an explicit new controlled run.
+			const bool bTraceFirstRetirement=[]()
+			{
+				if(!IsInGameThread())return false;
+				static const bool Enabled=FParse::Param(FCommandLine::Get(),TEXT("SLPrivateInputFailureFile"));
+				static bool Recorded=false;
+				if(!Enabled||Recorded)return false;
+				Recorded=true;return true;
+			}();
 			::RecordPrivateInputFailure(TEXT("PrivateRetirement.WheeledStorage"), FString::Printf(
 				TEXT("driver_uid=%u component_uid=%u actor_uid=%u world_time=%.6f generation=%llu boundary=%u produced=%d legacy_remote=%d endplay=%d begun=%d owner_destroying=%d registry_present=%d actor_stable=%llu still_bound=%d"),
 				It->GetUniqueID(), GetUniqueID(), GetOwner() ? GetOwner()->GetUniqueID() : 0,
@@ -1019,9 +1030,23 @@ void USpeedWheeledComponent::JoinInputWorkerBeforeStorageDestruction()
 				int32(HasProducedInputAuthority()), int32(HasLegacyRemoteInputAuthority()),
 				int32(bWheeledEndPlayTeardown), int32(HasBegunPlay()),
 				int32(GetOwner() && GetOwner()->IsActorBeingDestroyed()), int32(bool(View)), Actor, int32(bStillBound)));
-			if (!It->JoinOwnedSimulationForInputTeardown())
+			const double JoinBegin=bTraceFirstRetirement?FPlatformTime::Seconds():0.;
+			const bool Joined=It->JoinOwnedSimulationForInputTeardown();
+			const double JoinMs=bTraceFirstRetirement?1000.*(FPlatformTime::Seconds()-JoinBegin):0.;
+			if(bTraceFirstRetirement)
+				::RecordPrivateInputFailure(TEXT("PrivateRetirement.WheeledStorage.AfterJoin"),FString::Printf(
+					TEXT("driver_uid=%u component_uid=%u generation=%llu joined=%d join_ms=%.3f"),
+					It->GetUniqueID(),GetUniqueID(),It->GetInputWorkerGeneration(),int32(Joined),JoinMs));
+			if (!Joined)
 				UE_LOG(SpeedInputLog, Fatal, TEXT("Input worker could not join before actor storage destruction"));
-			if (!RetireSpeedWorldAdapterBeforeTeardown())
+			const double RetireBegin=bTraceFirstRetirement?FPlatformTime::Seconds():0.;
+			const bool Retired=RetireSpeedWorldAdapterBeforeTeardown();
+			const double RetireMs=bTraceFirstRetirement?1000.*(FPlatformTime::Seconds()-RetireBegin):0.;
+			if(bTraceFirstRetirement)
+				::RecordPrivateInputFailure(TEXT("PrivateRetirement.WheeledStorage.AfterAdapterRetire"),FString::Printf(
+					TEXT("driver_uid=%u component_uid=%u generation=%llu retired=%d join_ms=%.3f retire_ms=%.3f operations_ms=%.3f"),
+					It->GetUniqueID(),GetUniqueID(),It->GetInputWorkerGeneration(),int32(Retired),JoinMs,RetireMs,JoinMs+RetireMs));
+			if (!Retired)
 				UE_LOG(SpeedInputLog, Fatal, TEXT("Joined input owner did not retire its adapter before storage teardown"));
 			break;
 		}

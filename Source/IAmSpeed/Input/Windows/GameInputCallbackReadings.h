@@ -39,7 +39,8 @@ public:
 		return true;
 	}
 
-	FRawDeviceReadBatch PollRaw(FApi& InApi, FDevice* InDevice, FKind InKind)
+	FRawDeviceReadBatch PollRaw(FApi& InApi, FDevice* InDevice, FKind InKind,
+        V2::FNativeInputAvailability* Availability = nullptr)
 	{
 		using namespace GameInput::v3;
 		FRawDeviceReadBatch Batch;
@@ -64,6 +65,7 @@ public:
 			}
 			Registered = true;
 			const auto Current = Api->GetCurrentReading(Kind, Device.Get(), Baseline.GetAddressOf());
+            ObserveCurrentReadingDiagnostic(Availability, Current, Kind, true);
 			if (FAILED(Current) || !Baseline)
 			{
 				const bool Fenced = Stop();
