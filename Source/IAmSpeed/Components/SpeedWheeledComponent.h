@@ -17,6 +17,8 @@ namespace Speed::Replay { class FFieldWriter; }
 #include "IAmSpeed/Input/LegacyRemotePreSlew.h"
 
 #include "SpeedWheeledComponent.generated.h"
+namespace Speed {struct FPreparedNativeOwnerBinding;struct FNativePrepareGTFields;namespace Analytic::Certified {struct FDistanceBudget;}}
+
 
 DECLARE_LOG_CATEGORY_EXTERN(WheelNetcodeLog, Log, All);
 DECLARE_LOG_CATEGORY_EXTERN(SpeedInputLog, Log, All);
@@ -66,6 +68,10 @@ class IAMSPEED_API USpeedWheeledComponent : public UChaosWheeledVehicleMovementC
 	friend struct FNetworkWheeledSpeedInputState;
 
 public:
+    // Read-only GT diagnostics; caller retains authenticated lease and pins.
+    bool ReadCanonicalPrepareStateForGTInspection(const Speed::FPreparedNativeOwnerBinding& Binding,
+        Speed::FNativePrepareGTFields& Out,Speed::Analytic::Certified::FDistanceBudget& Budget,FString& Reason) const;
+
 #if WITH_DEV_AUTOMATION_TESTS
     // Isolated native fixtures have one IAmSpeed owner; suppress the host tick.
     void DisableAsyncPhysicsTickForTesting() { SetAsyncPhysicsTickEnabled(false); }
@@ -831,7 +837,7 @@ private:
 	void ClearWheelSimulationPointers();
 	/** Latches game-thread driving inputs exactly once at a physics-frame boundary. */
 	bool ConsumeProducedWheeledInputs(uint64 CanonicalFrame);
-	FCriticalSection FrameInputProducerMutex;
+	mutable FCriticalSection FrameInputProducerMutex;
 	std::shared_ptr<Speed::Input::FInputStream> FrameInputStream;
 	// Simulation-lane handle latched for this frame, including in-flight detach.
 	std::shared_ptr<Speed::Input::FInputStream> ConsumedFrameInputStream;

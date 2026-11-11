@@ -6,18 +6,20 @@
 #include "Components/ShapeComponent.h"
 #include "IAmSpeed/Base/SUtils.h"
 #include "IAmSpeed/Base/EpisodeShapeFieldsForTesting.h"
+#include "IAmSpeed/Base/InheritedMotionPolicyValues91.h"
 #include "SSubBody.generated.h"
 
 
 #if !UE_BUILD_SHIPPING
 namespace Speed { struct FNativeBallMechanicalWitnessForTesting; }
 #endif
+namespace Speed::PreparedExecution { class FStepScope; }
 class ISpeedComponent;
 class UBoxSubBody;
 class USphereSubBody;
 class USWheelSubBody;
 class UCylinderSubBody;
-namespace Speed { class IStaticCollisionWorld; }
+namespace Speed { class IStaticCollisionWorld; struct FPreparedNativeOwnerBinding; struct FNativePrepareGTFields; namespace Analytic::Certified { struct FDistanceBudget; } }
 
 /**
  * USubBody : Base class for any physics sub-body (wheel, hitbox, sphere) and detection SubBodies
@@ -49,6 +51,9 @@ public:
     {
         using B=Speed::FEpisodeStateBytesForTesting;
         B::Add(Out,ParentComponent);
+        B::Add(Out,InheritedMotionPolicy91.ParentMaxV);
+        B::Add(Out,InheritedMotionPolicy91.ParentMaxOmega);
+        B::Add(Out,InheritedMotionPolicy91.Captured);
         const FTransform RelativePose=GetRelativeTransform();B::Add(Out,RelativePose);
         B::Add(Out,Kinematics);
         B::Add(Out,SubBodyType);
@@ -114,6 +119,11 @@ public:
 	virtual void PostPhysicsUpdate() {};
 
     // --- Set/Get kinematics ---
+    // Read-only native synchronization witness. This never predicts a reset,
+    // resolves a weak identity, queries geometry, or grants physical admission.
+    virtual bool ReadCanonicalStepSyncFields(const Speed::FPreparedNativeOwnerBinding& Binding,
+        const FString& Prefix,Speed::FNativePrepareGTFields& Out,
+        Speed::Analytic::Certified::FDistanceBudget& Budget,FString& Reason) const;
 	virtual void UpdateKinematicsFromOwner(const SKinematic& ParentKinematic);
     void SetKinematicState(const Speed::FKinematicState& State) { Kinematics = State; }
     const Speed::FKinematicState& GetKinematicState() const { return Kinematics; }
@@ -139,12 +149,20 @@ public:
 	void SetHit(const SHitResult& Hit) { CurrentHit = Hit; }
     const SHitResult& GetHit() const { return CurrentHit; }
 	const SHitResult& GetFutureHit() const { return FutureHit; }
-	void SetFutureHit(const SHitResult& Hit) { FutureHit = Hit; }
+	void SetFutureHit(const SHitResult& Hit)
+    {
+        if(Hit.FirstRsResponseData||FutureHit.FirstRsResponseData||CurrentHit.FirstRsResponseData)
+            Speed::PreparedExecution::RequireFirstRsResponseHit(this,Hit,Speed::PreparedExecution::EFirstRsResponseCall::Set);
+        FutureHit = Hit;
+    }
 
 	ESubBodyType GetSubBodyType() const { return SubBodyType; }
     FVector GetCenterOfMassWS() const { return Kinematics.Location; }
 
 	ISpeedComponent* GetParentComponent() const { return ParentComponent; }
+
+    /** GT/canonical-owner copy only; workers use the authenticated immutable body binding. */
+    Speed::FInheritedMotionPolicyValues91 GetInheritedMotionPolicyValues91() const {return InheritedMotionPolicy91;}
 
     // ====== REQUIRED PHYSICS SHAPE AND COLLISION PARAMS ======
     virtual FCollisionShape GetCollisionShape(float Inflation = 0.0f) const { return FCollisionShape::MakeSphere(10.f); }
@@ -154,12 +172,14 @@ public:
 	FVector GetLocalOffset() const { return GetRelativeLocation(); }
 	FQuat GetLocalRotation() const { return GetRelativeRotation().Quaternion(); }
     static uint64 MakePairKey(const USSubBody* A, const UPrimitiveComponent* OtherComp);
+    static uint64 MakeComponentSweepPairKey(const USSubBody* Resolver,const SHitResult& Hit,bool HasStaticWorld);
     static int32 SubBodyPriority(USSubBody::ESubBodyType T);
     static USSubBody* PickResolver(USSubBody* A, USSubBody* B);
 protected:
     /** Clear transient exclusions, retaining bounded scratch and permanent-list order. */
     void ResetIgnoredComponents();
     friend class FIAmSpeedSubBodyIgnoredScratchTest;
+    friend class Speed::PreparedExecution::FStepScope;
     virtual void ResolveCurrentHitPrv(const float& delta, const float& SimTime) {};
     const TArray<TWeakObjectPtr<UBoxSubBody>>& GetExternalBoxSubBodies() const;
     const TArray<TWeakObjectPtr<USphereSubBody>>& GetExternalSphereSubBodies() const;
@@ -167,6 +187,9 @@ protected:
     const TArray<TWeakObjectPtr<UCylinderSubBody>>& GetExternalCylinderSubBodies() const {return ExternalCylinderSubBodies;}
 protected:
 
+private:
+    Speed::FInheritedMotionPolicyValues91 InheritedMotionPolicy91;
+protected:
 	ISpeedComponent* ParentComponent;
 
     // Kinematic state at start of frame or during substep

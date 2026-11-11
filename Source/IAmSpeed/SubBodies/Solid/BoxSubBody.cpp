@@ -2,9 +2,27 @@
 
 
 #include "BoxSubBody.h"
+
+#if !UE_BUILD_SHIPPING
+#include "HAL/PlatformTime.h"
+namespace RoofPostProfile
+{
+struct FCallbackRecord;
+extern thread_local FCallbackRecord* CallbackCurrent;
+struct FSample;
+extern thread_local const FSample* SupportCurrent;
+void ObserveCallbackStage(uint32 stage,uint64 start);
+}
+#endif
 #include "Misc/CommandLine.h"
 #include "Misc/Parse.h"
 #include "Misc/ScopeExit.h"
+#include "IAmSpeed/World/Collision/PreparedNativeOwnerPoseMutation.h"
+#include "IAmSpeed/World/Collision/PreparedPhysicalExecution.h"
+#include "IAmSpeed/World/Collision/PreparedSweepEvidence.h"
+#include "IAmSpeed/World/Collision/PreparedCanonicalStaticQueryService.h"
+#include "IAmSpeed/World/Simulation/OnePausedCanonicalWork.h"
+#include <stdexcept>
 #include "Engine/World.h"
 #include "PrimitiveViewRelevance.h"
 #include "PrimitiveSceneProxy.h"
@@ -15,6 +33,7 @@
 #include "IAmSpeed/World/Collision/ReciprocalBoxContact.h"
 #include "IAmSpeed/World/Collision/PlanarContactImpulse.h"
 #include "IAmSpeed/World/Collision/BoundedPlanarContact.h"
+#include "IAmSpeed/World/Collision/BoxWallResponseGeometry.h"
 #include "IAmSpeed/World/Analytic/StaticWorldQueryAudit.h"
 #include "IAmSpeed/Base/SpeedConstant.h"
 #include "IAmSpeed/Base/SUtils.h"
@@ -32,6 +51,116 @@
 #include "Math/QuatRotationTranslationMatrix.h"
 
 DEFINE_LOG_CATEGORY(BoxSubBodyLog);
+#if !UE_BUILD_SHIPPING
+namespace Speed::PreparedExecution::NativeSolidDetail
+{
+bool SameQueryBits(const Analytic::FWorldQuery&, const Analytic::FWorldQuery&) noexcept;
+}
+
+namespace
+{
+enum class EBoxSupportSite : uint8 { Other, Publish, Republish, Check };
+thread_local EBoxSupportSite BoxSupportSite = EBoxSupportSite::Other;
+
+struct FBoxSupportObservation
+{
+    Speed::PreparedExecution::FStepIdentity Step;
+    const UBoxSubBody* Body = nullptr;
+    const Speed::IStaticCollisionWorld* World = nullptr;
+    const Speed::FPreparedWorldSnapshot* Snapshot = nullptr;
+    const Speed::FPreparedCanonicalStaticQueryService* Service = nullptr;
+    Speed::Analytic::FWorldQuery Query;
+    FVector Center, Load, Velocity;
+    uint64 Numeric = 0;
+    float Friction = 0;
+    bool Accepted = false;
+};
+
+bool SameBoxSupportVector(const FVector& A, const FVector& B)
+{
+    return FMemory::Memcmp(&A.X, &B.X, sizeof(A.X)) == 0 &&
+        FMemory::Memcmp(&A.Y, &B.Y, sizeof(A.Y)) == 0 &&
+        FMemory::Memcmp(&A.Z, &B.Z, sizeof(A.Z)) == 0;
+}
+
+TAutoConsoleVariable<int32> RoofBoxSupportReuse(
+    TEXT("p.IAmSpeed.Simulation.RoofBoxSupportReuse"), 0,
+    TEXT("Reuse a positive exact support evaluation for the matching Fox roof Post predicate."));
+
+TAutoConsoleVariable<int32> RoofBoxSupportRepublish(
+    TEXT("p.IAmSpeed.Simulation.RoofBoxSupportRepublish"), 0,
+    TEXT("Reuse matching positive support values during the Fox roof projection republication."));
+
+bool RoofSupportObservationActive()
+{
+    return RoofPostProfile::CallbackCurrent || RoofPostProfile::SupportCurrent;
+}
+
+thread_local FBoxSupportObservation PreviousBoxSupport;
+thread_local Speed::FBoxRestingSupport PreviousBoxSupportValue;
+
+FBoxSupportObservation CaptureBoxSupport(const UBoxSubBody& Body,
+    const Speed::IStaticCollisionWorld& World, const Speed::Analytic::FWorldQuery& Query,
+    const FVector& Center, const FVector& Load, const FVector& Velocity, float Friction)
+{
+    using namespace Speed::PreparedExecution;
+    FStepIdentity Step;
+    const auto Snapshot = World.GetPreparedSnapshot();
+    const auto Service = World.GetPreparedQueryService();
+    const auto Numeric = Speed::Analytic::InspectCurrentAnalyticNumericContext(World.GetNumericContract());
+    if (!ReadCurrentStep(Step) || !Snapshot || !Service ||
+        !Service->MatchesPreparedSnapshot(Snapshot) ||
+        Numeric.Status != Speed::Analytic::EAnalyticNumericStatus::Complete ||
+        Numeric.ControlFingerprint() != Step.NumericControl)
+        return {};
+    return { Step, &Body, &World, Snapshot.Get(), Service.Get(), Query, Center, Load, Velocity,
+        Numeric.ControlFingerprint(), Friction, false };
+}
+
+struct FBoxSupportMatch
+{
+    bool Scope, Query, Center, Load, Motion;
+    bool All() const { return Scope && Query && Center && Load && Motion; }
+};
+
+FBoxSupportMatch MatchBoxSupport(const FBoxSupportObservation& Current,
+    const FBoxSupportObservation& Previous)
+{
+    const auto& A = Current.Step;
+    const auto& B = Previous.Step;
+    const bool Scope = Current.Body && Current.Body == Previous.Body && Current.World == Previous.World &&
+        Current.Snapshot == Previous.Snapshot && Current.Service == Previous.Service &&
+        A.Worker == B.Worker && A.Provider == B.Provider && A.Lease == B.Lease &&
+        A.InputGeneration == B.InputGeneration && A.StepSerial == B.StepSerial &&
+        A.WindowSerial == B.WindowSerial && A.WindowNonce == B.WindowNonce &&
+        A.QueryEpoch == B.QueryEpoch && A.Iteration == B.Iteration &&
+        Current.Numeric == Previous.Numeric;
+    return { Scope,
+        Scope && Speed::PreparedExecution::NativeSolidDetail::SameQueryBits(Previous.Query, Current.Query),
+        Scope && SameBoxSupportVector(Previous.Center, Current.Center),
+        Scope && SameBoxSupportVector(Previous.Load, Current.Load),
+        Scope && SameBoxSupportVector(Previous.Velocity, Current.Velocity) &&
+            FMemory::Memcmp(&Previous.Friction, &Current.Friction, sizeof(Current.Friction)) == 0 };
+}
+
+void LogBoxSupport(const FBoxSupportObservation& Current, const FBoxSupportMatch& Match, bool Reused)
+{
+    UE_LOG(BoxSubBodyLog, Display, TEXT("[RoofBoxSupportInputs] Frame=%llu Bound=%d Pair=%d Query=%d Center=%d Load=%d Motion=%d PriorAccepted=%d Accepted=%d Reused=%d"),
+        Current.Step.Frame, int(Current.Body != nullptr), int(Match.Scope), int(Match.Query),
+        int(Match.Center), int(Match.Load), int(Match.Motion), int(Match.Scope && PreviousBoxSupport.Accepted),
+        int(Current.Accepted), int(Reused));
+}
+}
+
+namespace RoofPostProfile
+{
+bool SupportReuseRequested()
+{
+    return RoofBoxSupportReuse.GetValueOnAnyThread() == 1 ||
+        RoofBoxSupportRepublish.GetValueOnAnyThread() == 1;
+}
+}
+#endif
 static TAutoConsoleVariable<int32> CVarIAmSpeedCoupledContactSpeedLimits(
  TEXT("p.IAmSpeed.Contact.CoupledSpeedLimits"),1,
  TEXT("Solve box/analytic-plane contact impulses and linear/angular speed-limit reactions together. 0 selects legacy independent clipping for comparison."));
@@ -542,7 +671,13 @@ bool UBoxSubBody::HasExactStaticRestingSupport(const Speed::IStaticCollisionWorl
 {
     if (!ParentComponent) return false;
     Speed::FBoxRestingSupport Support;
-    return HasToApplyRestForce() && EvaluateStaticBoxSupport(World, Load, Support, true);
+    if (!HasToApplyRestForce()) return false;
+#if !UE_BUILD_SHIPPING
+    TOptional<TGuardValue<EBoxSupportSite>> Observation;
+    if (RoofSupportObservationActive())
+        Observation.Emplace(BoxSupportSite, EBoxSupportSite::Check);
+#endif
+    return EvaluateStaticBoxSupport(World, Load, Support, true);
 }
 
 bool UBoxSubBody::HasCurrentExactPlanarContact() const
@@ -691,6 +826,14 @@ bool UBoxSubBody::CanApplyQuantizedPose(const Speed::IStaticCollisionWorld& Worl
     // zero-channel-mask surface must not be crossed by the final rounding.
     Query.bObjectQuery = true;
     Query.ObjectTypes = uint64(1) << ECC_WorldStatic;
+    // This is the actual candidate pose. A complete canonical no-penetration
+    // proof can serve this pose guard without claiming a legacy overlap miss.
+    // Keep the independent roundoff-plane correction check even on that path.
+    const auto Prepared = World.GetPreparedQueryService();
+    if (Prepared && Prepared->MatchesPreparedSnapshot(World.GetPreparedSnapshot()) &&
+        Prepared->TryCanonicalFixedBoxOverlapClearance(Query))
+        return FindBoxPlanarRoundoffCorrection(World, Query,
+            !OwnerPose.Velocity.IsZero() || !OwnerPose.AngularVelocity.IsZero()).IsZero();
     Speed::Analytic::FWorldHit Hit;
     if (!World.TryFindDeepestOverlap(Query, Hit)) return false;
 #if !UE_BUILD_SHIPPING
@@ -723,16 +866,82 @@ bool UBoxSubBody::EvaluateStaticBoxSupport(const Speed::IStaticCollisionWorld& W
     if (!ParentComponent) return false;
     const SKinematic& State = ParentComponent->GetKinematicState();
     const auto Query = MakeSupportBoxQuery(State);
-    return !bIncludeMotion || State.Velocity.IsZero()
+    const bool Resting = !bIncludeMotion || State.Velocity.IsZero();
+    const float Friction = Resting ? 0.0f : GetStaticWorldContactFriction(&World, FVector::UpVector);
+#if !UE_BUILD_SHIPPING
+    TOptional<FBoxSupportObservation> Observation;
+    FBoxSupportMatch Match{};
+    if (RoofSupportObservationActive() && BoxSupportSite != EBoxSupportSite::Other &&
+        bIncludeMotion && HorizonSeconds == 0.0)
+    {
+        Observation.Emplace(CaptureBoxSupport(*this, World, Query, State.Location, ExternalAcceleration,
+            State.Velocity, Friction));
+        Match = MatchBoxSupport(*Observation, PreviousBoxSupport);
+        // The projection can publish the four original witnesses again
+        // when the full query and lexical context still match.
+        if (BoxSupportSite == EBoxSupportSite::Republish &&
+            RoofBoxSupportRepublish.GetValueOnAnyThread() == 1 &&
+            Query.bAuthorityOnly && Match.All() && PreviousBoxSupport.Accepted)
+        {
+            Speed::PreparedExecution::FNativePlanarResponseCommitScope::RequireQueriesClosed();
+            OutSupport = PreviousBoxSupportValue;
+            UE_LOG(BoxSubBodyLog, Display, TEXT("[RoofBoxSupportRepublish] Frame=%llu Match=1 Accepted=1 Reused=1 Source=%llu Surface=%llu"),
+                Observation->Step.Frame, OutSupport.ProviderWitness.SourceId, OutSupport.ProviderWitness.SurfaceId);
+            return true;
+        }
+        // The Check caller consumes only the Boolean.
+        if (BoxSupportSite == EBoxSupportSite::Check && RoofBoxSupportReuse.GetValueOnAnyThread() == 1 &&
+            Query.bAuthorityOnly && Match.All() && PreviousBoxSupport.Accepted)
+        {
+            Speed::PreparedExecution::FNativePlanarResponseCommitScope::RequireQueriesClosed();
+            Observation->Accepted = true;
+            LogBoxSupport(*Observation, Match, true);
+            return true;
+        }
+    }
+#endif
+    const bool Accepted = Resting
         ? Speed::TryBuildBoxRestingSupport(World, Query, State.Location, ExternalAcceleration, OutSupport)
         : Speed::TryBuildBoxSlidingSupport(World, Query, State.Location, ExternalAcceleration,
-            State.Velocity, GetStaticWorldContactFriction( &World, FVector::UpVector), OutSupport, HorizonSeconds);
+            State.Velocity, Friction, OutSupport, HorizonSeconds);
+#if !UE_BUILD_SHIPPING
+    if (Observation)
+    {
+        Observation->Accepted = Accepted;
+        if (BoxSupportSite == EBoxSupportSite::Check)
+            LogBoxSupport(*Observation, Match, false);
+        else if (BoxSupportSite == EBoxSupportSite::Republish)
+        {
+            UE_LOG(BoxSubBodyLog, Display, TEXT("[RoofBoxSupportRepublish] Frame=%llu Match=%d Accepted=%d Reused=0 Source=%llu Surface=%llu"),
+                Observation->Step.Frame, int(Match.All()), int(Accepted),
+                OutSupport.ProviderWitness.SourceId, OutSupport.ProviderWitness.SurfaceId);
+        }
+        else if (Observation->Body && !Match.Scope)
+        {
+            const auto Closed = CaptureBoxSupport(*this, World, Query, State.Location,
+                ExternalAcceleration, State.Velocity, Friction);
+            if (MatchBoxSupport(Closed, *Observation).All())
+            {
+                PreviousBoxSupport = *Observation;
+                if (Accepted)
+                    PreviousBoxSupportValue = OutSupport;
+            }
+        }
+    }
+#endif
+    return Accepted;
 }
 
 void UBoxSubBody::PostPhysicsUpdate()
 {
     Super::PostPhysicsUpdate();
+#if !UE_BUILD_SHIPPING
+    const uint64 roofBoxSupport=::RoofPostProfile::CallbackCurrent?FPlatformTime::Cycles64():0;
+#endif
     PublishExactStaticSupport();
+#if !UE_BUILD_SHIPPING
+    if(roofBoxSupport)::RoofPostProfile::ObserveCallbackStage(3,roofBoxSupport);
+#endif
 }
 
 bool UBoxSubBody::PublishExactStaticSupport()
@@ -743,6 +952,11 @@ bool UBoxSubBody::PublishExactStaticSupport()
     const FVector Load = ParentComponent->GetNominalGravityAcceleration();
     if (Load.IsZero() || !State.AngularVelocity.IsZero() || FVector::DotProduct(State.Velocity, Load) != 0) return false;
     Speed::FBoxRestingSupport Support;
+#if !UE_BUILD_SHIPPING
+    TOptional<TGuardValue<EBoxSupportSite>> Observation;
+    if (RoofSupportObservationActive() && BoxSupportSite != EBoxSupportSite::Republish)
+        Observation.Emplace(BoxSupportSite, EBoxSupportSite::Publish);
+#endif
     if (!EvaluateStaticBoxSupport(*World, Load, Support, true)) return false;
     const USpeedWorldSubsystem* Bridge = GetWorld() ? GetWorld()->GetSubsystem<USpeedWorldSubsystem>() : nullptr;
     if (!Bridge) return false;
@@ -1048,6 +1262,8 @@ bool UBoxSubBody::ProjectEstablishedStaticContactImpl(
     Query.RequiredSourceId = ProjectionSeed.SourceId;
     Query.RequiredSurfaceId = ProjectionSeed.SurfaceId;
     Query.RequiredCanonicalGroupId = ProjectionSeed.CanonicalGroupId;
+    // The stationary projection sweep already uses zero initial-overlap tolerance.
+    Query.InitialOverlapTolerance = 0.0;
     if (bExactPlanarSeed) Query.DomainTolerance = 0;
 	Query.ReferenceNormal = FVector3d(
         bHasPersistentSeed
@@ -1057,10 +1273,19 @@ bool UBoxSubBody::ProjectEstablishedStaticContactImpl(
 
     constexpr uint32 MaxCorrectionIterations = 4;
     constexpr double ResidualToleranceCm = 1.0e-4;
-    Speed::FEstablishedStaticContactProjection Projection =
-        Speed::ProjectEstablishedStaticContact(
+    Speed::FEstablishedStaticContactProjection Projection;
+    if (!bExactPlanarSeed &&
+        Speed::PreparedExecution::FStepScope::TryProveNativeCurvedBoxPhysicalProjectionClear(
+            *this, ProjectionSeed, *StaticWorld, Query))
+    {
+        Projection.Location = Query.Start;
+    }
+    else
+    {
+        Projection = Speed::ProjectEstablishedStaticContact(
             *StaticWorld, Query, MaxCorrectionIterations,
             bExactPlanarSeed ? 0.0 : ResidualToleranceCm);
+    }
     if (bExactPlanarSeed && (!Projection.bContact || Projection.Location == Query.Start))
     {
         // SAT's sum-of-axis-radii and the independently transformed vertices
@@ -1105,7 +1330,15 @@ bool UBoxSubBody::ProjectEstablishedStaticContactImpl(
         // Absence of overlap is not separation: an exact nonpenetrating face
         // can still have four finite support witnesses at the current pose.
         // Revalidate them after any owner/wheel projection before clearing it.
-        if (bExactPlanarSeed && PublishExactStaticSupport()) return false;
+        if (bExactPlanarSeed)
+        {
+#if !UE_BUILD_SHIPPING
+            TOptional<TGuardValue<EBoxSupportSite>> Observation;
+            if (RoofSupportObservationActive())
+                Observation.Emplace(BoxSupportSite, EBoxSupportSite::Republish);
+#endif
+            if (PublishExactStaticSupport()) return false;
+        }
         if (bHasPersistentSeed)
         {
             bHasGroundContact = false;
@@ -1249,7 +1482,12 @@ void UBoxSubBody::AcceptHit()
         if (Count >= MaxHitsPerComponentPerFrame &&
             !(CanInitializeRepeatedContact(CurrentHit) || CanResolveRepeatedContact(CurrentHit)))
         {
-            IgnoredComponents.AddUnique(Comp);
+#if !UE_BUILD_SHIPPING
+            const bool keepForCertifiedReimpact=Speed::PreparedExecution::FStepScope::TryKeepCase585CurvedComponent(
+                *this,CurrentHit,Count,MaxHitsPerComponentPerFrame);
+            if(!keepForCertifiedReimpact)
+#endif
+                IgnoredComponents.AddUnique(Comp);
         }
     }
     else
@@ -1432,6 +1670,7 @@ bool UBoxSubBody::SweepTOI(const float& RemainingDelta, float& OutTOI)
     float TOI_Wheel = RemainingDelta;
     FutureHit = SHitResult();
     SHitResult OldGroundHit = GroundHit;
+    Speed::PreparedExecution::FComponentSweepScope::BeginNativeBoxOuterSweep(this, OldGroundHit, RemainingDelta);
 
     SHitResult GroundHitresult;
     SHitResult BoxHitresult;
@@ -1445,6 +1684,7 @@ bool UBoxSubBody::SweepTOI(const float& RemainingDelta, float& OutTOI)
 
     SHitResult PersistentSphereHit;
     float PersistentSphereTOI = RemainingDelta;
+    const bool bReportedSphere = bHitSphere;
     if (TryBuildPersistentSphereContact(bHitSphere, SphereHitresult, PersistentSphereHit, PersistentSphereTOI))
     {
         bPersistentSphereContact = true;
@@ -1452,25 +1692,41 @@ bool UBoxSubBody::SweepTOI(const float& RemainingDelta, float& OutTOI)
         SphereHitresult = PersistentSphereHit;
         TOI_Sphere = PersistentSphereTOI;
     }
+    Speed::PreparedExecution::FComponentSweepScope::ObserveCase202Serial3DynamicDispatches(
+        this,bHitBox,bReportedSphere,bHitWheel,bPersistentSphereContact);
 
     if (!bHitGround && !bHitBox && !bHitSphere && !bHitWheel)
     {
+        Speed::PreparedExecution::FComponentSweepScope::BeginNativeBoxGroundReuse(this, OldGroundHit,
+            RemainingDelta, OutTOI, uint8(bHitGround)|(uint8(bHitBox)<<1)|(uint8(bHitSphere)<<2)|(uint8(bHitWheel)<<3));
+        Speed::PreparedExecution::FNativeBoxGroundReuseDecisionValues ReuseDecision;
+        // Same native calls, arithmetic, short circuit and thresholds. Only
+        // copy their evaluated locals; do not rerun them in the observer.
+        const bool bPersistentGround = HasPersistentGroundContact();
+        ReuseDecision.Persistent = bPersistentGround;
         // IMPORTANT : ground can exist even without a hit (persistent contact)
-        if (HasPersistentGroundContact())
+        if (bPersistentGround)
         {
             const FVector N = OldGroundHit.ImpactNormal.GetSafeNormal();
             const FVector vP = GetVelocityAtPoint(OldGroundHit.ImpactPoint); // 
             const float vN = FVector::DotProduct(vP, N);
 
+            const bool bNormalComparison = vN <= 0.f;
+            ReuseDecision.VelocityComputed = true;
+            ReuseDecision.Normal = N; ReuseDecision.PointVelocity = vP;
+            ReuseDecision.NormalSpeed = vN; ReuseDecision.NormalComparison = bNormalComparison;
             // DO NOT recreate contact if separating
-            if (vN <= 0.f)
+            if (bNormalComparison)
             {
-                if (!IgnoredComponents.Contains(OldGroundHit.Component))
+                const bool bIgnoredGround = IgnoredComponents.Contains(OldGroundHit.Component);
+                ReuseDecision.IgnoreComputed = true; ReuseDecision.Ignored = bIgnoredGround;
+                if (!bIgnoredGround)
                 {
                     OutTOI = 0.0f;
                     FutureHit = OldGroundHit; // reuse current ground hit
                     GroundHit = OldGroundHit;
                     FutureHit.TOI = 0.0f;
+                    Speed::PreparedExecution::FComponentSweepScope::FinishNativeBoxGroundReuse(this, ReuseDecision, true, OutTOI);
                     return true;
                 }
                 else
@@ -1479,6 +1735,7 @@ bool UBoxSubBody::SweepTOI(const float& RemainingDelta, float& OutTOI)
                 }
             }
         }
+        Speed::PreparedExecution::FComponentSweepScope::FinishNativeBoxGroundReuse(this, ReuseDecision, false, OutTOI);
         return false;
     }
 
@@ -1528,6 +1785,26 @@ bool UBoxSubBody::SweepVsGround(UWorld* World, SHitResult& OutHit, const float& 
         Kinematics.Velocity * Delta +
         0.5f * Kinematics.Acceleration * Delta * Delta;
 
+    if(Speed::PreparedExecution::Requested())
+    {
+        Speed::OnePausedWork::FCanonicalFrameWindowPtr window;
+        if(!Speed::OnePausedWork::ReadExecutionWindow(window)||!window)
+            throw std::runtime_error("Prepared Box member has no current canonical window");
+        if(window->GetPurpose()==Speed::OnePausedWork::EPurpose::FullFrame)
+        {
+            bGroundHitFromSweep=false;const auto shape=GetWorldStaticCollisionShape();const auto trace=BuildTraceParams();
+            const bool found=Speed::PreparedExecution::FComponentSweepScope::EvaluateOrdinaryNativeBoxGround(
+                World,this,this,Start,End,shape,trace,Delta,OutHit);
+            if(found)
+            {
+                OutTOI=OutHit.TOI;bGroundHitFromSweep=true;
+                const FVector normal=OutHit.ImpactNormal.GetSafeNormal();bool present=false;
+                for(const auto& prior:CurrentGroundNormalsWS)if(FVector::DotProduct(normal,prior)>0.995f){present=true;break;}
+                if(!present)CurrentGroundNormalsWS.Add(normal);
+            }
+            return found;
+        }
+    }
     SHitResult Hit;
     bGroundHitFromSweep = false;
     // SSBox CarBox(Kinematics.Location, BoxExtent, Kinematics.Rotation, Kinematics.Velocity, Kinematics.Acceleration, Kinematics.AngularVelocity, Kinematics.AngularAcceleration);
@@ -2445,26 +2722,13 @@ void UBoxSubBody::ResolveWallOrGutter(const float& Dt, const SHitResult& Hit)
     // The sweep already supplies the admitted analytic witness. Quantizing it
     // again here changes the impulse lever arm after a common translation,
     // even when the emitted CCD point and normal are invariant.
-    const FVector N = bAnalyticWitness ? Hit.ImpactNormal.GetSafeNormal()
-        : Speed::QuantizeUnitNormal(Hit.ImpactNormal.GetSafeNormal());
-    const FVector P = bAnalyticWitness ? Hit.ImpactPoint
-        : Speed::QuantizeVectorCm(Hit.ImpactPoint, 0.1f); // legacy Unreal policy
+    const FVector N = Speed::BoxWallResponseGeometry::SelectNormal(bAnalyticWitness, Hit.ImpactNormal);
+    const FVector P = Speed::BoxWallResponseGeometry::SelectPoint(bAnalyticWitness, Hit.ImpactPoint);
 
     const FVector COM = GetCOM();
-    const float FaceAlignment = FMath::Max(
-        FMath::Abs(FVector::DotProduct(Kinematics.Rotation.GetAxisX(), N)),
-        FMath::Max(
-            FMath::Abs(FVector::DotProduct(Kinematics.Rotation.GetAxisY(), N)),
-            FMath::Abs(FVector::DotProduct(Kinematics.Rotation.GetAxisZ(), N))));
-    const bool bFaceOnPlaneContact = FaceAlignment >= 0.98f;
-
-    // A face-on box/plane impact is a contact manifold in every orientation,
-    // including a recontact inside numerical slop. Resolve it through the face
-    // center so a sampled corner cannot turn most of a wall or ceiling rebound
-    // into angular motion.
-    const FVector SolveP = bFaceOnPlaneContact
-        ? COM + N * FVector::DotProduct(P - COM, N)
-        : P;
+    const auto ResponseGeometry = Speed::BoxWallResponseGeometry::BuildResponsePoint(N, P, COM, Kinematics.Rotation);
+    const bool bFaceOnPlaneContact = ResponseGeometry.FaceOnPlaneContact;
+    const FVector SolveP = ResponseGeometry.SolvePoint;
     const FVector Vp = GetVelocityAtPoint(SolveP);
     const float vN = FVector::DotProduct(Vp, N);
 
@@ -2643,9 +2907,18 @@ void UBoxSubBody::ResolveWallOrGutter(const float& Dt, const SHitResult& Hit)
     // Guard against absurd impulses in 1-point concave contacts.
     // This is NOT a “wedging clamp”; it’s a numerical safety for edge cases.
     // Tune with care. If you prefer, delete it and rely on correct CCD.
-    const float jnMax = bUseSoftWallResponse
+    float jnMax = bUseSoftWallResponse
         ? FMath::Min(jnMaxByDeltaV, jnMaxByMass)
         : jnMaxByDeltaV;
+#if !UE_BUILD_SHIPPING
+    const bool bCase585FifthDeltaV = bUseSoftWallResponse && MaxWallDeltaVCmS == 50.f &&
+        jnMaxByMass < jnMaxByDeltaV && jn > jnMaxByMass &&
+        Speed::PreparedExecution::FStepScope::TryUseCase585FifthSoftWallDeltaV(*this, Hit);
+    if (bCase585FifthDeltaV)
+    {
+        jnMax = jnMaxByDeltaV;
+    }
+#endif
     jn = FMath::Clamp(jn, 0.f, jnMax);
 
     FVector J = jn * N;
@@ -2676,6 +2949,15 @@ void UBoxSubBody::ResolveWallOrGutter(const float& Dt, const SHitResult& Hit)
     }
 
     ApplyImpulse(J, SolveP);
+#if !UE_BUILD_SHIPPING
+    if (bCase585FifthDeltaV)
+    {
+        const double after = FVector::DotProduct(GetVelocityAtPoint(SolveP), N);
+        UE_LOG(BoxSubBodyLog, Display, TEXT("[NativeCase585FifthSoftWallDeltaV] Frame=%d Serial=5 Surface=%llu Corner=%d TOI=%.17g DeltaVCap=%.17g MassLimit=%.17g DeltaVLimit=%.17g Applied=%.17g PreVN=%.17g PostImpulseVN=%.17g"),
+            CurrentFrame, Hit.SurfaceId, Hit.ContactFeatureIndexThis, double(Hit.TOI),
+            double(MaxWallDeltaVCmS), double(jnMaxByMass), double(jnMaxByDeltaV), double(jn), double(vN), after);
+    }
+#endif
 
     const bool bApplyWallGutterSlideDamping =
         ParentComponent->IsUpsideDown() &&
@@ -4242,6 +4524,27 @@ bool UBoxSubBody::CanInitializeRepeatedContact(const SHitResult& Hit) const
         Hit.Component->GetCollisionObjectType() == ECC_WorldStatic;
 }
 
+static Speed::Analytic::FWorldHit SweepExactBoxManifoldWitness(const Speed::IStaticCollisionWorld& World,
+    const Speed::Analytic::FWorldQuery& Probe,const SHitResult& Seed)
+{
+    auto Witness=World.SweepSingle(Probe);
+    if(Witness.bHit)return Witness;
+    const auto Prepared=World.GetPreparedQueryService();
+    const auto Snapshot=World.GetPreparedSnapshot();
+    if(!Prepared||!Snapshot||!Prepared->MatchesPreparedSnapshot(Snapshot))return Witness;
+    bool bAmbiguous=false;
+    const auto* Binding=Snapshot->FindUniqueContactBinding(Seed.SourceId,bAmbiguous);
+    if(bAmbiguous||!Binding||!Binding->SourceIdentity||!Binding->ContactIdentity||
+        Binding->ContactToken.IsExplicitlyNull()||
+        !Seed.Component.HasSameIndexAndSerialNumber(Binding->ContactToken))return Witness;
+    const Speed::Analytic::Certified::FNativeBoxCachedPlaneValues Plane{
+        Seed.ImpactPoint,Seed.ImpactNormal,Seed.SourceId,Seed.SurfaceId,Seed.FeatureId,
+        Seed.PrimitiveId,Seed.CanonicalGroupId,Seed.MaterialId};
+    Speed::Analytic::FWorldHit Continuation;
+    if(Prepared->TryExactBoxSupportContinuation(Probe,Plane,Continuation))return Continuation;
+    return Witness;
+}
+
 bool UBoxSubBody::TryGetStaticContactAcceleration(FVector& Linear, FVector& Angular) const
 {
     Linear = Angular = FVector::ZeroVector;
@@ -4283,7 +4586,7 @@ bool UBoxSubBody::TryGetStaticContactAcceleration(FVector& Linear, FVector& Angu
         if (VN > SpeedRoundoff) continue; // A separating vertex cannot pull the body back.
         if (Count == 4) return false;
         Probe.Start = P + N * 0.01; Probe.End = P - N * 0.01;
-        const auto Witness = World->SweepSingle(Probe);
+        const auto Witness = SweepExactBoxManifoldWitness(*World,Probe,CurrentHit);
         if (!Witness.bHit || Witness.bStartPenetrating || Witness.bSurfaceNormalMayVary ||
             Witness.GeometricErrorBoundCm != 0 || Witness.SurfaceFeatureKind != Speed::EContactFeatureKind::Face ||
             !Witness.Normal.Equals(N, 32 * DBL_EPSILON)) return false;
@@ -4346,10 +4649,13 @@ bool UBoxSubBody::TryGetStaticContactAcceleration(FVector& Linear, FVector& Angu
     return !Linear.IsZero() || !Angular.IsZero();
 }
 
-bool UBoxSubBody::RefineExactPlanarTOI(SHitResult& Hit, float Delta) const
+bool UBoxSubBody::RefineExactPlanarTOI(SHitResult& Hit, float Delta,
+    Speed::PreparedExecution::FNativeBoxPlanarRefinementValues* Readback) const
 {
+    if (Readback) *Readback = {};
     const SKinematic Initial = ParentComponent->GetKinematicState();
     const FVector N = Hit.ImpactNormal;
+    const FVector ReadbackPlanePoint = Readback ? Hit.ImpactPoint : FVector::ZeroVector;
     const FVector LocalCOM = ParentComponent->GetPhysCenterOfMassLocal();
     const FVector LocalCenter = GetLocalOffset();
     const FQuat LocalQ = GetLocalRotation();
@@ -4444,7 +4750,31 @@ bool UBoxSubBody::RefineExactPlanarTOI(SHitResult& Hit, float Delta) const
             InitialGaps[4], InitialGaps[5], InitialGaps[6], InitialGaps[7],
             GapAt(4, Delta), GapAt(5, Delta), GapAt(6, Delta), GapAt(7, Delta));
  #endif
-    if (FirstCorner == INDEX_NONE) return false;
+    // Values-only observer. Legacy null callers retain every expression,
+    // branch, threshold and query above/below; no native decision is replayed.
+    const auto SaveReadback = [&](Speed::PreparedExecution::ENativeBoxPlanarRefinementOutcome Outcome)
+    {
+        if (!Readback) return;
+        Readback->Outcome = Outcome; Readback->Computed = true;
+        Readback->Initial = Initial; Readback->StartPose = StartPose;
+        Readback->LocalCOM = LocalCOM; Readback->LocalCenter = LocalCenter;
+        Readback->LocalRotation = LocalQ; Readback->Extent = BoxExtent;
+        Readback->Normal = N; Readback->Point = ReadbackPlanePoint;
+        for (int32 I = 0; I < 8; ++I)
+        {
+            Readback->InitialGaps[I] = InitialGaps[I];
+            Readback->InitialNormalSpeeds[I] = InitialNormalSpeeds[I];
+        }
+        Readback->MinimumInitial = MinimumInitial; Readback->Roundoff = Roundoff;
+        Readback->SpeedRoundoff = SpeedRoundoff; Readback->Established = bEstablished;
+        Readback->InitialEvent = bInitialEvent; Readback->EstablishedMask = EstablishedMask;
+        Readback->FirstCorner = FirstCorner; Readback->FirstTime = FirstTime; Readback->Horizon = Delta;
+    };
+    if (FirstCorner == INDEX_NONE)
+    {
+        SaveReadback(Speed::PreparedExecution::ENativeBoxPlanarRefinementOutcome::NoCorner);
+        return false;
+    }
     const SKinematic Pose = PoseAt(FirstTime);
     const FVector Vertex = Pose.Location + Pose.Rotation.RotateVector(Corners[FirstCorner]);
     const FVector Projected = Vertex - FVector::DotProduct(Vertex - Hit.ImpactPoint, N) * N;
@@ -4458,9 +4788,14 @@ bool UBoxSubBody::RefineExactPlanarTOI(SHitResult& Hit, float Delta) const
     Probe.BlockingObjectTypes = Speed::GetBlockingResponseMask(GetResponseParams().CollisionResponse);
     Probe.DomainTolerance = 0; Probe.InitialOverlapTolerance = 0;
     const auto Witness = ParentComponent->GetStaticCollisionWorldForFrame()->SweepSingle(Probe);
+    if (Readback) { Readback->WitnessQuery = Probe; Readback->Witness = Witness; Readback->WitnessComputed = true; }
     if (!Witness.bHit || Witness.bStartPenetrating || Witness.bSurfaceNormalMayVary ||
         Witness.SurfaceFeatureKind != Speed::EContactFeatureKind::Face || Witness.GeometricErrorBoundCm != 0 ||
-        !Witness.Normal.Equals(N, 32 * DBL_EPSILON)) return false;
+        !Witness.Normal.Equals(N, 32 * DBL_EPSILON))
+    {
+        SaveReadback(Speed::PreparedExecution::ENativeBoxPlanarRefinementOutcome::WitnessRejected);
+        return false;
+    }
     Hit.TOI = FirstTime;
     Hit.Location = Pose.Location;
     Hit.ImpactPoint = Witness.Point;
@@ -4468,6 +4803,7 @@ bool UBoxSubBody::RefineExactPlanarTOI(SHitResult& Hit, float Delta) const
     Hit.ContactPointOther = Witness.Point;
     Hit.ContactFeatureThis = Speed::EContactFeatureKind::Vertex;
     Hit.ContactFeatureIndexThis = static_cast<int8>(FirstCorner);
+    SaveReadback(Speed::PreparedExecution::ENativeBoxPlanarRefinementOutcome::Hit);
     return true;
 }
 
@@ -4543,6 +4879,7 @@ bool UBoxSubBody::TryResolveExactPlanarImpact(bool bNotifyImpact)
         !CurrentHit.Component.IsValid() || CurrentHit.Component->GetCollisionObjectType() != ECC_WorldStatic)
         return false;
     SKinematic State = ParentComponent->GetKinematicState();
+    const SKinematic NativeBeforePlanarCommit = State; // copy the original getter result; no replay
     if (bNotifyImpact) ProjectPlanarEventRoundoff(State, CurrentHit);
     const FVector BoxCenter = State.Location - State.Rotation.RotateVector(ParentComponent->GetPhysCenterOfMassLocal()) +
         State.Rotation.RotateVector(GetLocalOffset());
@@ -4590,7 +4927,7 @@ bool UBoxSubBody::TryResolveExactPlanarImpact(bool bNotifyImpact)
         const double Span = FMath::Abs(Gaps[Corner]) + 0.01;
         Probe.Start = Vertices[Corner] + Span * N;
         Probe.End = Vertices[Corner] - Span * N;
-        const auto Witness = World->SweepSingle(Probe);
+        const auto Witness = SweepExactBoxManifoldWitness(*World,Probe,CurrentHit);
         if (!Witness.bHit || Witness.bStartPenetrating || Witness.bSurfaceNormalMayVary ||
             Witness.GeometricErrorBoundCm != 0 || Witness.SurfaceFeatureKind != Speed::EContactFeatureKind::Face ||
             !Witness.Normal.Equals(N, 32 * DBL_EPSILON)) return false;
@@ -4717,6 +5054,8 @@ bool UBoxSubBody::TryResolveExactPlanarImpact(bool bNotifyImpact)
         UE_LOG(BoxSubBodyLog, Display, TEXT("[ExactPlanarManifoldApplied] frame=%u mode=%d count=%d W=[%.17g,%.17g,%.17g]"),
             ParentComponent->NumFrame(), bInitialOverlapManifold ? 1 : 0, Count, State.AngularVelocity.X, State.AngularVelocity.Y, State.AngularVelocity.Z);
 #endif
+    Speed::PreparedExecution::FNativePlanarResponseCommitScope planarCommit(
+        *ParentComponent,*this,CurrentHit,NativeBeforePlanarCommit,State);
     ParentComponent->SetPhysCOMLocation(State.Location);
     ParentComponent->SetPhysRotationPreserveCOM(State.Rotation);
     ParentComponent->SetPhysCOMVelocity(State.Velocity);
@@ -5673,7 +6012,10 @@ FMatrix UBoxSubBody::RotateLocalInverseInertia(const FQuat& BoxToFrame) const
     // apply the local tensor, then rotate its angular response back. Avoid an
     // Euler conversion, which snaps finite near-pole inclinations to +/-90deg.
     const FMatrix R = FQuatRotationMatrix(BoxToFrame);
-    return R.GetTransposed() * InvInertiaLocal * R;
+    const FMatrix Result = R.GetTransposed() * InvInertiaLocal * R;
+    Speed::PreparedExecution::FStepScope::ObserveOrdinaryBodyInertiaValue(this,Result,
+        Speed::PreparedExecution::EOrdinaryBodyInertiaOrigin::BoxRotatedLocalOperator,BoxToFrame);
+    return Result;
 }
 
 

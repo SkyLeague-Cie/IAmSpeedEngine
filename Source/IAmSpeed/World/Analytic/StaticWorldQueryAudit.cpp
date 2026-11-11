@@ -12,8 +12,11 @@
 #include "Components/PrimitiveComponent.h"
 #include "GameFramework/Actor.h"
 #include "HAL/IConsoleManager.h"
+#include "Misc/CommandLine.h"
+#include "Misc/Parse.h"
 #include "IAmSpeed/World/Subsystem/SpeedWorldSubsystem.h"
 #include "IAmSpeed/World/Collision/StaticCollisionWorld.h"
+#include "IAmSpeed/World/Collision/PreparedCanonicalStaticQueryService.h"
 #include "IAmSpeed/World/Collision/CollisionResponseMask.h"
 #if WITH_DEV_AUTOMATION_TESTS
 #include "Misc/AutomationTest.h"
@@ -96,6 +99,7 @@ namespace
 		uint32 LegacySweepCount = 0;
 		uint32 AuthorityAttemptCount = 0;
 		uint32 AuthorityCoveredCount = 0;
+        uint32 CanonicalPoseClearCount = 0;
 		uint32 AuthorityFallbackCount = 0;
 		uint32 StrictMissingWorldCount = 0;
 		uint32 ResidualSelectionDetailCount = 0;
@@ -986,10 +990,12 @@ bool FStaticWorldQueryAudit::TryCompactAuthoritySingle(
 			return false;
 		}
 		++GStaticWorldAuditFrame.StrictMissingWorldCount;
-		OutHit = FHitResult();
-		bOutHit = false;
-		return true;
+		// Strict missing authority is UNKNOWN, never a clear sweep. The owner
+		// pulse catches this refusal and becomes terminal before any integration.
+		throw std::runtime_error("SurfaceAnalytic static collision world unavailable (single)");
 	}
+	if (const auto* Data = RuntimeBridge->GetAnalyticWorldData())
+        RequireCurrentAnalyticNumericContext(Data->NumericContract);
 	FWorldQuery Query = MakeQuery(
 		Start, End, Rotation, Shape, TraceChannel, 0, false, &ResponseParams);
 	Query.RequiredSourceId = RequiredSourceId;
@@ -1082,6 +1088,18 @@ bool FStaticWorldQueryAudit::TryCompactAuthorityMulti(
 	TArray<FHitResult>& OutHits,
 	FWorldHit* OutAnalyticHit)
 {
+	return TryCompactAuthorityMulti(World, Start, End, Rotation, Shape,
+		ObjectTypes, OutHits, OutAnalyticHit, nullptr);
+}
+
+bool FStaticWorldQueryAudit::TryCompactAuthorityMulti(
+	UWorld* World,
+	const FVector& Start, const FVector& End, const FQuat& Rotation,
+	const FCollisionShape& Shape, const uint64 ObjectTypes,
+	TArray<FHitResult>& OutHits,
+	FWorldHit* OutAnalyticHit,
+	const PreparedExecution::FNativeSphereProjectionScope* Projection)
+{
 	if (OutAnalyticHit)
 	{
 		*OutAnalyticHit = FWorldHit();
@@ -1113,8 +1131,7 @@ bool FStaticWorldQueryAudit::TryCompactAuthorityMulti(
 			return false;
 		}
 		++GStaticWorldAuditFrame.StrictMissingWorldCount;
-		OutHits.Reset();
-		return true;
+		throw std::runtime_error("SurfaceAnalytic static collision world unavailable (multi)");
 	}
 	FWorldQuery Query = MakeQuery(
 		Start, End, Rotation, Shape, 0, ObjectTypes, true);
@@ -1132,12 +1149,35 @@ bool FStaticWorldQueryAudit::TryCompactAuthorityMulti(
 	}
 	else
 	{
-		if (!StaticWorld->TryFindDeepestOverlap(Query, Analytic))
+        const auto prepared=StaticWorld->GetPreparedQueryService();
+        if(prepared&&prepared->MatchesPreparedSnapshot(StaticWorld->GetPreparedSnapshot())&&
+            prepared->TryCanonicalFixedBoxOverlapClearance(Query))
+        {
+            // This is a successful canonical pose-clear operation, not the
+            // miss of an old facet kernel and not an accepted collision event.
+            OutHits.Reset();
+            ++GStaticWorldAuditFrame.CanonicalPoseClearCount;
+            ++GStaticWorldAuditFrame.AuthorityCoveredCount;
+            if(CVarStrictQueryDetailEnabled.GetValueOnAnyThread()>0&&
+                (CVarStrictQueryDetailFrameStart.GetValueOnAnyThread()<0||
+                    GStaticWorldAuditFrame.Frame>=uint64(CVarStrictQueryDetailFrameStart.GetValueOnAnyThread()))&&
+                (CVarStrictQueryDetailFrameEnd.GetValueOnAnyThread()<0||
+                    GStaticWorldAuditFrame.Frame<=uint64(CVarStrictQueryDetailFrameEnd.GetValueOnAnyThread())))
+                UE_LOG(LogTemp,Display,TEXT("[CanonicalFixedBoxPoseClear] Frame=%llu Attempt=%u CanonicalCount=%u"),
+                    GStaticWorldAuditFrame.Frame,GStaticWorldAuditFrame.AuthorityAttemptCount,
+                    GStaticWorldAuditFrame.CanonicalPoseClearCount);
+            return true;
+        }
+		const bool bProjection = Projection && Projection->IsActive() && prepared &&
+			prepared->MatchesPreparedSnapshot(StaticWorld->GetPreparedSnapshot());
+		const bool bFound = bProjection
+			? prepared->TryFindDeepestSphereProjection(Query, *Projection, Analytic)
+			: StaticWorld->TryFindDeepestOverlap(Query, Analytic);
+		if (!bFound)
 		{
 			// A failed operation is not a clear pose, and strict physics must
 			// never fall through to an unsafe worker-thread Unreal scene query.
-			UE_LOG(LogTemp, Fatal, TEXT("Strict overlap requires a stationary sphere or box query."));
-			return false;
+			throw std::runtime_error("SurfaceAnalytic overlap query is unsupported or invalid");
 		}
 		LogStrictQueryDetail(Query, Analytic, GStaticWorldAuditFrame.AuthorityAttemptCount,
 			*StaticWorld, true);
@@ -1177,6 +1217,7 @@ void FStaticWorldQueryAudit::BeginFrame(
 	GStaticWorldAuditFrame.LegacySweepCount = 0;
 	GStaticWorldAuditFrame.AuthorityAttemptCount = 0;
 	GStaticWorldAuditFrame.AuthorityCoveredCount = 0;
+    GStaticWorldAuditFrame.CanonicalPoseClearCount = 0;
 	GStaticWorldAuditFrame.AuthorityFallbackCount = 0;
 	GStaticWorldAuditFrame.StrictMissingWorldCount = 0;
 	GStaticWorldAuditFrame.ResidualSelectionDetailCount = 0;
@@ -1279,6 +1320,61 @@ void FStaticWorldQueryAudit::EndFrame()
 	GStaticWorldAuditFrame.QueryWorld = nullptr;
 }
 
+#if !UE_BUILD_SHIPPING
+bool FStaticWorldQueryAudit::IsQualificationContactTraceFrame(uint64 Frame)
+{
+    struct FTraceWindow
+    {
+        uint64 First = 0;
+        uint64 Last = 360;
+        bool bEnabled = false;
+    };
+    static const auto Window = []
+    {
+        FTraceWindow Value;
+        const TCHAR* Args = FCommandLine::Get();
+        Value.bEnabled = FParse::Param(Args, TEXT("SLFreeplayC2TransientQualification")) &&
+            FParse::Param(Args, TEXT("unattended")) && FParse::Param(Args, TEXT("RenderOffscreen"));
+        FParse::Value(Args, TEXT("SLC2TraceFirst="), Value.First);
+        FParse::Value(Args, TEXT("SLC2TraceLast="), Value.Last);
+        return Value;
+    }();
+    return Window.bEnabled && Window.Last >= Window.First && Window.Last - Window.First <= 600 &&
+        Frame >= Window.First && Frame <= Window.Last;
+}
+
+bool FStaticWorldQueryAudit::TryObserveStrictFrame(UWorld* World, uint64& OutFrame, uint64& OutSceneGeneration)
+{
+    OutFrame = OutSceneGeneration = 0;
+    const auto& Frame = GStaticWorldAuditFrame;
+    if (!World || !Frame.bActive || Frame.QueryWorld != World || !Frame.RuntimeBridge || !IsSurfaceAnalyticBackend())
+        return false;
+    const auto* Provider = Frame.RuntimeBridge->GetStaticCollisionWorld();
+    if (!Provider)
+        return false;
+    const auto Identity = Provider->GetImmutableQueryIdentity1075();
+    if (!Identity.IsValid())
+        return false;
+    OutFrame = Frame.Frame;
+    OutSceneGeneration = Identity.Generation;
+    return true;
+}
+#if WITH_EDITOR
+const Speed::IStaticCollisionWorld* FStaticWorldQueryAudit::ReadStrictFrameProviderForObservation(
+    UWorld* World, uint64 FrameNumber, uint64 Generation)
+{
+    const auto& Frame=GStaticWorldAuditFrame;
+    uint64 CurrentFrame=0, CurrentGeneration=0;
+    if (!TryObserveStrictFrame(World,CurrentFrame,CurrentGeneration) ||
+        CurrentFrame!=FrameNumber || CurrentGeneration!=Generation || !Frame.StaticWorld ||
+        Frame.StaticWorld!=Frame.RuntimeBridge->GetStaticCollisionWorld())
+        return nullptr;
+    return Frame.StaticWorld;
+}
+#endif
+
+#endif
+
 FStaticWorldQueryCounters FStaticWorldQueryAudit::GetCurrentFrameCounters()
 {
 	FStaticWorldQueryCounters Counters;
@@ -1286,11 +1382,47 @@ FStaticWorldQueryCounters FStaticWorldQueryAudit::GetCurrentFrameCounters()
 	Counters.LegacySweepCount = GStaticWorldAuditFrame.LegacySweepCount;
 	Counters.AuthorityAttemptCount = GStaticWorldAuditFrame.AuthorityAttemptCount;
 	Counters.AuthorityCoveredCount = GStaticWorldAuditFrame.AuthorityCoveredCount;
+    Counters.CanonicalPoseClearCount = GStaticWorldAuditFrame.CanonicalPoseClearCount;
 	Counters.AuthorityFallbackCount = GStaticWorldAuditFrame.AuthorityFallbackCount;
 	Counters.StrictMissingWorldCount = GStaticWorldAuditFrame.StrictMissingWorldCount;
 	Counters.AuthorityMilliseconds = GStaticWorldAuditFrame.AuthorityMilliseconds;
 	Counters.MaximumAuthorityMilliseconds = GStaticWorldAuditFrame.MaximumAuthorityMilliseconds;
 	return Counters;
+}
+
+uint32 FStaticWorldQueryAudit::BeginPreparedProbeQuery(bool first)
+{
+    if(first&&GStaticWorldAuditFrame.bActive)++GStaticWorldAuditFrame.QueryCount;
+    return ++GStaticWorldAuditFrame.AuthorityAttemptCount;
+}
+void FStaticWorldQueryAudit::EndPreparedProbeQuery(EStaticQuerySite site,const FWorldQuery& query,const FWorldHit& hit,
+    uint32 attempt,double elapsed,bool completed)
+{
+    GStaticWorldAuditFrame.AuthorityMilliseconds+=elapsed;
+    GStaticWorldAuditFrame.MaximumAuthorityMilliseconds=FMath::Max(GStaticWorldAuditFrame.MaximumAuthorityMilliseconds,elapsed);
+    if(!completed)return; // Unknown/exception is an attempt, never a covered miss.
+    ++GStaticWorldAuditFrame.AuthorityCoveredCount;
+    if(IsEnabled())
+    {
+        AuditHashValue(GStaticWorldAuditFrame.AnalyticHash,site);HashVector(GStaticWorldAuditFrame.AnalyticHash,FVector(query.Start));
+        HashVector(GStaticWorldAuditFrame.AnalyticHash,FVector(query.End));HashAnalyticHit(GStaticWorldAuditFrame.AnalyticHash,hit);
+    }
+    // Existing detailed logging can issue residual queries; this observer MUST
+    // remain values-only and cannot manufacture a Legacy/shadow comparison.
+    const int32 mode=CVarStrictQueryDetailEnabled.GetValueOnAnyThread();
+    const int32 start=CVarStrictQueryDetailFrameStart.GetValueOnAnyThread(),end=CVarStrictQueryDetailFrameEnd.GetValueOnAnyThread();
+    if(mode<=0||(start>=0&&GStaticWorldAuditFrame.Frame<uint64(start))||(end>=0&&GStaticWorldAuditFrame.Frame>uint64(end)))return;
+    if(hit.bHit){++GStaticWorldAuditFrame.StrictHitCount;if(hit.PrimitiveId)GStaticWorldAuditFrame.StrictProviderIds.AddUnique(hit.PrimitiveId);}
+    else ++GStaticWorldAuditFrame.StrictMissCount;
+    if(mode==1)
+    {
+        if(!hit.bHit&&!GStaticWorldAuditFrame.bStrictFirstMissCaptured)
+        {GStaticWorldAuditFrame.bStrictFirstMissCaptured=true;GStaticWorldAuditFrame.StrictFirstMissAuthorityAttempt=attempt;GStaticWorldAuditFrame.StrictFirstMissQuery=query;}
+        return;
+    }
+    if(mode>1)
+        UE_LOG(LogTemp,Display,TEXT("[AnalyticPreparedProbe] Frame=%llu Attempt=%u Site=%s Hit=%d Time=%.17g Source=%016llX Surface=%016llX Primitive=%016llX"),
+            GStaticWorldAuditFrame.Frame,attempt,SiteName(site),hit.bHit?1:0,hit.Time,hit.SourceId,hit.SurfaceId,hit.PrimitiveId);
 }
 
 void FStaticWorldQueryAudit::RecordLegacySweep()

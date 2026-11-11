@@ -1,9 +1,9 @@
 #pragma once
+#include "CoreMinimal.h"
 #if !UE_BUILD_SHIPPING
 #include "PublicationCadenceAudit.h"
 #endif
 
-#include "CoreMinimal.h"
 #include "HAL/CriticalSection.h"
 #include "IAmSpeed/Base/Kinematic.h"
 

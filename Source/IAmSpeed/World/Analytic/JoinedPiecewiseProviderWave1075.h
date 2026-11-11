@@ -45,7 +45,8 @@ public:
         const FPiecewiseProviderWaveIdentity1075& Identity,
         TConstArrayView<int32> ProviderIndices, int32 TotalCandidates, int32 Lanes,
         TFunctionRef<double()> CaptureBound,
-        TFunctionRef<FWorldHit(int32,double)> Evaluate);
+        TFunctionRef<FWorldHit(int32,double)> Evaluate,
+        EAnalyticNumericContract InNumericContract=EAnalyticNumericContract::Unspecified);
     ~FJoinedPiecewiseProviderWave1075();
     FJoinedPiecewiseProviderWave1075(const FJoinedPiecewiseProviderWave1075&)=delete;
     FJoinedPiecewiseProviderWave1075& operator=(const FJoinedPiecewiseProviderWave1075&)=delete;
@@ -59,6 +60,7 @@ private:
     FBox3d CapturedBounds;
     FPiecewiseProviderWaveIdentity1075 CapturedIdentity;
     FFrameFloatingPointContext NumericContext;
+    EAnalyticNumericContract NumericContract=EAnalyticNumericContract::Unspecified;
     TArray<FRecord> Records;
     FPiecewiseProviderWaveStats1075 Stats;
     double MaximumSearchTime=1;

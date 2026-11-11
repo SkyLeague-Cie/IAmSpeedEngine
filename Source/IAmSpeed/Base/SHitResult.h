@@ -10,6 +10,11 @@ class USSubBody;
 namespace Speed
 {
 	namespace Analytic { struct FWorldHit; }
+    namespace PreparedExecution { class FGroundSweepEvidence; class FFirstRsResponseData;
+    #if !UE_BUILD_SHIPPING
+    IAMSPEED_API void AppendPreparedGroundEvidenceState(TArray<uint8>& Out,const TSharedPtr<const FGroundSweepEvidence,ESPMode::ThreadSafe>& Evidence);
+    #endif
+    }
 
 	struct SHitResult
 	{
@@ -48,6 +53,11 @@ namespace Speed
 		uint32 MaterialId = 0;
 		uint32 FrameTag = 0; // Tag to identify the frame in which this hit result was generated, useful for avoiding processing the same hit multiple times in the same frame. Only relevant if bHit is true.
 
+        // Native data identity only; never permission to advance or respond.
+        TSharedPtr<const PreparedExecution::FGroundSweepEvidence,ESPMode::ThreadSafe> PreparedGroundEvidence;
+        TSharedPtr<const PreparedExecution::FFirstRsResponseData,ESPMode::ThreadSafe> FirstRsResponseData;
+        IAMSPEED_API static SHitResult FromAnalyticHitAtSeconds(const Analytic::FWorldHit& Hit,float Seconds,uint32 InFrameTag);
+
 		static SHitResult FromAnalyticHit(
 			const Analytic::FWorldHit& AnalyticHit, float Delta,
 			UPrimitiveComponent* InComponent = nullptr,
@@ -66,6 +76,13 @@ namespace Speed
 			return ret;
 		}
 	};
+    namespace PreparedExecution
+    {
+        enum class EFirstRsResponseCall:uint8 {Set,Accept,Resolve};
+        IAMSPEED_API void RequireFirstRsResponseHit(const USSubBody*,const SHitResult&,EFirstRsResponseCall,
+            float Delta=0.0f,float SimTime=0.0f);
+    }
+
 }
 
 using SHitResult = Speed::SHitResult;

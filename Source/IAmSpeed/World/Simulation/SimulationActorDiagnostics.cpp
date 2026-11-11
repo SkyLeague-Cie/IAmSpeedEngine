@@ -1,4 +1,5 @@
 #include "SimulationActorDiagnostics.h"
+#include "IAmSpeed/World/Analytic/AnalyticNumericContext.h"
 
 #if !UE_BUILD_SHIPPING
 #include "SimulationWorld.h"
@@ -80,6 +81,34 @@ namespace Speed::ActorDiagnostics
 				FrameNames[Phase], Sample.Calls, Sample.Milliseconds);
 		}
 		bEnabled = false;
+	}
+	void DumpFailedPrefix()
+	{
+		if (!bEnabled) return;
+        if(Analytic::InspectCurrentAnalyticNumericContext(Analytic::EAnalyticNumericContract::Binary64NearestAllowFlush).Status!=Analytic::EAnalyticNumericStatus::Complete)return;
+		static const TCHAR* Names[] = { TEXT("Prepare"), TEXT("Reset"), TEXT("Sweep"), TEXT("Integrate"), TEXT("Projection"), TEXT("Post") };
+		for (uint32 Id = 1; Id < UE_ARRAY_COUNT(Actors); ++Id)
+		{
+			const FActor& Actor = Actors[Id];
+			for (uint32 Phase = 0; Phase < UE_ARRAY_COUNT(Names); ++Phase)
+			{
+				const FSample& S = Actor.Phases[Phase];
+				if (!S.Calls) continue;
+				UE_LOG(LogTemp, Display, TEXT("[SimulationActorProfilePartial] Complete=0 ScenarioAccepted=0 IncludesFailedFrame=1 InclusivePhasesNotAdditive=1 Id=%u SubBodies=%d Phase=%s Calls=%llu TotalMs=%.9f Queries=%llu"),
+					Id, Actor.SubBodies, Names[Phase], S.Calls, S.Milliseconds, S.Queries);
+			}
+		}
+		UE_LOG(LogTemp, Display, TEXT("[SimulationActorProfilePartialSummary] Complete=0 ScenarioAccepted=0 IncludesFailedFrame=1 OverflowScopes=%llu"), OverflowScopes);
+		static const TCHAR* FrameNames[] = { TEXT("Initialize"), TEXT("Prepare"), TEXT("Core"), TEXT("Snapshot"),
+			TEXT("Publish"), TEXT("Journal"), TEXT("Finalize"), TEXT("SnapshotBodies"), TEXT("SnapshotPairs"), TEXT("SnapshotHash") };
+		static_assert(UE_ARRAY_COUNT(FrameNames) == UE_ARRAY_COUNT(FramePhases));
+		for (uint32 Phase = 0; Phase < UE_ARRAY_COUNT(FrameNames); ++Phase)
+		{
+			const FSample& Sample = FramePhases[Phase];
+			if (!Sample.Calls) continue;
+			UE_LOG(LogTemp, Display, TEXT("[SimulationFrameProfilePartial] Complete=0 ScenarioAccepted=0 IncludesFailedFrame=1 InclusivePhasesNotAdditive=1 Phase=%s Calls=%llu TotalMs=%.9f"),
+				FrameNames[Phase], Sample.Calls, Sample.Milliseconds);
+		}
 	}
 }
 #endif

@@ -6,6 +6,8 @@
 #include "Engine/World.h"
 #include "HAL/IConsoleManager.h"
 #include <cmath>
+#include "IAmSpeed/World/Collision/PreparedPhysicalExecution.h"
+#include "IAmSpeed/World/Analytic/YawFloorBoxSweepBounds.h"
 
 using namespace Speed;
 
@@ -1286,6 +1288,14 @@ FVector Speed::SBox::AdvanceAngularVelocity(const FVector& AngVel0, const FVecto
 
 FQuat Speed::SBox::IntegrateRotation(const FQuat& Q0, const FVector& W0, const FVector& Alpha, float t)
 {
+    const bool native=Speed::PreparedExecution::Requested();
+    const auto numeric=[&]()
+    {
+        if(!native)return;
+        try{Speed::Analytic::RequireCurrentAnalyticNumericContext(Speed::Analytic::EAnalyticNumericContract::Binary64NearestAllowFlush);}
+        catch(...){Speed::PreparedExecution::PoisonNativeRotationFailure();throw;}
+    };
+    numeric();
 	// Theta(t) = w0 t + 0.5 alpha t^2 (axis-angle in world space)
 	const FVector Theta = W0 * t + 0.5f * Alpha * (t * t);
 	if (Theta.IsZero()) return Q0;
@@ -1297,7 +1307,14 @@ FQuat Speed::SBox::IntegrateRotation(const FQuat& Q0, const FVector& W0, const F
 	const double Scale = AngleSquared < 1.e-8
 		? 0.5 - AngleSquared / 48.0 + AngleSquared * AngleSquared / 3840.0
 		: FMath::Sin(Angle * 0.5) / Angle;
-	const FQuat DQ(Theta.X * Scale, Theta.Y * Scale, Theta.Z * Scale, FMath::Cos(Angle * 0.5));
+    const double Cosine=FMath::Cos(Angle * 0.5);
+    numeric();
+    if(native&&!Speed::Analytic::Certified::GeneralBoxDetail::CheckedNativeExpResults(AngleSquared,Scale,Cosine))
+    {
+        Speed::PreparedExecution::PoisonNativeRotationFailure();
+        throw std::runtime_error("Native quaternion exponential scalars are outside their checked bounds");
+    }
+	const FQuat DQ(Theta.X * Scale, Theta.Y * Scale, Theta.Z * Scale, Cosine);
 	return (DQ * Q0).GetNormalized();
 }
 

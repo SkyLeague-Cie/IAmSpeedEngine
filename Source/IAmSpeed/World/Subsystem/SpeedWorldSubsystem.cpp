@@ -3,6 +3,21 @@
 // USpeedWorldSubsystem.cpp
 
 #include "SpeedWorldSubsystem.h"
+#include "HAL/CriticalSection.h"
+#include "Misc/ScopeLock.h"
+#include <atomic>
+#include <exception>
+#include "Misc/CoreDelegates.h"
+#include "HAL/PlatformTime.h"
+#include "HAL/IConsoleManager.h"
+#include "IAmSpeed/World/Collision/NativePreparationPrefix.h"
+#include "IAmSpeed/World/Collision/PreparedPhysicalExecution.h"
+#include "IAmSpeed/World/Collision/PreparedNativeFrameConsumer.h"
+#include "IAmSpeed/World/Collision/PreparedNativeWheelProbe.h"
+#include "IAmSpeed/World/Collision/PreparedSphereRsTrajectoryCapture.h"
+#include "IAmSpeed/World/Simulation/OnePausedCanonicalWork.h"
+#include "IAmSpeed/World/Collision/PreparedSweepEvidence.h"
+#include "IAmSpeed/World/Collision/PreparedIntervalStaticWorld.h"
 #include "IAmSpeed/World/Analytic/SpeedAnalyticContactComponent.h"
 #include "IAmSpeed/World/Simulation/CcdPoseAudit.h"
 #include "IAmSpeed/World/Simulation/SubBodyKinematicsTasks.h"
@@ -17,6 +32,7 @@
 #include "IAmSpeed/World/Simulation/SpeedPhysicsSimulation.h"
 #include "IAmSpeed/World/Simulation/SimulationActorDiagnostics.h"
 #include "IAmSpeed/World/Collision/ResolvedPairSet.h"
+#include "IAmSpeed/World/Collision/EarliestCollisionBatch.h"
 #include "IAmSpeed/World/Simulation/FrameSolveWitness.h"
 #include "IAmSpeed/World/Simulation/CollisionMatrixObservationForTesting.h"
 #include "IAmSpeed/World/Simulation/FrameAppliedCommandWitness.h"
@@ -30,6 +46,7 @@
 #include "IAmSpeed/SubBodies/Solid/SphereSubBody.h"
 #include "GameFramework/Actor.h"
 #include "Engine/World.h"
+#include "PhysicsEngine/BodyInstance.h"
 #include "EngineUtils.h"
 #include "LandscapeProxy.h"
 #include "Components/StaticMeshComponent.h"
@@ -47,6 +64,179 @@
 #if !UE_BUILD_SHIPPING
 #include "Misc/ScopeExit.h"
 #endif
+#if WITH_EDITOR && !UE_BUILD_SHIPPING
+#include "Misc/SecureHash.h"
+#include "UObject/Package.h"
+#include "UObject/StrongObjectPtr.h"
+#include "UObject/UObjectGlobals.h"
+#endif
+
+
+
+#if !UE_BUILD_SHIPPING
+namespace RoofPostProfile
+{
+static TAutoConsoleVariable<int32> Enabled(TEXT("p.IAmSpeed.Simulation.RoofPostProfile"),0,
+    TEXT("Observation only. Aggregate exact production roof fixture PostOwner stages."));
+enum EStage { Begin, Census, Callback, End, Dispatch, StageCount };
+struct FRow { std::atomic<uint64> Calls{0}, Ticks[StageCount]{}; };
+static FRow Rows[2];
+static std::atomic<bool> Valid{true};
+thread_local uint64* Current=nullptr;
+
+static TAutoConsoleVariable<int32> CallbackEnabled(TEXT("p.IAmSpeed.Simulation.RoofPostCallbackProfile"),0,
+    TEXT("Observation only. Subdivide the exact roof Fox PostOwner callback."));
+struct FCallbackRecord { uint64 Ticks[4]{}; uint32 Calls[4]{}; };
+thread_local FCallbackRecord* CallbackCurrent=nullptr;
+struct FSample;
+thread_local const FSample* SupportCurrent=nullptr;
+bool SupportReuseRequested();
+static std::atomic<uint64> CallbackCalls[4]{},CallbackTicks[4]{};
+static std::atomic<bool> CallbackValid{true};
+
+void ObserveCallbackStage(uint32 stage,uint64 start)
+{
+    if(!CallbackCurrent)return;
+    const uint64 end=FPlatformTime::Cycles64();
+    auto& current=*CallbackCurrent;
+    if(stage>=4||end<start||current.Calls[stage]==MAX_uint32||current.Ticks[stage]>MAX_uint64-(end-start))
+    {CallbackValid.store(false);return;}
+    ++current.Calls[stage];current.Ticks[stage]+=end-start;
+}
+
+static bool Fixture()
+{
+    FString cell;
+    const TCHAR* command=FCommandLine::Get();
+    return FParse::Param(command,TEXT("SLStadiumNativeFastBatch"))&&FParse::Param(command,TEXT("SLTestProductionFox"))&&
+        FParse::Value(command,TEXT("SLStadiumMatrixCell="),cell)&&FPaths::GetCleanFilename(cell)==TEXT("c202-production-roof-flat.json");
+}
+static void Publish()
+{
+    for(int32 i=0;i<2;++i)
+    {
+        const auto& row=Rows[i];
+        if(!row.Calls.load())continue;
+        UE_LOG(LogTemp,Display,TEXT("[RoofPostProfile] Id=%d Calls=%llu Integrity=%d SecondsPerCycle=%.17g Begin=%llu Census=%llu Callback=%llu End=%llu Dispatch=%llu"),
+            i?3:1,row.Calls.load(),int32(Valid.load()),FPlatformTime::GetSecondsPerCycle64(),
+            row.Ticks[Begin].load(),row.Ticks[Census].load(),row.Ticks[Callback].load(),row.Ticks[End].load(),row.Ticks[Dispatch].load());
+    }
+
+    if(Rows[1].Calls.load()&&CallbackCalls[0].load())
+    {
+        UE_LOG(LogTemp,Display,TEXT("[RoofPostCallbackProfile] Id=3 Integrity=%d SecondsPerCycle=%.17g CorrectionCalls=%llu CorrectionTicks=%llu QuantizeCalls=%llu QuantizeTicks=%llu RecordCalls=%llu RecordTicks=%llu BoxSupportCalls=%llu BoxSupportTicks=%llu"),
+            int32(CallbackValid.load()),FPlatformTime::GetSecondsPerCycle64(),
+            CallbackCalls[0].load(),CallbackTicks[0].load(),CallbackCalls[1].load(),CallbackTicks[1].load(),
+            CallbackCalls[2].load(),CallbackTicks[2].load(),CallbackCalls[3].load(),CallbackTicks[3].load());
+    }
+}
+struct FRegister { FRegister(){FCoreDelegates::OnPreExit.AddStatic(&Publish);} };
+static FRegister Register;
+struct FSample
+{
+    uint64 Marks[7]{};
+    FCallbackRecord Callback;
+    bool ProfileCallback=false;
+    bool ScopeSupport=false;
+    int32 Row=INDEX_NONE;
+    explicit FSample(const ISpeedComponent& owner)
+    {
+        const bool Profile = Enabled.GetValueOnAnyThread()==1;
+        const bool Reuse = SupportReuseRequested();
+        if (!Profile && !Reuse) return;
+        static const bool IsRoofFixture = Fixture();
+        if (!IsRoofFixture) return;
+        const uint64 Id = owner.GetPublishedSimulationStableId();
+        if (Id!=1 && Id!=3) return;
+        if (Current || SupportCurrent)
+        {
+            if (Profile) Valid.store(false);
+            return;
+        }
+        static const bool IsOffscreen = FParse::Param(FCommandLine::Get(),TEXT("NullRHI")) &&
+            FParse::Param(FCommandLine::Get(),TEXT("unattended"));
+        ScopeSupport = Reuse && IsOffscreen && Id==3;
+        if (!Profile) return;
+        ProfileCallback=Id==3&&CallbackEnabled.GetValueOnAnyThread()==1;
+        Row=Id==1?0:1; Marks[0]=FPlatformTime::Cycles64();
+    }
+    ~FSample()
+    {
+        if (SupportCurrent==this) SupportCurrent=nullptr;
+        if (Current==Marks) Current=nullptr;
+        if (CallbackCurrent==&Callback) CallbackCurrent=nullptr;
+    }
+    void BeginReturned()
+    {
+        if (ScopeSupport) SupportCurrent=this;
+        if(Row==INDEX_NONE)return;
+        Marks[1]=FPlatformTime::Cycles64();Current=Marks;
+        if(ProfileCallback)CallbackCurrent=&Callback;
+    }
+    void DispatchReturned()
+    {
+        if (SupportCurrent==this) SupportCurrent=nullptr;
+        if(Row==INDEX_NONE)return;
+        Current=nullptr;Marks[5]=FPlatformTime::Cycles64();
+        if(ProfileCallback)CallbackCurrent=nullptr;
+    }
+    void EndReturned()
+    {
+        if(Row==INDEX_NONE)return;
+        Marks[6]=FPlatformTime::Cycles64();
+        for(int32 i=1;i<7;++i)
+            if(!Marks[i]||Marks[i]<Marks[i-1]){Valid.store(false);return;}
+        const uint64 ticks[]={Marks[1]-Marks[0],Marks[3]-Marks[2],Marks[4]-Marks[3],Marks[6]-Marks[5],Marks[5]-Marks[1]};
+        auto& row=Rows[Row];
+        for(int32 i=0;i<StageCount;++i)
+            if(row.Ticks[i].fetch_add(ticks[i])>MAX_uint64-ticks[i])Valid.store(false);
+        if(row.Calls.fetch_add(1)==MAX_uint64)Valid.store(false);
+        if(ProfileCallback)
+            for(uint32 i=0;i<4;++i)
+            {
+                if(CallbackCalls[i].fetch_add(Callback.Calls[i])>MAX_uint64-Callback.Calls[i])CallbackValid.store(false);
+                if(CallbackTicks[i].fetch_add(Callback.Ticks[i])>MAX_uint64-Callback.Ticks[i])CallbackValid.store(false);
+            }
+    }
+};
+}
+#endif
+
+namespace StadiumClosedStepProfile70
+{
+struct FRecord {uint64 Bits[9]{};uint32 Queries=0,Attempts=0,Legacy=0;int32 Events=0;};
+std::atomic<uint64> Calls{0},Finished{0},InFlight{0};std::atomic<bool> Integrity{true},ObservedEnabled{false};
+FCriticalSection CaptureLock;TArray<FRecord> Records;
+bool Enabled(){static const IConsoleVariable* cvar=IConsoleManager::Get().FindConsoleVariable(TEXT("p.IAmSpeed.AnalyticWorld.PhaseTiming"));return cvar&&cvar->GetInt()!=0;}
+void Add(std::atomic<uint64>& field,uint64 n){if(field.fetch_add(n)>MAX_uint64-n)Integrity.store(false);}
+void Observe(const FSpeedStepDiagnostics& d)
+{
+ if(!Enabled())return;ObservedEnabled.store(true);Add(Calls,1);Add(InFlight,1);
+ // Worker capture is integer/object-byte only. No new FP sum, conversion,
+ // timestamp, rounding-control operation or sticky-flag repair occurs here.
+ const double* values[]={&d.TotalMilliseconds,&d.ResetMilliseconds,&d.IntegrateMilliseconds,&d.SweepMilliseconds,&d.ResolveMilliseconds,&d.ProjectionMilliseconds,&d.PostMilliseconds,&d.StaticAuthorityMilliseconds,&d.PhysicalDeltaTimeMilliseconds};
+ FRecord record;for(uint32 i=0;i<9;++i){FMemory::Memcpy(&record.Bits[i],values[i],sizeof(uint64));const uint64 magnitude=record.Bits[i]&0x7fffffffffffffffULL;if(magnitude>=0x7ff0000000000000ULL||((record.Bits[i]>>63)&&magnitude))Integrity.store(false);}
+ record.Queries=d.StaticQueryCount;record.Attempts=d.AuthorityAttemptCount;record.Legacy=d.LegacySweepCount;record.Events=d.ResolvedEventCount;if(record.Events<0)Integrity.store(false);
+ {FScopeLock lock(&CaptureLock);if(Records.Num()>=65536)Integrity.store(false);else Records.Add(record);}
+ Add(Finished,1);if(InFlight.fetch_sub(1)==0)Integrity.store(false);
+}
+void Publish()
+{
+ const uint64 calls=Calls.load(),flight=InFlight.load(),finished=Finished.load();TArray<FRecord> records;{FScopeLock lock(&CaptureLock);records=Records;}
+ bool coherent=Integrity.load()&&flight==0&&InFlight.load()==0&&calls==Calls.load()&&calls==finished&&calls==uint64(records.Num());
+ // FP aggregation is on the PreExit publication thread, outside Observe.
+ // This program prefix does not prove terminal closure of physical queries.
+ double sums[9]{};uint64 queries=0,attempts=0,legacy=0,events=0;
+ const auto sumCount=[&](uint64& total,uint64 value){if(total>MAX_uint64-value){coherent=false;return;}total+=value;};
+ for(const auto& record:records)
+ {
+  for(uint32 i=0;i<9;++i){double value=0;FMemory::Memcpy(&value,&record.Bits[i],sizeof(value));if(!FMath::IsFinite(value)||value<0){coherent=false;continue;}const double after=sums[i]+value;if(!FMath::IsFinite(after)){coherent=false;continue;}sums[i]=after;}
+  sumCount(queries,record.Queries);sumCount(attempts,record.Attempts);sumCount(legacy,record.Legacy);if(record.Events<0)coherent=false;else sumCount(events,uint64(record.Events));
+ }
+ UE_LOG(LogTemp,Display,TEXT("[ClosedStepPhasesProfile70] Scope=ProgramPrefixAtPreExit PerCase=0 TerminalQueryJoin=0 NoPASS=1 IncludesWarmup=1 LaterFrameFailurePossible=1 InclusivePhasesNotAdditive=1 AlreadyAcquiredDiagnostics=1 IntegerWorkerCapture=1 AggregatedAtPreExit=1 RawRecordLimit=65536 ResolveScope=WorldCCDBatchNotAllSupportCorrections Enabled=%d SnapshotCoherent=%d ClosedStepSites=%llu Finished=%llu InFlight=%llu CapturedRecords=%d TotalMs=%.9f ResetMs=%.9f IntegrateMs=%.9f SweepMs=%.9f ResolveMs=%.9f ProjectionMs=%.9f PostMs=%.9f StaticAuthorityMs=%.9f PhysicalDeltaSumMs=%.9f StaticQueries=%llu AuthorityAttempts=%llu LegacySweeps=%llu ResolvedCCDEvents=%llu"),int32(ObservedEnabled.load()),int32(coherent),calls,finished,flight,records.Num(),sums[0],sums[1],sums[2],sums[3],sums[4],sums[5],sums[6],sums[7],sums[8],queries,attempts,legacy,events);
+}
+struct FRegister {FRegister(){FCoreDelegates::OnPreExit.AddStatic(&Publish);}};FRegister Register;
+}
 
 static TAutoConsoleVariable<int32> CVarIAmSpeedPersistentDynamicPairs(
 	TEXT("p.IAmSpeed.Collision.PersistentDynamicPairs"),
@@ -144,6 +334,9 @@ void USpeedWorldSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 	AnalyticWorldData.Reset();
 	AnalyticSourceComponents.Reset();
 	AnalyticWorldBuildAttempt = 0;
+    PreparedIntervalScene.Reset();PreparedIntervalAsset.Reset();StaticWorldPublicationDepth=0;bPreparedWorldResetComplete=true;
+    bPreparedIntervalRouteRequested=FParse::Param(FCommandLine::Get(),TEXT("SpeedPreparedIntervalWorld"));
+    if(bPreparedIntervalRouteRequested)return; // Explicit preparation lane; old builder stays untouched otherwise.
 	if (!Speed::Analytic::FStaticWorldQueryAudit::ShouldBuildAnalyticWorld())
 	{
 		return;
@@ -164,8 +357,27 @@ TWeakObjectPtr<UPrimitiveComponent> USpeedWorldSubsystem::FindAnalyticSourceComp
 
 
 #define REPLAY_ANALYTIC_LOG(Category,Verbosity,...) do { UE_LOG(Category,Verbosity,__VA_ARGS__); if(FParse::Param(FCommandLine::Get(),TEXT("ReplayDeliveryProbe"))) { const FString File=FPaths::ProjectSavedDir()/TEXT("ReplayAnalyticDiagnostics.txt"); if(IFileManager::Get().FileSize(*File)<65536) FFileHelper::SaveStringToFile(FString::Printf(__VA_ARGS__)+TEXT("\n"),*File,FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM,&IFileManager::Get(),FILEWRITE_Append); } } while(false)
+#if WITH_EDITOR && !UE_BUILD_SHIPPING
+namespace Speed
+{
+static FOrdinaryC2SceneFactory OrdinaryC2SceneFactory=nullptr;
+
+bool RegisterOrdinaryC2SceneFactory(FOrdinaryC2SceneFactory Factory)
+{
+    if (!IsInGameThread() || !Factory || OrdinaryC2SceneFactory) return false;
+    OrdinaryC2SceneFactory=Factory;
+    return true;
+}
+
+void UnregisterOrdinaryC2SceneFactory(FOrdinaryC2SceneFactory Factory)
+{
+    if (IsInGameThread() && OrdinaryC2SceneFactory==Factory) OrdinaryC2SceneFactory=nullptr;
+}
+}
+#endif
 void USpeedWorldSubsystem::BuildAnalyticWorldFromLoadedSources()
 {
+    if(bPreparedIntervalRouteRequested||PreparedIntervalScene)return; // A queued legacy build must never replace the dedicated snapshot.
 	UWorld* World = GetWorld();
 	if (!World)
 	{
@@ -346,6 +558,105 @@ void USpeedWorldSubsystem::BuildAnalyticWorldFromLoadedSources()
 				nullptr, *BakedObjectPath);
 		}
 	}
+#if WITH_EDITOR && !UE_BUILD_SHIPPING
+    const TCHAR* Args = FCommandLine::Get();
+    const bool bC2Qualification = FParse::Param(Args,TEXT("SLFreeplayC2TransientQualification"));
+    const bool bC2SceneRequested=FParse::Param(Args,TEXT("SLFreeplayC2DirectedSceneWitness"));
+    const bool bPrivateOrdinaryC2IndexRequested=FParse::Param(Args,TEXT("SLPrivateOrdinaryC2RuntimeIndex"));
+    const bool bPrivateOrdinaryC2RuntimeIndex=bPrivateOrdinaryC2IndexRequested &&
+        FParse::Param(Args,TEXT("game")) && FParse::Param(Args,TEXT("unattended")) &&
+        FParse::Param(Args,TEXT("RenderOffscreen")) && !FParse::Param(Args,TEXT("SLStadiumMeshCollision")) &&
+        !FParse::Param(Args,TEXT("ReplayDeliveryProbe")) && !FParse::Param(Args,TEXT("SLC2QualificationBallSeam")) &&
+        !FParse::Param(Args,TEXT("SLC2QualificationBox205"));
+    if (bC2SceneRequested &&
+        (!FParse::Param(Args,TEXT("SLC2QualificationBallSeam")) ||
+         !FParse::Param(Args,TEXT("d3d12")) || FParse::Param(Args,TEXT("NullRHI")) ||
+         FParse::Param(Args,TEXT("SLC2QualificationBox205"))))
+    {
+        UE_LOG(LogTemp,Error,TEXT("[OrdinaryC2DiagnosticScene] Stage=paired_scope Refused=1"));
+        return;
+    }
+    const USpeedAnalyticCollisionAsset* C2NominalForScene=nullptr;
+    if (bC2SceneRequested && (!bC2Qualification || StepSerial!=0 || SimulationWorld.GetStaticCollisionWorld() ||
+        !IsInGameThread() || !Speed::OrdinaryC2SceneFactory))
+    {
+        UE_LOG(LogTemp,Error,TEXT("[OrdinaryC2DiagnosticScene] Stage=startup Refused=1"));
+        return;
+    }
+    TStrongObjectPtr<USpeedAnalyticCollisionAsset> QualificationCopy;
+    USpeedAnalyticSourceComponent* QualificationSource = nullptr;
+    TSoftObjectPtr<USpeedAnalyticCollisionAsset> OriginalSourceAsset;
+    ON_SCOPE_EXIT
+    {
+        if (QualificationSource) QualificationSource->AnalyticCollisionAsset = OriginalSourceAsset;
+    };
+    if (bC2Qualification)
+    {
+        using Audit = Speed::Analytic::FStaticWorldQueryAudit;
+        constexpr uint64 SourceId = 0x11af315a281440a9ull;
+        constexpr TCHAR Parent[] = TEXT("/Game/Generated/Analytic/RLDimension/CurrentParent4/DA_StadiumC2.DA_StadiumC2");
+        constexpr TCHAR Successor[] = TEXT("/Game/Generated/Analytic/RLDimension/CurrentSuccessor1/DA_StadiumC2.DA_StadiumC2");
+        constexpr TCHAR PackageHash[] = TEXT("944b6cf3e8a214cab3fa17bcba65272d9977fc0d");
+        const auto* Declaration = AuthoredDeclarations.Find(SourceId);
+        if (!IsInGameThread() || !World->IsGameWorld() || World->WorldType != EWorldType::Game ||
+            World->GetNetMode() != NM_Standalone ||
+            World->GetOutermost()->GetName() != TEXT("/Game/Core/Freeplay/EmptyLevel/FreeplayTest") ||
+            !FParse::Param(Args,TEXT("game")) || !FParse::Param(Args,TEXT("unattended")) ||
+            (!FParse::Param(Args,TEXT("NullRHI")) && !FParse::Param(Args,TEXT("d3d12"))) ||
+            !FParse::Param(Args,TEXT("RenderOffscreen")) ||
+            FParse::Param(Args,TEXT("SLStadiumMeshCollision")) || FParse::Param(Args,TEXT("ReplayDeliveryProbe")) ||
+            !Audit::IsSurfaceAnalyticBackend() || !bUsesExplicitBake || ExplicitBakedAssetPath != Parent ||
+            AuthoredDeclarations.Num() != 1 || !Declaration || !*Declaration || MeshSourceComponentCount != 0)
+        {
+            UE_LOG(LogTemp,Error,TEXT("[FreeplayC2TransientQualification] Stage=gate Refused=1"));
+            return;
+        }
+        const FString File = FPaths::ProjectContentDir() /
+            TEXT("Generated/Analytic/RLDimension/CurrentSuccessor1/DA_StadiumC2.uasset");
+        TArray<uint8> PackageBytes;
+        if (IFileManager::Get().FileSize(*File) != 3316770 ||
+            !FFileHelper::LoadFileToArray(PackageBytes,*File) || PackageBytes.Num() != 3316770 ||
+            !FSHA1::HashBuffer(PackageBytes.GetData(),PackageBytes.Num()).ToString().Equals(PackageHash,ESearchCase::IgnoreCase))
+        {
+            UE_LOG(LogTemp,Error,TEXT("[FreeplayC2TransientQualification] Stage=bytes Refused=1"));
+            return;
+        }
+        const auto* Nominal = LoadObject<USpeedAnalyticCollisionAsset>(nullptr,Successor);
+        if (!Nominal || Nominal->GetPathName() != Successor || Nominal->SourceHash != 3428384419190212694ull ||
+            Nominal->AuthoredSources.Num() != 1 || Nominal->AuthoredSources[0].SourceId != SourceId ||
+            Nominal->AuthoredSources[0].SourceComponentPath != TEXT("AnalyticSource") ||
+            Nominal->AuthoredSources[0].ContactComponentPath != TEXT("AnalyticContact") ||
+            Nominal->AuthoredSources[0].PayloadSha256 != TEXT("6a7d4caa177a5daaa6306147ec6fe78c3c7d067081307e156bb04e4c05841648") ||
+            !Nominal->MeshSources.IsEmpty() || !Nominal->IndexedTriangles.IsEmpty() ||
+            !Nominal->ExtrudedQuinticPatches.IsEmpty() || !Nominal->PiecewiseTensorBezierPatches.IsEmpty() ||
+            Nominal->BoundedPlanes.Num() != 18 || Nominal->TensorBezierPatches.Num() != 2636 ||
+            Nominal->BoundedPlanes.ContainsByPredicate([](const auto& Row){ return Row.bAuthorityEligible; }) ||
+            Nominal->TensorBezierPatches.ContainsByPredicate([](const auto& Row){ return Row.bAuthorityEligible; }))
+        {
+            UE_LOG(LogTemp,Error,TEXT("[FreeplayC2TransientQualification] Stage=nominal Refused=1"));
+            return;
+        }
+        if (bC2SceneRequested) C2NominalForScene=Nominal;
+        QualificationCopy.Reset(DuplicateObject<USpeedAnalyticCollisionAsset>(Nominal,GetTransientPackage(),
+            MakeUniqueObjectName(GetTransientPackage(),USpeedAnalyticCollisionAsset::StaticClass())));
+        if (!QualificationCopy || QualificationCopy->GetOutermost() != GetTransientPackage())
+        {
+            UE_LOG(LogTemp,Error,TEXT("[FreeplayC2TransientQualification] Stage=copy Refused=1"));
+            return;
+        }
+        QualificationCopy->ClearFlags(RF_Public | RF_Standalone);
+        QualificationCopy->SetFlags(RF_Transient);
+        for (auto& Row : QualificationCopy->BoundedPlanes) Row.bAuthorityEligible = true;
+        for (auto& Row : QualificationCopy->TensorBezierPatches) Row.bAuthorityEligible = true;
+        QualificationSource = const_cast<USpeedAnalyticSourceComponent*>(*Declaration);
+        OriginalSourceAsset = QualificationSource->AnalyticCollisionAsset;
+        QualificationSource->AnalyticCollisionAsset = QualificationCopy.Get();
+        BakedAsset = QualificationCopy.Get();
+        ExplicitBakedAssetPath = Successor;
+        UE_LOG(LogTemp,Display,TEXT("[FreeplayC2TransientQualification] Stage=selected PackageSha1=%s Source=%016llx Planes=18 Tensors=2636 Scope=ProcessOnly"),
+            PackageHash,SourceId);
+    }
+#endif
 	if (BakedAsset)
 	{
 		if (BakedAsset->AuthoredSources.Num() != AuthoredDeclarations.Num() ||
@@ -758,12 +1069,200 @@ void USpeedWorldSubsystem::BuildAnalyticWorldFromLoadedSources()
 		TEXT("[AnalyticQueryStorage] ExtrudedFacets=%llu FacetBoundsAllocatedBytes=%llu FacetGeometryAllocatedBytes=%llu"),
 		ExtrudedFacetCount, ExtrudedFacetBoundsAllocatedBytes, ExtrudedFacetGeometryAllocatedBytes);
 #endif
+#if WITH_EDITOR && !UE_BUILD_SHIPPING
+    Speed::FOrdinaryC2DiagnosticScene PendingC2Scene;
+    if (bC2SceneRequested)
+    {
+        constexpr uint64 StadiumSource=0x11af315a281440a9ull;
+        const auto Refuse=[](const TCHAR* Stage)
+        { UE_LOG(LogTemp,Error,TEXT("[OrdinaryC2DiagnosticScene] Stage=%s Refused=1"),Stage); };
+        if (!C2NominalForScene || !QualificationSource || !QualificationSource->GetOwner() ||
+            QualificationSource->GetOwner()->GetClass()->GetPathName()!=
+                TEXT("/Game/Core/Basics/Blueprints/stadium/BP_EmptyStadium.BP_EmptyStadium_C") ||
+            Landscapes.Num()!=1 || !Landscapes[0] || PendingSourceComponents.Num()!=2 ||
+            !PendingSourceComponents.Contains(StadiumSource) ||
+            Finalized.Planes.Num()!=19 || Finalized.TensorBezierPatches.Num()!=2636 ||
+            !Finalized.ExtrudedQuinticPatches.IsEmpty() || !Finalized.PiecewiseTensorBezierPatches.IsEmpty() ||
+            !Finalized.Triangles.IsEmpty() || !Finalized.Tori.IsEmpty())
+        { Refuse(TEXT("inventory")); return; }
+        const uint64 LandscapeSource=Speed::Analytic::StableStringId(AuthoredObjectPath(*Landscapes[0]));
+        const auto* LandscapePlane=Finalized.Planes.FindByPredicate([&](const auto& Plane)
+        { return Plane.SourceId==LandscapeSource; });
+        if (LandscapeSource==StadiumSource || !PendingSourceComponents.Contains(LandscapeSource) ||
+            !LandscapePlane || !LandscapePlane->PrimitiveId || !LandscapePlane->Bounds.IsValid ||
+            !LandscapePlane->bAuthorityEligible || !LandscapePlane->bQueryCollisionEnabled ||
+            LandscapePlane->bRequiresCompactOptIn || LandscapePlane->Normal!=FVector3d(0.,0.,1.) ||
+            Finalized.Planes.ContainsByPredicate([&](const auto& Plane)
+            { return &Plane!=LandscapePlane && Plane.SourceId!=StadiumSource; }) ||
+            Finalized.TensorBezierPatches.ContainsByPredicate([](const auto& Patch)
+            { return Patch.SourceId!=StadiumSource || !Patch.bAuthorityEligible; }))
+        { Refuse(TEXT("external_landscape")); return; }
+        FString Reason;
+        PendingC2Scene.Nominal=Speed::OrdinaryC2SceneFactory(*C2NominalForScene,Reason);
+        if (!PendingC2Scene.Nominal)
+        {
+            UE_LOG(LogTemp,Error,TEXT("[OrdinaryC2DiagnosticScene] Stage=binder Refused=1 Reason=%s"),*Reason);
+            return;
+        }
+        PendingC2Scene.FinalSourceHash=Finalized.SourceHash;
+        PendingC2Scene.ExternalLandscapePrimitive=LandscapePlane->PrimitiveId;
+    }
+    else if (bPrivateOrdinaryC2RuntimeIndex && !bC2Qualification && Speed::OrdinaryC2SceneFactory &&
+        bUsesExplicitBake && BakedAsset && BakedRuntimeWorld && IsInGameThread() && World->IsGameWorld() &&
+        World->WorldType==EWorldType::Game && World->GetNetMode()==NM_Standalone &&
+        World->GetOutermost()->GetName()==TEXT("/Game/Core/Freeplay/EmptyLevel/FreeplayTest") &&
+        Speed::Analytic::FStaticWorldQueryAudit::IsSurfaceAnalyticBackend() &&
+        AuthoredDeclarations.Num()==1 && BakedAsset->AuthoredSources.Num()==1)
+    {
+        const TCHAR* Stage=TEXT("inventory");
+        const auto TryAttach=[&]()
+        {
+            const auto Source=BakedAsset->AuthoredSources[0].SourceId;
+            const auto* Declared=AuthoredDeclarations.Find(Source);
+            const AActor* DeclaredOwner=(Declared && *Declared) ? (*Declared)->GetOwner() : nullptr;
+            const UClass* StadiumParent=DeclaredOwner ? DeclaredOwner->GetClass()->GetSuperClass() : nullptr;
+            if (!Source || !DeclaredOwner || !StadiumParent ||
+                StadiumParent->GetPathName()!=TEXT("/Game/Core/CppBasics/Blueprints/Stadium/BP_Stadium.BP_Stadium_C") ||
+                StadiumParent->GetOutermost()->IsDirty() ||
+                DeclaredOwner->GetClass()->GetPathName()!=
+                    TEXT("/Game/Core/Basics/Blueprints/stadium/BP_EmptyStadium.BP_EmptyStadium_C") ||
+                DeclaredOwner->GetClass()->GetOutermost()->IsDirty() || World->GetOutermost()->IsDirty() ||
+                (*Declared)->AnalyticCollisionAsset.Get()!=BakedAsset || BakedAsset->GetPathName()!=ExplicitBakedAssetPath ||
+                PendingSourceComponents.Num()!=2 || !PendingSourceComponents.Contains(Source) ||
+                Landscapes.Num()!=1 || !Landscapes[0] || MeshSourceComponentCount!=0 ||
+                !Finalized.SourceHash || Finalized.Planes.Num()!=BakedAsset->BoundedPlanes.Num()+1 ||
+                Finalized.TensorBezierPatches.Num()!=BakedAsset->TensorBezierPatches.Num() ||
+                !Finalized.ExtrudedQuinticPatches.IsEmpty() || !Finalized.PiecewiseTensorBezierPatches.IsEmpty() ||
+                !Finalized.Triangles.IsEmpty() || !Finalized.Tori.IsEmpty())
+                return false;
+
+            Stage=TEXT("runtime_receipt");
+            FString Reason;
+            auto Nominal=Speed::OrdinaryC2SceneFactory(*BakedAsset,Reason);
+            if (!Nominal)
+            {
+                UE_LOG(LogTemp,Display,TEXT("[OrdinaryC2NominalIndex] Stage=%s Reason=%s Attached=0"),Stage,*Reason);
+                Stage=nullptr;
+                return false;
+            }
+            Stage=TEXT("landscape");
+            const uint64 LandscapeSource=Speed::Analytic::StableStringId(AuthoredObjectPath(*Landscapes[0]));
+            const auto* Landscape=Finalized.Planes.FindByPredicate([&](const auto& Plane)
+                {return Plane.SourceId==LandscapeSource;});
+            if (!Landscape || !Landscape->PrimitiveId || !Landscape->Bounds.IsValid ||
+                !LandscapeSource || LandscapeSource==Source || !PendingSourceComponents.Contains(LandscapeSource) ||
+                !Landscape->bAuthorityEligible || !Landscape->bQueryCollisionEnabled || Landscape->bRequiresCompactOptIn ||
+                Landscape->Normal!=FVector3d::UpVector || Landscape->AxisU.Z!=0. || Landscape->AxisV.Z!=0.)
+                return false;
+
+            Stage=TEXT("finalized_raw_join");
+            namespace A=::AnalyticCertified;
+            const auto Same=[](double X,double Y){return A::Bits(X)==A::Bits(Y);};
+            const auto Same2=[&](const auto& X,const auto& Y){return Same(X.X,Y.X)&&Same(X.Y,Y.Y);};
+            const auto Same3=[&](const auto& X,const auto& Y){return Same2(X,Y)&&Same(X.Z,Y.Z);};
+            const auto SamePolicy=[&](const auto& Runtime,const auto& Raw)
+            {
+                return Runtime.SourceId==Source && Runtime.SourceId==Raw.SourceId &&
+                    Runtime.SurfaceId==Raw.SurfaceId && Runtime.FeatureId==Raw.FeatureId &&
+                    Runtime.PrimitiveId==Raw.PrimitiveId && Runtime.MaterialId==uint32(Raw.MaterialId) &&
+                    Runtime.ObjectType==uint32(Raw.ObjectType) && Runtime.BlockingChannels==Raw.BlockingChannels &&
+                    Runtime.bQueryCollisionEnabled==Raw.bQueryCollisionEnabled &&
+                    Runtime.bAuthorityEligible && Raw.bAuthorityEligible;
+            };
+            TMap<uint64,int32> RuntimeTensors,RuntimePlanes;
+            for (int32 I=0;I<Finalized.TensorBezierPatches.Num();++I)
+            {
+                const auto Id=Finalized.TensorBezierPatches[I].PrimitiveId;
+                if (!Id || RuntimeTensors.Contains(Id)) return false;
+                RuntimeTensors.Add(Id,I);
+            }
+            for (int32 I=0;I<Finalized.Planes.Num();++I)
+            {
+                const auto& Plane=Finalized.Planes[I];
+                if (&Plane==Landscape) continue;
+                if (!Plane.PrimitiveId || RuntimePlanes.Contains(Plane.PrimitiveId)) return false;
+                RuntimePlanes.Add(Plane.PrimitiveId,I);
+            }
+            for (const auto& Raw : BakedAsset->TensorBezierPatches)
+            {
+                const int32* Index=RuntimeTensors.Find(Raw.PrimitiveId);
+                if (!Index) return false;
+                const auto& Patch=Finalized.TensorBezierPatches[*Index];
+                if (!SamePolicy(Patch,Raw) || Patch.CanonicalGroupId!=Raw.CanonicalGroupId ||
+                    Patch.Surface.DegreeU!=Raw.DegreeU || Patch.Surface.DegreeV!=Raw.DegreeV ||
+                    Patch.Surface.ControlPoints.Num()!=Raw.ControlPoints.Num()) return false;
+                for (int32 C=0;C<Raw.ControlPoints.Num();++C)
+                    if (!Same3(Patch.Surface.ControlPoints[C],Raw.ControlPoints[C])) return false;
+            }
+            for (const auto& Raw : BakedAsset->BoundedPlanes)
+            {
+                const int32* Index=RuntimePlanes.Find(Raw.PrimitiveId);
+                if (!Index) return false;
+                const auto& Plane=Finalized.Planes[*Index];
+                if (!SamePolicy(Plane,Raw) || Plane.bRequiresCompactOptIn!=Raw.bRequiresCompactOptIn ||
+                    !Same3(Plane.Origin,Raw.Origin) || !Same3(Plane.Normal,Raw.Normal) ||
+                    !Same3(Plane.AxisU,Raw.AxisU) || !Same3(Plane.AxisV,Raw.AxisV) ||
+                    !Same2(Plane.HalfExtents,Raw.HalfExtents) || Plane.DomainVertices.Num()!=Raw.DomainVertices.Num())
+                    return false;
+                for (int32 V=0;V<Raw.DomainVertices.Num();++V)
+                    if (!Same2(Plane.DomainVertices[V],Raw.DomainVertices[V])) return false;
+            }
+            PendingC2Scene.Nominal=MoveTemp(Nominal);
+            PendingC2Scene.FinalSourceHash=Finalized.SourceHash;
+            PendingC2Scene.ExternalLandscapePrimitive=Landscape->PrimitiveId;
+            return true;
+        };
+        try
+        {
+            if (!TryAttach() && Stage)
+                UE_LOG(LogTemp,Display,TEXT("[OrdinaryC2NominalIndex] Stage=%s Attached=0"),Stage);
+        }
+        catch (...)
+        {
+            PendingC2Scene={};
+            UE_LOG(LogTemp,Display,TEXT("[OrdinaryC2NominalIndex] Stage=optional_exception Attached=0"));
+        }
+    }
+    else if (bPrivateOrdinaryC2IndexRequested)
+        UE_LOG(LogTemp,Display,TEXT("[OrdinaryC2NominalIndex] Stage=startup_scope Attached=0"));
+#endif
     AnalyticWorldData = MoveTemp(FinalizedWorld);
     AnalyticSourceComponents = MoveTemp(PendingSourceComponents);
     const Speed::FFrameParallelSettings ParallelSettings = Speed::CaptureFrameParallelSettings();
-    SimulationWorld.SetStaticCollisionWorld(MakeUnique<Speed::FAnalyticStaticCollisionWorld>(
+    auto OrdinaryProvider=MakeUnique<Speed::FAnalyticStaticCollisionWorld>(
         *AnalyticWorldData, ParallelSettings.LaneLimit, ParallelSettings.MinQueryItems,
-        ParallelSettings.MinFacetItems));
+        ParallelSettings.MinFacetItems);
+#if WITH_EDITOR && !UE_BUILD_SHIPPING
+    if (PendingC2Scene.Nominal)
+    {
+        PendingC2Scene.SceneGeneration=OrdinaryProvider->GetImmutableQueryIdentity1075().Generation;
+        UE_LOG(LogTemp,Display,TEXT("[OrdinaryC2DiagnosticScene] Stage=attach Providers=2992 Generation=%llu WorldHash=%016llx LandscapePrimitive=%016llx QueryDispatch=0"),
+            PendingC2Scene.SceneGeneration,PendingC2Scene.FinalSourceHash,PendingC2Scene.ExternalLandscapePrimitive);
+        if (!bC2SceneRequested)
+            UE_LOG(LogTemp,Display,TEXT("[OrdinaryC2NominalIndex] Stage=attach Attached=1 Generation=%llu WorldHash=%016llx"),
+                PendingC2Scene.SceneGeneration,PendingC2Scene.FinalSourceHash);
+        OrdinaryProvider->OrdinaryC2DiagnosticScene=MoveTemp(PendingC2Scene);
+    }
+#endif
+    SimulationWorld.SetStaticCollisionWorld(MoveTemp(OrdinaryProvider));
+#if WITH_EDITOR && !UE_BUILD_SHIPPING
+    if (bC2Qualification)
+    {
+        const auto* Provider = SimulationWorld.GetStaticCollisionWorld();
+        const auto Identity = Provider ? Provider->GetImmutableQueryIdentity1075() : Speed::FImmutableStaticQueryIdentity1075{};
+        for (const auto& Plane : AnalyticWorldData->Planes)
+        {
+            if (Plane.SourceId == 0x11af315a281440a9ull)
+                continue;
+            UE_LOG(LogTemp,Display,TEXT("[C2QualificationAdditionalPlane] Generation=%llu Source=%016llx Primitive=%016llx Origin=(%.17g,%.17g,%.17g) Normal=(%.17g,%.17g,%.17g)"),
+                Identity.Generation,Plane.SourceId,Plane.PrimitiveId,Plane.Origin.X,Plane.Origin.Y,Plane.Origin.Z,
+                Plane.Normal.X,Plane.Normal.Y,Plane.Normal.Z);
+        }
+        UE_LOG(LogTemp,Display,TEXT("[FreeplayC2TransientQualification] Stage=published Planes=%d Tensors=%d Bound=%d Generation=%llu Scope=ProcessOnly"),
+            AnalyticWorldData->Planes.Num(),AnalyticWorldData->TensorBezierPatches.Num(),
+            int32(AnalyticSourceComponents.Contains(0x11af315a281440a9ull)),Identity.Generation);
+    }
+#endif
 }
 
 static TAutoConsoleVariable<float> CVarIAmSpeedRollingBaumgarte(
@@ -834,6 +1333,9 @@ void USpeedWorldSubsystem::ApplyPendingOps()
     TArray<FPendingOp> Local;
     {
         FScopeLock Lock(&PendingCS);
+        if (Speed::PreparedExecution::RejectPreparedPendingMutation(
+            bPreparedIntervalRouteRequested && Speed::OnePausedWork::IsActive(), !PendingOps.IsEmpty()))
+            throw std::runtime_error("Prepared native pending registry mutation refused before MoveTemp/reset");
         Local = MoveTemp(PendingOps);
         PendingOps.Reset();
     }
@@ -959,6 +1461,7 @@ void USpeedWorldSubsystem::ActivatePendingRollingContactPairAtTOI(
 	const USolidSubBody& BodyB,
 	const float RemainingDt)
 {
+    Speed::PreparedExecution::FStepScope::RequireNativeContactPairTargets(SimulationWorld,&BodyA,&BodyB);
 	if (!AreUnilateralRollingPairsEnabled())
 	{
 		return;
@@ -1052,6 +1555,7 @@ void USpeedWorldSubsystem::SolveDynamicContactPairs(
 	const bool bFilterByPairKey,
 	const bool bSolveFirstSeenFrame)
 {
+    Speed::PreparedExecution::FStepScope::RequireNativeContactPairTargets(SimulationWorld);
 	auto& DynamicContactPairs = SimulationWorld.GetDynamicContactPairs();
 	unsigned int& CurrentStepFrame = SimulationWorld.GetCurrentStepFrame();
 	constexpr unsigned int MaxUnseenFrames = 2;
@@ -1621,6 +2125,7 @@ void USpeedWorldSubsystem::SolveDynamicContactPairs(
 
 void USpeedWorldSubsystem::ProjectDynamicContactPairs()
 {
+    Speed::PreparedExecution::FStepScope::RequireNativeContactPairTargets(SimulationWorld);
 	auto& DynamicContactPairs = SimulationWorld.GetDynamicContactPairs();
 	auto& PendingRollingContactPairs = SimulationWorld.GetPendingRollingContactPairs();
 #if !UE_BUILD_SHIPPING // IAmSpeed contact witness1075 BEGIN
@@ -1760,23 +2265,38 @@ void USpeedWorldSubsystem::ProjectDynamicContactPairs()
 
 bool USpeedWorldSubsystem::BeginCanonicalFrame(FString& OutReason)
 {
+    if(StaticWorldPublicationDepth){OutReason=TEXT("HostedGT static World publication active");return false;}
 	if (bCanonicalFrameActive)
 	{
 		OutReason = TEXT("canonical frame already active");
 		return false;
 	}
 	if (!ValidateSimulationBindings(OutReason)) return false;
+    Speed::PreparationPrefix::FEffectScope effect(Speed::PreparationPrefix::EEffect::AdmitCanonicalFrame);
 	bCanonicalFrameActive = true;
+    try { effect.Returned(); }
+    catch (...)
+    {
+        // This is canonical ownership cleanup, never a restoration of physical
+        // or input effects. Host's later lexical cleanup does not exist yet.
+        bCanonicalFrameActive=false;throw;
+    }
 	return true;
 }
 
 bool USpeedWorldSubsystem::ValidateSimulationBindings(FString& OutReason)
 {
+    Speed::PreparationPrefix::FEffectScope::VerifyStructuralBoundary();
 	ApplyPendingOps();
 	RebuildSortedIfNeeded();
 	for (const ISpeedComponent* Component : SimulationWorld.GetOrderedAdapters())
 	{
-		if (Component && !Component->ValidateSimulationBindings(OutReason)) return false;
+        if (Component)
+        {
+            Speed::PreparationPrefix::FEffectScope effect(Speed::PreparationPrefix::EEffect::ValidateOwnerBinding,Component);
+            const bool valid=Component->ValidateSimulationBindings(OutReason);
+            effect.Returned(valid,valid); if(!valid)return false;
+        }
 	}
 	return true;
 }
@@ -1829,7 +2349,11 @@ bool USpeedWorldSubsystem::InstallCanonicalInputs(const Speed::Input::V2::FRegis
 		}
 	}
 	for (const auto& Install : Installs)
-		if (!Install.Key->InstallCanonicalInput(Frame.Frame, Install.Value)) return false;
+    {
+        Speed::PreparationPrefix::FEffectScope effect(Speed::PreparationPrefix::EEffect::InstallOwnerInput,Install.Key);
+        const bool installed=Install.Key->InstallCanonicalInput(Frame.Frame,Install.Value);
+        effect.Returned(installed,installed);if(!installed)return false;
+    }
 	return true;
 }
 
@@ -1838,7 +2362,12 @@ bool USpeedWorldSubsystem::StageCanonicalScenarioInputs(const FCanonicalFrameCon
 {
 	if (!bCanonicalFrameActive) return false;
 	for (ISpeedComponent* Component : SimulationWorld.GetOrderedAdapters())
-		if (Component && !Component->StageCanonicalScenarioInput(Context, Registry)) return false;
+        if (Component)
+        {
+            Speed::PreparationPrefix::FEffectScope effect(Speed::PreparationPrefix::EEffect::StageScenarioInput,Component);
+            const bool staged=Component->StageCanonicalScenarioInput(Context,Registry);
+            effect.Returned(staged,staged);if(!staged)return false;
+        }
 	return true;
 }
 
@@ -1846,7 +2375,12 @@ bool USpeedWorldSubsystem::PrepareCanonicalInputs(const FCanonicalFrameContext& 
 {
 	// BeginCanonicalFrame has already frozen/validated the active adapter view.
 	for (ISpeedComponent* Component : SimulationWorld.GetOrderedAdapters())
-		if (Component && !Component->PrepareCanonicalInputs(Context)) return false;
+        if (Component)
+        {
+            Speed::PreparationPrefix::FEffectScope effect(Speed::PreparationPrefix::EEffect::PrepareOwnerInput,Component);
+            const bool prepared=Component->PrepareCanonicalInputs(Context);
+            effect.Returned(prepared,prepared);if(!prepared)return false;
+        }
 	return true;
 }
 
@@ -1866,6 +2400,7 @@ bool USpeedWorldSubsystem::InspectBodyContactPairsForTesting(
 void USpeedWorldSubsystem::PrepareCanonicalFrame(
 	const FCanonicalFrameContext& Context)
 {
+    Speed::PreparationPrefix::FEffectScope::VerifyStructuralBoundary();
 #if !UE_BUILD_SHIPPING
     const uint64 PreviousTestingFrame=TestingPreparingFrame;
     TestingPreparingFrame=Context.NumFrame;
@@ -1877,14 +2412,30 @@ void USpeedWorldSubsystem::PrepareCanonicalFrame(
 	for (bool bPrescribed : {true, false})
 	for (ISpeedComponent* Component : SimulationWorld.GetOrderedAdapters())
 	{
-		if (Component && Component->IsPrescribedMotion()==bPrescribed)
+        if(!Component)continue;
+        bool prescribed=false;
+        {
+            Speed::PreparationPrefix::FEffectScope effect(Speed::PreparationPrefix::EEffect::ReadPrescribedMotion,Component,int32(bPrescribed));
+            prescribed=Component->IsPrescribedMotion();effect.Returned(true,prescribed);
+        }
+		if (prescribed==bPrescribed)
 		{
 			IAMSPEED_ACTOR_SCOPE(SimulationWorld, *Component, Prepare);
+            {
+                Speed::PreparationPrefix::FEffectScope effect(Speed::PreparationPrefix::EEffect::BindStaticWorld,Component,int32(bPrescribed));
 			Component->SetStaticCollisionWorldForFrame(
 				CVarIAmSpeedExactBoxRestingSupport.GetValueOnAnyThread() != 0 &&
 				Speed::Analytic::FStaticWorldQueryAudit::IsSurfaceAnalyticBackend()
 					? SimulationWorld.GetStaticCollisionWorld() : nullptr, Context.PhysicalDeltaTime);
-			Component->PrepareCanonicalFrame(Context);
+                effect.Returned();
+            }
+            {
+                Speed::PreparationPrefix::FEffectScope effect(Speed::PreparationPrefix::EEffect::PrepareOwner,Component,int32(bPrescribed));
+                Speed::PreparedExecution::FOrdinaryOwnerProbePhaseScope probes(
+                    Speed::PreparedExecution::ENativeOwnerProbePhase::Prepare,*Component,Context.PhysicalDeltaTime);
+                if(!Speed::PreparedExecution::FCanonicalFramePreflight::DispatchNativePrepare(*Component,Context))Component->PrepareCanonicalFrame(Context);
+                probes.Returned();effect.Returned();
+            }
 		}
 	}
 }
@@ -1957,6 +2508,28 @@ ECanonicalRunControlState USpeedWorldSubsystem::InspectAdmittedCanonicalRunContr
 void USpeedWorldSubsystem::NotifyCanonicalFramePublished(uint64 NumFrame)
 {
 	SimulationWorld.NotifyCanonicalFramePublished(NumFrame);
+#if !UE_BUILD_SHIPPING
+    if (Speed::Analytic::FStaticWorldQueryAudit::IsQualificationContactTraceFrame(NumFrame))
+    {
+        const auto* Provider = SimulationWorld.GetStaticCollisionWorld();
+        const uint64 SceneGeneration = Provider ? Provider->GetImmutableQueryIdentity1075().Generation : 0;
+        for (const UBoxSubBody* Box : SimulationWorld.GetProjectionBoxes())
+        {
+            if (!Box || Box->GetSubBodyType() != USSubBody::ESubBodyType::Hitbox)
+                continue;
+            const auto* Owner = Box->GetParentComponent();
+            if (!Owner)
+                continue;
+            const auto& Pose = Box->GetKinematicState();
+            const FVector Extent = FCollisionShape::MakeBox(Box->GetBoxExtent()).GetBox();
+            UE_LOG(LogTemp, Display,
+                TEXT("[OrdinaryPublishedChassisPose] Frame=%llu SceneGeneration=%llu Body=%llu SubBody=%d PostBox=(%.17g,%.17g,%.17g) PostBoxQ=(%.17g,%.17g,%.17g,%.17g) Extent=(%.17g,%.17g,%.17g)"),
+                NumFrame, SceneGeneration, SimulationWorld.FindStableId(*Owner), Owner->GetSubBodies().IndexOfByKey(Box),
+                Pose.Location.X, Pose.Location.Y, Pose.Location.Z,
+                Pose.Rotation.X, Pose.Rotation.Y, Pose.Rotation.Z, Pose.Rotation.W, Extent.X, Extent.Y, Extent.Z);
+        }
+    }
+#endif
 }
 
 ECanonicalPublicationResult USpeedWorldSubsystem::PublishCanonicalFrame(uint64 Frame, TFunctionRef<bool()> Publish)
@@ -1964,6 +2537,66 @@ ECanonicalPublicationResult USpeedWorldSubsystem::PublishCanonicalFrame(uint64 F
 	return SimulationWorld.PublishCanonicalFrame(Frame, Publish);
 }
 
+bool USpeedWorldSubsystem::DispatchPostPrepareInitialPosition(const ASpeedPhysicsSimulation& host)
+{
+    using namespace Speed::PreparationPrefix;
+    const auto* c=FCursor::Current;
+    if(!c||c->Observing||c->PositionDispatch||c->Context.Bridge!=this||c->Context.Host!=&host||
+        !c->CurrentIdentity()||!Speed::OnePausedWork::HasInitialPosition(c->Contract->GetPurpose()))return false;
+    // PendingCS is recursive on this native Windows target. CurrentIdentity
+    // rechecks it inside every Source observation while this outer lock holds.
+    FScopeLock lock(&PendingCS);
+    if(!PendingOps.IsEmpty()||!SimulationWorld.GetDynamicContactPairs().IsEmpty()||
+        !SimulationWorld.GetPendingRollingContactPairs().IsEmpty()||!c->CurrentIdentity())return false;
+    return FCursor::ApplyPostPrepareInitialPosition(host);
+}
+bool USpeedWorldSubsystem::RetirePreparationInputTransactions(const FCanonicalFrameContext& context)
+{
+    using namespace Speed::PreparationPrefix;
+    auto* c=FCursor::Current;
+    if(!c||c->Observing||c->Context.Bridge!=this||c->Context.Frame!=context.NumFrame||
+        !c->CurrentIdentity()||!c->Stack.IsEmpty()||c->Contract->Reached||c->Contract->AllPrepareReached)
+        return false;
+    const auto& ordered=SimulationWorld.GetOrderedAdapters();
+    const auto purpose=c->Contract->GetPurpose();
+    const bool preparation=purpose==Speed::OnePausedWork::EPurpose::PreparationPrefixStop&&c->NextCall==30&&c->Contract->Calls.Num()==33;
+    const bool position=purpose==Speed::OnePausedWork::EPurpose::PostPrepareInitialPositionStop&&c->NextCall==31&&c->Contract->Calls.Num()==34&&
+        c->Contract->HasAcceptedPosition()&&c->Contract->Records[30].Attempted&&c->Contract->Records[30].Returned&&c->Contract->Records[30].Accepted;
+    const bool sync=purpose==Speed::OnePausedWork::EPurpose::TerminalStepSyncStop&&c->NextCall==35&&c->Contract->Calls.Num()==38&&
+        c->Contract->HasCompletedStepSync()&&c->CurrentStep==c->Window->GetExpectedStep();
+    const bool capture=purpose==Speed::OnePausedWork::EPurpose::TerminalSphereRsCaptureStop&&c->NextCall==38&&c->Contract->Calls.Num()==41&&
+        c->Contract->HasClosedNativeRsCapture()&&c->CurrentStep==c->Window->GetExpectedStep();
+    const bool consumedAdvance=purpose==Speed::OnePausedWork::EPurpose::TerminalConsumedPrefixAdvanceStop&&c->NextCall==42&&c->Contract->Calls.Num()==45&&
+        c->Contract->HasCompletedNativeRsAdvance()&&c->CurrentStep==c->Window->GetExpectedStep();
+    const bool contactAdvance=purpose==Speed::OnePausedWork::EPurpose::TerminalRsContactAdvanceStop&&c->NextCall==42&&c->Contract->Calls.Num()==45&&
+        c->Contract->HasCompletedNativeRsContactAdvance()&&c->CurrentStep==c->Window->GetExpectedStep();
+    const bool rsResponse=purpose==Speed::OnePausedWork::EPurpose::TerminalRsResponseStop&&c->NextCall==46&&c->Contract->Calls.Num()==49&&
+        c->Contract->HasCompletedNativeRsResponse()&&c->CurrentStep==c->Window->GetExpectedStep();
+    const bool rsResponseSync=purpose==Speed::OnePausedWork::EPurpose::TerminalRsResponseSyncStop&&c->NextCall==47&&c->Contract->Calls.Num()==50&&
+        c->Contract->HasCompletedNativeRsResponseSync()&&c->CurrentStep==c->Window->GetExpectedStep();
+    const bool postSyncRs=purpose==Speed::OnePausedWork::EPurpose::TerminalPostSyncRsCaptureStop&&c->NextCall==50&&c->Contract->Calls.Num()==53&&
+        c->Contract->HasCompletedNativePostSyncRsCapture()&&c->CurrentStep==c->Window->GetExpectedStep();
+    if(ordered.Num()!=3||(!preparation&&!position&&!sync&&!capture&&!consumedAdvance&&!contactAdvance&&!rsResponse&&!rsResponseSync&&!postSyncRs))return false;
+    // Authenticate the COMPLETE suffix before dispatching the first callback.
+    // The closed producer also proves exact classes, no reservation/commit lock
+    // and every input/endpoint transition. This check alone grants no contract.
+    for(int32 i=0;i<ordered.Num();++i)
+    {
+        const auto* owner=ordered[i];const auto& call=c->Contract->Calls[c->NextCall+i];
+        if(!owner||!c->Window->GetSnapshot()->GetNativeOwners()->Find(owner)||
+            call.Effect!=EEffect::RetireOwnerInput||call.Owner!=owner||call.Pass!=INDEX_NONE)return false;
+    }
+    for(int32 i=0;i<c->NextCall;++i)
+        if(!c->IsClosedPlannedRow(i))return false;
+    c->Contract->AllPrepareReached=true;
+    for(auto* owner:ordered)
+    {
+        FEffectScope effect(EEffect::RetireOwnerInput,owner);
+        owner->AbortCanonicalFrame(context.NumFrame,ECanonicalFrameAbortReason::TerminalPreparationRetirement);
+        effect.Returned();
+    }
+    return true;
+}
 void USpeedWorldSubsystem::AbortCanonicalFrame(uint64 Frame, ECanonicalFrameAbortReason Reason) noexcept
 {
 	SimulationWorld.AbortCanonicalFrame(Frame, Reason);
@@ -2004,16 +2637,51 @@ bool USpeedWorldSubsystem::ApplySimulationInputs(
 #if WITH_DEV_AUTOMATION_TESTS
 namespace Speed::Testing
 {
-namespace { thread_local FCcdPoseAuditObserver CcdObserver=nullptr; thread_local void* CcdContext=nullptr; }
+namespace
+{
+thread_local FCcdPoseAuditObserver CcdObserver=nullptr;
+thread_local void* CcdContext=nullptr;
+thread_local const ISpeedComponent* CcdPrimitiveOwner=nullptr;
+thread_local uint64 CcdRunGeneration=0,CcdPrimitiveSerial=0;
+thread_local bool CcdPrimitiveDelivering=false,CcdPrimitiveViolation=false;
+}
 bool SetCcdPoseAuditObserverForCurrentThread(FCcdPoseAuditObserver Observer, void* Context) noexcept
 {
-    if(!Observer || !Context || CcdObserver) return false;
+    if(!Observer || !Context || CcdObserver || CcdPrimitiveDelivering || CcdRunGeneration==MAX_uint64) return false;
+    ++CcdRunGeneration; CcdPrimitiveSerial=0; CcdPrimitiveOwner=nullptr; CcdPrimitiveViolation=false;
     CcdObserver=Observer; CcdContext=Context; return true;
 }
 bool ClearCcdPoseAuditObserverForCurrentThread(FCcdPoseAuditObserver Observer, void* Context) noexcept
 {
-    if(CcdObserver!=Observer || CcdContext!=Context) return false;
-    CcdObserver=nullptr; CcdContext=nullptr; return true;
+    if(CcdPrimitiveDelivering || CcdObserver!=Observer || CcdContext!=Context) return false;
+    CcdObserver=nullptr; CcdContext=nullptr; CcdPrimitiveOwner=nullptr; return true;
+}
+bool EnableCcdPrimitiveCaptureForCurrentThread(FCcdPoseAuditObserver Observer,void* Context,const ISpeedComponent* OwnerIdentity) noexcept
+{
+    if(!Observer || !Context || !CcdObserver || !OwnerIdentity || CcdPrimitiveDelivering || CcdPrimitiveViolation || CcdObserver!=Observer || CcdContext!=Context || CcdPrimitiveOwner) return false;
+    CcdPrimitiveOwner=OwnerIdentity; return true;
+}
+bool IsCcdPrimitiveCaptureEnabledForCurrentThread(const ISpeedComponent* OwnerIdentity) noexcept
+{
+    return CcdObserver && !CcdPrimitiveViolation && OwnerIdentity && CcdPrimitiveOwner==OwnerIdentity;
+}
+FCcdPrimitiveStamp NextCcdPrimitiveCaptureStampForCurrentThread() noexcept
+{
+    if(!CcdObserver || !CcdPrimitiveOwner || CcdPrimitiveViolation || CcdPrimitiveSerial==MAX_uint64) return {};
+    return {CcdRunGeneration,++CcdPrimitiveSerial};
+}
+bool CcdPrimitiveCaptureHadViolationForCurrentThread() noexcept { return CcdPrimitiveViolation; }
+void MarkCcdPrimitiveCaptureViolationForCurrentThread() noexcept
+{
+    CcdPrimitiveViolation=true;CcdPrimitiveOwner=nullptr;
+}
+void ObserveCcdPrimitiveForCurrentThread(ECcdPoseAuditStage Stage,FCcdPrimitiveCapture Sample) noexcept
+{
+    if(CcdPrimitiveDelivering || !IsCcdPrimitiveCaptureEnabledForCurrentThread(static_cast<const ISpeedComponent*>(Sample.OwnerIdentity)) || !Sample.Serial || Sample.RunGeneration!=CcdRunGeneration || Sample.Serial>CcdPrimitiveSerial) return;
+    if(Stage!=ECcdPoseAuditStage::SphereSweepCapture && Stage!=ECcdPoseAuditStage::BeforePrimitiveIntegrate && Stage!=ECcdPoseAuditStage::AfterPrimitiveIntegrate) return;
+    CcdPrimitiveDelivering=true;
+    CcdObserver(CcdContext,{nullptr,Sample.OwnerFrame,Stage,0.f,Sample.Delta,&Sample});
+    CcdPrimitiveDelivering=false;
 }
 static void ObserveCcdPose(const USpeedWorldSubsystem* World, uint32 Frame, ECcdPoseAuditStage Stage,
     float TimePassed, float SubDelta) noexcept
@@ -2025,6 +2693,19 @@ static void ObserveCcdPose(const USpeedWorldSubsystem* World, uint32 Frame, ECcd
 
 void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const unsigned int& Frame)
 {
+    if(StaticWorldPublicationDepth)throw std::runtime_error("HostedGT static World publication active");
+    Speed::OnePausedWork::FCanonicalFrameWindowPtr window;
+    const auto* currentProvider=SimulationWorld.GetStaticCollisionWorld();
+    if(bPreparedIntervalRouteRequested&&currentProvider&&currentProvider->GetPreparedSnapshot()&&currentProvider->GetPreparedSnapshot()->GetReference()&&
+        !Speed::OnePausedWork::ReadExecutionWindow(window))throw std::runtime_error("Retained reference Step has no live GT execution window");
+    // This effect is inert without a closed native cursor. In the distinct
+    // terminal purpose it authenticates the census/pending queue BEFORE ++StepSerial.
+    Speed::PreparationPrefix::FEffectScope TerminalStepEntry(Speed::PreparationPrefix::EEffect::EnterTerminalStep);
+    if(!Speed::OnePausedWork::BeforeWorldEffects(this,currentProvider,StepSerial,Frame,Dt,SimTime))
+        throw std::runtime_error("Native execution window refused before Step effects");
+    if(const auto* provider=SimulationWorld.GetStaticCollisionWorld())
+        if(!provider->IsReadyForPhysicsStep()&&!Speed::PreparationPrefix::FCursor::IsTerminalStepSyncEntry(*this))
+            throw std::runtime_error("Prepared static World has no qualified physical consumer");
 #if !UE_BUILD_SHIPPING
     Speed::Analytic::CaseSatDiagnostics::FScopedCpuPhase400 Phase400(
         Speed::Analytic::CaseSatDiagnostics::ECpuPhase400::SubsystemStep);
@@ -2033,6 +2714,8 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
 	const double StepStartSeconds = FPlatformTime::Seconds();
 	LastStepDiagnostics = FSpeedStepDiagnostics();
 	LastStepDiagnostics.Serial = ++StepSerial;
+    if(!Speed::OnePausedWork::ConfirmWorldSerial(StepSerial)||!Speed::PreparationPrefix::FCursor::ConfirmTerminalStepSerial(*this))
+        throw std::runtime_error("Native assigned Step serial differs from its pre-effect window");
 	LastStepDiagnostics.Frame = Frame;
 	LastStepDiagnostics.PhysicalDeltaTimeMilliseconds =
 		static_cast<double>(Dt) * 1000.0;
@@ -2044,7 +2727,8 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
 
 #if !UE_BUILD_SHIPPING
 	const bool bCaptureSolverEventTrace =
-		CVarIAmSpeedSolverEventTraceFrame.GetValueOnAnyThread() == static_cast<int32>(Frame);
+		CVarIAmSpeedSolverEventTraceFrame.GetValueOnAnyThread() == static_cast<int32>(Frame) ||
+        Speed::Analytic::FStaticWorldQueryAudit::IsQualificationContactTraceFrame(Frame);
 	const auto TraceEvent = [&](const TCHAR* Stage, const TCHAR* Disposition,
 		const int32 Iteration, const int32 Order, const uint64 PairKey,
 		const SHitResult& Hit, USSubBody* Resolver, const int32 GenerationBefore,
@@ -2054,8 +2738,10 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
 		ISpeedComponent* Parent = Resolver ? Resolver->GetParentComponent() : nullptr;
 		const uint64 ComponentStableId = Parent ? SimulationWorld.FindStableId(*Parent) : 0;
 		const int32 SubBodyIndex = Parent ? Parent->GetSubBodies().IndexOfByKey(Resolver) : INDEX_NONE;
+		const auto* StaticProvider = SimulationWorld.GetStaticCollisionWorld();
+		const uint64 SceneGeneration = StaticProvider ? StaticProvider->GetImmutableQueryIdentity1075().Generation : 0;
 		UE_LOG(LogTemp, Display,
-			TEXT("[SpeedSolverEventV2] Frame=%u Iter=%d Stage=%s Disposition=%s Order=%d ComponentStableId=%llu ResolverClass=%s SubBodyIndex=%d PairKey=%llu SourceId=%llu SurfaceId=%llu FeatureId=%llu PrimitiveId=%llu ThisFeature=%d ThisIndex=%d OtherFeature=%d OtherIndex=%d HitTOI=%.9g GenerationBefore=%d GenerationAfter=%d"),
+			TEXT("[SpeedSolverEventV2] Frame=%u Iter=%d Stage=%s Disposition=%s Order=%d ComponentStableId=%llu ResolverClass=%s SubBodyIndex=%d PairKey=%llu SourceId=%llu SurfaceId=%llu FeatureId=%llu PrimitiveId=%llu ThisFeature=%d ThisIndex=%d OtherFeature=%d OtherIndex=%d HitTOI=%.9g GenerationBefore=%d GenerationAfter=%d SceneGeneration=%llu ContactThis=(%.17g,%.17g,%.17g) ContactOther=(%.17g,%.17g,%.17g) ContactNormal=(%.17g,%.17g,%.17g)"),
 			Frame, Iteration, Stage, Disposition, Order,
 			static_cast<unsigned long long>(ComponentStableId),
 			Resolver ? *Resolver->GetClass()->GetName() : TEXT("None"), SubBodyIndex,
@@ -2068,12 +2754,27 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
 			static_cast<int32>(Hit.ContactFeatureIndexThis),
 			static_cast<int32>(Hit.ContactFeatureOther),
 			static_cast<int32>(Hit.ContactFeatureIndexOther), Hit.TOI,
-			GenerationBefore, GenerationAfter);
+			GenerationBefore, GenerationAfter, SceneGeneration,
+			Hit.ContactPointThis.X, Hit.ContactPointThis.Y, Hit.ContactPointThis.Z,
+			Hit.ContactPointOther.X, Hit.ContactPointOther.Y, Hit.ContactPointOther.Z,
+			Hit.ImpactNormal.X, Hit.ImpactNormal.Y, Hit.ImpactNormal.Z);
 	};
 #endif
 	CurrentStepFrame = Frame;
     ApplyPendingOps();
     RebuildSortedIfNeeded();
+    Speed::FPreparedPhysicalQueryDomainPtr PhysicalFilters;
+    if(bPreparedIntervalRouteRequested)
+    {
+        const auto* base=SimulationWorld.GetStaticCollisionWorld();
+        if(!base||!PreparedIntervalScene)throw std::runtime_error("Prepared native Step input absent");
+        const auto snapshot=base->GetPreparedSnapshot();
+        if(!snapshot||snapshot->GetNominalScene()!=PreparedIntervalScene)
+            throw std::runtime_error("Prepared native Step provider snapshot type/identity differs");
+        PhysicalFilters=snapshot->GetFilters();
+    }
+    Speed::PreparedExecution::FStepScope PhysicalStep(bPreparedIntervalRouteRequested,*this,SimulationWorld,
+        SimulationWorld.GetStaticCollisionWorld(),StepSerial,Frame,Dt,SimTime,PreparedIntervalScene,MoveTemp(PhysicalFilters));
 
     if (Dt <= 0.f || SimulationWorld.GetOrderedAdapters().Num() == 0)
 	{
@@ -2097,10 +2798,13 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
     if(Speed::FrameParallel::IsJoinedActorKinematicWaveEnabled1213())
         JoinedActors1213.CaptureAndCompute(SimulationWorld.GetOrderedAdapters(),
             ParallelPreparationSettings.LaneLimit,ParallelPreparationSettings.MinPrepareItems);
+    TerminalStepEntry.Returned();
 	for (ISpeedComponent* Comp : SimulationWorld.GetOrderedAdapters())
     {
         if (!Comp) continue;
 
+        Speed::PreparationPrefix::FEffectScope TerminalOwnerSync(Speed::PreparationPrefix::EEffect::SyncStepOwner,Comp);
+        {
 		IAMSPEED_ACTOR_SCOPE(SimulationWorld, *Comp, Reset);
         // Preserve the exact pre-existing native child-batch admission and
         // fallback choice. Shadow only observes around this original block.
@@ -2114,7 +2818,11 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
             OriginalOwnerOperation1213();
         Comp->ResetForFrame(Dt);
 		Comp->SetStaticCollisionWorldForFrame(RestingWorld, Dt);
+        }
+        TerminalOwnerSync.Returned();
     }
+    if(Speed::PreparationPrefix::FCursor::FinishTerminalStepSync(*this))return;
+    const bool TerminalRsCapture=Speed::PreparationPrefix::FCursor::IsCurrentRsNativeWindow(*this);
 
 	LastStepDiagnostics.ResetMilliseconds =
 		(FPlatformTime::Seconds() - ResetStartSeconds) * 1000.0;
@@ -2125,21 +2833,31 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
     float TimePassed = 0.f;
     float LastSubDelta = Dt;
 	const float CompletionTolerance = FMath::Max(1.0e-8f, Dt * 1.0e-6f);
-	const auto IntegrateAll = [&](const float SubDelta)
+	TArray<Speed::PreparedExecution::FComponentSweepEvidencePtr> PreparedSweepBundles;
+	const auto IntegrateAll = [&](const float SubDelta,const bool HasActualSelection=false,
+        const TConstArrayView<SComponentTOI> SelectedBatch={},const float SweepHorizon=-1.f)
 	{
+        PhysicalStep.RequireAdvanceEvidence(MakeArrayView(PreparedSweepBundles),SubDelta,HasActualSelection,SelectedBatch,SweepHorizon);
+        PhysicalStep.InvalidateQueries(); // includes completion/max-iteration integration paths
+        PhysicalStep.BeginOrdinaryIntegration(SubDelta,HasActualSelection,SelectedBatch,SweepHorizon,TimePassed);
 		LastSubDelta = SubDelta;
 		const double IntegrateStartSeconds = FPlatformTime::Seconds();
-		for (ISpeedComponent* Comp : SimulationWorld.GetOrderedAdapters())
-		{
-			if (Comp)
-			{
-				IAMSPEED_ACTOR_SCOPE(SimulationWorld, *Comp, Integrate);
-				Comp->IntegrateKinematics(SubDelta);
-			}
-		}
+        int32 IntegrationIndex=0;
+        for (ISpeedComponent* Comp : SimulationWorld.GetOrderedAdapters())
+        {
+            PhysicalStep.BeginOrdinaryIntegrationOwner(Comp,IntegrationIndex);
+            if (Comp)
+            {
+                IAMSPEED_ACTOR_SCOPE(SimulationWorld, *Comp, Integrate);
+                if(!PhysicalStep.DispatchNativeIntegration(*Comp,SubDelta))Comp->IntegrateKinematics(SubDelta);
+            }
+            PhysicalStep.EndOrdinaryIntegrationOwner(Comp,IntegrationIndex,Comp!=nullptr);
+            ++IntegrationIndex;
+        }
 		LastStepDiagnostics.IntegrateMilliseconds +=
 			(FPlatformTime::Seconds() - IntegrateStartSeconds) * 1000.0;
 		TimePassed += SubDelta;
+        PhysicalStep.EndOrdinaryIntegration(TimePassed);
 #if WITH_DEV_AUTOMATION_TESTS
     Speed::Testing::ObserveCcdPose(this,Frame,Speed::Testing::ECcdPoseAuditStage::AfterIntegrate,TimePassed,SubDelta);
 #endif
@@ -2150,7 +2868,9 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
 	while (TimePassed < Dt)
     {
         float Remaining = Dt - TimePassed;
-		if (Remaining <= CompletionTolerance)
+        TUniquePtr<Speed::PreparationPrefix::FEffectScope> RsPrelude;
+        if(TerminalRsCapture)RsPrelude.Reset(new Speed::PreparationPrefix::FEffectScope(Speed::PreparationPrefix::EEffect::BeginRsCaptureSweep));
+		if (Remaining <= CompletionTolerance&&!PhysicalStep.NativeConsumer)
 		{
 			IntegrateAll(Remaining);
 			break;
@@ -2165,37 +2885,175 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
 		LastStepDiagnostics.IterationCount = Iter;
 		// A material stop is a real temporal boundary just like a TOI. Never
 		// sweep a trajectory that decelerates past zero and reverses its slip.
-		for (const ISpeedComponent* Comp : SimulationWorld.GetOrderedAdapters())
-			if (Comp) Remaining = FMath::Min(Remaining, Comp->GetMaximumCanonicalSupportInterval(Remaining));
+        for(const ISpeedComponent* Comp:SimulationWorld.GetOrderedAdapters())
+            if(Comp)
+            {
+                const float before=Remaining;const float actual=Comp->GetMaximumCanonicalSupportInterval(Remaining);
+                Remaining=FMath::Min(Remaining,actual);
+                PhysicalStep.ObserveTerminalRsSupportInterval(Comp,before,actual);
+            }
 
         // ------------------------------------------------------------
 		// 2) Find every independent hit at the global earliest TOI. The
 		// iteration budget bounds temporal substeps, not the number of objects
 		// that happen to collide at the same instant.
         // ------------------------------------------------------------
+        PhysicalStep.BeginSweepIteration(Iter,Remaining,TimePassed);
+        if(RsPrelude)RsPrelude->Returned();
+        PreparedSweepBundles.Reset();
 		constexpr float SimultaneousTOITolerance = 1.0e-9f;
 		TArray<SComponentTOI, TInlineAllocator<16>> EarliestHits;
 		float EarliestTOI = Remaining;
+        PhysicalStep.BeginOrdinaryWorldSelection(ResolvedPairs,Remaining,TimePassed,Dt,SimultaneousTOITolerance);
 
         const double SweepStartSeconds = FPlatformTime::Seconds();
         for (ISpeedComponent* Comp : SimulationWorld.GetOrderedAdapters())
         {
-            if (!Comp) continue;
-			++LastStepDiagnostics.ComponentSweepCount;
-
+            if(!Comp)continue;
+            TUniquePtr<Speed::PreparationPrefix::FEffectScope> RsOwnerEffect;
+            if(TerminalRsCapture)RsOwnerEffect.Reset(new Speed::PreparationPrefix::FEffectScope(
+                Speed::PreparationPrefix::EEffect::SweepOwnerForRsCapture,Comp));
+            ++LastStepDiagnostics.ComponentSweepCount;
+            PhysicalStep.BeginTerminalRsSweepOwner(Comp,LastSubDelta);
             SComponentTOI Ctoi;
+            PhysicalStep.BeginOrdinaryOwnerSweep(Comp,LastSubDelta);
+            try
             {
-                IAMSPEED_ACTOR_SCOPE(SimulationWorld, *Comp, Sweep);
-                Ctoi = Comp->SweepTOISubBodies(Remaining, LastSubDelta
+                IAMSPEED_ACTOR_SCOPE(SimulationWorld,*Comp,Sweep);
+                Ctoi=Comp->SweepTOISubBodies(Remaining,LastSubDelta
 #if !UE_BUILD_SHIPPING
-					, bCaptureSolverEventTrace
+                    ,bCaptureSolverEventTrace
 #endif
-				);
+                );
             }
-
+            catch(const Speed::PreparedExecution::FTerminalRsCaptureStop& stop)
+            {
+                if(!TerminalRsCapture||!RsOwnerEffect)throw;
+                const auto captured=PhysicalStep.CloseTerminalRsCapture(stop);
+                RsOwnerEffect->InterruptedAtRsCapture(captured);
+                if(Speed::OnePausedWork::HasConsumedSphereAdvancePrefix(PhysicalStep.Window->GetPurpose()))
+                {
+                    Speed::PreparationPrefix::FEffectScope advance(Speed::PreparationPrefix::EEffect::AdvanceRsPrefix);
+                    const float consumed=PhysicalStep.BeginTerminalConsumedPrefixAdvance();
+                    const double start=FPlatformTime::Seconds();int32 index=0;
+                    for(ISpeedComponent* owner:SimulationWorld.GetOrderedAdapters())
+                    {
+                        Speed::PreparationPrefix::FEffectScope effect(Speed::PreparationPrefix::EEffect::AdvanceRsPrefixOwner,owner);
+                        PhysicalStep.BeginTerminalConsumedPrefixAdvanceOwner(owner,index);
+                        try {IAMSPEED_ACTOR_SCOPE(SimulationWorld,*owner,Integrate);owner->IntegrateKinematics(consumed);}
+                        catch(...){PhysicalStep.RecordTerminalConsumedPrefixAdvanceStates(owner,index,false);throw;}
+                        PhysicalStep.EndTerminalConsumedPrefixAdvanceOwner(owner,index);effect.Returned();++index;
+                    }
+                    LastSubDelta=consumed;TimePassed+=consumed;
+                    LastStepDiagnostics.IntegrateMilliseconds+=(FPlatformTime::Seconds()-start)*1000.;
+                    PhysicalStep.EndTerminalConsumedPrefixAdvance();advance.Returned();
+                    if(Speed::OnePausedWork::HasFirstRsResponsePrefix(PhysicalStep.Window->GetPurpose()))
+                    {
+                        using Speed::PreparationPrefix::EEffect;
+                        Speed::PreparationPrefix::FEffectScope response(EEffect::ResponseRsContact);
+                        const auto* raw=PhysicalStep.BeginTerminalFirstRsResponse(LastSubDelta,TimePassed,SimTime);
+                        auto* resolver=const_cast<USphereSubBody*>(raw);
+                        const EEffect effects[3]={EEffect::SetRsFutureHit,EEffect::AcceptRsHit,EEffect::ResolveRsHit};
+                        for(int32 call=0;call<3;++call)
+                        {
+                            Speed::PreparationPrefix::FEffectScope effect(effects[call],resolver->GetParentComponent());
+                            const SHitResult hit=PhysicalStep.BeginTerminalFirstRsResponseCall(resolver,call);
+                            try
+                            {
+                                // Authenticate BEFORE virtual dispatch; each
+                                // base entry checks the same active ticket.
+                                if(call==0)resolver->SetFutureHit(hit);
+                                else if(call==1)resolver->AcceptHit();
+                                else resolver->ResolveCurrentHit(LastSubDelta,SimTime);
+                            }
+                            catch(...){PhysicalStep.RecordTerminalFirstRsResponseStates(resolver,call,false);throw;}
+                            PhysicalStep.EndTerminalFirstRsResponseCall(resolver,call);effect.Returned();
+                        }
+                        PhysicalStep.EndTerminalFirstRsResponse();response.Returned();
+                        if(Speed::OnePausedWork::HasFirstRsResponseSyncPrefix(PhysicalStep.Window->GetPurpose()))
+                        {
+                            Speed::PreparationPrefix::FEffectScope synchronize(EEffect::SyncRsResponseOwner,resolver->GetParentComponent());
+                            auto* owner=PhysicalStep.BeginTerminalFirstRsResponseSynchronization();
+                            try {owner->UpdateSubBodiesKinematics();}
+                            catch(...){PhysicalStep.RecordTerminalFirstRsResponseSynchronizationStates(owner,false);throw;}
+                            PhysicalStep.EndTerminalFirstRsResponseSynchronization(owner);synchronize.Returned();
+                        }
+                    }
+                }
+                if(PhysicalStep.Window->GetPurpose()==Speed::OnePausedWork::EPurpose::TerminalPostSyncRsCaptureStop)
+                {
+                    // A distinct native continuation. Every value below comes
+                    // from this very Step and its actual first response/sync.
+                    float PostRemaining=Dt-TimePassed;
+                    {
+                        Speed::PreparationPrefix::FEffectScope prelude(Speed::PreparationPrefix::EEffect::BeginPostSyncRsCaptureSweep);
+                        PhysicalStep.BeginPostSyncRsPrelude(PostRemaining,TimePassed,LastSubDelta);
+                        // Keep the ordinary completion/iteration boundaries;
+                        // this capture-only purpose cannot integrate a fallback.
+                        if(PostRemaining<=CompletionTolerance||Iter>=MaxIter)
+                            throw std::runtime_error("Post-sync Rs second sweep is outside actual completion/iteration limits");
+                        ++Iter;LastStepDiagnostics.IterationCount=Iter;
+                        for(const ISpeedComponent* owner:SimulationWorld.GetOrderedAdapters())
+                        {
+                            if(!owner)throw std::runtime_error("Post-sync Rs support owner missing");
+                            const float before=PostRemaining;const float actual=owner->GetMaximumCanonicalSupportInterval(PostRemaining);
+                            PostRemaining=FMath::Min(PostRemaining,actual);
+                            PhysicalStep.ObservePostSyncRsSupport(owner,before,actual);
+                        }
+                        PhysicalStep.BeginSweepIteration(Iter,PostRemaining,TimePassed);prelude.Returned();
+                    }
+                    const auto& postOwners=SimulationWorld.GetOrderedAdapters();
+                    if(postOwners.Num()!=3)throw std::runtime_error("Post-sync Rs actual owner census differs");
+                    for(int32 postIndex=0;postIndex<2;++postIndex)
+                    {
+                        auto* owner=postOwners[postIndex];
+                        Speed::PreparationPrefix::FEffectScope effect(Speed::PreparationPrefix::EEffect::SweepOwnerForPostSyncRsCapture,owner);
+                        ++LastStepDiagnostics.ComponentSweepCount;PhysicalStep.BeginPostSyncRsOwner(owner,LastSubDelta);
+                        SComponentTOI actual;
+                        try
+                        {
+                            IAMSPEED_ACTOR_SCOPE(SimulationWorld,*owner,Sweep);
+                            actual=owner->SweepTOISubBodies(PostRemaining,LastSubDelta
+#if !UE_BUILD_SHIPPING
+                                ,bCaptureSolverEventTrace
+#endif
+                            );
+                        }
+                        catch(const Speed::PreparedExecution::FTerminalRsCaptureStop& postStop)
+                        {
+                            const auto captured2=PhysicalStep.ClosePostSyncRsCapture(postStop);
+                            effect.InterruptedAtPostSyncRsCapture(captured2);
+                            return; // No second advance/response, selection or publication.
+                        }
+                        PhysicalStep.CompletePostSyncRsRunner(owner,actual);effect.Returned();
+                    }
+                    throw std::runtime_error("Post-sync Rs ball sweep failed to produce its actual private capture stop");
+                }
+                return; // Terminal only: optional p7 first response, no next sweep/publication/frame increment.
+            }
+            if(TerminalRsCapture)
+            {
+                try {PhysicalStep.CompleteTerminalRsRunner(Comp,Ctoi);}
+                catch(const std::exception& error)
+                {
+                    UE_LOG(LogTemp,Error,TEXT("[TerminalRsRunnerValidationRefused] %hs"),error.what());
+                    RsOwnerEffect->Returned(false);throw;
+                }
+                catch(...)
+                {
+                    UE_LOG(LogTemp,Error,TEXT("[TerminalRsRunnerValidationRefused] Unclassified native validator failure"));
+                    RsOwnerEffect->Returned(false);throw;
+                }
+                RsOwnerEffect->Returned();
+            }
+            PhysicalStep.EndOrdinaryOwnerSweep(Comp,Ctoi);
+            if(Speed::PreparedExecution::Requested())PreparedSweepBundles.Add(Ctoi.PreparedEvidence);
             // TOI sanity
             if (!Ctoi.bHit)
+            {
+                PhysicalStep.ObserveOrdinaryWorldCandidate(Comp,Ctoi,ResolvedPairs,{},false,0.f,MakeArrayView(EarliestHits),EarliestTOI);
                 continue;
+            }
 #if !UE_BUILD_SHIPPING
 			if (bCaptureSolverEventTrace)
 			{
@@ -2235,19 +3093,36 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
 			// this canonical frame, it is an established unilateral constraint.
 			// Rediscovering the same time-zero event would only consume the bounded
 			// CCD iteration budget; IntegrateKinematics now owns its continuation.
-			const bool bEligibleExactReacquisition = Ctoi.Resolver.IsValid() &&
-				Ctoi.Resolver->CanResolveRepeatedContact(Ctoi.Hit);
-			if (Ctoi.Hit.SurfaceId != 0 &&
-				!(ResolvedPairs.Contains(Ctoi.PairKey)
-                    ? bEligibleExactReacquisition && ResolvedPairs.CanSelectExactProgress(
-                        Ctoi.PairKey, Ctoi.Hit.TOI, TimePassed, Dt)
-                    : ResolvedPairs.CanResolve(Ctoi.PairKey, bEligibleExactReacquisition)))
+            Speed::PreparedExecution::FOrdinaryWorldFilterValues WorldFilter;
+            WorldFilter.ResolverValid=Ctoi.Resolver.IsValid();
+            const bool bEligibleExactReacquisition = WorldFilter.ResolverValid &&
+                (Ctoi.Resolver->CanResolveRepeatedContact(Ctoi.Hit)||
+                    PhysicalStep.IsPreparedCurvedBoxExactProgress(Ctoi,Ctoi.Resolver.Get(),false));
+            WorldFilter.EligibleRepeated=bEligibleExactReacquisition;
+            WorldFilter.Applied=Ctoi.Hit.SurfaceId!=0;WorldFilter.Allowed=true;
+            if(WorldFilter.Applied)
+            {
+                WorldFilter.PairWasMember=ResolvedPairs.Contains(Ctoi.PairKey);
+                if(WorldFilter.PairWasMember)
+                {
+                    WorldFilter.ProgressRead=bEligibleExactReacquisition;
+                    WorldFilter.Allowed=bEligibleExactReacquisition&&ResolvedPairs.CanSelectExactProgress(
+                        Ctoi.PairKey,Ctoi.Hit.TOI,TimePassed,Dt);
+                }
+                else
+                {
+                    WorldFilter.OrdinaryRead=true;
+                    WorldFilter.Allowed=ResolvedPairs.CanResolve(Ctoi.PairKey,bEligibleExactReacquisition);
+                }
+            }
+            if (!WorldFilter.Allowed)
 			{
 #if !UE_BUILD_SHIPPING
 				const int32 Generation = ResolvedPairs.GetGeneration(Ctoi.PairKey);
 				TraceEvent(TEXT("ComponentFilter"), TEXT("Filtered"), Iter, 0,
 					Ctoi.PairKey, Ctoi.Hit, Ctoi.Resolver.Get(), Generation, Generation);
 #endif
+                PhysicalStep.ObserveOrdinaryWorldCandidate(Comp,Ctoi,ResolvedPairs,WorldFilter,false,0.f,MakeArrayView(EarliestHits),EarliestTOI);
 				continue;
 			}
 #if !UE_BUILD_SHIPPING
@@ -2259,20 +3134,8 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
 #endif
 
             const float T = FMath::Clamp(Ctoi.TOI, 0.f, Remaining);
-			if (EarliestHits.IsEmpty() ||
-				T < EarliestTOI - SimultaneousTOITolerance)
-            {
-				EarliestTOI = T;
-				EarliestHits.Reset();
-				SComponentTOI& Earliest = EarliestHits.Add_GetRef(Ctoi);
-				Earliest.TOI = T;
-            }
-			else if (FMath::IsNearlyEqual(
-				T, EarliestTOI, SimultaneousTOITolerance))
-            {
-				SComponentTOI& Earliest = EarliestHits.Add_GetRef(Ctoi);
-				Earliest.TOI = T;
-            }
+            Speed::Collision::AppendEarliestCollision(Ctoi,T,SimultaneousTOITolerance,EarliestHits,EarliestTOI);
+            PhysicalStep.ObserveOrdinaryWorldCandidate(Comp,Ctoi,ResolvedPairs,WorldFilter,true,T,MakeArrayView(EarliestHits),EarliestTOI);
         }
 		LastStepDiagnostics.SweepMilliseconds +=
 			(FPlatformTime::Seconds() - SweepStartSeconds) * 1000.0;
@@ -2288,7 +3151,7 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
 			}
 		}
 #endif
-		EarliestHits.Sort([](const SComponentTOI& A, const SComponentTOI& B)
+		EarliestHits.Sort([&PhysicalStep](const SComponentTOI& A, const SComponentTOI& B)
 		{
 			if (A.PairKey != B.PairKey)
 			{
@@ -2298,7 +3161,9 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
 			const USSubBody* ResolverB = B.Resolver.Get();
 			const uint32 ResolverIdA = ResolverA ? ResolverA->GetUniqueID() : 0u;
 			const uint32 ResolverIdB = ResolverB ? ResolverB->GetUniqueID() : 0u;
-			return ResolverIdA < ResolverIdB;
+			PhysicalStep.ObserveOrdinaryWorldSortKey(A,ResolverA,ResolverIdA);
+            PhysicalStep.ObserveOrdinaryWorldSortKey(B,ResolverB,ResolverIdB);
+            return ResolverIdA < ResolverIdB;
 		});
 #if !UE_BUILD_SHIPPING
 		if (bCaptureSolverEventTrace)
@@ -2320,8 +3185,9 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
 		const bool bWillResolve = !EarliestHits.IsEmpty();
 		const float SubDelta = FMath::Clamp(
 			bWillResolve ? EarliestTOI : Remaining, 0.0f, Remaining);
+        PhysicalStep.FinishOrdinaryWorldSelection(MakeArrayView(EarliestHits),EarliestTOI,SubDelta,Remaining,TimePassed,Dt);
         const float TimeBeforeIntegration = TimePassed;
-		IntegrateAll(SubDelta);
+		IntegrateAll(SubDelta,true,MakeArrayView(EarliestHits),Remaining);
 #if !UE_BUILD_SHIPPING
 		if (bCaptureSolverEventTrace)
 		{
@@ -2343,16 +3209,20 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
 		// measured from the same pre-resolution state, so independent objects do
 		// not consume additional temporal iterations.
         // ------------------------------------------------------------
-		for (int32 HitIndex = 0; HitIndex < EarliestHits.Num(); ++HitIndex)
-		{
-			const SComponentTOI& Hit = EarliestHits[HitIndex];
-			USSubBody* Resolver = Hit.Resolver.Get();
+        PhysicalStep.BeginOrdinaryResponseBatch(MakeArrayView(EarliestHits),ResolvedPairs,SubDelta,TimeBeforeIntegration,TimePassed,SimTime);
+        for (int32 HitIndex = 0; HitIndex < EarliestHits.Num(); ++HitIndex)
+        {
+            const SComponentTOI& Hit = EarliestHits[HitIndex];
+            USSubBody* Resolver = Hit.Resolver.Get();
 			const bool bEligibleExactReacquisition = Resolver &&
-				Resolver->CanResolveRepeatedContact(Hit.Hit);
-			if (!Resolver || !(ResolvedPairs.Contains(Hit.PairKey)
+				(Resolver->CanResolveRepeatedContact(Hit.Hit)||
+					PhysicalStep.IsPreparedCurvedBoxExactProgress(Hit,Resolver,true));
+            const bool bResponseAllowed = Resolver && (ResolvedPairs.Contains(Hit.PairKey)
                 ? bEligibleExactReacquisition && ResolvedPairs.CanResolveExactProgress(
                     Hit.PairKey, Hit.Hit.TOI, TimeBeforeIntegration, TimePassed, Dt)
-                : ResolvedPairs.CanResolve(Hit.PairKey, bEligibleExactReacquisition)))
+                : ResolvedPairs.CanResolve(Hit.PairKey, bEligibleExactReacquisition));
+            PhysicalStep.ObserveOrdinaryResponseDecision(HitIndex,Hit,Resolver,bEligibleExactReacquisition,bResponseAllowed,ResolvedPairs);
+            if (!bResponseAllowed)
 			{
 #if !UE_BUILD_SHIPPING
 				const int32 Generation = ResolvedPairs.GetGeneration(Hit.PairKey);
@@ -2365,8 +3235,12 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
 #if !UE_BUILD_SHIPPING
             const int32 GenerationBefore = ResolvedPairs.GetGeneration(Hit.PairKey);
 #endif
-			Resolver->SetFutureHit(Hit.Hit);
-			Resolver->AcceptHit();
+            PhysicalStep.BeginOrdinaryResponseCall(0);
+            if(!PhysicalStep.DispatchNativeResponse(0,*Resolver,Hit.Hit,SubDelta,SimTime))Resolver->SetFutureHit(Hit.Hit);
+            PhysicalStep.EndOrdinaryResponseCall(0);
+            PhysicalStep.BeginOrdinaryResponseCall(1);
+            if(!PhysicalStep.DispatchNativeResponse(1,*Resolver,Hit.Hit,SubDelta,SimTime))Resolver->AcceptHit();
+            PhysicalStep.EndOrdinaryResponseCall(1);
 			bool bIgnored = false;
 			if (UPrimitiveComponent* HitComponent =
 				Resolver->GetHit().Component.Get())
@@ -2390,7 +3264,9 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
             auto MatrixResolution042 = Speed::CollisionMatrix042::FObserver::Before(
                 Frame, TimePassed, *Resolver, Hit.Hit);
 #endif
-			Resolver->ResolveCurrentHit(SubDelta, SimTime);
+            PhysicalStep.BeginOrdinaryResponseCall(2);
+            if(!PhysicalStep.DispatchNativeResponse(2,*Resolver,Hit.Hit,SubDelta,SimTime))Resolver->ResolveCurrentHit(SubDelta, SimTime);
+            PhysicalStep.EndOrdinaryResponseCall(2);
 #if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
             Speed::CollisionMatrix042::FObserver::After(MatrixResolution042);
 #endif
@@ -2432,12 +3308,36 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
                     Hit.PairKey,Hit.Hit,bIgnored,GenerationBefore,GenerationAfter,Resolver,RestingWorld!=nullptr);
             }
 #endif
-			if (RollingBodyA && RollingBodyB)
-			{
-				ActivatePendingRollingContactPairAtTOI(
-					*RollingBodyA, *RollingBodyB, Dt - TimePassed);
-			}
-		}
+            if (RollingBodyA && RollingBodyB)
+            {
+                ActivatePendingRollingContactPairAtTOI(
+                    *RollingBodyA, *RollingBodyB, Dt - TimePassed);
+            }
+            PhysicalStep.EndOrdinaryResponseEntry(HitIndex,bIgnored,bRecordExactGeneration,ResolvedPairs);
+            // Resolve may project a COM or change velocity/acceleration.
+            // Refresh the actual child caches before another response or
+            // sweep reads them. This advances no time and changes no hit/TOI.
+            TSet<ISpeedComponent*> ResponseOwners;
+            if(ISpeedComponent* Owner=Resolver->GetParentComponent())ResponseOwners.Add(Owner);
+            if(USSubBody* Other=Resolver->GetHit().SubBody.Get())
+                if(ISpeedComponent* Owner=Other->GetParentComponent())ResponseOwners.Add(Owner);
+            for(ISpeedComponent* Owner:SimulationWorld.GetOrderedAdapters())
+            {
+                if(!Owner||!ResponseOwners.Contains(Owner))continue;
+                if(PhysicalStep.NativeConsumer)
+                {
+                    PhysicalStep.RequireNativeFrameContext();
+                    if(!PhysicalStep.NativeConsumer->ContainsOwner(Owner))
+                        throw std::runtime_error("Post-response sync owner is outside the retained native census");
+                }
+                // Same non-virtual operation as the captured native Sync
+                // callback; no private dispatch access or new capability.
+                Owner->UpdateSubBodiesKinematics();
+                if(PhysicalStep.NativeConsumer)PhysicalStep.RequireNativeFrameContext();
+            }
+
+        }
+        PhysicalStep.EndOrdinaryResponseBatch();
 
         // Optional: post update at each substep (useful if certain gameplay sensors need to react "immediately")
         /*
@@ -2454,18 +3354,29 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
 	// an infeasible analytical pose. Moving the body here also avoids changing
 	// the within-frame CCD trajectory from inside an impact callback.
 	const double ProjectionStartSeconds = FPlatformTime::Seconds();
+    int32 FinalProjectionIndex=0;
 	for (ISpeedComponent* Comp : SimulationWorld.GetOrderedAdapters())
 	{
 		if (Comp)
 		{
 			IAMSPEED_ACTOR_SCOPE(SimulationWorld, *Comp, Projection);
-			Comp->ProjectEstablishedStaticContacts(Dt);
-		}
-	}
+            PhysicalStep.BeginNativeFinalOperation(Speed::PreparedExecution::ENativeFrameFinalOperation::StaticProjectionOwner,Comp,FinalProjectionIndex);
+            {
+                Speed::PreparedExecution::FOrdinaryOwnerProbePhaseScope probes(
+                    Speed::PreparedExecution::ENativeOwnerProbePhase::FinalProjection,*Comp,Dt);
+                if(!PhysicalStep.DispatchNativeFinalOwner(*Comp,Dt,false))Comp->ProjectEstablishedStaticContacts(Dt);
+                probes.Returned();
+            }
+            PhysicalStep.EndNativeFinalOperation();
+        }
+        ++FinalProjectionIndex;
+    }
 
     // Make persistent finite-mass contacts geometrically feasible before any
     // PostPhysics observer samples them.
+    PhysicalStep.BeginNativeFinalOperation(Speed::PreparedExecution::ENativeFrameFinalOperation::DynamicProjectionBeforePost);
 	ProjectDynamicContactPairs();
+    PhysicalStep.EndNativeFinalOperation();
 #if WITH_DEV_AUTOMATION_TESTS
     Speed::Testing::ObserveCcdPose(this,Frame,Speed::Testing::ECcdPoseAuditStage::AfterProjection,TimePassed,0.f);
 #endif
@@ -2476,20 +3387,42 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
     // 5) Final post update
     // ------------------------------------------------------------
 	const double PostStartSeconds = FPlatformTime::Seconds();
+    int32 FinalPostIndex=0;
     for (ISpeedComponent* Comp : SimulationWorld.GetOrderedAdapters())
     {
         if (!Comp) continue;
 		IAMSPEED_ACTOR_SCOPE(SimulationWorld, *Comp, Post);
-		Comp->PostPhysicsUpdate(Dt);
+#if !UE_BUILD_SHIPPING
+        RoofPostProfile::FSample roofPost(*Comp);
+#endif
+        PhysicalStep.BeginNativeFinalOperation(Speed::PreparedExecution::ENativeFrameFinalOperation::PostOwner,Comp,FinalPostIndex);
+#if !UE_BUILD_SHIPPING
+        roofPost.BeginReturned();
+#endif
+        {
+            Speed::PreparedExecution::FOrdinaryOwnerProbePhaseScope probes(
+                Speed::PreparedExecution::ENativeOwnerProbePhase::FinalPost,*Comp,Dt);
+            if(!PhysicalStep.DispatchNativeFinalOwner(*Comp,Dt,true))Comp->PostPhysicsUpdate(Dt);
+            probes.Returned();
+        }
+#if !UE_BUILD_SHIPPING
+        roofPost.DispatchReturned();
+#endif
+        PhysicalStep.EndNativeFinalOperation();++FinalPostIndex;
+#if !UE_BUILD_SHIPPING
+        roofPost.EndReturned();
+#endif
 	}
 
-	if (!SimulationWorld.GetPendingRollingContactPairs().IsEmpty())
-	{
-		SimulationWorld.MergePendingRollingContactPairs();
-	}
-
-	SolveDynamicContactPairs(Dt);
-	ProjectDynamicContactPairs();
+    const bool MergeFinalPairs=!SimulationWorld.GetPendingRollingContactPairs().IsEmpty();
+    PhysicalStep.BeginNativeFinalOperation(Speed::PreparedExecution::ENativeFrameFinalOperation::MergeRollingPairs,nullptr,INDEX_NONE,MergeFinalPairs);
+    if(MergeFinalPairs)SimulationWorld.MergePendingRollingContactPairs();
+    PhysicalStep.EndNativeFinalOperation();
+    PhysicalStep.BeginNativeFinalOperation(Speed::PreparedExecution::ENativeFrameFinalOperation::SolvePairs);
+    SolveDynamicContactPairs(Dt);PhysicalStep.EndNativeFinalOperation();
+    PhysicalStep.BeginNativeFinalOperation(Speed::PreparedExecution::ENativeFrameFinalOperation::DynamicProjectionAfterPost);
+    ProjectDynamicContactPairs();PhysicalStep.EndNativeFinalOperation();
+    PhysicalStep.CloseNativeFrameStep(TimePassed);
 #if WITH_DEV_AUTOMATION_TESTS
     Speed::Testing::ObserveCcdPose(this,Frame,Speed::Testing::ECcdPoseAuditStage::AfterPost,TimePassed,0.f);
 #endif
@@ -2506,6 +3439,7 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
 		QueryCounters.AuthorityMilliseconds;
 	LastStepDiagnostics.MaximumStaticAuthorityMilliseconds =
 		QueryCounters.MaximumAuthorityMilliseconds;
+    ::StadiumClosedStepProfile70::Observe(LastStepDiagnostics);
 
 	if (LastStepDiagnostics.bIterationLimitReached)
 	{
@@ -2600,3 +3534,5 @@ bool USpeedWorldSubsystem::CaptureReplayStateFields(
 {
     return SimulationWorld.CaptureReplayStateFields(Out, UnsupportedStableId);
 }
+
+#include "PreparedIntervalWorldPublication.inl"

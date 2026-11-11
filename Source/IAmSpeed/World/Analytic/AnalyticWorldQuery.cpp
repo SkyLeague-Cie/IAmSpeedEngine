@@ -390,6 +390,8 @@ FWorldQueryService::FWorldQueryService(const FAnalyticWorldData& InWorld,
     : World(InWorld), FacetLanes(FMath::Clamp(InFacetLanes, 1, Speed::FFrameParallelPolicy::MaximumLanes)),
       MinimumFacetItems(FMath::Max(2, InMinimumFacetItems))
 {
+    RequireCurrentAnalyticNumericContext(World.NumericContract);
+
 	TArray<FBox3d> PlaneBounds;
 	PlaneBounds.Reserve(World.Planes.Num());
 	for (const FBoundedPlane& Plane : World.Planes) PlaneBounds.Add(Plane.Bounds);
@@ -1675,6 +1677,84 @@ double FWorldQueryService::SupportRadius(
 	}
 }
 
+FValidatedFinitePlaneGeometryPtr FWorldQueryService::ValidateFinitePlaneGeometry(const FBoundedPlane& plane)
+{
+    const auto before=RequireCurrentAnalyticNumericContext(EAnalyticNumericContract::Binary64NearestAllowFlush);
+    TSharedPtr<FValidatedFinitePlaneGeometry,ESPMode::ThreadSafe> owned(
+        new FValidatedFinitePlaneGeometry(plane,before.ControlFingerprint()));
+    // Validate the COPY that will actually be published, DomainVertices and
+    // every provenance/material/filter/derived field included.
+    if(!owned->Plane.IsValid())return {};
+    const auto after=RequireCurrentAnalyticNumericContext(EAnalyticNumericContract::Binary64NearestAllowFlush);
+    if(after.ControlFingerprint()!=owned->NumericControl)return {};
+    return owned;
+}
+
+bool FWorldQueryService::EvaluateFinitePlaneGeometry(const FWorldQuery& query,
+    const FBoundedPlane& plane,bool deepest,FWorldHit& out)
+{
+    out={};
+    RequireCurrentAnalyticNumericContext(EAnalyticNumericContract::Binary64NearestAllowFlush);
+    // Preserve the generic wrapper's original short-circuit order.
+    if(!query.bAuthorityOnly||!plane.IsValid())return false;
+    return EvaluateCheckedFinitePlaneGeometry(query,plane,deepest,out);
+}
+
+bool FWorldQueryService::EvaluateValidatedFinitePlaneGeometry(const FWorldQuery& query,
+    const FValidatedFinitePlaneGeometryPtr& geometry,bool deepest,FWorldHit& out,EFinitePlaneValidationPath* path)
+{
+    out={};if(path)*path=EFinitePlaneValidationPath::Unavailable;
+    const auto current=RequireCurrentAnalyticNumericContext(EAnalyticNumericContract::Binary64NearestAllowFlush);
+    if(!geometry||!query.bAuthorityOnly)return false;
+    // Different FP controls select the ORIGINAL validation path before any
+    // plane/query arithmetic. An attempted failure is never swallowed.
+    if(current.ControlFingerprint()!=geometry->NumericControl)
+    {
+        if(path)*path=EFinitePlaneValidationPath::RevalidatedGeometry;
+        return EvaluateFinitePlaneGeometry(query,geometry->Plane,deepest,out);
+    }
+    if(path)*path=EFinitePlaneValidationPath::ReusedGeometry;
+    return EvaluateCheckedFinitePlaneGeometry(query,geometry->Plane,deepest,out);
+}
+
+bool FWorldQueryService::EvaluateCheckedFinitePlaneGeometry(const FWorldQuery& query,
+    const FBoundedPlane& plane,bool deepest,FWorldHit& out)
+{
+    if(query.Start.ContainsNaN()||query.End.ContainsNaN()||
+        (query.End-query.Start).ContainsNaN()||!FMath::IsFinite((query.End-query.Start).SizeSquared())||
+        query.Rotation.ContainsNaN()||!query.Rotation.IsNormalized()||
+        !FMath::IsFinite(query.DomainTolerance)||query.DomainTolerance<0||
+        !FMath::IsFinite(query.InitialOverlapTolerance)||query.InitialOverlapTolerance<0||
+        query.ReferenceNormal.ContainsNaN()||!FMath::IsFinite(query.MinimumReferenceNormalDot)||
+        query.MinimumReferenceNormalDot < -1||query.MinimumReferenceNormalDot>1)return false;
+    switch(query.Shape)
+    {
+    case EQueryShape::Ray:if(deepest)return false;break;
+    case EQueryShape::Sphere:
+        if(!FMath::IsFinite(query.Radius)||query.Radius<=0)return false;break;
+    case EQueryShape::Box:
+        if(query.HalfExtent.ContainsNaN()||query.HalfExtent.GetMin()<=0||
+            !FMath::IsFinite(query.HalfExtent.SizeSquared()))return false;break;
+    default:return false;
+    }
+    if(deepest&&query.Start!=query.End)return false;
+    if(query.RejectsAllCollision()||(query.bExcludeAuthorityEligible&&plane.bAuthorityEligible)||
+        !PlanePassesFilter(query,plane))return true;
+    FWorldQuery effective=query;
+    if(deepest)
+    {
+        // Same pose-only operation as TryFindDeepestOverlap: no CCD release
+        // shell, no moving trajectory and no provider-eligibility mutation.
+        effective.bUseFiniteContactDomain=true;effective.InitialOverlapTolerance=0;
+    }
+    auto hit=SweepPlane(effective,plane,nullptr,nullptr,
+        deepest?EHitSelection::DeepestOverlap:EHitSelection::FirstSweepHit);
+    if(hit.bHit&&IsBetterHit(hit,FWorldHit{},
+        deepest?EHitSelection::DeepestOverlap:EHitSelection::FirstSweepHit)&&
+        HitPassesReferenceNormal(effective,hit))out=MoveTemp(hit);
+    return true;
+}
+
 FWorldHit FWorldQueryService::SweepPlane(
 	const FWorldQuery& Query, const FBoundedPlane& Plane,
 	const FAnalyticWorldData* PlaneUnionWorld,
@@ -1994,6 +2074,8 @@ double FWorldQueryService::DistanceToCoplanarSemanticUnionBoundary(
 bool FWorldQueryService::IsPlanarSupportTranslationCertified(const FWorldQuery& Query,
 	TConstArrayView<FVector3d> Points, const FVector3d& Normal, const FVector3d& Translation) const
 {
+    RequireCurrentAnalyticNumericContext(World.NumericContract);
+
 	if (Points.IsEmpty() || Points.Num() > 4 || Normal.ContainsNaN() || Translation.ContainsNaN() ||
 		Query.RejectsAllCollision() || FMath::Abs(Normal.SizeSquared() - 1) > 64 * DBL_EPSILON) return false;
 	FBox3d Bounds(EForceInit::ForceInit);
@@ -2026,6 +2108,8 @@ bool FWorldQueryService::IsPlanarSupportTranslationCertified(const FWorldQuery& 
 void FWorldQueryService::VisitPlanarCandidates(const FWorldQuery& Query,
 	TFunctionRef<void(const FWorldHit&)> Visitor) const
 {
+    RequireCurrentAnalyticNumericContext(World.NumericContract);
+
 	if (Query.Shape != EQueryShape::Sphere || Query.Radius <= 0 || Query.RejectsAllCollision()) return;
 	FBox3d Bounds(Query.Start, Query.Start);
 	Bounds += Query.End;
@@ -2044,6 +2128,7 @@ void FWorldQueryService::VisitPlanarCandidates(const FWorldQuery& Query,
 		Candidate.MaterialId = Plane.MaterialId;
 		Candidate.SurfaceFeatureKind = EContactFeatureKind::Face;
 		Visitor(Candidate);
+        RequireCurrentAnalyticNumericContext(World.NumericContract);
 	}
 }
 
@@ -2327,8 +2412,9 @@ FWorldHit FWorldQueryService::SweepExtrudedQuintic(
 	const FExtrudedQuinticPatch& Patch, const EHitSelection Selection,
 	Private::FBoxBoundsSweepContext* CachedBoundsContext435,
     int32 InFacetLanes, int32 InMinimumFacetItems,
-    Speed::FIndependentQueryBatchStats* OutDispatch, int32* OutEvaluatedFacets)
+    Speed::FIndependentQueryBatchStats* OutDispatch, int32* OutEvaluatedFacets, const EAnalyticNumericContract NumericContract)
 {
+    RequireCurrentAnalyticNumericContext(NumericContract);
 #if !UE_BUILD_SHIPPING
 #if SL_ANALYTIC_QUERY_FINE_CPU_SCOPES659
     CaseSatDiagnostics::FScopedCpuPhase400 Phase400(CaseSatDiagnostics::ECpuPhase400::Extruded);
@@ -2723,6 +2809,7 @@ FWorldHit FWorldQueryService::SweepExtrudedQuintic(
     // Capture the existing owner environment once, before any worker dispatch.
     const Speed::FFrameFloatingPointContext OwnerNumericContext = bNumericSpeculationSafe1213
         ? Speed::CaptureFrameFloatingPointContext() : Speed::FFrameFloatingPointContext{};
+    if (bNumericSpeculationSafe1213) RequireAnalyticNumericTransfer(NumericContract,OwnerNumericContext.bValid);
     if (bNumericSpeculationSafe1213 && OwnerNumericContext.bValid)
     {
         constexpr int32 MaximumFacetBatch = 4096;
@@ -2762,16 +2849,20 @@ FWorldHit FWorldQueryService::SweepExtrudedQuintic(
                     Dispatch.NativeThreadIds[Lane] = FPlatformTLS::GetCurrentThreadId();
                     try
                     {
-                        if (!TaskScope.IsNumericContextApplied())
+                        RequireAnalyticNumericTransfer(NumericContract,TaskScope.IsNumericContextApplied());
+            if (!TaskScope.IsNumericContextApplied())
                             throw std::runtime_error("IAmSpeed facet numeric context unavailable");
+                        RequireCurrentAnalyticNumericContext(NumericContract);
                         FScopedAnalyticCycles1075 Numeric(Causal.NumericTarget(Lane));
                         for (int32 Index = WorkPlan.First(Lane); Index < WorkPlan.End(Lane); Index += WorkPlan.Stride())
+                        {
+                            RequireCurrentAnalyticNumericContext(NumericContract);
                             FacetHits[Index] = EvaluateSegment(OrderedSegments[Index], LaneContexts[Lane], nullptr, nullptr);
+                        }
                     }
                     catch (...) { Failures[Lane] = std::current_exception(); }
                     if (!TaskScope.RestoreNumericContext())
-                        Failures[Lane] = std::make_exception_ptr(std::runtime_error(
-                            "IAmSpeed facet numeric restoration failed"));
+                        Failures[Lane] = AnalyticNumericTransferException(NumericContract,EAnalyticNumericFailure::ContextRestoration,"IAmSpeed facet numeric restoration failed");
                 }, Causal.DispatchObservation());
             // A failed worker never contributes an unqualified partial hit.
             for (int32 Lane = 0; Lane < Dispatch.DispatchedLogicalLanes; ++Lane)
@@ -3740,8 +3831,10 @@ FWorldHit FWorldQueryService::SweepTensorBezierApproximation(
 FWorldHit FWorldQueryService::SweepPiecewiseTensorBezier(
 	const FWorldQuery& Query, const FBox3d& QueryBounds,
 	const FPiecewiseTensorBezierPatch& Patch,
-	const double MaximumSearchTime, const EHitSelection Selection, const int32 InTensorCellLanes1213)
+	const double MaximumSearchTime, const EHitSelection Selection, const int32 InTensorCellLanes1213,
+    const EAnalyticNumericContract NumericContract)
 {
+    RequireCurrentAnalyticNumericContext(NumericContract);
     FScopedAnalyticCausalObservation1075 Causal(EAnalyticCausalKind1075::PiecewiseProvider);
     Causal.SetItems(0);
 	FWorldHit Best;
@@ -3822,11 +3915,14 @@ FWorldHit FWorldQueryService::SweepPiecewiseTensorBezier(
         {
         FScopedTensorCellEligibilityObservation1213 EligibilityObservation1213;
         const auto EntryNumeric1213=CaptureFrameFloatingPointContext();
+        RequireAnalyticNumericTransfer(NumericContract,EntryNumeric1213.bValid);
         if(EntryNumeric1213.bValid)
         {
             FScopedFrameFloatingPointContext AdmissionNumeric1213(EntryNumeric1213);
+            RequireAnalyticNumericTransfer(NumericContract,AdmissionNumeric1213.IsApplied());
             if(AdmissionNumeric1213.IsApplied())
             {
+                    RequireCurrentAnalyticNumericContext(NumericContract);
                 FBoxBoundsSweepContext AdmissionBox1213;
                 if(Query.Shape==EQueryShape::Box)AdmissionBox1213.Initialize(Query,ProviderBoxContext.Axis);
                 const double Bound1213=CurrentMaximumSearchTime();
@@ -3859,12 +3955,13 @@ FWorldHit FWorldQueryService::SweepPiecewiseTensorBezier(
                 }
             }
             if(!AdmissionNumeric1213.Restore())
-                throw std::runtime_error("IAmSpeed Tensor cell admission numeric restoration failed");
+                ThrowAnalyticNumericTransferFailure(NumericContract,EAnalyticNumericFailure::ContextRestoration,"IAmSpeed Tensor cell admission numeric restoration failed");
         }
         } // Eligibility scope closes before wave construction or any dispatch.
         const auto CaptureCellBound1213=[&](){return CurrentMaximumSearchTime();};
         const auto EvaluateCell1213=[&](int32 CellIndex1213,double Bound1213)
         {
+            RequireCurrentAnalyticNumericContext(NumericContract);
             // A complete Tensor invocation owns its local Best, stack, SAT cache,
             // causal observer and scratch. Shared provider axes are immutable.
 #if !UE_BUILD_SHIPPING
@@ -3875,7 +3972,8 @@ FWorldHit FWorldQueryService::SweepPiecewiseTensorBezier(
                 Query.Shape==EQueryShape::Box?ProviderBoxContext.Axis:nullptr,Selection);
         };
         CellWave1213.Emplace(Query,QueryBounds,CellIdentity1213,
-            Eligible1213,Eligible1213.Num(),InTensorCellLanes1213,CaptureCellBound1213,EvaluateCell1213);
+            Eligible1213,Eligible1213.Num(),InTensorCellLanes1213,CaptureCellBound1213,EvaluateCell1213,
+            ETensorCellWindowReason1534::Legacy,NumericContract);
     };
 	TArray<int32, TInlineAllocator<64>> CellNodeStack;
 	CellNodeStack.Add(0);
@@ -3890,11 +3988,14 @@ FWorldHit FWorldQueryService::SweepPiecewiseTensorBezier(
         {
             FScopedTensorCellEligibilityObservation1213 EligibilityObservation1534;
             const auto EntryNumeric1534=CaptureFrameFloatingPointContext();
+        RequireAnalyticNumericTransfer(NumericContract,EntryNumeric1534.bValid);
             if(EntryNumeric1534.bValid)
             {
                 FScopedFrameFloatingPointContext AdmissionNumeric1534(EntryNumeric1534);
+            RequireAnalyticNumericTransfer(NumericContract,AdmissionNumeric1534.IsApplied());
                 if(AdmissionNumeric1534.IsApplied())
                 {
+                    RequireCurrentAnalyticNumericContext(NumericContract);
                     FBoxBoundsSweepContext AdmissionBox1534;
                     if(Query.Shape==EQueryShape::Box)AdmissionBox1534.Initialize(Query,ProviderBoxContext.Axis);
                     const double Bound1534=CurrentMaximumSearchTime();
@@ -3932,12 +4033,13 @@ FWorldHit FWorldQueryService::SweepPiecewiseTensorBezier(
                     }
                 }
                 if(!AdmissionNumeric1534.Restore())
-                    throw std::runtime_error("IAmSpeed Tensor cell window admission numeric restoration failed");
+                    ThrowAnalyticNumericTransferFailure(NumericContract,EAnalyticNumericFailure::ContextRestoration,"IAmSpeed Tensor cell window admission numeric restoration failed");
             }
         } // Restore the exact owner flags before the existing wave constructor.
         const auto CaptureCellBound1534=[&](){return CurrentMaximumSearchTime();};
         const auto EvaluateCell1534=[&](int32 CellIndex1534,double Bound1534)
         {
+            RequireCurrentAnalyticNumericContext(NumericContract);
 #if !UE_BUILD_SHIPPING
             TGuardValue<bool> Detail1534(GAnalyticQueryDetailedTimingEnabled,false);
 #endif
@@ -3946,7 +4048,7 @@ FWorldHit FWorldQueryService::SweepPiecewiseTensorBezier(
                 Query.Shape==EQueryShape::Box?ProviderBoxContext.Axis:nullptr,Selection);
         };
         CellWave1213.Emplace(Query,QueryBounds,CellIdentity1213,Eligible1534,Eligible1534.Num(),
-            InTensorCellLanes1213,CaptureCellBound1534,EvaluateCell1534,Reason1534);
+            InTensorCellLanes1213,CaptureCellBound1534,EvaluateCell1534,Reason1534,NumericContract);
         // A small tail or any policy/numeric/executor refusal stays serial for
         // the remainder of this invocation; never repeat a suffix probe per cell.
         if(!CellWave1213->IsReady())StopCellWindows1534=true;
@@ -4267,6 +4369,8 @@ bool FWorldQueryService::IsSameQuery(
 
 bool FWorldQueryService::HasAuthorityCoverage(const FWorldQuery& Query) const
 {
+    RequireCurrentAnalyticNumericContext(World.NumericContract);
+
 	FWorldHit AuthorityHit;
 	return TrySweepAuthority(Query, AuthorityHit);
 }
@@ -4274,6 +4378,8 @@ bool FWorldQueryService::HasAuthorityCoverage(const FWorldQuery& Query) const
 bool FWorldQueryService::TrySweepAuthority(
 	const FWorldQuery& Query, FWorldHit& OutAuthorityHit) const
 {
+    RequireCurrentAnalyticNumericContext(World.NumericContract);
+
 	TRACE_CPUPROFILER_EVENT_SCOPE(IAmSpeed_AnalyticTrySweepAuthority);
 	static thread_local bool bLoggedFirstCoverageMismatch = false;
 	// AnalyticHybrid is a migration tool. The certified primitive must produce
@@ -4383,6 +4489,8 @@ FWorldHit FWorldQueryService::Sweep(const FWorldQuery& Query) const
 
 bool FWorldQueryService::TryFindDeepestOverlap(const FWorldQuery& Query, FWorldHit& OutHit) const
 {
+    RequireCurrentAnalyticNumericContext(World.NumericContract);
+
 	OutHit = FWorldHit();
 	if (Query.Start != Query.End || Query.Start.ContainsNaN() ||
 		Query.Rotation.ContainsNaN() || !Query.Rotation.IsNormalized() ||
@@ -4400,6 +4508,18 @@ bool FWorldQueryService::TryFindDeepestOverlap(const FWorldQuery& Query, FWorldH
 
 FWorldHit FWorldQueryService::QueryCached(const FWorldQuery& Query, const EHitSelection Selection) const
 {
+    const auto NumericEvidence = RequireCurrentAnalyticNumericContext(World.NumericContract);
+    if (NumericEvidence.Status == EAnalyticNumericStatus::Complete)
+    {
+        const uint64 Fingerprint = NumericEvidence.ControlFingerprint();
+        if (!bNumericCacheContextInitialized || Fingerprint != NumericCacheControlFingerprint)
+        {
+            for (auto& Cached : SweepCache) Cached.bValid = false;
+            NumericCacheControlFingerprint = Fingerprint;
+            bNumericCacheContextInitialized = true;
+        }
+    }
+
     FScopedAnalyticCausalObservation1075 Causal(EAnalyticCausalKind1075::WorldSweep);
     Causal.SetItems(1);
 	// Impossible filtered queries must not traverse providers or evict useful
@@ -4465,6 +4585,8 @@ FWorldHit FWorldQueryService::QueryCached(const FWorldQuery& Query, const EHitSe
 FWorldHit FWorldQueryService::SweepDetailed(
 	const FWorldQuery& Query, FWorldHit* OutBestTriangle, const EHitSelection Selection) const
 {
+    RequireCurrentAnalyticNumericContext(World.NumericContract);
+
     FScopedAnalyticCausalObservation1075 Causal(EAnalyticCausalKind1075::DetailedWorldQuery);
     Causal.SetItems(1);
 #if !UE_BUILD_SHIPPING
@@ -4602,7 +4724,7 @@ FWorldHit FWorldQueryService::SweepDetailed(
 					Speed::FIndependentQueryBatchStats FacetDispatch;
                     int32 EvaluatedFacets = 0;
                     Candidate = SweepExtrudedQuintic(Query, QueryBounds, Patch, Selection,
-                        SharedBoundsContext435, FacetLanes, MinimumFacetItems, &FacetDispatch, &EvaluatedFacets);
+                        SharedBoundsContext435, FacetLanes, MinimumFacetItems, &FacetDispatch, &EvaluatedFacets, World.NumericContract);
                     FacetParallelTotals.Add(FacetDispatch, EvaluatedFacets);
 				}
 				ConsiderProviderHit(Candidate);
@@ -4670,11 +4792,14 @@ FWorldHit FWorldQueryService::SweepDetailed(
                     // still executes or consumes at its original owner-loop point.
                     // Extra geometric tests leave no FP status/control behind.
                     const auto Previous1146=CaptureFrameFloatingPointContext();
+                    RequireAnalyticNumericTransfer(World.NumericContract,Previous1146.bValid);
                     if(Previous1146.bValid)
                     {
                         FScopedFrameFloatingPointContext Numeric1146(Previous1146);
+                        RequireAnalyticNumericTransfer(World.NumericContract,Numeric1146.IsApplied());
                         if(Numeric1146.IsApplied())
                         {
+                            RequireCurrentAnalyticNumericContext(World.NumericContract);
                             FBoxBoundsSweepContext AdmissionBox1146;
                             if(Query.Shape==EQueryShape::Box)AdmissionBox1146.Initialize(Query);
                             const double Bound1146=CurrentMaximumSearchTime();
@@ -4689,23 +4814,24 @@ FWorldHit FWorldQueryService::SweepDetailed(
                             }
                         }
                         if(!Numeric1146.Restore())
-                            throw std::runtime_error("IAmSpeed admission1146 numeric restoration failed");
+                            ThrowAnalyticNumericTransferFailure(World.NumericContract,EAnalyticNumericFailure::ContextRestoration,"IAmSpeed admission1146 numeric restoration failed");
                     }
                 }
             }
             const auto Bound1075=[&](){return CurrentMaximumSearchTime();};
             const auto Evaluate1075=[&](int32 Index1075,double Maximum1075)
             {
+                RequireCurrentAnalyticNumericContext(World.NumericContract);
 #if !UE_BUILD_SHIPPING
                 // A previous throwing query may leave this worker-local diagnostic
                 // flag set. Speculation has no canonical query diagnostic identity.
                 TGuardValue<bool> Detail1075(GAnalyticQueryDetailedTimingEnabled,false);
 #endif
                 return SweepPiecewiseTensorBezier(Query,QueryBounds,
-                    World.PiecewiseTensorBezierPatches[Index1075],Maximum1075,Selection,FacetLanes);
+                    World.PiecewiseTensorBezierPatches[Index1075],Maximum1075,Selection,FacetLanes,World.NumericContract);
             };
             ProviderWave1075.Emplace(Query,QueryBounds,ProviderIdentity1075,
-                Eligible1075,ProviderCandidates1075.Num(),FacetLanes,Bound1075,Evaluate1075);
+                Eligible1075,ProviderCandidates1075.Num(),FacetLanes,Bound1075,Evaluate1075,World.NumericContract);
         }
 		for (const int32 ProviderIndex : ProviderCandidates1075)
 		{
@@ -4726,10 +4852,10 @@ FWorldHit FWorldQueryService::SweepDetailed(
                         ProviderIdentity1075,Bound1075,Joined1075))return Joined1075;
                     // A tightened bound or changed context re-executes this exact
                     // provider at the original current bound, never a wider one.
-                    return SweepPiecewiseTensorBezier(Query,QueryBounds,Patch,Bound1075,Selection,FacetLanes);
+                    return SweepPiecewiseTensorBezier(Query,QueryBounds,Patch,Bound1075,Selection,FacetLanes,World.NumericContract);
                 }
                 return SweepPiecewiseTensorBezier(
-                    Query, QueryBounds, Patch, CurrentMaximumSearchTime(), Selection,FacetLanes);
+                    Query, QueryBounds, Patch, CurrentMaximumSearchTime(), Selection,FacetLanes,World.NumericContract);
             }();
 			ConsiderProviderHit(Candidate);
 		}
@@ -4891,7 +5017,13 @@ FWorldHit FWorldQueryService::SweepDetailed(
 void Speed::Analytic::FWorldQueryService::VisitTorusCandidates(const FWorldQuery& Query,
     TFunctionRef<void(const FTorusSurface&)> Visitor) const
 {
+    RequireCurrentAnalyticNumericContext(World.NumericContract);
+
     const FBox3d Bounds=SweptQueryBounds(Query);
     for (const auto& Torus:World.Tori)
-        if (TorusPassesFilter(Query,Torus) && Torus.Bounds.Intersect(Bounds)) Visitor(Torus);
+        if (TorusPassesFilter(Query,Torus) && Torus.Bounds.Intersect(Bounds))
+        {
+            Visitor(Torus);
+            RequireCurrentAnalyticNumericContext(World.NumericContract);
+        }
 }

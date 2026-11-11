@@ -2,7 +2,17 @@
 
 
 #include "SphereSubBody.h"
+#include "IAmSpeed/SubBodies/Common/SweepTOISelection.h"
 #include "CarBallContactImpulse.h"
+#include "IAmSpeed/World/Collision/WorldStaticSphereGTInspection.h"
+#include "IAmSpeed/World/Collision/NativePostPrepareInitialPositionValues.h"
+#include "IAmSpeed/World/Collision/NativeInitialHitCache.h"
+#include "IAmSpeed/World/Collision/NativePrepareGTInspection.h"
+#include <stdexcept>
+#include "IAmSpeed/World/Collision/PreparedPhysicalExecution.h"
+#include "IAmSpeed/World/Collision/PreparedNativeWheelProbe.h"
+#include "IAmSpeed/World/Collision/PreparedSphereRsTrajectoryCapture.h"
+#include "IAmSpeed/World/Collision/SphereStaticResponsePoint.h"
 #include "Engine/World.h"
 #include "PrimitiveViewRelevance.h"
 #include "PrimitiveSceneProxy.h"
@@ -47,26 +57,194 @@ namespace
         const FVector& SphereCenter, const float Radius, const SHitResult& Hit,
         const float StaticContactOffsetCm = 0.0f)
     {
-        if (StaticContactOffsetCm > 0.0f ||
-            (Hit.SurfaceId != 0 && Hit.bSurfaceNormalMayVary && !Hit.bStartPenetrating))
-        {
-            // A static skin changes separation, never the physical response arm.
-            // Preserve the authored surface witness for support and diagnostics.
-            // A certified curved provider retains its chord witness while
-            // reporting the authored smooth normal. Its positional witness
-            // therefore need not be radial to that normal. The sphere's own
-            // response arm is radial: using the chord point creates a spurious
-            // normal torque and lets unilateral point projection erase spin.
-            // Keep the provider witness and penetration certificate unchanged.
-            return SphereCenter - Radius * Hit.ImpactNormal.GetSafeNormal();
-        }
-        return Hit.ImpactPoint;
+        return Speed::SphereStaticResponse::Point(SphereCenter, Radius,
+            Hit.ImpactPoint, Hit.ImpactNormal, Hit.SurfaceId,
+            Hit.bSurfaceNormalMayVary, Hit.bStartPenetrating, StaticContactOffsetCm);
     }
 
     FVector IAmSpeedSphereVelocityAtPointFromKS(const SKinematic& KS, const FVector& Point)
     {
         return KS.Velocity + FVector::CrossProduct(KS.AngularVelocity, Point - KS.Location);
     }
+}
+
+bool USphereSubBody::HasWorldStaticGTInspectionOwner(const ISpeedComponent& owner) const
+{
+    if(IsInGameThread())return GetClass()==USphereSubBody::StaticClass()&&GetParentComponent()==&owner;
+    const auto* b=Speed::PreparationPrefix::FindCurrentPrivateSourceObservation(&owner);
+    return b&&b->Bodies.Num()==1&&b->Bodies[0].Body==this&&b->Bodies[0].Class==USphereSubBody::StaticClass()&&GetParentComponent()==&owner;
+}
+
+bool USphereSubBody::ReadWorldStaticShapeForGTInspection(const ISpeedComponent& owner,
+    Speed::FWorldStaticSphereGTInspection& out,FString& reason) const
+{
+    out={};reason.Reset();
+    // No worker-side Cast/weak lookup and no fabricated CCD/Step scope. A GT
+    // diagnostic remains independent of the physical execution capability.
+    if(!IsInGameThread()||GetParentComponent()!=&owner||!GetWorld()||GetWorld()->bIsTearingDown)
+    {reason=TEXT("Actual sphere GT member/parent/World unavailable");return false;}
+    if(!HasWorldStaticGTInspectionOwner(owner))
+    {reason=TEXT("Actual sphere inspection private owner link is not qualified");return false;}
+    auto capture=[&](Speed::FWorldStaticSphereGTInspection& v)
+    {
+        v.PhysicalRadius=GetRadius();v.StaticContactOffset=GetWorldStaticContactOffsetCm();
+        v.VirtualMargin=CollisionMargin();v.SupportRadius=GetWorldStaticSupportRadius();
+        const auto shape=GetWorldStaticCollisionShape();if(!shape.IsSphere())return false;
+        v.ActualQueryRadius=shape.GetSphereRadius();
+        v.BodyState=GetKinematicState();v.OwnerState=owner.GetKinematicState();
+        v.LocalOffset=GetLocalOffset();v.LocalRotation=GetLocalRotation();
+        v.OwnerFrame=owner.NumFrame();v.OwnerFrozen=owner.IsFrozen();
+        v.NoInitialContactCaches=Speed::IsEmptyNativeInitialHit(CurrentHit)&&Speed::IsEmptyNativeInitialHit(FutureHit)&&
+            Speed::IsEmptyNativeInitialHit(GroundHit)&&Speed::IsEmptyNativeInitialHit(BoxHit)&&
+            Speed::IsEmptyNativeInitialHit(SphereHit)&&Speed::IsEmptyNativeInitialHit(WheelHit);
+        // Pointer membership is tested BEFORE dereferencing an exclusion.
+        // The closed GT caller pins and reauthenticates this complete current
+        // owner/body census. No stale external contact is looked up here.
+        if(AlwaysIgnoredComponents.Num()!=1||AlwaysIgnoredComponents[0]!=this)return false;
+        for(const auto* ignored:IgnoredComponents)if(ignored!=this)return false;
+        FCollisionQueryParams trace=BuildTraceParams();v.IgnoreBlocks=trace.bIgnoreBlocks;
+        const auto& sources=trace.GetIgnoredSourceObjects();v.IgnoredSourceObjectIds.Append(sources.GetData(),sources.Num());
+        const auto& components=trace.GetIgnoredComponents();v.IgnoredComponentIds.Append(components.GetData(),components.Num());
+        v.TraceChannel=uint8(USSubBody::GetCollisionChannel());v.BlockingObjectTypes=0;
+        const auto& response=USSubBody::GetResponseParams();
+        for(int32 channel=0;channel<UE_ARRAY_COUNT(FCollisionResponseContainer::EnumArray);++channel)
+            if(response.CollisionResponse.GetResponse(ECollisionChannel(channel))==ECR_Block)v.BlockingObjectTypes|=uint64(1)<<channel;
+        auto finite=[](const Speed::FKinematicState& s)
+        {return !s.Location.ContainsNaN()&&!s.Velocity.ContainsNaN()&&!s.Acceleration.ContainsNaN()&&!s.Rotation.ContainsNaN()&&!s.AngularVelocity.ContainsNaN()&&!s.AngularAcceleration.ContainsNaN();};
+        return FMath::IsFinite(v.PhysicalRadius)&&v.PhysicalRadius>0&&FMath::IsFinite(v.StaticContactOffset)&&v.StaticContactOffset>=0&&
+            FMath::IsFinite(v.SupportRadius)&&v.SupportRadius>0&&FMath::IsFinite(v.ActualQueryRadius)&&v.ActualQueryRadius>0&&
+            Speed::PreparedExecution::IsSupportedSphereResponseMargin(v.VirtualMargin)&&finite(v.BodyState)&&finite(v.OwnerState)&&
+            !v.LocalOffset.ContainsNaN()&&!v.LocalRotation.ContainsNaN();
+    };
+    Speed::FWorldStaticSphereGTInspection a,b;
+    if(!capture(a)||!HasWorldStaticGTInspectionOwner(owner)||!capture(b)||!HasWorldStaticGTInspectionOwner(owner)||
+        a.ExactInitialOperationBits()!=b.ExactInitialOperationBits())
+    {reason=TEXT("Actual sphere static shape/margin/state changed or unsupported during GT reread");return false;}
+    out=MoveTemp(a);return true;
+}
+
+bool USphereSubBody::ReadCanonicalPreparationSphereValues(const Speed::FPreparedNativeOwnerBinding& binding,
+    Speed::FNativePrepareGTFields& out,Speed::Analytic::Certified::FDistanceBudget& budget,FString& reason) const
+{
+    out={};reason.Reset();
+    if(!binding.NativeObject||!binding.Adapter||
+        !Speed::MatchesNativePrepareGTBinding(*binding.NativeObject,*binding.Adapter,binding)||
+        binding.Bodies.Num()!=1||binding.Bodies[0].Body!=this||binding.Bodies[0].Index!=0||
+        !binding.Bodies[0].Class||GetParentComponent()!=binding.Adapter||!HasWorldStaticGTInspectionOwner(*binding.Adapter))
+    {reason=TEXT("Sphere preparation values require the exact retained native owner/body link");return false;}
+    if(IsInGameThread()&&(GetClass()!=binding.Bodies[0].Class||!binding.Bodies[0].Object.HasSameIndexAndSerialNumber(FWeakObjectPtr(this))))return false;
+    bool ok=true;const auto scalar=[&](const TCHAR* n,auto v){ok=out.Scalar(FString(TEXT("sphere."))+n,v,budget)&&ok;};
+    scalar(TEXT("radius"),GetRadius());scalar(TEXT("static_offset"),GetWorldStaticContactOffsetCm());
+    scalar(TEXT("virtual_margin"),CollisionMargin());scalar(TEXT("support_radius"),GetWorldStaticSupportRadius());
+    const auto shape=GetWorldStaticCollisionShape();if(!shape.IsSphere())return false;
+    scalar(TEXT("query_radius"),shape.GetSphereRadius());
+    ok=out.Vector(TEXT("sphere.local_offset"),GetLocalOffset(),budget)&&ok;
+    ok=out.Quat(TEXT("sphere.local_rotation"),GetLocalRotation(),budget)&&ok;
+    ok=out.Kinematic(TEXT("sphere.state"),GetKinematicState(),budget)&&ok;
+    ok=out.Hit(TEXT("sphere.current_hit"),CurrentHit,budget)&&ok;
+    ok=out.Hit(TEXT("sphere.future_hit"),FutureHit,budget)&&ok;
+    ok=out.Hit(TEXT("sphere.ground_hit"),GroundHit,budget)&&ok;
+    ok=out.Hit(TEXT("sphere.box_hit"),BoxHit,budget)&&ok;
+    ok=out.Hit(TEXT("sphere.sphere_hit"),SphereHit,budget)&&ok;
+    ok=out.Hit(TEXT("sphere.wheel_hit"),WheelHit,budget)&&ok;
+    scalar(TEXT("all_caches_empty"),Speed::IsEmptyNativeInitialHit(CurrentHit)&&Speed::IsEmptyNativeInitialHit(FutureHit)&&
+        Speed::IsEmptyNativeInitialHit(GroundHit)&&Speed::IsEmptyNativeInitialHit(BoxHit)&&Speed::IsEmptyNativeInitialHit(SphereHit)&&Speed::IsEmptyNativeInitialHit(WheelHit));
+    if(!ok){out={};reason=TEXT("Sphere preparation values budget exhausted");}return ok;
+}
+bool USphereSubBody::ReadPostPrepareInitialPositionValues(const Speed::FPreparedNativeOwnerBinding& binding,
+    Speed::PreparationPrefix::FPostPrepareInitialPositionSphereValues& out,
+    Speed::Analytic::Certified::FDistanceBudget& budget,FString& reason) const
+{
+    using namespace Speed::PreparationPrefix;
+    out={};reason.Reset();
+    const auto fail=[&](const TCHAR* why){out={};reason=why;return false;};
+    const auto context=[&](FContext& actual)
+    {
+        return !IsInGameThread()&&binding.Adapter&&
+            (ReadInitialPositionObservationContext(binding.Adapter,this,actual)||
+             ReadInitialPositionMutationContext(binding.Adapter,this,actual));
+    };
+    const auto associated=[&]()
+    {
+        return binding.NativeObject&&binding.Adapter&&
+            Speed::MatchesNativePrepareGTBinding(*binding.NativeObject,*binding.Adapter,binding)&&
+            binding.Bodies.Num()==1&&binding.Bodies[0].Body==this&&binding.Bodies[0].Index==0&&
+            binding.Bodies[0].Class&&GetParentComponent()==binding.Adapter&&
+            HasWorldStaticGTInspectionOwner(*binding.Adapter);
+    };
+    FContext before;
+    // No virtual shape getter precedes authentic current scope and private Move.
+    if(!context(before)||!associated())return fail(TEXT("Position sphere requires the actual new-purpose member context/private owner link"));
+    const auto capture=[&](FPostPrepareInitialPositionSphereValues& v)
+    {
+        if(!context(v.Context)||!associated())return false;
+        const auto& owner=*binding.Adapter;
+        v.Binding=&binding;v.Body=this;
+        auto& s=v.Shape;
+        s.PhysicalRadius=GetRadius();s.StaticContactOffset=GetWorldStaticContactOffsetCm();
+        s.VirtualMargin=CollisionMargin();s.SupportRadius=GetWorldStaticSupportRadius();
+        const auto shape=GetWorldStaticCollisionShape();if(!shape.IsSphere())return false;
+        s.ActualQueryRadius=shape.GetSphereRadius();
+        v.BodyStorage=&USSubBody::GetKinematicState();v.OwnerStorage=&owner.GetKinematicState();
+        s.BodyState=*v.BodyStorage;s.OwnerState=*v.OwnerStorage;
+        s.LocalOffset=GetLocalOffset();s.LocalRotation=GetLocalRotation();
+        s.OwnerFrame=owner.NumFrame();s.OwnerFrozen=owner.IsFrozen();
+        if(!Speed::PreparedExecution::JoinCanonicalPreparedFrameClock(v.Context.Frame,owner.NumFrame(),v.Clock))return false;
+        v.OwnerFrameStorage=&owner.GetKinematicStateForFrame(owner.NumFrame());
+        v.OwnerCenterOfMassLocal=owner.GetPhysCenterOfMassLocal();
+        v.OwnerPrescribed=owner.IsPrescribedMotion();v.OwnerSleeping=owner.IsPhysicsSleeping();
+        v.ConstraintsEmpty=owner.GetPhysicalConstraints().IsEmpty();
+        v.StaticWorld=owner.GetStaticCollisionWorldForFrame();
+        v.StaticSupportFrameHorizon=owner.GetStaticSupportFrameHorizon();
+        s.NoInitialContactCaches=Speed::IsEmptyNativeInitialHit(CurrentHit)&&Speed::IsEmptyNativeInitialHit(FutureHit)&&
+            Speed::IsEmptyNativeInitialHit(GroundHit)&&Speed::IsEmptyNativeInitialHit(BoxHit)&&
+            Speed::IsEmptyNativeInitialHit(SphereHit)&&Speed::IsEmptyNativeInitialHit(WheelHit);
+        if(AlwaysIgnoredComponents.Num()!=1||AlwaysIgnoredComponents[0]!=this)return false;
+        for(const auto* ignored:IgnoredComponents)if(!budget.Consume()||ignored!=this)return false;
+        const FCollisionQueryParams trace=BuildTraceParams();s.IgnoreBlocks=trace.bIgnoreBlocks;
+        const auto& sources=trace.GetIgnoredSourceObjects();
+        for(int32 i=0;i<sources.Num();++i)if(!budget.Consume())return false;
+        s.IgnoredSourceObjectIds.Append(sources.GetData(),sources.Num());
+        const auto& components=trace.GetIgnoredComponents();
+        for(int32 i=0;i<components.Num();++i)if(!budget.Consume())return false;
+        s.IgnoredComponentIds.Append(components.GetData(),components.Num());
+        s.TraceChannel=uint8(USSubBody::GetCollisionChannel());
+        const auto& response=USSubBody::GetResponseParams();
+        for(int32 channel=0;channel<UE_ARRAY_COUNT(FCollisionResponseContainer::EnumArray);++channel)
+        {
+            const auto value=response.CollisionResponse.GetResponse(ECollisionChannel(channel));
+            if(!v.ExactFields.Scalar(FString::Printf(TEXT("position.response[%d]"),channel),value,budget))return false;
+            if(value==ECR_Block)s.BlockingObjectTypes|=uint64(1)<<channel;
+        }
+        // Capture the actual trace's physical flags/mask and exclusion lists;
+        // profiling/diagnostic tags grant no geometry or collision semantics.
+        const auto scalar=[&](const TCHAR* name,auto value){return v.ExactFields.Scalar(FString(TEXT("position."))+name,value,budget);};
+        if(!scalar(TEXT("trace_complex"),trace.bTraceComplex)||!scalar(TEXT("find_initial_overlaps"),trace.bFindInitialOverlaps)||
+            !scalar(TEXT("return_face_index"),trace.bReturnFaceIndex)||!scalar(TEXT("return_physical_material"),trace.bReturnPhysicalMaterial)||
+            !scalar(TEXT("ignore_blocks"),trace.bIgnoreBlocks)||!scalar(TEXT("ignore_touches"),trace.bIgnoreTouches)||
+            !scalar(TEXT("skip_narrow_phase"),trace.bSkipNarrowPhase)||!scalar(TEXT("trace_into_subcomponents"),trace.bTraceIntoSubComponents)||
+            !scalar(TEXT("replace_hit_with_subcomponents"),trace.bReplaceHitWithSubComponents)||
+            !scalar(TEXT("mobility"),trace.MobilityType)||!scalar(TEXT("ignore_mask"),trace.IgnoreMask)||
+            !scalar(TEXT("prescribed"),v.OwnerPrescribed)||!scalar(TEXT("sleeping"),v.OwnerSleeping)||
+            !scalar(TEXT("constraints_empty"),v.ConstraintsEmpty)||!scalar(TEXT("static_horizon"),v.StaticSupportFrameHorizon)||
+            !v.ExactFields.Vector(TEXT("position.com_local"),v.OwnerCenterOfMassLocal,budget)||
+            !v.ExactFields.Kinematic(TEXT("position.owner_state"),s.OwnerState,budget))return false;
+        Speed::FNativePrepareGTFields actualShape;
+        if(!ReadCanonicalPreparationSphereValues(binding,actualShape,budget,reason)||
+            !v.ExactFields.Append(actualShape,budget))return false;
+        const auto finite=[](const Speed::FKinematicState& k)
+        {return !k.Location.ContainsNaN()&&!k.Velocity.ContainsNaN()&&!k.Acceleration.ContainsNaN()&&!k.Rotation.ContainsNaN()&&!k.AngularVelocity.ContainsNaN()&&!k.AngularAcceleration.ContainsNaN();};
+        return FMath::IsFinite(s.PhysicalRadius)&&s.PhysicalRadius>0&&FMath::IsFinite(s.StaticContactOffset)&&s.StaticContactOffset>=0&&
+            FMath::IsFinite(s.SupportRadius)&&s.SupportRadius>0&&FMath::IsFinite(s.ActualQueryRadius)&&s.ActualQueryRadius>0&&
+            Speed::PreparedExecution::IsSupportedSphereResponseMargin(s.VirtualMargin)&&finite(s.OwnerState)&&finite(s.BodyState)&&
+            !s.LocalOffset.ContainsNaN()&&!s.LocalRotation.ContainsNaN()&&!v.OwnerCenterOfMassLocal.ContainsNaN()&&
+            FMath::IsFinite(v.StaticSupportFrameHorizon)&&v.StaticSupportFrameHorizon>=0;
+    };
+    FPostPrepareInitialPositionSphereValues a,b;
+    if(!capture(a)||!associated()||!capture(b)||!associated()||!a.HasSameContext(before)||!b.HasSameContext(before)||!a.SameValues(b))
+        return fail(TEXT("Position sphere state/filter/private link/context changed or member capture refused"));
+    FContext after;if(!context(after)||!a.HasSameContext(after))return fail(TEXT("Position sphere lost its actual context after reread"));
+    out=MoveTemp(a);return true;
 }
 
 USphereSubBody::USphereSubBody(const FObjectInitializer& ObjectInitializer):
@@ -162,7 +340,37 @@ bool USphereSubBody::SweepTOI(const float& RemainingDelta, float& OutTOI)
 	SHitResult BoxHitresult;
 	SHitResult SphereHitresult;
 	SHitResult WheelHitresult;
-    bool bHitGround = SweepVsGround(GetWorld(), GroundHitresult, RemainingDelta, TOI_ground);
+    bool bHitGround=false;
+    if(Speed::PreparedExecution::Requested())
+    {
+        // Both protected virtual reads occur in the actual sphere member.
+        // Ball's override uses its live movement margin, not Rc-Rp.
+        const auto readTrace=[this]()
+        {
+            Speed::PreparedExecution::FNativeRsTraceValues out;const auto params=BuildTraceParams();
+            out.TraceComplex=params.bTraceComplex;out.FindInitialOverlaps=params.bFindInitialOverlaps;
+            out.ReturnFaceIndex=params.bReturnFaceIndex;out.ReturnPhysicalMaterial=params.bReturnPhysicalMaterial;
+            out.IgnoreBlocks=params.bIgnoreBlocks;out.IgnoreTouches=params.bIgnoreTouches;
+            out.SkipNarrowPhase=params.bSkipNarrowPhase;out.TraceIntoSubComponents=params.bTraceIntoSubComponents;
+            out.ReplaceHitWithSubComponents=params.bReplaceHitWithSubComponents;
+            out.IgnoreMask=uint64(params.IgnoreMask);out.Mobility=uint8(params.MobilityType);
+            out.TraceChannel=uint8(GetCollisionChannel());
+            for(int32 c=0;c<UE_ARRAY_COUNT(FCollisionResponseContainer::EnumArray);++c)
+                out.Responses.Add(uint8(GetResponseParams().CollisionResponse.GetResponse(ECollisionChannel(c))));
+            const auto& sources=params.GetIgnoredSourceObjects();out.IgnoredSourceObjects.Append(sources.GetData(),sources.Num());
+            const auto& ignored=params.GetIgnoredComponents();out.IgnoredComponents.Append(ignored.GetData(),ignored.Num());return out;
+        };
+        const bool terminal=Speed::PreparedExecution::FSphereMemberSweepScope::IsTerminalRsCaptureRequested();
+        Speed::PreparedExecution::FNativeRsTraceValues trace;if(terminal)trace=readTrace();
+        Speed::PreparedExecution::FSphereMemberSweepScope memberScope(this,ParentComponent,CollisionMargin(),terminal?&trace:nullptr);
+        try {bHitGround=SweepVsGround(GetWorld(),GroundHitresult,RemainingDelta,TOI_ground);}
+        catch(const Speed::PreparedExecution::FTerminalRsCaptureStop& stop)
+        {
+            memberScope.CloseTerminalRsCapture(stop,CollisionMargin(),readTrace());throw;
+        }
+        memberScope.Finish(CollisionMargin(),bHitGround,GroundHitresult,TOI_ground);
+    }
+    else bHitGround=SweepVsGround(GetWorld(),GroundHitresult,RemainingDelta,TOI_ground);
 	if (WorldStaticPenetrationDiagnostics.bEnabled && bHitGround &&
 		GroundHitresult.bStartPenetrating && GroundHitresult.PenetrationDepth > 0.0f)
 	{
@@ -184,36 +392,41 @@ bool USphereSubBody::SweepTOI(const float& RemainingDelta, float& OutTOI)
         return false;
 
     OutTOI = RemainingDelta;
+    bool bHasSelection = false;
 
-    if (bHitGround && TOI_ground < OutTOI)
+    if (bHitGround && Speed::ShouldSelectSweepTOI(TOI_ground, OutTOI, bHasSelection))
     {
         OutTOI = TOI_ground;
 		GroundHit = GroundHitresult;
         FutureHit = GroundHit;
+        bHasSelection = true;
     }
 
-    if (bHitBox && TOI_Box < OutTOI)
+    if (bHitBox && Speed::ShouldSelectSweepTOI(TOI_Box, OutTOI, bHasSelection))
     {
         OutTOI = TOI_Box;
 		BoxHit = BoxHitresult;
         FutureHit = BoxHit;
+        bHasSelection = true;
     }
 
-    if (bHitSphere && TOI_Sphere < OutTOI)
+    if (bHitSphere && Speed::ShouldSelectSweepTOI(TOI_Sphere, OutTOI, bHasSelection))
     {
         OutTOI = TOI_Sphere;
 		SphereHit = SphereHitresult;
         FutureHit = SphereHit;
+        bHasSelection = true;
     }
 
-    if (bHitWheel && TOI_Wheel < OutTOI)
+    if (bHitWheel && Speed::ShouldSelectSweepTOI(TOI_Wheel, OutTOI, bHasSelection))
     {
 		OutTOI = TOI_Wheel;
         WheelHit = WheelHitresult;
         FutureHit = WheelHit;
+        bHasSelection = true;
 	}
 
-    return true;
+    return bHasSelection;
 }
 
 
@@ -223,6 +436,10 @@ bool USphereSubBody::SweepTOI(const float& RemainingDelta, float& OutTOI)
 
 void USphereSubBody::ResolveCurrentHitPrv(const float& delta, const float& SimTime)
 {
+    if(CurrentHit.FirstRsResponseData)
+        Speed::PreparedExecution::RequireFirstRsResponseHit(this,CurrentHit,Speed::PreparedExecution::EFirstRsResponseCall::Resolve,delta,SimTime);
+    if(CurrentHit.PreparedGroundEvidence)
+        throw std::runtime_error("Prepared static response/constraint/advance consumer is not installed");
     if (!HasHit() || !ParentComponent)
     {
         return;
@@ -231,8 +448,9 @@ void USphereSubBody::ResolveCurrentHitPrv(const float& delta, const float& SimTi
     const bool bWorldStaticContact = CurrentHit.SurfaceId != 0 ||
         (CurrentHit.Component.IsValid() &&
          CurrentHit.Component->GetCollisionObjectType() == ECC_WorldStatic);
-    if (bWorldStaticContact && (GetWorldStaticContactOffsetCm() > 0.0f ||
-        (CurrentHit.bSurfaceNormalMayVary && !CurrentHit.bStartPenetrating)))
+    if (bWorldStaticContact && Speed::SphereStaticResponse::UsesRadialPoint(
+        CurrentHit.SurfaceId, CurrentHit.bSurfaceNormalMayVary, CurrentHit.bStartPenetrating,
+        GetWorldStaticContactOffsetCm()))
     {
         RegisterContactAsConstraint(
             IAmSpeedSphereStaticResponsePoint(GetKinematicState().Location,
@@ -881,12 +1099,14 @@ bool USphereSubBody::ProjectOutOfWorldStatic()
     {
         TArray<FHitResult> Hits;
 		Speed::Analytic::FWorldHit AnalyticHit;
+		const Speed::PreparedExecution::FNativeSphereProjectionScope Projection(
+			*this, *ParentComponent, Center, ProjectionShape.GetSphereRadius(), Pass);
 		if (!Speed::Analytic::FStaticWorldQueryAudit::TryCompactAuthorityMulti(
 			GetWorld(),
 			Center, Center, FQuat::Identity,
 			ProjectionShape,
 			1ull << static_cast<uint8>(ECC_WorldStatic), Hits,
-			&AnalyticHit))
+			&AnalyticHit, &Projection))
 		{
 			Speed::Analytic::FStaticWorldQueryAudit::RecordLegacySweep();
 			GetWorld()->SweepMultiByObjectType(Hits, Center, Center,
@@ -1241,6 +1461,8 @@ FMatrix USphereSubBody::InitInvInertiaTensor() const
 
 FMatrix USphereSubBody::ComputeWorldInvInertiaTensor() const
 {
+    Speed::PreparedExecution::FStepScope::ObserveOrdinaryBodyInertiaValue(this,InvInertiaLocal,
+        Speed::PreparedExecution::EOrdinaryBodyInertiaOrigin::SphereCachedOperator,FQuat::Identity);
     return InvInertiaLocal;
 }
 

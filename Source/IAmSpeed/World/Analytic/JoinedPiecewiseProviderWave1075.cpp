@@ -4,6 +4,7 @@
 #include "IAmSpeed/World/Simulation/FrameParallelSettings.h"
 #include "HAL/IConsoleManager.h"
 #include "HAL/PlatformTLS.h"
+#include "HAL/PlatformTime.h"
 #include <cmath>
 #include <atomic>
 #include <exception>
@@ -78,8 +79,11 @@ void LogPiecewiseProviderWaveStats1075(const TCHAR* Context)
 FJoinedPiecewiseProviderWave1075::FJoinedPiecewiseProviderWave1075(
     const FWorldQuery& Query,const FBox3d& Bounds,const FPiecewiseProviderWaveIdentity1075& Identity,
     TConstArrayView<int32> ProviderIndices,int32 TotalCandidates,int32 Lanes,
-    TFunctionRef<double()> CaptureBound,TFunctionRef<FWorldHit(int32,double)> Evaluate)
+    TFunctionRef<double()> CaptureBound,TFunctionRef<FWorldHit(int32,double)> Evaluate,
+    EAnalyticNumericContract InNumericContract)
 {
+    NumericContract=InNumericContract;
+    RequireCurrentAnalyticNumericContext(NumericContract);
     if(!IsPiecewiseProviderWave1075Enabled())return;
     bObserve=CVarPiecewiseProviderObserve1075.GetValueOnAnyThread()!=0;
     Stats.Attempts=1;Stats.Candidates=TotalCandidates;Stats.Eligible=ProviderIndices.Num();
@@ -99,19 +103,22 @@ FJoinedPiecewiseProviderWave1075::FJoinedPiecewiseProviderWave1075(
     }
     const uint64 PreparationStart=bTime?FPlatformTime::Cycles64():0;
     const auto PreviousNumeric=CaptureFrameFloatingPointContext();
+    RequireAnalyticNumericTransfer(NumericContract,PreviousNumeric.bValid);
     if(!PreviousNumeric.bValid){Refuse(EProviderWaveFallback1075::Numeric);return;}
     FScopedFrameFloatingPointContext OwnerNumeric(PreviousNumeric);
+    RequireAnalyticNumericTransfer(NumericContract,OwnerNumeric.IsApplied());
     if(!OwnerNumeric.IsApplied()){Refuse(EProviderWaveFallback1075::Numeric);
-        if(!OwnerNumeric.Restore())throw std::runtime_error("IAmSpeed provider owner numeric restoration failed");return;}
+        if(!OwnerNumeric.Restore())ThrowAnalyticNumericTransferFailure(NumericContract,EAnalyticNumericFailure::ContextRestoration,"IAmSpeed provider owner numeric restoration failed");return;}
     // Bound evaluation is inside the restored owner guard. It is repeated by
     // the original owner loop at its original point before each kernel call.
     MaximumSearchTime=CaptureBound();
     if(!std::isfinite(MaximumSearchTime)||MaximumSearchTime<0||MaximumSearchTime>1)
     {Refuse(EProviderWaveFallback1075::InvalidBound);
-        if(!OwnerNumeric.Restore())throw std::runtime_error("IAmSpeed provider owner numeric restoration failed");return;}
+        if(!OwnerNumeric.Restore())ThrowAnalyticNumericTransferFailure(NumericContract,EAnalyticNumericFailure::ContextRestoration,"IAmSpeed provider owner numeric restoration failed");return;}
     NumericContext=CaptureFrameFloatingPointContext();
+    RequireAnalyticNumericTransfer(NumericContract,NumericContext.bValid);
     if(!NumericContext.bValid){Refuse(EProviderWaveFallback1075::Numeric);
-        if(!OwnerNumeric.Restore())throw std::runtime_error("IAmSpeed provider owner numeric restoration failed");return;}
+        if(!OwnerNumeric.Restore())ThrowAnalyticNumericTransferFailure(NumericContract,EAnalyticNumericFailure::ContextRestoration,"IAmSpeed provider owner numeric restoration failed");return;}
     CapturedQuery=Query;CapturedBounds=Bounds;CapturedIdentity=Identity;
     Records.SetNum(ProviderIndices.Num());
     for(int32 I=0;I<ProviderIndices.Num();++I)Records[I].Index=ProviderIndices[I];
@@ -124,6 +131,7 @@ FJoinedPiecewiseProviderWave1075::FJoinedPiecewiseProviderWave1075(
         FScopedFrameParallelTask Task(NumericContext);
         try
         {
+            RequireAnalyticNumericTransfer(NumericContract,Task.IsNumericContextApplied());
             if(!Task.IsNumericContextApplied())throw std::runtime_error("IAmSpeed provider wave numeric context unavailable");
             if(bObserve)ThreadIds[Lane]=FPlatformTLS::GetCurrentThreadId();
             const uint64 Start=bTime?FPlatformTime::Cycles64():0;
@@ -131,11 +139,14 @@ FJoinedPiecewiseProviderWave1075::FJoinedPiecewiseProviderWave1075(
             {
                 // Every provider starts with the exact captured environment,
                 // replacing flags left by a previous provider on the same lane.
-                if(!ApplyFrameFloatingPointContext(NumericContext))
+                const bool bNumericApplied=ApplyFrameFloatingPointContext(NumericContext);
+                RequireAnalyticNumericTransfer(NumericContract,bNumericApplied);
+                if(!bNumericApplied)
                     throw std::runtime_error("IAmSpeed provider entry numeric context unavailable");
-                try {Records[I].Hit=Evaluate(Records[I].Index,MaximumSearchTime);}
+                try {const FWorldHit Hit=Evaluate(Records[I].Index,MaximumSearchTime); RequireCurrentAnalyticNumericContext(NumericContract); Records[I].Hit=Hit;}
                 catch(...){Records[I].Failure=std::current_exception();} // Deferred until canonical consumption.
                 Records[I].NumericAfter=CaptureFrameFloatingPointContext();
+                RequireAnalyticNumericTransfer(NumericContract,Records[I].NumericAfter.bValid);
                 if(!Records[I].NumericAfter.bValid)
                     throw std::runtime_error("IAmSpeed provider output numeric context unavailable");
                 ++Completed[Lane];
@@ -143,12 +154,12 @@ FJoinedPiecewiseProviderWave1075::FJoinedPiecewiseProviderWave1075(
             if(bTime)NumericCycles[Lane]=FPlatformTime::Cycles64()-Start;
         }
         catch(...){Failures[Lane]=std::current_exception();}
-        if(!Task.RestoreNumericContext())Failures[Lane]=std::make_exception_ptr(std::runtime_error("IAmSpeed provider wave numeric restoration failed"));
+        if(!Task.RestoreNumericContext())Failures[Lane]=AnalyticNumericTransferException(NumericContract,EAnalyticNumericFailure::ContextRestoration,"IAmSpeed provider wave numeric restoration failed");
     };
     if(bTime)Stats.PreparationCycles=FPlatformTime::Cycles64()-PreparationStart;
     const bool Admitted=TryDispatchPrivateFrameParallelLanes1075(UsedLanes,Work,bTime?&Dispatch:nullptr);
     if(!Admitted){Refuse(EProviderWaveFallback1075::ExecutorAdmission);
-        if(!OwnerNumeric.Restore())throw std::runtime_error("IAmSpeed provider owner numeric restoration failed");return;}
+        if(!OwnerNumeric.Restore())ThrowAnalyticNumericTransferFailure(NumericContract,EAnalyticNumericFailure::ContextRestoration,"IAmSpeed provider owner numeric restoration failed");return;}
     // No result is consumable until every lane restored and joined.
     std::exception_ptr FirstFailure;
     for(int32 Lane=0;Lane<UsedLanes;++Lane)
@@ -167,7 +178,7 @@ FJoinedPiecewiseProviderWave1075::FJoinedPiecewiseProviderWave1075(
             if(Completed[Lane]>0&&ThreadIds[Lane]!=0&&!SeenUseful)++Stats.UsefulNativeMax;
         }
     }
-    if(!OwnerNumeric.Restore())throw std::runtime_error("IAmSpeed provider owner numeric restoration failed");
+    if(!OwnerNumeric.Restore())ThrowAnalyticNumericTransferFailure(NumericContract,EAnalyticNumericFailure::ContextRestoration,"IAmSpeed provider owner numeric restoration failed");
     if(FirstFailure)std::rethrow_exception(FirstFailure); // Numeric infrastructure takes precedence.
     if(Stats.Computed!=uint64(Records.Num()))throw std::runtime_error("IAmSpeed provider wave incomplete joined results");
     Stats.Waves=1;Stats.LogicalMax=UsedLanes;
@@ -204,8 +215,9 @@ bool FJoinedPiecewiseProviderWave1075::TryConsume(int32 ProviderIndex,const FWor
         if(!Match){++Stats.Recomputed;return false;}
         // The serial kernel would have left this numeric status/control state.
         // Speculative worker state is replayed only for a validated consumption.
+        if(NumericContract!=EAnalyticNumericContract::Unspecified && R.Failure) std::rethrow_exception(R.Failure);
         if(!ApplyFrameFloatingPointContext(R.NumericAfter))
-            throw std::runtime_error("IAmSpeed provider output numeric publication failed");
+            ThrowAnalyticNumericTransferFailure(NumericContract,EAnalyticNumericFailure::ContextRestoration,"IAmSpeed provider output numeric publication failed");
         ++Stats.Reused;
         // A speculative exception is authoritative only at this original
         // provider boundary, after the exact key/bound/FP checks and output FP.

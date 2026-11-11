@@ -124,6 +124,24 @@ struct IAMSPEED_API FWorldHit
 	uint32 MaterialId = 0;
 };
 
+// Geometry-only validation, never a World/snapshot/filter/admission ticket.
+// The producer owns a deep copy of the COMPLETE plane. No mutable getter or
+// constructor from an asserted "already valid" flag is exposed. A prepared
+// consumer keeps this handle private inside its separately bound snapshot.
+class IAMSPEED_API FValidatedFinitePlaneGeometry final
+{
+    FBoundedPlane Plane;
+    uint64 NumericControl=0;
+    FValidatedFinitePlaneGeometry(const FBoundedPlane& plane,uint64 control):Plane(plane),NumericControl(control){}
+    FValidatedFinitePlaneGeometry(const FValidatedFinitePlaneGeometry&)=delete;
+    FValidatedFinitePlaneGeometry& operator=(const FValidatedFinitePlaneGeometry&)=delete;
+    friend class FWorldQueryService;
+public:
+    ~FValidatedFinitePlaneGeometry()=default;
+};
+using FValidatedFinitePlaneGeometryPtr=TSharedPtr<const FValidatedFinitePlaneGeometry,ESPMode::ThreadSafe>;
+enum class EFinitePlaneValidationPath:uint8 {Unavailable,ReusedGeometry,RevalidatedGeometry};
+
 class IAMSPEED_API FWorldQueryService
 {
 #if WITH_DEV_AUTOMATION_TESTS
@@ -133,11 +151,27 @@ public:
 	explicit FWorldQueryService(const FAnalyticWorldData& InWorld,
         int32 InFacetLanes = 1, int32 InMinimumFacetItems = 32);
     FFacetParallelTotals GetFacetParallelTotals() const { return FacetParallelTotals; }
+    // Pure finite-plane geometry for a separately authenticated canonical
+    // consumer. Does not require or promote Plane.bAuthorityEligible, change
+    // authorityOnly, certify a whole union or bind accelerated/rotating time.
+    // False means invalid/unsupported, never an admitted miss. A round-shape
+    // face miss does not exclude a finite polygon's edge neighborhood.
+    static bool EvaluateFinitePlaneGeometry(const FWorldQuery& Query,
+        const FBoundedPlane& Plane,bool DeepestOverlap,FWorldHit& OutHit);
+    // Factory validates the owned copy under the current numeric contract.
+    // Controls must still match at use; sticky-flag identity is not promised.
+    static FValidatedFinitePlaneGeometryPtr ValidateFinitePlaneGeometry(const FBoundedPlane& Plane);
+    static bool EvaluateValidatedFinitePlaneGeometry(const FWorldQuery& Query,
+        const FValidatedFinitePlaneGeometryPtr& Geometry,bool DeepestOverlap,FWorldHit& OutHit,
+        EFinitePlaneValidationPath* OutPath=nullptr);
     static bool QueriesHaveSameCacheKey1075(const FWorldQuery& A, const FWorldQuery& B)
     { return IsSameQuery(A, B); }
     void ResetFacetParallelTotals() const { FacetParallelTotals = {}; }
 
 #if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+    // Private shadow uses the same deterministic arbitration as the legacy world.
+    static bool TestPreferFirstSweepHit(const FWorldHit& candidate,const FWorldHit& best)
+    {return IsBetterHit(candidate,best,EHitSelection::FirstSweepHit);}
     static FWorldHit TestRetainedExtrudedSweep938(const FWorldQuery& Query,
         const FExtrudedQuinticPatch& Patch, bool bRetained938, int32 Lanes,
         bool bDeepest, Speed::FIndependentQueryBatchStats* OutDispatch = nullptr);
@@ -161,6 +195,10 @@ public:
 		TConstArrayView<FVector3d> Points, const FVector3d& Normal, const FVector3d& Translation) const;
 
 private:
+    // Both callers have checked numeric context, authorityOnly and the full
+    // immutable plane. All remaining query/filter/SweepPlane logic is shared.
+    static bool EvaluateCheckedFinitePlaneGeometry(const FWorldQuery& Query,
+        const FBoundedPlane& Plane,bool DeepestOverlap,FWorldHit& OutHit);
 	// An operation policy, not a provider subtype flag. It remains private so
 	// neither Sweep nor Hybrid replacement can accidentally inherit overlap order.
 	enum class EHitSelection : uint8 { FirstSweepHit, DeepestOverlap };
@@ -219,6 +257,8 @@ private:
 	static constexpr uint8 SweepCacheWays = 4;
 	mutable FCachedSweep SweepCache[SweepCacheCapacity];
 	mutable uint8 NextCacheWay[SweepCacheCapacity / SweepCacheWays] = {};
+	mutable uint64 NumericCacheControlFingerprint = 0;
+	mutable bool bNumericCacheContextInitialized = false;
 	static_assert(sizeof(SweepCache) + sizeof(NextCacheWay) <= 64 * 1024, "Keep the per-world query cache bounded to 64 KiB");
 #if !UE_BUILD_SHIPPING
 	struct FCacheProfile
@@ -270,7 +310,8 @@ private:
 		Private::FBoxBoundsSweepContext* CachedBoundsContext435 = nullptr,
         int32 InFacetLanes = 1, int32 InMinimumFacetItems = 32,
         Speed::FIndependentQueryBatchStats* OutDispatch = nullptr,
-        int32* OutEvaluatedFacets = nullptr);
+        int32* OutEvaluatedFacets = nullptr,
+        EAnalyticNumericContract NumericContract = EAnalyticNumericContract::Unspecified);
 #if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
     static FWorldHit SweepExtrudedQuinticRetained938(const FWorldQuery& Query,
         const FBox3d& QueryBounds, const FExtrudedQuinticPatch& Patch,
@@ -292,7 +333,8 @@ private:
 		const FWorldQuery& Query, const FBox3d& QueryBounds,
 		const FPiecewiseTensorBezierPatch& Patch,
 		double MaximumSearchTime = 1.0,
-		EHitSelection Selection = EHitSelection::FirstSweepHit, int32 InTensorCellLanes1213 = 1);
+		EHitSelection Selection = EHitSelection::FirstSweepHit, int32 InTensorCellLanes1213 = 1,
+        EAnalyticNumericContract NumericContract = EAnalyticNumericContract::Unspecified);
 	static bool TrianglePassesFilter(
 		const FWorldQuery& Query, const FTriangleSurface& Triangle);
 	static bool PatchPassesFilter(

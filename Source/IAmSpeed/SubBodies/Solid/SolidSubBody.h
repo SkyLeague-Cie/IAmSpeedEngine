@@ -101,6 +101,9 @@ public:
 	float GetMass() const { return Mass; }
 	void SetMass(float InMass) { Mass = InMass; }
 	virtual FMatrix ComputeWorldInvInertiaTensor() const;
+    // Exact cached configuration, independent of a future consumed pose.
+    // Reading this cache grants no response/impulse or reconstruction policy.
+    const FMatrix& GetCachedLocalInvInertiaTensor() const { return InvInertiaLocal; }
 	int Idx() const { return idx; }
 	void SetIdx(int InIdx) { idx = InIdx; }
 	bool IsMainSubBody() const { return bIsMainSubBody; }

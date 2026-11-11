@@ -41,7 +41,7 @@ public:
  int32 LogicalLanes() const{return Lanes;}
  int32 NativeParticipants() const{return Participants;}
 private:
- friend bool TryConsumeJoinedActorBase1430(const USSubBody&,const SKinematic&,const FVector&,const FQuat&,SKinematic&);
+ friend IAMSPEED_API bool TryConsumeJoinedActorBase1430(const USSubBody&,const SKinematic&,const FVector&,const FQuat&,SKinematic&);
  struct FItem{SKinematic Origin;FSubBodyKinematicInput Local;};
  struct FActor
  {

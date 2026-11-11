@@ -477,13 +477,29 @@ bool FIAmSpeedBoxCanonicalRestTest::RunTest(const FString& Parameters)
 				return false;
 			}
 		}
-		// Unsupported/moving poses retain the existing quantization contract.
+		// Unbinding revokes contact preservation, but does not revoke the
+		// existing free-axis / unforced-rotation integration contract (042).
 		Owner->SetStaticCollisionWorldForFrame(nullptr);
-		SKinematic Expected = Initial;
+		Owner->SetKinematicState(Initial);
+		TestFalse(TEXT("unbound world retains no exact resting support"), Owner->HasExactStaticRestingSupport());
 		const FQuat PreviousRotation = Owner->GetKinematicStateForFrame(Owner->NumFrame() - 1).Rotation;
+		SKinematic Canonical = Initial;
+		Canonical.Quantize(PreviousRotation);
+		Owner->QuantizePhysicalState();
+		TestTrue(TEXT("unbound non-forced horizontal coordinates retain their integrated values"),
+			Owner->GetPhysCOMLocation().X == Initial.Location.X && Owner->GetPhysCOMLocation().Y == Initial.Location.Y);
+		TestTrue(TEXT("unbound unforced rotation retains its integrated orientation"), Owner->GetPhysRotation() == Initial.Rotation);
+		TestEqual(TEXT("unbound gravity-forced coordinate follows the ordinary codec"), Owner->GetPhysCOMLocation().Z, Canonical.Location.Z);
+		// A separate arithmetic fixture exercises the raw codec on all pose
+		// coordinates. These unit coefficients never create a gameplay actor.
+		SKinematic Forced = Initial;
+		Forced.Acceleration = FVector(1, 1, 1);
+		Forced.AngularAcceleration = FVector(0, 0, 1);
+		Owner->SetKinematicState(Forced);
+		SKinematic Expected = Forced;
 		Expected.Quantize(PreviousRotation);
 		Owner->QuantizePhysicalState();
-		TestTrue(TEXT("unbound world retains ordinary pose quantization"),
+		TestTrue(TEXT("unbound forced pose follows the ordinary codec without stale contact preservation"),
 			Owner->GetPhysCOMLocation() == Expected.Location && Owner->GetPhysRotation() == Expected.Rotation);
 		Owner->SetKinematicState(Initial);
 		Owner->SetStaticCollisionWorldForFrame(&World);
