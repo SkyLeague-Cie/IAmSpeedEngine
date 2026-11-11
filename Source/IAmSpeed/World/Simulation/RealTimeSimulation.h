@@ -92,6 +92,7 @@ protected:
 	void OnOwnedWorkerStarting() override;
 	void OnOwnedSimulationPaused() override;
 	void OnOwnedSimulationResumed() override;
+    void OnOwnedInputWaitEnded() override;
 
 private:
 #if !UE_BUILD_SHIPPING

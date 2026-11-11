@@ -7,6 +7,7 @@
 #include "GameFramework/Actor.h"
 #include "CanonicalFrameDriver.h"
 #include "SimulationFrameJournal.h"
+#include "CompletedSimulationPublication.h"
 #include "SimulationWorker.h"
 #include "LiveSimulationBoundary.h"
 #include "IAmSpeed/World/Analytic/AnalyticCaseSatDiagnostics.h"
@@ -63,6 +64,7 @@ class IAMSPEED_API ASpeedPhysicsSimulation : public ASpeedSimulation
 #if WITH_DEV_AUTOMATION_TESTS
 	friend class FIAmSpeedWheelSimulationAdmissionTest;
 	friend class FIAmSpeedProducedInputWorkerOrderTest;
+	friend class FIAmSpeedPresentationClientPendingWorldTest;
 	friend class FIAmSpeedNativeCarsCamera1217;
  friend class FIAmSpeedNativeAnalyticContacts1221;
 	friend class FIAmSpeedNativeAnalyticGrounded1368;
@@ -164,16 +166,24 @@ public:
 		const Speed::Input::V2::FBoundaryCommandDescriptor& Command,
 		std::shared_ptr<Speed::Input::V2::FRawAcquisitionJournal> Journal = {},
 		std::shared_ptr<Speed::Input::V2::FInputObservationChannel> Observation = {},
-		std::shared_ptr<Speed::Input::V2::FAIInputCommands> AI = {});
+		std::shared_ptr<Speed::Input::V2::FAIInputCommands> AI = {},
+        std::shared_ptr<Speed::Netcode::FExactRemoteInputIngress> Remote = {});
+    /** Dedicated authority only, frozen before any worker or input admission. */
+    bool ConfigureExactRemoteInputHost(uint32 RequiredSessions);
+    /** Explicit policy mode for original Device frames; no default activation or client-selected policy. */
+    bool ConfigureOriginalDeviceRemoteInputHost(uint32 RequiredSessions, Speed::Input::V2::EExactRemoteAdmission Admission);
 	uint64 AllocateInputCommandId() { check(IsInGameThread()); return NextInputCommandId == MAX_uint64 ? 0 : NextInputCommandId++; }
 	std::optional<Speed::Input::V2::FBoundaryReceipt> ReadInputSessionReceipt(uint64 Id) const;
 	bool AcknowledgeInputSessionReceipt(uint64 Id) { return InputSessionCommands->Acknowledge(Id); }
 	std::shared_ptr<const Speed::Input::V2::FInputRegistryView> ReadInputRegistryView() const;
 	std::shared_ptr<const Speed::Input::V2::FRegistryFrame> ReadCompletedInputFrame() const;
+	/** Retain one immutable completed world/input pair; no fullstate, branch, current-input or restore capability. */
+	std::shared_ptr<const Speed::FCompletedSimulationPublication> ReadCompletedWorldAndInputFrame() const;
 	uint64 GetInputWorkerGeneration() const { return InputWorkerGeneration; }
 	/** GT opt-in private observer. Reads existing state; never submits/ACKs input or changes a gate. */
 	void ObservePrivateInputStartup(EPrivateInputStartupObservation Observation,
 		uint64 Command = 0, uint64 Session = 0, uint64 Epoch = 0) const;
+	bool HasOwnedWorkerForPresentationAdmission() const { check(IsInGameThread()); return SimulationWorker != nullptr; }
 	bool InputOwnersRetiredAfterJoin(uint64 Generation) const
 	{ return Generation == InputWorkerGeneration && bInputOwnerRetired.Load() && bInputOwnersClosedOnWorker.Load() && !SimulationWorker; }
 	/** Pauses the owned execution lane without changing the canonical frame. */
@@ -241,6 +251,8 @@ protected:
 	/** Executes one driver pulse on whichever thread currently owns simulation. */
 	virtual ESimulationWorkerResult DriveSimulation(float DeltaTime, float SimTime)
 		PURE_VIRTUAL(ASpeedPhysicsSimulation::DriveSimulation, return ESimulationWorkerResult::Failed;);
+    /** Owner-only completion request at a quiescent boundary, before input admission. */
+    virtual bool CompleteOwnedWorkerAtBoundary() { return false; }
 	/** Executes one interruptible worker pulse; FastSimulation specializes its granularity. */
 	virtual ESimulationWorkerResult DriveOwnedWorkerPulse(float DeltaTime, float SimTime)
 	{
@@ -255,6 +267,8 @@ protected:
 	virtual void OnOwnedWorkerStarting() {}
 	virtual void OnOwnedSimulationPaused() {}
 	virtual void OnOwnedSimulationResumed() {}
+    /** Rebase wall-clock pacing after input starvation; physical time stays fixed. */
+    virtual void OnOwnedInputWaitEnded() {}
 	virtual bool ShouldMeasureCallback() const { return true; }
 	/** Optional pure camera evaluator hook; false leaves the sample unpublished. */
 	virtual bool BuildCanonicalCameraSample(const FSimulationSnapshot& Snapshot,
@@ -331,6 +345,8 @@ private:
     Speed::Diagnostics::CaseCoverage276::FDriverLedger IndependentFastCoverage276;
 #endif
 	bool bPublishPresentation = false;
+	// Immutable after BeginPlay, before worker creation. Native qualification remains separate.
+	bool bPublishCompletedWorldInput = false;
 	TSharedRef<TAtomic<bool>, ESPMode::ThreadSafe> PresentationRetiredAfterJoin = MakeShared<TAtomic<bool>, ESPMode::ThreadSafe>(false);
 	bool bPresentationBindingClosed = false;
 	TAtomic<bool> bReplayCaptureRequested{false};
@@ -361,12 +377,17 @@ private:
 	std::unique_ptr<Speed::Input::V2::FInputSessionRegistry> InputSessionRegistry;
 	Speed::Concurrency::TAtomicSharedPtr<const Speed::Input::V2::FInputRegistryView> PublishedInputRegistry{};
 	Speed::Concurrency::TAtomicSharedPtr<const Speed::Input::V2::FRegistryFrame> PublishedInputFrame{};
+	Speed::Concurrency::TAtomicSharedPtr<const Speed::FCompletedSimulationPublication> PublishedCompletedWorldInput{};
 	FCriticalSection InputSessionAdmissionMutex;
 	std::vector<Speed::Input::V2::FInputSessionRegistry::FJournalService> PendingInputJournals;
 	std::map<uint64, std::shared_ptr<Speed::Input::V2::FInputObservationChannel>> InputObservations;
 	std::vector<std::pair<uint64, std::shared_ptr<Speed::Input::V2::FInputObservationChannel>>> PendingInputObservations;
 	uint64 InputWorkerGeneration = 0, NextInputCommandId = 1;
 	TAtomic<bool> bInputSessionAdmissionRequested = false;
+    uint32 RequiredExactRemoteInputSessions = 0; // frozen GT configuration before worker creation
+    Speed::Input::V2::EExactRemoteAdmission ConfiguredRemoteInputAdmission = Speed::Input::V2::EExactRemoteAdmission::Closed;
+    bool bExactRemoteInputWaiting = false; // worker only
+    bool bInputCommandBoundaryDirty = false; // protected by InputSessionAdmissionMutex
 	TAtomic<bool> bInputOwnersClosedOnWorker = false;
 	uint64 NeutralizedInputRegistryVersion = MAX_uint64;
 	bool bInputNeutralizedDuringPause = false;

@@ -12,6 +12,7 @@ class IAMSPEED_API USafeNetworkPhysicsComponent : public UNetworkPhysicsComponen
 	GENERATED_BODY()
 
 public:
+	virtual void OnRegister() override;
 	virtual void InitializeComponent() override;
 	virtual void UninitializeComponent() override;
 	virtual void BeginDestroy() override;

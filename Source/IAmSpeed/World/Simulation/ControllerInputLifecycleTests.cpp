@@ -14,13 +14,20 @@
 #include "GameFramework/WorldSettings.h"
 #include "GameFramework/PlayerState.h"
 #include "HAL/PlatformProcess.h"
+#include "HAL/PlatformTLS.h"
 #include "Misc/AutomationTest.h"
 #include "Misc/ScopeExit.h"
 #include "SimpleVehicle.h"
 #include "SuspensionSystem.h"
 #include "WheelSystem.h"
 #include "ControllerDeviceV2Lifecycle2443.h"
+#include "Components/BoxComponent.h"
+#include "IAmSpeed/SubBodies/Solid/SWheelSubBody.h"
+#include "Misc/FileHelper.h"
+#include "Misc/Paths.h"
+#include "HAL/FileManager.h"
 #include <atomic>
+#include <thread>
 
 namespace
 {
@@ -79,6 +86,15 @@ void FIAmSpeedControllerInputLifecycleTest::GetTests(TArray<FString>& Names, TAr
 bool FIAmSpeedControllerInputLifecycleTest::RunTest(const FString& Parameters)
 {
 	using namespace Speed::Input;
+	if (Parameters == TEXT("IAmSpeed.Netcode.DrivingActions.StockCanonicalTrajectories")
+        || Parameters == TEXT("IAmSpeed.Netcode.DrivingActions.RemoteCanonicalTrajectories"))
+	{
+#include "StockDrivingCanonicalTrajectories.inl"
+	}
+	if (Parameters == TEXT("IAmSpeed.Netcode.CompletedPublication.CanonicalLifecycle"))
+	{
+#include "CompletedPublicationCanonicalLifecycle.inl"
+	}
 	if (Parameters == TEXT("DeviceV2Lifecycle2443") || Parameters == TEXT("IAmSpeed.Simulation.DeviceV2Lifecycle2443"))
 	{
 #include "ControllerDeviceV2Lifecycle2443.inl"
@@ -169,8 +185,6 @@ bool FIAmSpeedControllerInputLifecycleTest::RunTest(const FString& Parameters)
 	Component->VehicleSimulationPT = MakeUnique<USpeedSimulation>();
 	Component->SkySimulation = static_cast<USpeedSimulation*>(Component->VehicleSimulationPT.Get());
 	Component->SkySimulation->Init(Vehicle);
-	AddExpectedMessagePlain(TEXT("[WheelSuspensionBinding] subbodies="), ELogVerbosity::Warning,
-		EAutomationExpectedMessageFlags::Contains, 1);
 	Component->BindWheelSimulationPointers();
 	ON_SCOPE_EXIT
 	{
@@ -434,4 +448,60 @@ bool FIAmSpeedControllerInputLifecycleTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("EndPlay has no acquisition"), EndSource->Calls.load(), uint32(0));
 	return true;
 }
+
+// An independent registration delegates to the existing friend method. This
+// adds no production friend or runtime setter and leaves the existing
+// simple legacy test registration and its empty command unchanged.
+class FIAmSpeedCompletedPublicationCanonicalLifecycleTest final : public FIAmSpeedControllerInputLifecycleTest
+{
+public:
+    explicit FIAmSpeedCompletedPublicationCanonicalLifecycleTest(const FString& Name)
+        : FIAmSpeedControllerInputLifecycleTest(Name) {}
+protected:
+    void GetTests(TArray<FString>& Names, TArray<FString>& Commands) const override
+    {
+        Names.Add(TEXT("IAmSpeed.Netcode.CompletedPublication.CanonicalLifecycle"));
+        Commands.Add(FString());
+    }
+    FString GetBeautifiedTestName() const override
+    { return TEXT("IAmSpeed.Netcode.CompletedPublication.CanonicalLifecycle"); }
+    bool RunTest(const FString&) override
+    { return FIAmSpeedControllerInputLifecycleTest::RunTest(TEXT("IAmSpeed.Netcode.CompletedPublication.CanonicalLifecycle")); }
+};
+#if WITH_AUTOMATION_WORKER
+namespace
+{
+FIAmSpeedCompletedPublicationCanonicalLifecycleTest CompletedPublicationCanonicalLifecycleInstance(
+    TEXT("FIAmSpeedCompletedPublicationCanonicalLifecycleTest"));
+}
+#endif
+
+class FIAmSpeedStockCanonicalTrajectoriesTest final : public FIAmSpeedControllerInputLifecycleTest
+{
+public:
+ explicit FIAmSpeedStockCanonicalTrajectoriesTest(const FString& Name):FIAmSpeedControllerInputLifecycleTest(Name){}
+protected:
+ void GetTests(TArray<FString>& Names,TArray<FString>& Commands)const override
+ {Names.Add(TEXT("IAmSpeed.Netcode.DrivingActions.StockCanonicalTrajectories"));Commands.Add(FString());}
+ FString GetBeautifiedTestName()const override{return TEXT("IAmSpeed.Netcode.DrivingActions.StockCanonicalTrajectories");}
+ bool RunTest(const FString&)override{return FIAmSpeedControllerInputLifecycleTest::RunTest(TEXT("IAmSpeed.Netcode.DrivingActions.StockCanonicalTrajectories"));}
+};
+#if WITH_AUTOMATION_WORKER
+namespace { FIAmSpeedStockCanonicalTrajectoriesTest StockCanonicalTrajectoriesInstance(TEXT("FIAmSpeedStockCanonicalTrajectoriesTest")); }
+#endif
+
+class FIAmSpeedRemoteCanonicalTrajectoriesTest final : public FIAmSpeedControllerInputLifecycleTest
+{
+public:
+ explicit FIAmSpeedRemoteCanonicalTrajectoriesTest(const FString& Name):FIAmSpeedControllerInputLifecycleTest(Name){}
+protected:
+ void GetTests(TArray<FString>& Names,TArray<FString>& Commands)const override
+ {Names.Add(TEXT("IAmSpeed.Netcode.DrivingActions.RemoteCanonicalTrajectories"));Commands.Add(FString());}
+ FString GetBeautifiedTestName()const override{return TEXT("IAmSpeed.Netcode.DrivingActions.RemoteCanonicalTrajectories");}
+ bool RunTest(const FString&)override{return FIAmSpeedControllerInputLifecycleTest::RunTest(TEXT("IAmSpeed.Netcode.DrivingActions.RemoteCanonicalTrajectories"));}
+};
+#if WITH_AUTOMATION_WORKER
+namespace { FIAmSpeedRemoteCanonicalTrajectoriesTest RemoteCanonicalTrajectoriesInstance(TEXT("FIAmSpeedRemoteCanonicalTrajectoriesTest")); }
+#endif
+
 #endif

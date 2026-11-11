@@ -1,4 +1,5 @@
 #include "SafeNetworkPhysicsComponent.h"
+#include "IAmSpeed/Netcode/presentation-client/PresentationClientWorld.h"
 
 #include "Physics/PhysScene.h"
 #include "SafeNetworkPhysicsRPCObservation.h"
@@ -94,8 +95,19 @@ void USafeNetworkPhysicsComponent::PrepareAsyncShutdown(const TCHAR* Stage)
 	}
 }
 
+void USafeNetworkPhysicsComponent::OnRegister()
+{
+    if (Speed::Netcode::PresentationClient::SuppressesLocalPhysics(GetWorld()))
+    {
+        if(GetWorld())Speed::Netcode::PresentationClient::Fail(*GetWorld(),TEXT("Unexpected client network physics registration; seamless-travel initialization forbidden"));
+        UActorComponent::OnRegister();return;
+    }
+    Super::OnRegister();
+}
+
 void USafeNetworkPhysicsComponent::InitializeComponent()
 {
+	if (Speed::Netcode::PresentationClient::SuppressesLocalPhysics(GetWorld())) { UActorComponent::InitializeComponent(); return; }
 	if (ShouldBypassNetworkPhysicsLifecycle())
 	{
 		LogBypass(TEXT("InitializeComponent"));
@@ -132,6 +144,7 @@ void USafeNetworkPhysicsComponent::BeginDestroy()
 
 bool USafeNetworkPhysicsComponent::CallRemoteFunction(UFunction* Function, void* Parameters, FOutParmRec* OutParms, FFrame* Stack)
 {
+	if (Speed::Netcode::PresentationClient::SuppressesLocalPhysics(GetWorld())) return false;
 #if !(UE_BUILD_SHIPPING)
     static const bool bPrivateTrace = FParse::Param(FCommandLine::Get(), TEXT("SLBumpPrivateRPCEnvelopeTrace"));
     if (bPrivateTrace && IsInGameThread() && GetWorld() && GetWorld()->IsGameWorld() &&
