@@ -3,6 +3,7 @@
 
 #include "SpeedMovementComponent.h"
 #include "IAmSpeed/World/ReplayInertWorld.h"
+#include "IAmSpeed/World/Collision/PreparedNativeOwnerPoseMutation.h"
 #include "IAmSpeed/World/Simulation/ReplayFieldArchive.h"
 #include "IAmSpeed/World/Simulation/ReplayBaseStateFields.h"
 #include "IAmSpeed/World/Simulation/CanonicalEpisodeTestingScope.h"
@@ -262,7 +263,9 @@ void USpeedMovementComponent::RcvImpactOnSubBody(const USSubBody& SubBody, const
 
 void USpeedMovementComponent::SetKinematicState(const SKinematic& NewKinematicState)
 {
+    Speed::PreparedExecution::FNativeOwnerPoseMutationScope assignment(*this,BasePhysicsState.Kinematic,NewKinematicState);
 	BasePhysicsState.Kinematic = NewKinematicState;
+    assignment.Returned();
 }
 
 void USpeedMovementComponent::RegisterTestVelocity(const FVector& InitialVelocity)

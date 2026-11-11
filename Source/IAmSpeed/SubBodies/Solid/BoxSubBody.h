@@ -13,6 +13,7 @@ class USphereSubBody;
 class USWheelSubBody;
 namespace Speed { struct FBoxRestingSupport; }
 namespace Speed::Analytic { struct FWorldQuery; }
+namespace Speed::PreparedExecution { class FComponentSweepScope; struct FNativeBoxPlanarRefinementValues; }
 
 DECLARE_LOG_CATEGORY_EXTERN(BoxSubBodyLog, Log, All);
 
@@ -23,6 +24,7 @@ UCLASS(ClassGroup = "Collision", hidecategories = (Object, LOD, Lighting, Textur
 class IAMSPEED_API UBoxSubBody : public USolidSubBody, public IBoxSweeper, public ISolidSweeper
 {
     GENERATED_UCLASS_BODY()
+    friend class Speed::PreparedExecution::FComponentSweepScope;
 #if WITH_DEV_AUTOMATION_TESTS
     friend class FIAmSpeedSweeperCandidatesTest;
 #endif
@@ -83,6 +85,9 @@ public:
 #endif
     virtual void Initialize(ISpeedComponent* InParentComponent) override;
 
+    bool ReadCanonicalStepSyncFields(const Speed::FPreparedNativeOwnerBinding& Binding,
+        const FString& Prefix,Speed::FNativePrepareGTFields& Out,
+        Speed::Analytic::Certified::FDistanceBudget& Budget,FString& Reason) const override;
     // --- USubBody overrides ---
     bool SweepTOI(const float& RemainingDelta, float& OutTOI) override;
     void ResolveCurrentHitPrv(const float& delta, const float& SimTime) override;
@@ -210,7 +215,8 @@ private:
     bool TryResolveExactPlanarImpact(bool bNotifyImpact = true);
     /** Refines a candidate plane against the owner-integrated vertices and
      * already established unilateral support; returns only a new contact. */
-    bool RefineExactPlanarTOI(SHitResult& Hit, float Delta) const;
+    bool RefineExactPlanarTOI(SHitResult& Hit, float Delta,
+        Speed::PreparedExecution::FNativeBoxPlanarRefinementValues* Readback = nullptr) const;
     /** Projects only the float-TOI roundoff of an arriving edge/face; never
      * settles a finite tilt or edits the live state before contact validation. */
     void ProjectPlanarEventRoundoff(SKinematic& State, const SHitResult& Hit) const;

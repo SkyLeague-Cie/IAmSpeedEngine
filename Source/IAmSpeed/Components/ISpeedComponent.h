@@ -36,8 +36,9 @@ class USSubBody;
 class USolidSubBody;
 struct SubBodyConfig;
 struct FCanonicalFrameContext;
-enum class ECanonicalFrameAbortReason : uint8 { PreparationFailed, SnapshotPublicationFailed };
+enum class ECanonicalFrameAbortReason : uint8 { PreparationFailed, SnapshotPublicationFailed, TerminalPreparationRetirement };
 namespace Speed { class IStaticCollisionWorld; class FSimulationWorld; }
+namespace Speed::PreparedExecution {class FComponentSweepEvidence;}
 
 #if !UE_BUILD_SHIPPING
 /** Observation-only record of one sub-body candidate considered by a component sweep. */
@@ -66,6 +67,7 @@ struct SComponentTOI
 	TWeakObjectPtr<USSubBody> Resolver;     // SubBody that will resolve the hit at TOI
 	SHitResult Hit;                         // Chosen hit result at TOI
 	uint64 PairKey = 0;                     // Optional: anti-double resolution
+	TSharedPtr<const Speed::PreparedExecution::FComponentSweepEvidence,ESPMode::ThreadSafe> PreparedEvidence;
 #if !UE_BUILD_SHIPPING
 	// Never consulted by physics; carried only by opt-in diagnostics.
 	TArray<SSubBodyTOIDiagnostic, TInlineAllocator<8>> DiagnosticCandidates;

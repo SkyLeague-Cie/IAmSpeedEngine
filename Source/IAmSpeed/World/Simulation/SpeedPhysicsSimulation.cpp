@@ -1,4 +1,6 @@
 #include "SpeedPhysicsSimulation.h"
+#include "IAmSpeed/World/Collision/NativePreparationPrefix.h"
+#include "NativeCanonicalFrameStream.h"
 #include "ReplayPhysicalFrameScope.h"
 #include "ReplayLifecycleBoundary.h"
 #include "Engine/World.h"
@@ -19,13 +21,17 @@
 #endif
 #include "IAmSpeed/World/Simulation/FrameParallelSettings.h"
 #include "IAmSpeed/World/Collision/StaticCollisionWorld.h"
+#include "IAmSpeed/World/Collision/PreparedNativeFrameConsumer.h"
 #include "IAmSpeed/World/Simulation/FramePresentationTasks.h"
 #include "CanonicalFrameContext.h"
+#include "IAmSpeed/World/Collision/PreparedPhysicalExecution.h"
 #include "CanonicalEpisodeTestingScope.h"
 #include "SimulationActorDiagnostics.h"
 #include "OwnedFrameAudit.h"
 #include "RealTimeSimulation.h"
+#include "FastSimulation.h"
 #include "CanonicalFrameDriver.h"
+#include "OnePausedCanonicalWork.h"
 #include "IAmSpeed/World/Analytic/StaticWorldQueryAudit.h"
 #include "IAmSpeed/Base/SUtils.h"
 #include "IAmSpeed/Components/ISpeedComponent.h"
@@ -119,6 +125,14 @@ Token Acquire(ASpeedPhysicsSimulation& H,FString& F)
     if(!Identity(H,*Current,F)){FString Ignore;Release(H,V.Id,Ignore);return 0;}
     return V.Id;
 }
+bool HasActiveHold(ASpeedPhysicsSimulation& H)
+{return IsInGameThread()&&Holds.Contains(Key(H));}
+bool ReadActiveHoldResumeIntent(ASpeedPhysicsSimulation& H,bool& Intent)
+{
+    Intent=false;if(!IsInGameThread())return false;
+    const auto* hold=Holds.Find(Key(H));if(!hold||!hold->Ready)return false;
+    Intent=!hold->InitiallyPaused||Fences[hold->Slot].ResumeRequested.load();return true;
+}
 bool Validate(ASpeedPhysicsSimulation& H,Token T,FString& F)
 {if(!IsInGameThread())return Refuse(F,TEXT("Replay lifecycle requires game thread"));F.Empty();auto* V=Find(H,T);return V?Identity(H,*V,F):Refuse(F,TEXT("Replay lifecycle token is not current owner"));}
 bool SuspendService(ASpeedPhysicsSimulation& H,Token T,FString& F)
@@ -177,10 +191,13 @@ namespace
     // release; no per-actor fields/ABI change and no lookup from physics lane.
     TMap<TWeakObjectPtr<ASpeedPhysicsSimulation>,uint64> ReplayStartupHolds;
     uint64 NextReplayStartupToken=1;
+    TMap<TWeakObjectPtr<ASpeedPhysicsSimulation>,uint64> NativeFrameStartupHolds;
+    uint64 NextNativeFrameStartupToken=1;
     TWeakObjectPtr<ASpeedPhysicsSimulation> ReplayStartupKeyFor(const ASpeedPhysicsSimulation* Host)
     {return TWeakObjectPtr<ASpeedPhysicsSimulation>(const_cast<ASpeedPhysicsSimulation*>(Host));}
     bool HasReplayStartupHoldOnGameThread(const ASpeedPhysicsSimulation* Host)
-    {check(IsInGameThread());return !ReplayStartupHolds.IsEmpty()&&ReplayStartupHolds.Contains(ReplayStartupKeyFor(Host));}
+    {check(IsInGameThread());const auto key=ReplayStartupKeyFor(Host);
+        return ReplayStartupHolds.Contains(key)||NativeFrameStartupHolds.Contains(key);}
 	std::atomic<uint64> NextInputWorkerGeneration{1};
 
 	TAutoConsoleVariable<int32> CVarSimulationPerformanceAudit(
@@ -409,6 +426,25 @@ bool ASpeedPhysicsSimulation::ReadCanonicalCameraSamples(const uint64 FirstFrame
 	return CameraSampleBuffer.ReadRange(FirstFrame, LastFrame, Out);
 }
 
+uint64 ASpeedPhysicsSimulation::TryAcquireNativeFrameStartupHoldBeforeBeginPlay()
+{
+    check(IsInGameThread());
+    if(!::IsValid(this)||IsTemplate()||HasActorBegunPlay()||SimulationWorker||CanonicalNumFrame!=0||
+        bOwnedWorkerTerminal.Load()||bInputOwnerRetired.Load()||!Speed::CanonicalFrameDriver::IsEnabled()||
+        Speed::CanonicalFrameDriver::GetExecutionMode()!=ESimulationExecutionMode::IAmSpeedThread)return 0;
+    for(auto it=NativeFrameStartupHolds.CreateIterator();it;++it)if(!it.Key().IsValid())it.RemoveCurrent();
+    const auto key=ReplayStartupKeyFor(this);
+    if(NativeFrameStartupHolds.Num()>=64||NativeFrameStartupHolds.Contains(key)||
+        !NextNativeFrameStartupToken||NextNativeFrameStartupToken==MAX_uint64)return 0;
+    const uint64 token=NextNativeFrameStartupToken++;NativeFrameStartupHolds.Add(key,token);return token;
+}
+bool ASpeedPhysicsSimulation::ReleaseNativeFrameStartupHold(uint64 token)
+{
+    check(IsInGameThread());const auto key=ReplayStartupKeyFor(this);const auto* held=NativeFrameStartupHolds.Find(key);
+    if(!token||!held||*held!=token)return false;NativeFrameStartupHolds.Remove(key);return true;
+}
+bool ASpeedPhysicsSimulation::IsNativeFrameStartupHeld(uint64 token) const
+{check(IsInGameThread());const auto* held=NativeFrameStartupHolds.Find(ReplayStartupKeyFor(this));return token&&held&&*held==token;}
 uint64 ASpeedPhysicsSimulation::TryAcquireReplayStartupHoldBeforeBeginPlay()
 {
     check(IsInGameThread());
@@ -435,11 +471,23 @@ bool ASpeedPhysicsSimulation::IsReplayStartupHeld(uint64 Token)const
 void ASpeedPhysicsSimulation::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
     if(!ReplayStartupHolds.IsEmpty())ReplayStartupHolds.Remove(ReplayStartupKeyFor(this));
+    NativeFrameStartupHolds.Remove(ReplayStartupKeyFor(this));
 	bPresentationBindingClosed = true;
 #if WITH_DEV_AUTOMATION_TESTS
 	Speed::OwnedFrameAudit::TryExportForHostOnGameThread(this);
 #endif
 	StopOwnedWorker();
+#if !UE_BUILD_SHIPPING
+    // Passive, cumulative closed-frame counters. The owned worker is joined;
+    // this does not request a further pulse or change run completion state.
+    if (IsOwnedWorkerExecutionMode() && PerformanceFrameCount &&
+        FParse::Param(FCommandLine::Get(), TEXT("SLStadiumNativeFastBatch")))
+        UE_LOG(LogTemp, Display, TEXT("[JoinedPhysicalFramePerformance] Boundary=EndPlay Host=%u Cumulative=1 Frames=%llu TotalStepMs=%.9f AverageStepMs=%.9f MaximumStepMs=%.9f WarningFrames=%llu IterationLimits=%llu"),
+            GetUniqueID(), PerformanceFrameCount, PerformanceTotalStepMilliseconds,
+            PerformanceTotalStepMilliseconds / double(PerformanceFrameCount), PerformanceMaximumStepMilliseconds,
+            PerformanceWarningFrameCount, PerformanceIterationLimitCount);
+#endif
+
     Speed::ReplayLifecycle::RetireHost(*this);
 	{
 		FScopeLock Lock(&PresentationProducerMutex);
@@ -482,9 +530,8 @@ void ASpeedPhysicsSimulation::Tick(const float DeltaSeconds)
 			static_cast<double>(FCanonicalFrameContext::CanonicalPhysicalDeltaTime);
 		while (GameThreadAccumulatorSeconds + UE_DOUBLE_SMALL_NUMBER >= FrameIntervalSeconds)
 		{
-			const ESimulationWorkerResult Result = DriveSimulation(
-				FCanonicalFrameContext::CanonicalPhysicalDeltaTime,
-				GetCanonicalPulseSimTime());
+			const ESimulationWorkerResult Result = ExecuteCheckedSimulationPulse([this]()
+            { return DriveSimulation(FCanonicalFrameContext::CanonicalPhysicalDeltaTime, GetCanonicalPulseSimTime()); });
 			if (Result == ESimulationWorkerResult::Failed ||
 				Result == ESimulationWorkerResult::Complete)
 			{
@@ -542,16 +589,20 @@ void ASpeedPhysicsSimulation::RefreshExecutionMode()
 void ASpeedPhysicsSimulation::TransitionExecutionMode(
 	const ESimulationExecutionMode NewMode)
 {
+    if (IsInGameThread() && bStaticWorldPublicationLease) return;
 	if (bInputOwnerRetired.Load()) return;
+    bAsyncPhysicsTickEnabled = false;
+    StopOwnedWorker();
+    Speed::ReplayLifecycle::RetireHost(*this);
+    if (!ValidateAnalyticNumericOwner()) return;
     // A manual unsupported mode change invalidates startup admission; the
     // recording owner must refuse rather than override the requested mode.
-    if(NewMode!=ESimulationExecutionMode::IAmSpeedThread&&!ReplayStartupHolds.IsEmpty())ReplayStartupHolds.Remove(ReplayStartupKeyFor(this));
-	StopOwnedWorker();
-    Speed::ReplayLifecycle::RetireHost(*this);
-	bAsyncPhysicsTickEnabled = false;
+    if(NewMode!=ESimulationExecutionMode::IAmSpeedThread)
+    {ReplayStartupHolds.Remove(ReplayStartupKeyFor(this));NativeFrameStartupHolds.Remove(ReplayStartupKeyFor(this));}
+
 	ResetCanonicalFrame();
 	GameThreadAccumulatorSeconds = 0.0;
-	bOwnedWorkerTerminal.Store(false);
+	bOwnedWorkerTerminal.Store(bCanonicalPublicationTerminal.Load());
 	ActiveExecutionModeValue.Store(static_cast<uint8>(NewMode));
 	bExecutionModeInitialized = true;
 	HostTransitionDelayTicks = NewMode == ESimulationExecutionMode::UnrealAsyncCallback ? 0 : 1;
@@ -563,16 +614,19 @@ void ASpeedPhysicsSimulation::TransitionExecutionMode(
 
 void ASpeedPhysicsSimulation::StartOwnedWorkerIfReady()
 {
-    if(HasReplayStartupHoldOnGameThread(this))
-    { ObservePrivateInputStartup(EPrivateInputStartupObservation::ReplayHold); return; }
-    // Same short-circuit order and exactly the existing readiness call. The
-    // observer labels only the branch already selected by the original guards.
-	if (SimulationWorker)
+    if (IsInGameThread() && bStaticWorldPublicationLease) return;
+    // Never validate GT as numeric owner of an already running worker.
+    // Retain common startup observations around the same terminal guards.
+    if (SimulationWorker)
     { ObservePrivateInputStartup(EPrivateInputStartupObservation::WorkerPresent); return; }
     if (bOwnedWorkerTerminal.Load())
     { ObservePrivateInputStartup(EPrivateInputStartupObservation::WorkerTerminal); return; }
+    if (bCanonicalPublicationTerminal.Load() || !ValidateAnalyticNumericOwner()) return;
+    if (HasReplayStartupHoldOnGameThread(this))
+    { ObservePrivateInputStartup(EPrivateInputStartupObservation::ReplayHold); return; }
     if (!EnsureSimulationWorldReady())
     { ObservePrivateInputStartup(EPrivateInputStartupObservation::WorldNotReady); return; }
+    if (!ValidateAnalyticNumericOwner()) return;
 	InitializeCanonicalFrame(0.0f);
 	OnOwnedWorkerStarting();
 #if WITH_DEV_AUTOMATION_TESTS
@@ -604,14 +658,37 @@ void ASpeedPhysicsSimulation::StartOwnedWorkerIfReady()
 #if WITH_DEV_AUTOMATION_TESTS
 			Speed::OwnedFrameAudit::BeginWork(OwnedAudit, CanonicalNumFrame);
 #endif
-			const ESimulationWorkerResult Result = DriveOwnedWorkerPulse(
-				FCanonicalFrameContext::CanonicalPhysicalDeltaTime,
-				GetCanonicalPulseSimTime());
+			const ESimulationWorkerResult Result = ExecuteCheckedSimulationPulse([this]()
+            {
+                if (Speed::OnePausedWork::IsPreparationPrefixFor(this)||Speed::OnePausedWork::IsPostPrepareInitialPositionFor(this)||Speed::OnePausedWork::IsTerminalStepSyncFor(this)||Speed::OnePausedWork::IsTerminalSphereRsCaptureFor(this)||Speed::OnePausedWork::IsTerminalConsumedPrefixAdvanceFor(this)||Speed::OnePausedWork::IsTerminalRsContactAdvanceFor(this)||Speed::OnePausedWork::IsTerminalRsResponseFor(this)||Speed::OnePausedWork::IsTerminalRsResponseSyncFor(this)||Speed::OnePausedWork::IsTerminalPostSyncRsCaptureFor(this))
+                {
+                    bool noRollback=false;
+                    {FScopeLock lock(&RollbackRequestMutex);noRollback=!PendingRollbackRequest.IsSet();}
+                    if (!Speed::OnePausedWork::BeginRun(this,SpeedWorldSubsystem,SimulationWorker.Get(),
+                        InputWorkerGeneration,CanonicalNumFrame,1,noRollback)) return ESimulationWorkerResult::Failed;
+                    const bool produced=StepCanonicalFrame(MakeCanonicalFrameContext(CanonicalNumFrame));
+                    if(!produced&&Speed::OnePausedWork::HasTerminalConsumedPrefixAdvanceStop(this))return ESimulationWorkerResult::TerminalConsumedPrefixAdvanceStopped;
+                    if(!produced&&Speed::OnePausedWork::HasTerminalRsContactAdvanceStop(this))return ESimulationWorkerResult::TerminalRsContactAdvanceStopped;
+                    if(!produced&&Speed::OnePausedWork::HasTerminalRsResponseStop(this))return ESimulationWorkerResult::TerminalRsResponseStopped;
+                    if(!produced&&Speed::OnePausedWork::HasTerminalPostSyncRsCaptureStop(this))return ESimulationWorkerResult::TerminalPostSyncRsCaptureStopped;
+                    if(!produced&&Speed::OnePausedWork::HasTerminalRsResponseSyncStop(this))return ESimulationWorkerResult::TerminalRsResponseSyncStopped;
+                    if(!produced&&Speed::OnePausedWork::HasTerminalSphereRsCaptureStop(this))return ESimulationWorkerResult::TerminalSphereRsCaptureStopped;
+                    if(!produced&&Speed::OnePausedWork::HasTerminalStepSyncStop(this))return ESimulationWorkerResult::TerminalStepSyncStopped;
+                    if(!produced&&Speed::OnePausedWork::HasPostPrepareInitialPositionStop(this))return ESimulationWorkerResult::PostPrepareInitialPositionStopped;
+                    return !produced&&Speed::OnePausedWork::HasPreparationStop(this)
+                        ? ESimulationWorkerResult::PreparationPrefixStopped : ESimulationWorkerResult::Failed;
+                }
+                const auto nativeContext=MakeCanonicalFrameContext(CanonicalNumFrame);
+                Speed::OnePausedWork::FNativeFrameStreamScope nativeStream(this,SpeedWorldSubsystem,SimulationWorker.Get(),
+                    nativeContext.NumFrame,nativeContext.PhysicalDeltaTime,nativeContext.SimTime);
+                const auto pulse=DriveOwnedWorkerPulse(FCanonicalFrameContext::CanonicalPhysicalDeltaTime, GetCanonicalPulseSimTime());
+                return nativeStream.Finish(pulse,CanonicalNumFrame);
+            });
 #if WITH_DEV_AUTOMATION_TESTS
 			Speed::OwnedFrameAudit::EndWork(OwnedAudit, Result);
 #endif
 			if (Result == ESimulationWorkerResult::Complete ||
-				Result == ESimulationWorkerResult::Failed)
+				Result == ESimulationWorkerResult::Failed || Result == ESimulationWorkerResult::PreparationPrefixStopped || Result == ESimulationWorkerResult::PostPrepareInitialPositionStopped || Result == ESimulationWorkerResult::TerminalStepSyncStopped || Result == ESimulationWorkerResult::TerminalSphereRsCaptureStopped || Result == ESimulationWorkerResult::TerminalConsumedPrefixAdvanceStopped || Result == ESimulationWorkerResult::TerminalRsContactAdvanceStopped || Result == ESimulationWorkerResult::TerminalRsResponseStopped || Result == ESimulationWorkerResult::TerminalRsResponseSyncStopped || Result == ESimulationWorkerResult::TerminalPostSyncRsCaptureStopped)
 			{
 				bOwnedWorkerTerminal.Store(true);
 			}
@@ -692,6 +769,7 @@ void ASpeedPhysicsSimulation::StopOwnedWorker()
 
 bool ASpeedPhysicsSimulation::PrepareControlledInputRun()
 {
+    if (IsInGameThread() && bStaticWorldPublicationLease) return false;
 	check(IsInGameThread());
 	if (GetActiveExecutionMode() != ESimulationExecutionMode::IAmSpeedThread
 		|| bCanonicalPublicationTerminal.Load()) return false;
@@ -735,6 +813,21 @@ void ASpeedPhysicsSimulation::RestartControlledRun()
 	CanonicalReadyDelayPulsesObserved = 0;
 	ResumeOwnedSimulation();
 }
+
+#if !UE_BUILD_SHIPPING
+ESimulationWorkerResult ASpeedPhysicsSimulation::ReadOwnedFastBatchCompletion() const
+{
+    check(IsInGameThread());
+    if(!SimulationWorker)return ESimulationWorkerResult::Failed;
+    // Run publishes the outcome after its worker-side close callback, before
+    // clearing bRunning. A boundary pause ACK is a different observation.
+    if(SimulationWorker->IsRunning())return ESimulationWorkerResult::Idle;
+    if(!SimulationWorker->bClosedAfterNaturalCompletion.Load()||bCanonicalPublicationTerminal.Load()||
+        (bInputSessionAdmissionRequested.Load()&&!bInputOwnersClosedOnWorker.Load()))
+        return ESimulationWorkerResult::Failed;
+    return ESimulationWorkerResult::Complete;
+}
+#endif
 
 ESimulationQuiescence ASpeedPhysicsSimulation::TryPauseOwnedSimulation(const uint32 TimeoutMilliseconds)
 {
@@ -854,6 +947,17 @@ bool ASpeedPhysicsSimulation::JoinOwnedSimulationForInputTeardown()
 	bInputOwnerRetired.Store(true);
 	bOwnedSimulationPaused.Store(true); bOwnedWorkerTerminal.Store(true);
 	StopOwnedWorker();
+#if !UE_BUILD_SHIPPING
+    // Passive, cumulative closed-frame counters. The owned worker is joined;
+    // this does not request a further pulse or change run completion state.
+    if (IsOwnedWorkerExecutionMode() && PerformanceFrameCount &&
+        FParse::Param(FCommandLine::Get(), TEXT("SLStadiumNativeFastBatch")))
+        UE_LOG(LogTemp, Display, TEXT("[JoinedPhysicalFramePerformance] Boundary=InputTeardown Host=%u Cumulative=1 Frames=%llu TotalStepMs=%.9f AverageStepMs=%.9f MaximumStepMs=%.9f WarningFrames=%llu IterationLimits=%llu"),
+            GetUniqueID(), PerformanceFrameCount, PerformanceTotalStepMilliseconds,
+            PerformanceTotalStepMilliseconds / double(PerformanceFrameCount), PerformanceMaximumStepMilliseconds,
+            PerformanceWarningFrameCount, PerformanceIterationLimitCount);
+#endif
+
 	if (SimulationWorker) return false;
 	if (!bInputOwnersClosedOnWorker.Load())
 	{
@@ -872,6 +976,7 @@ bool ASpeedPhysicsSimulation::JoinOwnedSimulationForInputTeardown()
 
 void ASpeedPhysicsSimulation::ResumeOwnedSimulation()
 {
+    if (IsInGameThread() && bStaticWorldPublicationLease) return;
     // Native input/gameplay callers are GT owners. Refuse a foreign-thread
     // resume before consulting GT lifecycle ownership or changing pause state.
     if(!IsInGameThread())return;
@@ -890,6 +995,20 @@ void ASpeedPhysicsSimulation::ResumeOwnedSimulation()
 	// A timed-out structural request remains fail-closed until a later caller
 	// claims its ACK or joins the worker. Do not publish a false resumed state.
 	if (SimulationWorker && SimulationWorker->IsBoundaryServiceSuspendRequested()) return;
+    // Publication readiness does not authorize an ordinary worker pulse.
+    // Input resumes can arrive during the paused native bootstrap. Keep them
+    // paused until the actual first FullFrame has closed and armed this worker.
+    if(Speed::PreparedExecution::Requested())
+    {
+        const auto* provider=SpeedWorldSubsystem?SpeedWorldSubsystem->GetStaticCollisionWorld():nullptr;
+        const auto snapshot=provider?provider->GetPreparedSnapshot():Speed::FPreparedWorldSnapshotPtr{};
+        const auto consumer=provider?provider->GetPreparedNativeFrameConsumer():Speed::FPreparedNativeFrameConsumerPtr{};
+        if(!provider||!provider->IsReadyForPhysicsStep()||!snapshot||!consumer||
+            snapshot->GetOrigin().Host!=this||snapshot->GetOrigin().Bridge!=SpeedWorldSubsystem||
+            snapshot->GetOrigin().World!=GetWorld()||snapshot->GetOrigin().Generation!=GetInputWorkerGeneration()||
+            !consumer->Matches(snapshot,provider->GetPreparedQueryService())||
+            !consumer->IsContinuousStreamArmedFor(SimulationWorker.Get()))return;
+    }
     if (Speed::ReplayLifecycle::DeferResume(this)) return;
 	bOwnedSimulationPaused.Store(false);
 	OnOwnedSimulationResumed();
@@ -935,6 +1054,8 @@ USpeedWorldSubsystem* ASpeedPhysicsSimulation::GetSpeedWorldSubsystem(UWorld* Wo
 
 void ASpeedPhysicsSimulation::AsyncPhysicsTickActor(float Dt, float SimTime)
 {
+    if (bCanonicalPublicationTerminal.Load() || bOwnedWorkerTerminal.Load()) return;
+
 	if (GetActiveExecutionMode() != ESimulationExecutionMode::UnrealAsyncCallback)
 	{
 		return;
@@ -1010,7 +1131,52 @@ void ASpeedPhysicsSimulation::AsyncPhysicsTickActor(float Dt, float SimTime)
 		}
 	};
 
-	DriveSimulation(Dt, SimTime);
+	const auto Result=ExecuteCheckedSimulationPulse([&]() { return DriveSimulation(Dt, SimTime); });
+    if (Result == ESimulationWorkerResult::Failed)
+    { bCanonicalPublicationTerminal.Store(true); bOwnedWorkerTerminal.Store(true); }
+}
+
+bool ASpeedPhysicsSimulation::ValidateAnalyticNumericOwner()
+{
+    if (bCanonicalPublicationTerminal.Load()) return false;
+    const auto* Subsystem=SpeedWorldSubsystem ? SpeedWorldSubsystem : GetSpeedWorldSubsystem(GetWorld());
+    const auto* Data=Subsystem ? Subsystem->GetAnalyticWorldData() : nullptr;
+    const auto Contract=Data ? Data->NumericContract : Speed::Analytic::EAnalyticNumericContract::Unspecified;
+    try
+    {
+        Speed::Analytic::RequireCurrentAnalyticNumericContext(Contract);
+        if(const auto* Provider=Subsystem?Subsystem->GetStaticCollisionWorld():nullptr)
+            Speed::Analytic::RequireCurrentAnalyticNumericContext(Provider->GetNumericContract());
+        return true;
+    }
+    catch (const Speed::Analytic::FAnalyticNumericUnknown& Unknown)
+    {
+        bCanonicalPublicationTerminal.Store(true); bOwnedWorkerTerminal.Store(true);
+        const auto& E=Unknown.Evidence;
+        UE_LOG(LogTemp, Error, TEXT("[AnalyticNumericUnknown] Phase=OwnerPreflight Reason=%u MXCSR=%08X FCW=%04X NewStep=0 Terminal=1"),
+            uint32(E.Failure),E.VectorControl,E.ScalarControl);
+        return false;
+    }
+}
+
+ESimulationWorkerResult ASpeedPhysicsSimulation::ExecuteCheckedSimulationPulse(
+    TFunctionRef<ESimulationWorkerResult()> Work)
+{
+    if (!ValidateAnalyticNumericOwner()) return ESimulationWorkerResult::Failed;
+    try { return Work(); }
+    catch (const Speed::Analytic::FAnalyticNumericUnknown& Unknown)
+    {
+        const auto& E=Unknown.Evidence;
+        UE_LOG(LogTemp, Error, TEXT("[AnalyticNumericUnknown] Phase=Pulse Reason=%u MXCSR=%08X FCW=%04X MutationPossible=1 Terminal=1"),
+            uint32(E.Failure),E.VectorControl,E.ScalarControl);
+    }
+    catch (const std::exception& Error)
+    { UE_LOG(LogTemp, Error, TEXT("[SimulationPulseUnknown] %hs MutationPossible=1 Terminal=1"),Error.what()); }
+    catch (...)
+    { UE_LOG(LogTemp, Error, TEXT("[SimulationPulseUnknown] Unclassified MutationPossible=1 Terminal=1")); }
+    // Terminal failure is not a kinematic rollback. Teardown may still neutralize inputs.
+    bCanonicalPublicationTerminal.Store(true); bOwnedWorkerTerminal.Store(true);
+    return ESimulationWorkerResult::Failed;
 }
 
 bool ASpeedPhysicsSimulation::EnsureSimulationWorldReady()
@@ -1021,7 +1187,7 @@ bool ASpeedPhysicsSimulation::EnsureSimulationWorldReady()
 	}
 	if (!SpeedWorldSubsystem) return false;
 	if (Speed::Analytic::FStaticWorldQueryAudit::IsSurfaceAnalyticBackend() &&
-		!SpeedWorldSubsystem->GetStaticCollisionWorld())
+		(!SpeedWorldSubsystem->GetStaticCollisionWorld() || !SpeedWorldSubsystem->GetStaticCollisionWorld()->IsReadyForPhysicsStep()))
 	{
 		if (!bStaticCollisionReadinessErrorReported)
 		{
@@ -1037,8 +1203,35 @@ bool ASpeedPhysicsSimulation::EnsureSimulationWorldReady()
 
 ESimulationWorkerResult ASpeedPhysicsSimulation::CheckCanonicalRunReadiness()
 {
-	const ECanonicalRunControlState RunState =
-		SpeedWorldSubsystem->GetCanonicalRunControlState();
+    const bool nativeRequested=Speed::PreparedExecution::Requested();
+    const auto nativeContext=MakeCanonicalFrameContext(CanonicalNumFrame);
+    const auto nativeReady=[&]()
+    {
+        const bool supportedNativeHost=IsA<ARealTimeSimulation>()||
+            (GetClass()==AFastSimulation::StaticClass()&&Speed::CanonicalFrameDriver::IsFastSimulationEnabled()&&
+                GetActiveExecutionMode()==ESimulationExecutionMode::IAmSpeedThread);
+        if(!supportedNativeHost||!SpeedWorldSubsystem)return false;
+        {FScopeLock lock(&RollbackRequestMutex);if(PendingRollbackRequest.IsSet())return false;}
+        return Speed::PreparedExecution::FCanonicalFramePreflight::HasCurrentNativeRunControlContext(
+            *this,*SpeedWorldSubsystem,SimulationWorker.Get(),InputWorkerGeneration,CanonicalNumFrame,
+            nativeContext.PhysicalDeltaTime,nativeContext.SimTime);
+    };
+    ECanonicalRunControlState RunState;
+    try
+    {
+        if(nativeRequested&&!nativeReady())throw std::runtime_error("Native run-control context refused");
+        // Actual complete ordered aggregation, exactly once. The factory has
+        // joined these real virtual implementations to the retained census.
+        RunState=SpeedWorldSubsystem->GetCanonicalRunControlState();
+        if(nativeRequested&&!nativeReady())throw std::runtime_error("Native run-control census changed");
+    }
+    catch(...)
+    {
+        if(!nativeRequested)throw;
+        bCanonicalPublicationTerminal.Store(true);bOwnedWorkerTerminal.Store(true);
+        UE_LOG(LogTemp, Error, TEXT("[PreparedRunControlRefused] Current native context/callback closure unavailable"));
+        return ESimulationWorkerResult::Failed;
+    }
 	if (RunState == ECanonicalRunControlState::WaitingForScenario ||
 		(RunState == ECanonicalRunControlState::Uncontrolled &&
 			RequiresCanonicalRunController()))
@@ -1200,10 +1393,20 @@ FCanonicalFrameContext ASpeedPhysicsSimulation::MakeCanonicalFrameContext(const 
 
 bool ASpeedPhysicsSimulation::RunCanonicalFrames(const uint32 FrameCount)
 {
+    if(Speed::OnePausedWork::IsActive())
+    {
+        bool noRollback=false;
+        {FScopeLock lock(&RollbackRequestMutex);noRollback=!PendingRollbackRequest.IsSet();}
+        if(!Speed::OnePausedWork::BeginRun(this,SpeedWorldSubsystem,SimulationWorker.Get(),
+            InputWorkerGeneration,CanonicalNumFrame,FrameCount,noRollback))return false;
+    }
+    if (IsInGameThread() && bStaticWorldPublicationLease) return false;
+    if (!ValidateAnalyticNumericOwner()) return false;
+
 #if !UE_BUILD_SHIPPING
     Speed::Diagnostics::CaseCoverage276::FScopedPreloop CallerPreloop276(IndependentFastCoverage276);
 #endif
-	if (!ProcessPendingRollbackRequest())
+	if (!Speed::OnePausedWork::IsActive() && !ProcessPendingRollbackRequest())
 	{
 #if !UE_BUILD_SHIPPING
         CallerPreloop276.Finish(false);
@@ -1248,6 +1451,10 @@ bool ASpeedPhysicsSimulation::RunCanonicalFrames(const uint32 FrameCount)
 
 void ASpeedPhysicsSimulation::Simulate(const float& DeltaTime, const float& SimTime)
 {
+    if(!Speed::OnePausedWork::RefuseLegacySimulate())throw std::runtime_error("Legacy Simulate forbidden in single canonical Work");
+    if (IsInGameThread() && bStaticWorldPublicationLease) throw std::runtime_error("HostedGT static World publication active");
+    if (!ValidateAnalyticNumericOwner()) throw std::runtime_error("Terminal or incompatible authored analytic simulation");
+
     if (!SpeedWorldSubsystem)
     {
 		SpeedWorldSubsystem = GetSpeedWorldSubsystem(GetWorld());
@@ -1258,7 +1465,11 @@ void ASpeedPhysicsSimulation::Simulate(const float& DeltaTime, const float& SimT
 	}
 
 	const double PhysicalFrameStartSeconds = FPlatformTime::Seconds();
+    {
+        Speed::PreparedExecution::FHostCallScope PhysicalOwner(Speed::PreparedExecution::Requested(),*this,*SpeedWorldSubsystem,SimulationWorker.Get(),InputWorkerGeneration,
+            uint64(NumFrame()),DeltaTime,SimTime,IsOwnedWorkerExecutionMode()&&!bOwnedWorkerTerminal.Load()&&!bCanonicalPublicationTerminal.Load()&&!bInputOwnerRetired.Load()&&!bStaticWorldPublicationLease);
 	SpeedWorldSubsystem->Step(DeltaTime, SimTime, NumFrame());
+    }
 	RecordStepPerformance(
 		(FPlatformTime::Seconds() - PhysicalFrameStartSeconds) * 1000.0);
 }
@@ -1310,6 +1521,14 @@ float ASpeedPhysicsSimulation::GetWarningFrameFraction() const
 
 bool ASpeedPhysicsSimulation::StepCanonicalFrame(const FCanonicalFrameContext& Context)
 {
+    bool resimulation=false;
+#if !UE_BUILD_SHIPPING
+    resimulation=Context.bResimulationForTesting;
+#endif
+    if(!Speed::OnePausedWork::BeginStep(this,Context.NumFrame,resimulation,Context.PhysicalDeltaTime,Context.SimTime))return false;
+    if (IsInGameThread() && bStaticWorldPublicationLease) return false;
+    if (!ValidateAnalyticNumericOwner()) return false;
+
 #if WITH_DEV_AUTOMATION_TESTS
     Speed::OwnedFrameAudit::FCanonicalPhaseScope OwnedPhases(Context.NumFrame);
 #endif
@@ -1328,7 +1547,19 @@ bool ASpeedPhysicsSimulation::StepCanonicalFrame(const FCanonicalFrameContext& C
 
 	FString BindingFailure;
 	bool bAdmitted = false;
-	try { bAdmitted = SpeedWorldSubsystem->BeginCanonicalFrame(BindingFailure); }
+    // Lives through Prepare, Step and EndCanonicalFrame; never a second nested Host.
+    TUniquePtr<Speed::PreparedExecution::FHostCallScope> CanonicalHostOwner;
+    TUniquePtr<Speed::PreparedExecution::FCanonicalFramePreflight> PreparedPreflight;
+    try
+    {
+        if(Speed::PreparedExecution::Requested())CanonicalHostOwner.Reset(new Speed::PreparedExecution::FHostCallScope(
+            Speed::PreparedExecution::Requested(),*this,*SpeedWorldSubsystem,SimulationWorker.Get(),InputWorkerGeneration,
+            Context.NumFrame,Context.PhysicalDeltaTime,Context.SimTime,IsOwnedWorkerExecutionMode()&&!bOwnedWorkerTerminal.Load()&&!bCanonicalPublicationTerminal.Load()&&!bInputOwnerRetired.Load()&&!bStaticWorldPublicationLease));
+        PreparedPreflight.Reset(new Speed::PreparedExecution::FCanonicalFramePreflight(
+            Speed::PreparedExecution::Requested(),*this,*SpeedWorldSubsystem,SimulationWorker.Get(),
+            InputWorkerGeneration,Context.NumFrame,Context.PhysicalDeltaTime,Context.SimTime));
+        bAdmitted = SpeedWorldSubsystem->BeginCanonicalFrame(BindingFailure);
+    }
 	catch (...)
 	{
 		bCanonicalPublicationTerminal.Store(true);
@@ -1406,7 +1637,13 @@ bool ASpeedPhysicsSimulation::StepCanonicalFrame(const FCanonicalFrameContext& C
     OwnedPhases.Mark(Speed::OwnedFrameAudit::ECanonicalEdge::ScenarioInputs);
 #endif
 			ExceptionStage = TEXT("InputPrepareFrame");
-			if (!InputSessionRegistry->PrepareFrame(Context.NumFrame))
+            bool registryPrepared=false;
+            {
+                Speed::PreparationPrefix::FEffectScope effect(Speed::PreparationPrefix::EEffect::PrepareInputRegistry);
+                registryPrepared=InputSessionRegistry->PrepareFrame(Context.NumFrame);
+                effect.Returned(registryPrepared,registryPrepared);
+            }
+			if (!registryPrepared)
 			{
 				const auto Failure = InputSessionRegistry->ReadLastFrameFailure();
                 UE_LOG(LogTemp, Error, TEXT("[CanonicalInputPollRejected] Frame=%llu Reason=%u Session=%llu Epoch=%llu OwnerPresent=%u OwnerStatusPresent=%u OwnerStatus=%u OwnerPhase=%u PollFailure=%u PollSerial=%llu RegistryVersion=%llu"),
@@ -1420,7 +1657,13 @@ bool ASpeedPhysicsSimulation::StepCanonicalFrame(const FCanonicalFrameContext& C
     OwnedPhases.Mark(Speed::OwnedFrameAudit::ECanonicalEdge::InputPrepare);
 #endif
 			ExceptionStage = TEXT("InputInstallAll");
-			if (!InputSessionRegistry->InstallAll())
+            bool registryInstalled=false;
+            {
+                Speed::PreparationPrefix::FEffectScope effect(Speed::PreparationPrefix::EEffect::InstallInputRegistry);
+                registryInstalled=InputSessionRegistry->InstallAll();
+                effect.Returned(registryInstalled,registryInstalled);
+            }
+			if (!registryInstalled)
 			{
 				const auto Failure = InputSessionRegistry->ReadLastFrameFailure();
                 UE_LOG(LogTemp, Error, TEXT("[CanonicalInputInstallRejected] Frame=%llu Reason=%u Session=%llu Epoch=%llu OwnerPresent=%u OwnerStatusPresent=%u OwnerStatus=%u OwnerPhase=%u PollFailure=%u PollSerial=%llu RegistryVersion=%llu"),
@@ -1435,8 +1678,13 @@ bool ASpeedPhysicsSimulation::StepCanonicalFrame(const FCanonicalFrameContext& C
 #endif
 			ExceptionStage = TEXT("InputSnapshotInstall");
 			const auto Installed = InputSessionRegistry->ReadInstalled();
-			if (!Installed || !SpeedWorldSubsystem->InstallCanonicalInputs(*Installed) || !InputSessionRegistry->BeginAll())
-				throw std::runtime_error("canonical input installation rejected");
+            if (!Installed || !SpeedWorldSubsystem->InstallCanonicalInputs(*Installed))
+                throw std::runtime_error("canonical input installation rejected");
+            {
+                Speed::PreparationPrefix::FEffectScope effect(Speed::PreparationPrefix::EEffect::BeginInputRegistry);
+                const bool begun=InputSessionRegistry->BeginAll();effect.Returned(begun,begun);
+                if(!begun)throw std::runtime_error("canonical input beginning rejected");
+            }
 		}
 #if WITH_DEV_AUTOMATION_TESTS
     OwnedPhases.Mark(Speed::OwnedFrameAudit::ECanonicalEdge::InputSnapshot);
@@ -1454,16 +1702,25 @@ bool ASpeedPhysicsSimulation::StepCanonicalFrame(const FCanonicalFrameContext& C
         catch(...) { UE_LOG(LogTemp,Error,TEXT("[FrameAppliedCommandBeginUnknown] Frame=%llu"),Context.NumFrame); }
 #endif
 		ExceptionStage = TEXT("StaticWorldAudit");
+        {
+            Speed::PreparationPrefix::FEffectScope effect(Speed::PreparationPrefix::EEffect::BeginStaticAudit);
 		Speed::Analytic::FStaticWorldQueryAudit::BeginFrame(
 			Context.NumFrame, SpeedWorldSubsystem->GetAnalyticWorldData(),
 			SpeedWorldSubsystem);
-		bAuditStarted = true;
+            bAuditStarted=true; // cleanup must survive a refused After observer
+            effect.Returned();
+        }
 #if WITH_DEV_AUTOMATION_TESTS
     OwnedPhases.Mark(Speed::OwnedFrameAudit::ECanonicalEdge::StaticAudit);
 #endif
 		ExceptionStage = TEXT("SimulationInputJournal");
-		if (InputJournal.IsSealed() &&
-			!SpeedWorldSubsystem->ApplySimulationInputs(Context.NumFrame, InputJournal))
+        bool journalApplied=true;
+        {
+            Speed::PreparationPrefix::FEffectScope effect(Speed::PreparationPrefix::EEffect::ApplyInputJournal);
+            journalApplied=!InputJournal.IsSealed() || SpeedWorldSubsystem->ApplySimulationInputs(Context.NumFrame,InputJournal);
+            effect.Returned(journalApplied,journalApplied);
+        }
+		if (!journalApplied)
 		{
 			if (!bInputConsumptionErrorReported)
 			{
@@ -1492,13 +1749,18 @@ bool ASpeedPhysicsSimulation::StepCanonicalFrame(const FCanonicalFrameContext& C
 #if WITH_DEV_AUTOMATION_TESTS
     OwnedPhases.Mark(Speed::OwnedFrameAudit::ECanonicalEdge::CanonicalInputs);
 #endif
-		bInputConsumptionErrorReported = false;
+        {
+            Speed::PreparationPrefix::FEffectScope effect(Speed::PreparationPrefix::EEffect::ClearInputError);
+            bInputConsumptionErrorReported=false;effect.Returned();
+        }
 
 #if !UE_BUILD_SHIPPING
         ParallelTimingScope.NextPhase(Speed::ParallelTiming::EFrameCostPhase::Prepare);
 #endif
 		IAMSPEED_FRAME_PHASE(Prepare);
 		ExceptionStage = TEXT("WorldPrepare");
+        {
+            Speed::PreparationPrefix::FEffectScope effect(Speed::PreparationPrefix::EEffect::PrepareWorld);
 #if !UE_BUILD_SHIPPING
         {
             Speed::FCanonicalEpisodeTestingScope PrepareOwnerScope(Context);
@@ -1507,15 +1769,55 @@ bool ASpeedPhysicsSimulation::StepCanonicalFrame(const FCanonicalFrameContext& C
 #else
         SpeedWorldSubsystem->PrepareCanonicalFrame(Context);
 #endif
+            effect.Returned();
+        }
 #if WITH_DEV_AUTOMATION_TESTS
     OwnedPhases.Mark(Speed::OwnedFrameAudit::ECanonicalEdge::WorldPrepare);
 #endif
 
+        if((Speed::OnePausedWork::IsPostPrepareInitialPositionFor(this)||Speed::OnePausedWork::IsTerminalStepSyncFor(this)||Speed::OnePausedWork::IsTerminalSphereRsCaptureFor(this)||Speed::OnePausedWork::IsTerminalConsumedPrefixAdvanceFor(this)||Speed::OnePausedWork::IsTerminalRsContactAdvanceFor(this)||Speed::OnePausedWork::IsTerminalRsResponseFor(this)||Speed::OnePausedWork::IsTerminalRsResponseSyncFor(this)||Speed::OnePausedWork::IsTerminalPostSyncRsCaptureFor(this))&&
+            !SpeedWorldSubsystem->DispatchPostPrepareInitialPosition(*this))
+            throw std::runtime_error("Native post-Prepare position action refused before retirement");
+        if (Speed::OnePausedWork::IsPreparationPrefixFor(this)||Speed::OnePausedWork::IsPostPrepareInitialPositionFor(this))
+        {
+            if (!SpeedWorldSubsystem->RetirePreparationInputTransactions(Context)||
+                !Speed::PreparationPrefix::FCursor::Finish(*this))
+                throw std::runtime_error("Native preparation prefix did not reach its closed all-owner stop");
+            // No snapshot, hash, presentation, CompleteAll, Step or ++N. Existing
+            // lexical cleanup ends the audit/canonical-active flag; real worker
+            // retirement later cancels input tokens without physical rollback.
+            bOutcomeHandled=true;
+            return false;
+        }
 #if !UE_BUILD_SHIPPING
         ParallelTimingScope.NextPhase(Speed::ParallelTiming::EFrameCostPhase::WorldStep);
 #endif
 		IAMSPEED_FRAME_PHASE(Core);
 		ExceptionStage = TEXT("WorldStep");
+        const bool terminalAdvance=Speed::OnePausedWork::IsTerminalConsumedPrefixAdvanceFor(this);
+        const bool terminalContactAdvance=Speed::OnePausedWork::IsTerminalRsContactAdvanceFor(this);
+        const bool terminalResponse=Speed::OnePausedWork::IsTerminalRsResponseFor(this);
+        const bool terminalResponseSync=Speed::OnePausedWork::IsTerminalRsResponseSyncFor(this);
+        const bool terminalPostSyncRsCapture=Speed::OnePausedWork::IsTerminalPostSyncRsCaptureFor(this);
+        const bool terminalCapture=Speed::OnePausedWork::IsTerminalSphereRsCaptureFor(this);
+        const bool terminalSync=Speed::OnePausedWork::IsTerminalStepSyncFor(this);
+        if(!(terminalPostSyncRsCapture?Speed::OnePausedWork::BeginTerminalPostSyncRsCapture(this,SpeedWorldSubsystem,
+            SpeedWorldSubsystem->GetStaticCollisionWorld(),Context.NumFrame,Context.PhysicalDeltaTime,Context.SimTime):
+            terminalResponseSync?Speed::OnePausedWork::BeginTerminalRsResponseSync(this,SpeedWorldSubsystem,
+            SpeedWorldSubsystem->GetStaticCollisionWorld(),Context.NumFrame,Context.PhysicalDeltaTime,Context.SimTime):
+            terminalResponse?Speed::OnePausedWork::BeginTerminalRsResponse(this,SpeedWorldSubsystem,
+            SpeedWorldSubsystem->GetStaticCollisionWorld(),Context.NumFrame,Context.PhysicalDeltaTime,Context.SimTime):
+            terminalContactAdvance?Speed::OnePausedWork::BeginTerminalRsContactAdvance(this,SpeedWorldSubsystem,
+            SpeedWorldSubsystem->GetStaticCollisionWorld(),Context.NumFrame,Context.PhysicalDeltaTime,Context.SimTime):
+            terminalAdvance?Speed::OnePausedWork::BeginTerminalConsumedPrefixAdvance(this,SpeedWorldSubsystem,
+            SpeedWorldSubsystem->GetStaticCollisionWorld(),Context.NumFrame,Context.PhysicalDeltaTime,Context.SimTime):
+            terminalCapture?Speed::OnePausedWork::BeginTerminalSphereRsCapture(this,SpeedWorldSubsystem,
+            SpeedWorldSubsystem->GetStaticCollisionWorld(),Context.NumFrame,Context.PhysicalDeltaTime,Context.SimTime):
+            terminalSync?Speed::OnePausedWork::BeginTerminalStepSync(this,SpeedWorldSubsystem,
+            SpeedWorldSubsystem->GetStaticCollisionWorld(),Context.NumFrame,Context.PhysicalDeltaTime,Context.SimTime):
+            Speed::OnePausedWork::BeginWorldStep(this,SpeedWorldSubsystem,
+            SpeedWorldSubsystem->GetStaticCollisionWorld(),Context.NumFrame,Context.PhysicalDeltaTime,Context.SimTime)))
+            throw std::runtime_error("Single canonical physical Step identity refused");
 #if WITH_DEV_AUTOMATION_TESTS
     const uint64 OwnedDiagnosticSerialBefore = OwnedPhases.CapturesPhysicalDetail()
         ? SpeedWorldSubsystem->GetLastStepDiagnostics().Serial : 0;
@@ -1530,11 +1832,18 @@ bool ASpeedPhysicsSimulation::StepCanonicalFrame(const FCanonicalFrameContext& C
         OwnedPhases.CopyPhysicalDetail(SpeedWorldSubsystem->GetLastStepDiagnostics(), OwnedDiagnosticSerialBefore);
 #endif
 
+        if(terminalSync||terminalCapture||terminalAdvance||terminalContactAdvance||terminalResponse||terminalResponseSync||terminalPostSyncRsCapture)
+        {
+            if(!SpeedWorldSubsystem->RetirePreparationInputTransactions(Context)||!Speed::PreparationPrefix::FCursor::Finish(*this))
+                throw std::runtime_error("Native terminal Step sync failed its all-owner retirement");
+            bOutcomeHandled=true;return false;
+        }
 #if !UE_BUILD_SHIPPING
         ParallelTimingScope.NextPhase(Speed::ParallelTiming::EFrameCostPhase::Snapshot);
 #endif
 		IAMSPEED_FRAME_PHASE(Snapshot);
 		ExceptionStage = TEXT("SnapshotCapture");
+        PreparedPreflight->RequireClosedForSnapshot();
 		FSimulationSnapshot Snapshot = SpeedWorldSubsystem->CaptureSimulationSnapshot(
 			Context.NumFrame, InputJournal.StableHash(), bPublishPresentation);
 #if WITH_DEV_AUTOMATION_TESTS
@@ -1760,6 +2069,16 @@ bool ASpeedPhysicsSimulation::StepCanonicalFrame(const FCanonicalFrameContext& C
 		IAMSPEED_FRAME_PHASE(Finalize);
 		return true;
 	}
+	catch (const Speed::Analytic::FAnalyticNumericUnknown& Unknown)
+    {
+        MarkTerminal();
+        const auto& E=Unknown.Evidence;
+        UE_LOG(LogTemp, Error, TEXT("[CanonicalFrameNumericUnknown] Frame=%llu GlobalPublished=%d Stage=%s Reason=%u MXCSR=%08X FCW=%04X MutationPossible=1 Terminal=1"),
+            Context.NumFrame,bGlobalPublished ? 1 : 0,ExceptionStage,uint32(E.Failure),E.VectorControl,E.ScalarControl);
+        if (!bGlobalPublished && !bOutcomeHandled)
+            SpeedWorldSubsystem->AbortCanonicalFrame(Context.NumFrame, ECanonicalFrameAbortReason::PreparationFailed);
+        return false; // Teardown notification is not a kinematic rollback.
+    }
 	catch (const std::exception& Exception)
 	{
 		if (!bGlobalPublished && !bOutcomeHandled)

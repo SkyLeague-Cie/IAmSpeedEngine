@@ -75,6 +75,26 @@ public:
         EOwnerInputStatus Status = EOwnerInputStatus::InvalidBinding;
         std::optional<FToken> Token;
     };
+
+    // Values only. The registry retains the real immutable snapshots and
+    // receipts; no pending-token identity or producer handle is exposed.
+    struct FPreparationReadValues
+    {
+        EOwnerInputPhase Phase = EOwnerInputPhase::Quarantined;
+        EOwnerPollFailure LastPollFailure = EOwnerPollFailure::None;
+        FFrameNumber NextFrame = 0, ReplayNext = 0, ReplayEnd = 0;
+        std::uint64_t PollSerial = 0, FaultSerial = 0, ReplayPass = 0;
+        bool SourcePresent = false, RequireBaseline = false, Exhausted = false;
+        bool Replay = false, ReplayFinished = false;
+        bool PendingPresent = false, TokenPresent = false, TokenMatches = false;
+        FContractFingerprint BindingFingerprint;
+        std::optional<FActionValues> FilterApplied, FilterReplay;
+        std::shared_ptr<const FOwnerInputSnapshot> PendingSnapshot, InitialSnapshot, LastInput;
+        std::shared_ptr<const FOwnerInputReceipt> Latest, ReplayReceipt;
+        std::array<std::shared_ptr<const FOwnerInputReceipt>, HistoryCapacity> History{};
+        std::size_t HistoryCount = 0;
+    };
+
     static std::unique_ptr<FSameFrameInputOwner> Create(std::unique_ptr<IInputProducer> Producer,
         FOwnerInputBinding Binding, FFrameNumber FirstFrame = 0)
     {
@@ -253,6 +273,26 @@ public:
     {
         if (!IsOwner() || CallingSource || Pending || !Source || Initial) return {};
         return Source->InspectBaseline(N);
+    }
+    // Read-only, owner-lane observation of the actual unconsumed initial seed.
+    // This is not Poll, an installed snapshot, or permission to prepare physics.
+    std::optional<FInputFrame> InspectFreshExactScenarioSeed(
+        FFrameNumber N, const FOwnerInputBinding& Expected) const
+    {
+        if (!IsOwner() || FPresentationInputScope::IsActive() || CallingSource ||
+            Phase != EOwnerInputPhase::Idle || Pending || Initial || LastInput || Latest || ReplayReceipt ||
+            Replay || Filter || !RequireBaseline || Exhausted || NextFrame != N ||
+            PollSerial || FaultSerial || ReplayPass || Expected.ProducerContract != EProducerContract::ExactScenario)
+            return {};
+        try
+        {
+            if (!ValidBinding(Source.get(), Expected) || Fingerprint != FingerprintFor(Expected)) return {};
+            const auto Seed = Source->InspectBaseline(N);
+            if (!Seed || !Seed->IsValidFor(*Expected.Contract) || !ValidateAddress(*Seed, N) ||
+                !Seed->GetData().Reset || !Seed->GetData().Transitions.empty()) return {};
+            return Seed;
+        }
+        catch (...) { return {}; }
     }
     bool RetireAtBoundary()
     {
@@ -478,5 +518,35 @@ private:
     FFrameNumber ReplayNext = 0, ReplayEnd = 0;
     std::uint64_t ReplayPass = 0;
     std::shared_ptr<const FHistoryEntry> Initial;
+
+    friend class FInputSessionRegistry;
+    // Only the real registry on the actual owner thread may inspect its own
+    // token. CallingSource/reentrant/presentation reads are refused.
+    std::optional<FPreparationReadValues> ReadPreparationValuesForRegistry(
+        const FToken* Token) const noexcept
+    {
+        if (!IsOwner() || CallingSource || FPresentationInputScope::IsActive()) return {};
+        try
+        {
+            FPreparationReadValues R;
+            R.Phase = Phase; R.LastPollFailure = LastPollFailure;
+            R.NextFrame = NextFrame; R.ReplayNext = ReplayNext; R.ReplayEnd = ReplayEnd;
+            R.PollSerial = PollSerial; R.FaultSerial = FaultSerial; R.ReplayPass = ReplayPass;
+            R.SourcePresent = bool(Source); R.RequireBaseline = RequireBaseline;
+            R.Exhausted = Exhausted; R.Replay = Replay; R.ReplayFinished = ReplayFinished;
+            R.PendingPresent = bool(Pending); R.TokenPresent = Token != nullptr;
+            R.TokenMatches = Token && Matches(*Token);
+            R.BindingFingerprint = Fingerprint;
+            if (Filter) { R.FilterApplied = Filter->Applied; R.FilterReplay = Filter->Replay; }
+            if (Pending) R.PendingSnapshot = Pending->Entry->Snapshot;
+            if (Initial) R.InitialSnapshot = Initial->Snapshot;
+            R.LastInput = LastInput; R.Latest = Latest; R.ReplayReceipt = ReplayReceipt;
+            for (std::size_t N = 0; N < History.size(); ++N)
+                if (History[N]) { R.History[N] = History[N]->Receipt; ++R.HistoryCount; }
+            return R;
+        }
+        catch (...) { return {}; }
+    }
+
 };
 }

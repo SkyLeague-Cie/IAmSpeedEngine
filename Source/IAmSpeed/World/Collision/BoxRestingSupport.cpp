@@ -1,4 +1,5 @@
 #include "BoxRestingSupport.h"
+#include "PreparedCanonicalStaticQueryService.h"
 #include <cfloat>
 
 namespace Speed
@@ -110,6 +111,35 @@ bool TryBuildBoxRestingSupport(
 	Analytic::FWorldQuery Query = BoxQuery;
 	Query.InitialOverlapTolerance = 0.0;
 	Query.DomainTolerance = 0.0;
+	// Capture the SAME four actual ray values once. Their compound envelope can
+	// exclude support even when the finite-floor literal Box query is unavailable.
+	constexpr double ProbeHalfLengthCm = 0.01;
+	Analytic::FWorldQuery CornerQueries[4];
+	FVector ActualCorners[4];
+	auto RayQuery = Query;
+	RayQuery.Shape = Analytic::EQueryShape::Ray;
+	RayQuery.HalfExtent = FVector::ZeroVector;
+	for (int32 PointIndex = 0; PointIndex < 4; ++PointIndex)
+	{
+		const double SignU = (PointIndex & 1) ? 1.0 : -1.0;
+		const double SignV = (PointIndex & 2) ? 1.0 : -1.0;
+		FVector LocalCorner = FVector::ZeroVector;
+		LocalCorner[FaceAxis] = FaceSign * BoxQuery.HalfExtent[FaceAxis];
+		LocalCorner[U] = SignU * BoxQuery.HalfExtent[U];
+		LocalCorner[V] = SignV * BoxQuery.HalfExtent[V];
+		ActualCorners[PointIndex] = BoxQuery.Start + BoxQuery.Rotation.RotateVector(LocalCorner);
+		CornerQueries[PointIndex] = RayQuery;
+		CornerQueries[PointIndex].Start = ActualCorners[PointIndex] + Normal * ProbeHalfLengthCm;
+		CornerQueries[PointIndex].End = ActualCorners[PointIndex] - Normal * ProbeHalfLengthCm;
+	}
+	const auto Prepared = World.GetPreparedQueryService();
+	if (Prepared && Prepared->MatchesPreparedSnapshot(World.GetPreparedSnapshot()) &&
+		Prepared->TryExcludeCanonicalBoxRestingSupport(Query, MakeArrayView(CornerQueries)))
+	{
+		// No nominal miss, accepted hit, provider witness or reaction is created.
+		OutSupport.Result = EBoxRestingSupportResult::NotTouching;
+		return false;
+	}
 	const Analytic::FWorldHit Overlap = World.SweepSingle(Query);
 	OutSupport.Result = EBoxRestingSupportResult::Penetrating;
 	if (Overlap.bStartPenetrating || Overlap.PenetrationDepth > 0.0)
@@ -121,46 +151,19 @@ bool TryBuildBoxRestingSupport(
 
 	FBoxRestingSupport Candidate;
 	Candidate.Normal = Normal;
-	Query.Shape = Analytic::EQueryShape::Ray;
-	Query.HalfExtent = FVector::ZeroVector;
-	// The ray straddles each actual corner. Its length locates a witness only;
-	// the accepted gap below is bounded by floating-point roundoff, not this ray.
-	constexpr double ProbeHalfLengthCm = 0.01;
-    // Only these four values-only corner rays are independent. The preceding
-    // overlap certificate and following first-failing-corner fold retain their
-    // canonical order. With one lane the old early-out path is unchanged.
-    Analytic::FWorldQuery CornerQueries[4];
+    // The prepared exclusion and ordinary queries share the exact captured
+    // four ray values. Preserve the old batch/first-failing-corner order.
     Analytic::FWorldHit CornerHits[4];
     bool bCornerBatchReady = false;
     if (World.GetIndependentQueryLaneLimit() > 1 && 4 >= World.GetMinimumIndependentQueryItems())
-    {
-        for (int32 PointIndex = 0; PointIndex < 4; ++PointIndex)
-        {
-            const double SignU = (PointIndex & 1) ? 1.0 : -1.0;
-            const double SignV = (PointIndex & 2) ? 1.0 : -1.0;
-            FVector LocalCorner = FVector::ZeroVector;
-            LocalCorner[FaceAxis] = FaceSign * BoxQuery.HalfExtent[FaceAxis];
-            LocalCorner[U] = SignU * BoxQuery.HalfExtent[U];
-            LocalCorner[V] = SignV * BoxQuery.HalfExtent[V];
-            const FVector Corner = BoxQuery.Start + BoxQuery.Rotation.RotateVector(LocalCorner);
-            CornerQueries[PointIndex] = Query;
-            CornerQueries[PointIndex].Start = Corner + Normal * ProbeHalfLengthCm;
-            CornerQueries[PointIndex].End = Corner - Normal * ProbeHalfLengthCm;
-        }
         bCornerBatchReady = World.SweepIndependentBatch(CornerQueries, CornerHits);
-    }
+
 	for (int32 PointIndex = 0; PointIndex < 4; ++PointIndex)
 	{
 		const double SignU = (PointIndex & 1) ? 1.0 : -1.0;
 		const double SignV = (PointIndex & 2) ? 1.0 : -1.0;
-		FVector LocalCorner = FVector::ZeroVector;
-		LocalCorner[FaceAxis] = FaceSign * BoxQuery.HalfExtent[FaceAxis];
-		LocalCorner[U] = SignU * BoxQuery.HalfExtent[U];
-		LocalCorner[V] = SignV * BoxQuery.HalfExtent[V];
-		const FVector Corner = BoxQuery.Start + BoxQuery.Rotation.RotateVector(LocalCorner);
-		Query.Start = Corner + Normal * ProbeHalfLengthCm;
-		Query.End = Corner - Normal * ProbeHalfLengthCm;
-		const Analytic::FWorldHit Hit = bCornerBatchReady ? CornerHits[PointIndex] : World.SweepSingle(Query);
+		const FVector& Corner = ActualCorners[PointIndex];
+		const Analytic::FWorldHit Hit = bCornerBatchReady ? CornerHits[PointIndex] : World.SweepSingle(CornerQueries[PointIndex]);
 		OutSupport.Result = EBoxRestingSupportResult::UncertifiedGeometry;
 		OutSupport.WitnessIndex = PointIndex;
 		if (!Hit.bHit || Hit.bStartPenetrating || Hit.PenetrationDepth > 0.0 ||

@@ -6,6 +6,9 @@
 
 namespace Speed
 {
+class FPreparedWorldSnapshot;
+class FPreparedCanonicalStaticQueryService;
+class FPreparedNativeFrameConsumer;
 
 enum class EStaticCollisionBackend : uint8
 {
@@ -18,6 +21,16 @@ class IAMSPEED_API IStaticCollisionWorld
 {
 public:
 	virtual ~IStaticCollisionWorld() = default;
+    // Typed native snapshot access. A backend enum never proves a derived type.
+    virtual TSharedPtr<const FPreparedWorldSnapshot,ESPMode::ThreadSafe> GetPreparedSnapshot() const {return {};}
+    virtual TSharedPtr<const FPreparedCanonicalStaticQueryService,ESPMode::ThreadSafe> GetPreparedQueryService() const {return {};}
+    virtual TSharedPtr<const FPreparedNativeFrameConsumer,ESPMode::ThreadSafe> GetPreparedNativeFrameConsumer() const {return {};}
+
+    // Geometry may be prepared/published before its typed physical consumer is
+    // implemented. Presence alone must never release a canonical frame.
+    virtual bool IsReadyForPhysicsStep() const { return true; }
+    virtual Analytic::EAnalyticNumericContract GetNumericContract() const
+    { return Analytic::EAnalyticNumericContract::Unspecified; }
 	virtual Analytic::FWorldHit SweepSingle(
 		const Analytic::FWorldQuery& Query) const = 0;
     // Caller has already proved query independence. Synchronous barrier; index
@@ -110,6 +123,7 @@ public:
     bool SweepPrefetchBatch1075(TConstArrayView<Analytic::FWorldQuery> Queries,
         TArrayView<Analytic::FWorldHit> OutHits,
         FIndependentQueryBatchStats* OutStats = nullptr) const override;
+    Analytic::EAnalyticNumericContract GetNumericContract() const override { return WorldData.NumericContract; }
     FImmutableStaticQueryIdentity1075 GetImmutableQueryIdentity1075() const override
     { return {&WorldData, &QueryService, ImmutableQueryGeneration1075}; }
     int32 GetMinimumIndependentQueryItems() const override { return MinimumIndependentQueryItems; }

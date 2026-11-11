@@ -8,6 +8,10 @@ using Token=uint64;
 // No UObject layout change; neither token nor proof is accepted from an archive.
 IAMSPEED_API Token Acquire(ASpeedPhysicsSimulation&,FString& Failure);
 IAMSPEED_API bool Validate(ASpeedPhysicsSimulation&,Token,FString& Failure);
+// Read-only GT observations for another native lifecycle participant. They
+// neither acquire a Replay hold nor expose/renew/release its owner's token.
+IAMSPEED_API bool HasActiveHold(ASpeedPhysicsSimulation&);
+IAMSPEED_API bool ReadActiveHoldResumeIntent(ASpeedPhysicsSimulation&,bool&);
 IAMSPEED_API bool SuspendService(ASpeedPhysicsSimulation&,Token,FString& Failure);
 IAMSPEED_API bool ResumeService(ASpeedPhysicsSimulation&,Token,FString& Failure);
 // Only after the actual old input generation has joined; renews under fence.

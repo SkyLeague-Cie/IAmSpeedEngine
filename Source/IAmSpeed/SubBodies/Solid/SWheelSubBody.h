@@ -8,6 +8,7 @@
 #include "SWheelSubBody.generated.h"
 
 namespace Speed::Analytic { struct FAnalyticPrefetchQuery1075; }
+namespace Speed {struct FPreparedNativeOwnerBinding;struct FNativePrepareGTFields;namespace Analytic::Certified {struct FDistanceBudget;}}
 class ISpeedWheeledComponent;
 class UChaosVehicleWheel;
 namespace Chaos
@@ -92,6 +93,22 @@ public:
     }
 #endif
 
+    // Under the authentic closed GT lease and complete retained owner census.
+    // Copies named values only, including private steering/timers/render state.
+    bool ReadCanonicalPrepareWheelForGTInspection(const Speed::FPreparedNativeOwnerBinding& Binding,int32 Index,
+        Speed::FNativePrepareGTFields& Out,Speed::Analytic::Certified::FDistanceBudget& Budget,FString& Reason) const;
+
+    // Exact expected AIR suspension substep on a real copy only. No live
+    // getter/simulate/setter and no owner/frame/physics capability follows.
+    // The caller must close the rest of the native preparation separately.
+    bool PredictColdAirSuspensionPreparation(const Speed::FPreparedNativeOwnerBinding& Binding,int32 Index,
+        float RestoredLastDisplacement,float Delta,Speed::FNativePrepareGTFields& Expected,
+        Speed::Analytic::Certified::FDistanceBudget& Budget,FString& Reason) const;
+    // Complete stored wheel/render projection of the narrow cold AIR substep;
+    // actual owner/control provenance is still the closed producer's obligation.
+    bool PredictColdAirWheelPreparation(const Speed::FPreparedNativeOwnerBinding& Binding,int32 Index,
+        float RestoredLastDisplacement,uint8 RestoredJump,uint8 RestoredGroundFrames,float Delta,
+        Speed::FNativePrepareGTFields& Expected,Speed::Analytic::Certified::FDistanceBudget& Budget,FString& Reason) const;
     // initializer methods
     virtual void Initialize(ISpeedComponent* InParentComponent) override;
     bool TryGetPrescribedSupportVelocity(const FVector& Point,FVector& Velocity) const;

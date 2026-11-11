@@ -428,12 +428,16 @@ USpeedAnalyticCollisionAsset::BuildRuntimeData(
 	const bool bAuthorityProvidersOnly) const
 {
 	using namespace Speed::Analytic;
+	const auto NumericContract = AuthoredSources.IsEmpty() ? EAnalyticNumericContract::Unspecified
+		: EAnalyticNumericContract::Binary64NearestAllowFlush;
+	if (!ValidateCurrentAnalyticNumericContext(NumericContract, OutReason)) return nullptr;
 	const double BuildStartSeconds = FPlatformTime::Seconds();
 	if (!ValidateGeneratedData(OutReason, bAuthorityProvidersOnly))
 	{
 		return nullptr;
 	}
 	TSharedPtr<FAnalyticWorldData> Runtime = MakeShared<FAnalyticWorldData>();
+	Runtime->NumericContract = NumericContract;
 	Runtime->SchemaVersion = SchemaVersion;
 	Runtime->SourceHash = SourceHash;
 	TMap<uint64, const FSpeedAnalyticMeshSourceRecord*> SourcesById;
