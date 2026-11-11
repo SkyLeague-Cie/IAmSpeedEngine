@@ -8,6 +8,7 @@
 #include <mutex>
 #include <optional>
 #include <thread>
+#include <type_traits>
 
 namespace Speed::Input::V2
 {
@@ -415,6 +416,22 @@ public:
         if (Prepared.Owner != this || !Prepared.Publication || !Matches(Prepared.Ticket)) return EDesktopAdmission::Stale;
         using std::swap; swap(State, Prepared.Next); Published.swap(Prepared.Publication);
         Notices.clear(); Overflow = false; Prepared.Owner = nullptr;
+        return EDesktopAdmission::Ready;
+    }
+
+    // Same owner/ticket/notice validation as Commit. The prepared downstream
+    // installer may refuse without advancing this source. No allocations,
+    // notifications or reentry into this source are allowed in Install.
+    template<class TInstall> EDesktopAdmission CommitWith(FPrepared& Prepared,TInstall&& Install)
+    {
+        static_assert(std::is_nothrow_invocable_r_v<bool,TInstall>,"desktop installation must be noexcept bool");
+        if(!IsOwner())return EDesktopAdmission::WrongOwner;
+        std::lock_guard<std::mutex> Lock(Gate);
+        if(EpochExhausted)return EDesktopAdmission::Exhausted;
+        if(Prepared.Owner!=this||!Prepared.Publication||!Matches(Prepared.Ticket))return EDesktopAdmission::Stale;
+        if(!Install())return EDesktopAdmission::Invalid;
+        using std::swap;swap(State,Prepared.Next);Published.swap(Prepared.Publication);
+        Notices.clear();Overflow=false;Prepared.Owner=nullptr;
         return EDesktopAdmission::Ready;
     }
 

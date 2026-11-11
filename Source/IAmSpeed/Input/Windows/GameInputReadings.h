@@ -4,6 +4,7 @@
 // supply Microsoft GameInput v3 include/link dependencies before enabling it.
 // Source-only checkpoint: not included by the Unreal module yet.
 #include "../InputFrame.h"
+#include "../InputAcquisitionWorker.h"
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
@@ -37,6 +38,16 @@ struct FDeviceState
 using FGameInputMapper = std::function<bool(const FDeviceState&, FActionValues&)>;
 enum class EReadBatchStatus { NoChange, Updated, Resynchronize, Error };
 struct FReadBatchResult { EReadBatchStatus Status; HRESULT Error; };
+inline void ObserveCurrentReadingDiagnostic(V2::FNativeInputAvailability* Availability,
+    HRESULT Result, GameInput::v3::GameInputKind Kind, bool Selected) noexcept
+{
+    if (!Availability) return;
+    ++Availability->CurrentReadingCalls;
+    Availability->HasCurrentReadingHResult = true;
+    Availability->LastCurrentReadingHResult = static_cast<std::int32_t>(Result);
+    Availability->LastCurrentReadingKind = Kind == GameInput::v3::GameInputKindKeyboard ? 1 : 2;
+    Availability->LastCurrentReadingSelected = Selected;
+}
 // Diagnostic only: never changes admission, resynchronization or tape contents.
 enum class ERawReadReject : std::uint8_t
 {
@@ -89,7 +100,7 @@ public:
 	// A failed traversal returns no partial batch and requires a new baseline.
 	FRawDeviceReadBatch PollRaw(GameInput::v3::IGameInput& Api,
 		GameInput::v3::IGameInputDevice* Device, GameInput::v3::GameInputKind Kind,
-		FTooOldReadDiagnostic* TooOld = nullptr)
+		FTooOldReadDiagnostic* TooOld = nullptr, V2::FNativeInputAvailability* Availability = nullptr)
 	{
 		FRawDeviceReadBatch Batch;
 		Batch.FreshBaseline = !Cursor;
@@ -101,7 +112,7 @@ public:
 				if (Batch.Count == Batch.States.size()) return false;
 				Batch.States[Batch.Count++] = Staged;
 				return true;
-			}, nullptr, TooOld);
+			}, nullptr, TooOld, Availability, true);
 		if (Batch.Result.Status != EReadBatchStatus::Updated && Batch.Result.Status != EReadBatchStatus::NoChange)
 		{
 			Batch.Count = 0;
@@ -113,7 +124,8 @@ public:
 	FReadBatchResult Poll(GameInput::v3::IGameInput& Api, GameInput::v3::IGameInputDevice* Device,
 		GameInput::v3::GameInputKind Kind, const FGameInputMapper& Mapper,
 		const std::function<bool(const FActionValues&)>& Commit, FReadObservations* Observations = nullptr,
-		FTooOldReadDiagnostic* TooOld = nullptr)
+		FTooOldReadDiagnostic* TooOld = nullptr, V2::FNativeInputAvailability* Availability = nullptr,
+        bool SelectedRead = false)
 	{
 		using namespace GameInput::v3;
 		if (Observations) *Observations = {};
@@ -128,6 +140,7 @@ public:
 			const auto Status = Cursor
 				? Api.GetNextReading(Cursor.Get(), Kind, Device, Next.GetAddressOf())
 				: Api.GetCurrentReading(Kind, Device, Next.GetAddressOf());
+            if (!Cursor) ObserveCurrentReadingDiagnostic(Availability, Status, Kind, SelectedRead);
 			// A quiet device may leave Cursor outside GameInput's bounded history.
 			// If the current singleton is still that exact reading, no input was
 			// lost. A different current reading remains an explicit resync.
@@ -135,6 +148,7 @@ public:
 			{
 				Microsoft::WRL::ComPtr<IGameInputReading> Current;
 				const auto CurrentStatus = Api.GetCurrentReading(Kind, Device, Current.GetAddressOf());
+                ObserveCurrentReadingDiagnostic(Availability, CurrentStatus, Kind, SelectedRead);
 				if (SUCCEEDED(CurrentStatus) && Current && Current.Get() == Cursor.Get())
 					return {Changed ? EReadBatchStatus::Updated : EReadBatchStatus::NoChange, S_OK};
 				if (TooOld)

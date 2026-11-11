@@ -11,6 +11,29 @@ static std::vector<FDiscoveredDevice> Devices() { return {{Id(1),1,2,true},{Id(2
 static FActivityState Button(bool Held) { FActivityState S; S.Buttons[0] = Held; return S; }
 int main()
 {
+    for (bool Reverse : {false,true})
+    {
+        auto C=Config(); C.StartupPreferredKind=EDeviceKind::Gamepad;
+        C.RetainSameKindOwner=true; C.GamepadPriority=true;
+        FDeviceActivityPolicy P(C);auto D=Devices();if(Reverse)std::reverse(D.begin(),D.end());P.Sync(D);
+        for(std::uint8_t N:std::array<std::uint8_t,3>{1,2,3})P.Observe(Id(N),1,100,{});
+        Check(P.Decide(0)->Id==Id(1), "idle readable pad retains startup preference");
+        P.Observe(Id(2),1,101,Button(true));
+        Check(P.Decide(1)->Id==Id(2), "real keyboard press is usable with readable idle pads connected");
+        P.Observe(Id(2),1,102,Button(false));
+        Check(P.Decide(2)->Id==Id(2), "keyboard release does not switch back to a merely readable pad");
+        P.Observe(Id(1),1,103,Button(true));
+        Check(P.Decide(3)->Id==Id(1), "new real pad command can reclaim keyboard owner");
+        P.Observe(Id(1),1,104,Button(false));P.Observe(Id(2),1,105,Button(true));
+        Check(P.Decide(4)->Id==Id(2), "second keyboard command is not permanently suppressed by pad priority");
+        P.Observe(Id(2),1,106,Button(false));P.Decide(5);
+        if(Reverse){P.Observe(Id(2),1,107,Button(true));P.Observe(Id(1),1,107,Button(true));}
+        else{P.Observe(Id(1),1,107,Button(true));P.Observe(Id(2),1,107,Button(true));}
+        Check(P.Decide(6)->Id==Id(1), "simultaneous real claims prefer gamepad independently of observe order");
+        P.SetLock(Id(1));P.Observe(Id(2),1,108,Button(false));P.Observe(Id(2),1,109,Button(true));
+        Check(P.Decide(7)->Id==Id(1), "explicit owner lock still fences keyboard takeover");
+        P.SetLock(std::nullopt);Check(P.Decide(8)->Id==Id(1), "unlock never replays the suppressed keyboard claim");
+    }
 	// A respawn constructs a new activity policy, while the warm catalogue
 	// still exposes both a physical controller and its virtual gamepad.
 	for (unsigned Session = 0; Session < 2; ++Session)
@@ -37,6 +60,61 @@ int main()
 		Check(P.Decide(8)->Id == Id(1), "explicit same-kind lock remains authoritative");
 	}
 
+	// Product priority must retain a claimed pad, not an arbitrary readable
+	// startup mirror. Repeat with a fresh policy as on first spawn/respawn.
+	for (unsigned Session = 0; Session < 2; ++Session)
+	{
+		auto C = Config(30); C.StartupPreferredKind = EDeviceKind::Gamepad;
+		C.RetainSameKindOwner = true; C.GamepadPriority = true;
+		FDeviceActivityPolicy P(C); auto D = Devices(); P.Sync(D);
+		for (auto N : {1,2,3}) P.Observe(Id(static_cast<std::uint8_t>(N)),1,100,{});
+		Check(P.Decide(0)->Id == Id(1), "priority startup pad is readable before any real command");
+		FActivityState ThrottleState; ThrottleState.Axes[1] = 1;
+		P.Observe(Id(3),1,101,ThrottleState);
+		Check(P.Decide(1)->Id == Id(3), "priority real throttle replaces the provisional startup mirror");
+		P.Observe(Id(1),1,102,ThrottleState);
+		Check(P.Decide(2)->Id == Id(3), "priority claimed pad rejects later mirrored throttle");
+		P.Observe(Id(2),1,103,Button(true));
+		Check(P.Decide(3)->Id == Id(3), "configured residence still consumes a temporarily suppressed keyboard claim");
+		P.SetPaused(true); Check(!P.Decide(4), "priority claimed pad stays neutral while paused");
+		P.SetPaused(false);
+		P.Observe(Id(1),1,104,{}); P.Observe(Id(2),1,104,Button(true)); P.Observe(Id(3),1,104,ThrottleState);
+		Check(P.Decide(5)->Id == Id(3), "priority fresh held resume preserves the claimed pad");
+		D[2].Connected = false; P.Sync(D);
+		Check(P.Decide(6)->Id == Id(1), "priority removal falls back to another readable pad");
+		D[2].Connected = true; D[2].Revision = 2; P.Sync(D);
+		Check(P.Decide(7)->Id == Id(1), "priority reconnected pad needs a new revision baseline");
+		Check(!P.Observe(Id(3),1,105,ThrottleState), "priority rejects the former lifecycle revision");
+		P.Observe(Id(3),2,106,ThrottleState);
+		Check(P.Decide(8)->Id == Id(1), "priority held reconnect baseline does not invent an activity claim");
+		P.Observe(Id(3),2,107,{}); P.Observe(Id(3),2,108,ThrottleState);
+		Check(P.Decide(9)->Id == Id(3), "priority new revision throttle replaces a provisional fallback without residence delay");
+		P.Observe(Id(1),1,109,ThrottleState);
+		Check(P.Decide(10)->Id == Id(3), "priority new revision claim is stable against the mirror");
+		P.ResetDevice(Id(1)); P.ResetDevice(Id(3));
+		Check(P.Decide(11)->Id == Id(2), "priority unreadable pads leave the keyboard usable");
+		P.Observe(Id(2),1,110,Button(false)); P.Observe(Id(2),1,111,Button(true));
+		Check(P.Decide(12)->Id == Id(2), "priority fresh keyboard command works while pads are unreadable");
+		P.Observe(Id(3),2,112,ThrottleState);
+		Check(P.Decide(13)->Id == Id(2), "readable held pad baseline cannot override a real keyboard owner");
+		D[0].Connected = D[2].Connected = false; P.Sync(D);
+		Check(P.Decide(14)->Id == Id(2), "priority no-pad fallback keeps the readable keyboard");
+		P.SetLock(Id(8)); Check(!P.Decide(15), "priority unavailable explicit lock remains neutral");
+		P.SetLock(std::nullopt); Check(P.Decide(16)->Id == Id(2), "priority unlocking restores readable keyboard fallback");
+	}
+	{
+		auto C = Config(30); C.StartupPreferredKind = EDeviceKind::Gamepad;
+		C.RetainSameKindOwner = true; C.GamepadPriority = true;
+		FDeviceActivityPolicy P(C); auto D = Devices(); D[0].Connected = D[2].Connected = false; P.Sync(D);
+		P.Observe(Id(2),1,1,{}); P.Observe(Id(2),1,2,Button(true));
+		Check(P.Decide(0)->Id == Id(2), "priority initial keyboard activity is usable without pads");
+		D[0].Connected = D[2].Connected = true; P.Sync(D);
+		P.Observe(Id(1),1,3,{}); P.Observe(Id(3),1,3,{});
+		Check(P.Decide(1)->Id == Id(2), "late readable pad does not exclude an already active keyboard");
+		FActivityState ThrottleState; ThrottleState.Axes[1] = 1;
+		P.Observe(Id(3),1,4,ThrottleState); P.Observe(Id(2),1,5,Button(false)); P.Observe(Id(2),1,6,Button(true));
+		Check(P.Decide(2)->Id == Id(2), "newer real keyboard activity remains eligible beside a late pad");
+	}
 	Check(FDeviceActivityPolicy::ValidConfig(Config()), "explicit candidate config valid");
 	{
 		auto C=Config(3); C.RetainSameKindOwner=true;

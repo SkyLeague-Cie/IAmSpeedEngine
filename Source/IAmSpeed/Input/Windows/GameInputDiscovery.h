@@ -3,6 +3,7 @@
 #include "GameInputAcquisition.h"
 #include "GameInputWarmCatalogue.h"
 #include "../DeviceDiscovery.h"
+#include "../DesktopInputSource.h"
 #include <cstring>
 #include <type_traits>
 
@@ -20,6 +21,44 @@ class FGameInputDiscovery final : public IInputProducer
 	template<class T> using TComPtr = Microsoft::WRL::ComPtr<T>;
 public:
 	struct FLease { FDeviceSelection Ticket; TComPtr<FDevice> Device; };
+    // Independent catalogue capability: Mouse is never a legacy keyboard kind.
+    struct FDesktopLease
+    {
+        FDeviceId Id{};std::uint64_t Revision=0;
+        V2::EDesktopSubsourceKind Kind=V2::EDesktopSubsourceKind::Keyboard;
+        TComPtr<FDevice> Device;
+    };
+    struct FDesktopSnapshot {std::uint64_t Revision=0;std::vector<FDesktopLease> Devices;};
+    std::optional<FDesktopSnapshot> CaptureDesktop()const
+    {
+        std::lock_guard<std::mutex> Lock(Mailbox);
+        if(Stopping||FAILED(Error)||Catalogue.IsFailed())return {};
+        FDesktopSnapshot Result;Result.Revision=DesktopRevision;
+        for(const auto& P:Records)if(P.second.Connected)
+        {
+            if(P.second.Kinds&1)Result.Devices.push_back({P.first,P.second.Timestamp,V2::EDesktopSubsourceKind::Keyboard,P.second.Device});
+            if(P.second.Mouse)Result.Devices.push_back({P.first,P.second.Timestamp,V2::EDesktopSubsourceKind::Mouse,P.second.Device});
+        }
+        return Result;
+    }
+    template<class TCommit> bool CommitDesktop(const FDesktopSnapshot& Snapshot,TCommit&& Commit)
+    {
+        static_assert(std::is_nothrow_invocable_r_v<bool,TCommit>,"desktop catalogue installation must be noexcept bool");
+        std::lock_guard<std::mutex> Lock(Mailbox);
+        if(Stopping||FAILED(Error)||Catalogue.IsFailed()||Snapshot.Revision!=DesktopRevision)return false;
+        std::size_t Count=0;
+        for(const auto& P:Records)if(P.second.Connected)Count+=std::size_t(bool(P.second.Kinds&1))+std::size_t(P.second.Mouse);
+        if(Count!=Snapshot.Devices.size())return false;
+        for(std::size_t I=0;I<Snapshot.Devices.size();++I)
+        {
+            const auto& L=Snapshot.Devices[I];const auto It=Records.find(L.Id);
+            if(!L.Device||It==Records.end()||!It->second.Connected||It->second.Timestamp!=L.Revision||
+               It->second.Device.Get()!=L.Device.Get()||L.Kind>V2::EDesktopSubsourceKind::Mouse||
+               (L.Kind==V2::EDesktopSubsourceKind::Keyboard?!(It->second.Kinds&1):!It->second.Mouse))return false;
+            for(std::size_t J=0;J<I;++J)if(Snapshot.Devices[J].Id==L.Id&&Snapshot.Devices[J].Kind==L.Kind)return false;
+        }
+        return Commit();
+    }
 	static std::unique_ptr<FGameInputDiscovery> Create(FApi* Api, std::uint64_t ProducerId,
 		const std::array<bool, ActionCount>& Digital)
 	{
@@ -159,7 +198,7 @@ public:
         return Result;
     }
 private:
-	struct FRecord { TComPtr<FDevice> Device; std::uint64_t Timestamp; bool Connected; std::uint8_t Kinds; };
+	struct FRecord { TComPtr<FDevice> Device; std::uint64_t Timestamp; bool Connected; std::uint8_t Kinds; bool Mouse=false; };
 	FGameInputDiscovery(FApi* InApi, std::uint64_t Id, const std::array<bool, ActionCount>& Digital)
 		: Api(InApi), Catalogue(Id, Digital) {}
 	void FailLocked(HRESULT Reason, EGameInputFailureSite Site = EGameInputFailureSite::DiscoveryExternalAcquisition,
@@ -212,6 +251,7 @@ private:
 		const bool Connected = (Current & GameInputDeviceConnected) != 0;
 		const auto Kinds = static_cast<std::uint8_t>(((Info->supportedInput & GameInputKindKeyboard) ? 1 : 0)
 			| ((Info->supportedInput & GameInputKindGamepad) ? 2 : 0));
+        const bool Mouse=(Info->supportedInput&GameInputKindMouse)!=0;
 		const auto It = Records.find(Id);
 		if (It != Records.end())
 		{
@@ -221,7 +261,7 @@ private:
 			if (!Connected && Old.Device.Get() != Device) return;
 			if (Timestamp == Old.Timestamp)
 			{
-				if (Old.Device.Get() == Device && Old.Connected == Connected && Old.Kinds == Kinds) return;
+				if (Old.Device.Get() == Device && Old.Connected == Connected && Old.Kinds == Kinds && Old.Mouse==Mouse) return;
 				const std::uint64_t Details = std::uint64_t(Old.Device.Get() != Device)
                     | (std::uint64_t(Old.Connected) << 1) | (std::uint64_t(Connected) << 2)
                     | (std::uint64_t(Old.Kinds) << 8) | (std::uint64_t(Kinds) << 16);
@@ -231,7 +271,12 @@ private:
 		else if (Records.size() == FDeviceDiscovery::Capacity) { FailLocked(E_OUTOFMEMORY, EGameInputFailureSite::DiscoveryCapacity, Timestamp); return; }
 		const auto Result = Catalogue.Update({Id, Timestamp, Kinds, Connected});
 		if (Result == EDiscoveryUpdate::Failed) { FailLocked(E_UNEXPECTED, EGameInputFailureSite::DiscoveryCatalogueUpdate, Timestamp, 0, static_cast<std::uint64_t>(Result)); return; }
-		Records[Id] = FRecord{TComPtr<FDevice>(Device), Timestamp, Connected, Kinds};
+        if((Kinds&1)||Mouse||(It!=Records.end()&&((It->second.Kinds&1)||It->second.Mouse)))
+        {
+            if(DesktopRevision==UINT64_MAX){FailLocked(E_UNEXPECTED);return;}
+            ++DesktopRevision;
+        }
+		Records[Id] = FRecord{TComPtr<FDevice>(Device), Timestamp, Connected, Kinds,Mouse};
 	}
 	TComPtr<FApi> Api;
 	std::shared_ptr<FGameInputWarmCatalogue> Warm;
@@ -242,6 +287,7 @@ private:
 	std::map<FDeviceId, FRecord> Records;
 	GameInput::v3::GameInputCallbackToken Token = 0;
 	HRESULT Error = S_OK;
+    std::uint64_t DesktopRevision=0;
     std::optional<FGameInputFailureDiagnostic> FirstFailure;
 	bool Registered = false;
 	bool Stopping = false;

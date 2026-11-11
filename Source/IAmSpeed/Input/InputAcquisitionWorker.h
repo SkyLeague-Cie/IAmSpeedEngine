@@ -1,6 +1,7 @@
 #pragma once
 
 #include <chrono>
+#include <cstdint>
 #include <condition_variable>
 #include <memory>
 #include <mutex>
@@ -9,13 +10,28 @@
 
 namespace Speed::Input::V2
 {
-enum class EAcquisitionPumpResult { Installed, NoChange, Neutralized, Rejected, Closed };
+enum class EAcquisitionPumpResult { Installed, NoChange, Neutralized, Rejected, Closed, RetryableUnavailable };
 enum class EAcquisitionStartup { Waiting, Ready, Failed };
+// Passive native-availability metadata; never an input value, identity,
+// selection request or admission/physical-lifecycle decision.
+struct FNativeInputAvailability
+{
+    std::uint32_t ConnectedDevices = 0, KeyboardDevices = 0, GamepadDevices = 0, HybridDevices = 0;
+    std::uint32_t ReadableKeyboards = 0, ReadableGamepads = 0;
+    std::uint64_t CurrentReadingCalls = 0;
+    std::int32_t LastCurrentReadingHResult = 0;
+    std::uint8_t LastCurrentReadingKind = 0; // 0 none, 1 keyboard, 2 gamepad.
+    bool CatalogueObserved = false, HasCurrentReadingHResult = false;
+    bool LastCurrentReadingSelected = false, SelectedTicketPresent = false;
+};
 class IInputAcquisition
 {
 public:
 	virtual ~IInputAcquisition() = default;
 	virtual EAcquisitionPumpResult Pump() = 0;
+    // Existing acquisition owner only, after Pump. Defaults inert for backends
+    // without this optional diagnostic; no platform call is permitted here.
+    virtual std::optional<FNativeInputAvailability> ReadNativeAvailabilityDiagnostic() { return {}; }
 	// Must invalidate consumer-visible cached data before attempting platform
 	// teardown. False may retain callback resources for retry, never live input.
 	virtual bool Close() = 0;
@@ -47,19 +63,38 @@ public:
 	{
 		std::unique_lock<std::mutex> Lock(Gate);
 		if (!Started || Timeout.count() < 0) return false;
-		Changed.wait_for(Lock, Timeout, [&] { return Ready || Finished || Stopping; });
-		return Ready && !Stopping && !Finished;
+		Changed.wait_for(Lock, Timeout, [&] { return Ready || Finished || Stopping
+			|| Result == EAcquisitionPumpResult::RetryableUnavailable; });
+		return Ready && !Stopping && !Finished && Result != EAcquisitionPumpResult::RetryableUnavailable;
 	}
 	// Polled by the host without blocking the game thread during pawn replacement.
 	// A late first publication is accepted only within the configured deadline.
 	EAcquisitionStartup StartupState(std::chrono::milliseconds Timeout) const
 	{
 		std::lock_guard<std::mutex> Lock(Gate);
-		if (!Started || Stopping || Finished || Timeout.count() <= 0) return EAcquisitionStartup::Failed;
+		if (!Started || Stopping || Finished || Timeout.count() <= 0
+			|| Result == EAcquisitionPumpResult::RetryableUnavailable) return EAcquisitionStartup::Failed;
 		if (Ready) return ReadyAt - StartedAt <= Timeout
 			? EAcquisitionStartup::Ready : EAcquisitionStartup::Failed;
 		return std::chrono::steady_clock::now() - StartedAt < Timeout
 			? EAcquisitionStartup::Waiting : EAcquisitionStartup::Failed;
+	}
+	// A deadline failure may replace this attempt only after its owner is drained.
+	// Source rejection, stop and invalid configuration remain terminal failures.
+	bool IsStartupTimedOut(std::chrono::milliseconds Timeout) const
+	{
+		std::lock_guard<std::mutex> Lock(Gate);
+		if (!Started || Stopping || Finished || Timeout.count() <= 0
+			|| Result == EAcquisitionPumpResult::RetryableUnavailable) return false;
+		return Ready ? ReadyAt - StartedAt > Timeout
+			: std::chrono::steady_clock::now() - StartedAt >= Timeout;
+	}
+	// Explicit backend unavailability ends this owner. The host must drain it
+	// before constructing a replacement; generic Rejected never authorizes retry.
+	bool IsRetryableUnavailable() const
+	{
+		std::lock_guard<std::mutex> Lock(Gate);
+		return Started && !Stopping && Result == EAcquisitionPumpResult::RetryableUnavailable;
 	}
 	std::optional<EAcquisitionPumpResult> LastResult() const
 	{ std::lock_guard<std::mutex> Lock(Gate); return Result; }
@@ -106,13 +141,23 @@ private:
 			if (!Ready && (Current == EAcquisitionPumpResult::Installed || Current == EAcquisitionPumpResult::Neutralized))
 			{ ReadyAt = std::chrono::steady_clock::now(); Ready = true; }
 			Changed.notify_all();
-			if (Current == EAcquisitionPumpResult::Closed || Current == EAcquisitionPumpResult::Rejected) break;
+			if (Current == EAcquisitionPumpResult::Closed || Current == EAcquisitionPumpResult::Rejected
+				|| Current == EAcquisitionPumpResult::RetryableUnavailable) break;
 			Deadline += Period;
 			const auto Now = std::chrono::steady_clock::now();
 			// No catch-up burst after a slow OS call. SDK history handles readings
 			// between acquisitions; its overflow is an explicit source failure.
 			if (Deadline <= Now) Deadline = Now + Period;
 			if (Changed.wait_until(Lock, Deadline, [&] { return Stopping; })) break;
+		}
+		{
+			std::unique_lock<std::mutex> Lock(Gate);
+			// The source already neutralized its journal before reporting unavailable.
+			// Stop polling now, but keep that neutral journal readable until the host
+			// quiesces/detaches its physical owner and calls Stop. Close stays on this
+			// acquisition thread; closing early could fault an otherwise viable worker.
+			if (Result == EAcquisitionPumpResult::RetryableUnavailable)
+				Changed.wait(Lock, [&] { return Stopping; });
 		}
 		bool ClosedSource = false;
 		try { ClosedSource = Source->Close(); } catch (...) {}

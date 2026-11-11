@@ -2,6 +2,8 @@
 
 #include "GameInputDiscovery.h"
 #include "GameInputCallbackReadings.h"
+#include "GameInputDesktopSource.h"
+#include "../DesktopPublicationValidation.h"
 #include "../DeviceActivityPolicy.h"
 
 namespace Speed::Input::Windows
@@ -26,6 +28,9 @@ public:
 		FRawDeviceReadBatch Readings;
 		EPollStatus Status = EPollStatus::Disconnected;
 		std::uint64_t AcquisitionTick = 0;
+        std::uint16_t VendorId = 0; // Display metadata from the same selected lease.
+        bool DesktopSelected = false;
+        bool SelectedByActivity = false; // Exact current decision, never held baseline alone.
 	};
 	struct FSelectedRawDeviceDiagnostic
 	{
@@ -103,6 +108,47 @@ public:
 		if (Config) Result->Activity = std::make_unique<FDeviceActivityPolicy>(*Config);
 		return Result;
 	}
+
+    bool EnableDesktopPolicy(std::uint64_t Producer)
+    {
+        std::lock_guard<std::mutex> Lock(Gate);
+        if(!RawMode||!Activity||!Producer||PollAttempted)return false;
+        DesktopEnabled=true;DesktopProducer=Producer;DesktopPolicyId={};
+        for(std::size_t I=0;I<8&&I<DesktopPolicyId.size();++I)DesktopPolicyId[I]=std::uint8_t(Producer>>(I*8));
+        DesktopPolicyId.back()=0xdd;return true;
+    }
+    std::unique_ptr<FGameInputDesktopSource> CreateDesktopCompanion(std::uint64_t Producer)
+    {
+        std::lock_guard<std::mutex> Lock(Gate);
+        return DesktopEnabled&&Producer==DesktopProducer
+            ?FGameInputDesktopSource::Create(Api.Get(),Discovery.get(),Producer):nullptr;
+    }
+    bool SetDesktopCandidate(std::shared_ptr<const V2::FDesktopPublication> Publication,bool MouseActivity)
+    {
+        std::lock_guard<std::mutex> Lock(Gate);
+        if(!DesktopEnabled)return false;
+        if(Publication&&(!V2::ValidateDesktopPublication(*Publication)
+            ||Publication->Baseline.ProducerId!=DesktopProducer||Publication->Baseline.StreamEpoch!=DesktopProducer))return false;
+        bool Changed=bool(DesktopCandidate)!=bool(Publication);
+        if(DesktopCandidate&&Publication)
+        {
+            const auto& A=DesktopCandidate->Baseline.Members;const auto& B=Publication->Baseline.Members;
+            Changed=A.size()!=B.size();
+            if(!Changed)for(std::size_t I=0;I<A.size();++I)if(!(A[I]==B[I])){Changed=true;break;}
+        }
+        if(Changed)
+        {
+            if(DesktopPolicyRevision==UINT64_MAX)return false;
+            ++DesktopPolicyRevision;
+        }
+        DesktopCandidate=std::move(Publication);DesktopMouseActivity=false;
+        if(DesktopCandidate&&MouseActivity&&!DesktopCandidate->RequiresLifecycleEnvelope)
+            for(const auto& C:DesktopCandidate->Changes)
+                if(C.Origin.Source.Kind==V2::EDesktopSubsourceKind::Mouse&&C.Cause==V2::EIngressCause::Hardware&&C.Value!=0)
+                    DesktopMouseActivity=true;
+        return true;
+    }
+
 	// AcquisitionTick is the acquisition owner's clock, never a physics frame.
 	// Sink installs a bounded value batch under the hotplug fence, without
 	// reentering this object. False means nothing was installed: discard all data.
@@ -121,15 +167,28 @@ public:
 		LastAcquisitionTick = AcquisitionTick; PollAttempted = true;
 		if (Activity && !PollActivityLocked(AcquisitionTick))
 		{ LastRawPollReject = ERawPollReject::Activity; return false; }
-		if (HasPending)
-		{
-			if (!Discovery->Select(Pending))
-			{ Discovery->FailAcquisition(E_FAIL); Status = EPollStatus::Failed; LastRawPollReject = ERawPollReject::Selection; return false; }
-			HasPending = false;
-		}
-		const auto Lease = Discovery->AcquireSelected();
+        if(HasPending)
+        {
+            const auto PhysicalChoice=DesktopSelected?FRequest{}:Pending;
+            if(!Discovery->Select(PhysicalChoice))
+            {Discovery->FailAcquisition(E_FAIL);Status=EPollStatus::Failed;LastRawPollReject=ERawPollReject::Selection;return false;}
+            HasPending=false;
+        }
+        if(DesktopEnabled&&DesktopSelected)
+        {
+            if(!ResetCursorsLocked())return false;
+            Active.reset();LastSuccessfulRawReadTick=0;ActiveVendorId=0;Availability.SelectedTicketPresent=false;
+            FSelectedRawBatch Batch;Batch.DesktopSelected=true;Batch.AcquisitionTick=AcquisitionTick;
+            Batch.SelectedByActivity=Activity&&Activity->SelectedByActivity();Batch.Status=EPollStatus::Updated;
+            const bool Accepted=Sink(Batch);Status=Accepted?EPollStatus::Updated:EPollStatus::Failed;
+            if(!Accepted)LastRawPollReject=ERawPollReject::Sink;
+            return Accepted;
+        }
+        const auto Lease = Discovery->AcquireSelected();
+        Availability.SelectedTicketPresent = bool(Lease);
 		FSelectedRawBatch Batch; Batch.AcquisitionTick = AcquisitionTick;
-		if (!Lease) { if (!ResetCursorsLocked()) return false; Active.reset(); LastSuccessfulRawReadTick = 0; }
+        Batch.SelectedByActivity = Activity && Activity->SelectedByActivity();
+		if (!Lease) { if (!ResetCursorsLocked()) return false; Active.reset(); LastSuccessfulRawReadTick = 0; ActiveVendorId = 0; }
 		else
 		{
 			Batch.Ticket = Lease->Ticket;
@@ -138,13 +197,23 @@ public:
 			{
 				Disconnected.reset();
 				if (!Active || !Same(*Active, *Lease))
-				{ if (!ResetCursorsLocked()) return false; Active = Lease; LastSuccessfulRawReadTick = 0; }
+				{
+                    if (!ResetCursorsLocked()) return false; Active = Lease; LastSuccessfulRawReadTick = 0;
+                    ActiveVendorId=0;
+                    // The acquisition worker reads static device metadata
+                    // once per selected lease, never from GT or a sink
+                    // callback that would reenter this object's mutex.
+                    const GameInput::v3::GameInputDeviceInfo* Info=nullptr;
+                    if(Lease->Ticket.Kind==EDeviceKind::Gamepad
+                        &&SUCCEEDED(Lease->Device->GetDeviceInfo(&Info))&&Info)ActiveVendorId=Info->vendorId;
+                }
+                Batch.VendorId=ActiveVendorId;
 				FTooOldReadDiagnostic TooOld;
 				const auto Kind = Lease->Ticket.Kind == EDeviceKind::Keyboard
 					? GameInput::v3::GameInputKindKeyboard : GameInput::v3::GameInputKindGamepad;
 				Batch.Readings = CallbackCursor
-					? CallbackCursor->PollRaw(*Api.Get(), Lease->Device.Get(), Kind)
-					: Cursor.PollRaw(*Api.Get(), Lease->Device.Get(), Kind, &TooOld);
+					? CallbackCursor->PollRaw(*Api.Get(), Lease->Device.Get(), Kind, &Availability)
+					: Cursor.PollRaw(*Api.Get(), Lease->Device.Get(), Kind, &TooOld, &Availability);
 				Error = Batch.Readings.Result.Error;
 				if (Batch.Readings.Result.Status == EReadBatchStatus::Error
 					|| Batch.Readings.Result.Status == EReadBatchStatus::Resynchronize)
@@ -200,6 +269,11 @@ public:
 		if (Batch.Readings.Count) LastSuccessfulRawReadTick = AcquisitionTick;
 		Status = Batch.Status; return true;
 	}
+    V2::FNativeInputAvailability ReadNativeAvailabilityDiagnostic() const
+    {
+        std::lock_guard<std::mutex> Lock(Gate);
+        return Availability; // Copy only; no discovery refresh or OS call.
+    }
 	ERawPollReject GetLastRawPollReject() const
 	{
 		std::lock_guard<std::mutex> Lock(Gate);
@@ -372,6 +446,32 @@ private:
 		Status = EPollStatus::Resynchronized;
 		return true;
 	}
+    void ObserveCatalogueAvailability(const std::vector<FDiscoveredDevice>& Devices)
+    {
+        Availability.CatalogueObserved = true;
+        Availability.ConnectedDevices = Availability.KeyboardDevices = Availability.GamepadDevices = Availability.HybridDevices = 0;
+        for (const auto& Device : Devices) if (Device.Connected)
+        {
+            ++Availability.ConnectedDevices;
+            if (Device.SupportedKinds & 1) ++Availability.KeyboardDevices;
+            if (Device.SupportedKinds & 2) ++Availability.GamepadDevices;
+            if ((Device.SupportedKinds & 3) == 3) ++Availability.HybridDevices;
+        }
+    }
+
+    bool AddDesktopPolicyDevice(std::vector<FDiscoveredDevice>& Devices)
+    {
+        if(!DesktopEnabled)return true;
+        for(const auto& D:Devices)if(D.Id==DesktopPolicyId)return false;
+        // The policy chooses one logical Desktop participant, never a fake
+        // keyboard reading. Its real typed members remain in the publication.
+        Devices.erase(std::remove_if(Devices.begin(),Devices.end(),[](const auto& D){return !(D.SupportedKinds&2);}),Devices.end());
+        for(auto& D:Devices)D.SupportedKinds=2;
+        if(DesktopCandidate&&!DesktopCandidate->Baseline.Members.empty())
+            Devices.push_back({DesktopPolicyId,DesktopPolicyRevision,1,true});
+        return true;
+    }
+
 	bool PollActivityLocked(FFrameNumber Frame)
 	{
 		using namespace GameInput::v3;
@@ -380,14 +480,27 @@ private:
 			Activity->SetLock(PendingLock);
 			AppliedLock.reset(); HasPendingLock = false;
 		}
-		const auto Devices = Discovery->Snapshot();
-		if (!Activity->Sync(Devices)) { Discovery->FailAcquisition(E_OUTOFMEMORY); return false; }
+        auto Devices=Discovery->Snapshot();
+        ObserveCatalogueAvailability(Devices);
+        if(!AddDesktopPolicyDevice(Devices)){Discovery->FailAcquisition(E_FAIL);return false;}
+        if (!Activity->Sync(Devices)) { Discovery->FailAcquisition(E_OUTOFMEMORY); return false; }
 		std::map<FDeviceId, FActivityCursor> Retained;
 		if (!bPaused) for (const auto& D : Devices)
 		{
-			const auto Kind = Activity->Kind(D.Id);
-			if (!Kind) continue;
-			const auto Lease = Discovery->AcquireDevice(D.Id, *Kind);
+            const auto Kind=Activity->Kind(D.Id);
+            if(!Kind)continue;
+            if(DesktopEnabled&&D.Id==DesktopPolicyId)
+            {
+                FActivityState DesktopState;
+                for(const auto& C:DesktopCandidate->Baseline.Contributions)
+                    if(C.Origin.Control.Kind==V2::ERawControlKind::KeyboardUsage)
+                        DesktopState.Buttons[C.Origin.Control.Code]=DesktopState.Buttons[C.Origin.Control.Code]||C.Value!=0;
+                // One acquisition ordinal is the common policy clock in this
+                // composed mode. OS timestamps stay with their own origins.
+                if(!Activity->Observe(D.Id,D.Revision,Frame,DesktopState,DesktopMouseActivity))return false;
+                DesktopMouseActivity=false;continue;
+            }
+            const auto Lease = Discovery->AcquireDevice(D.Id, *Kind);
 			if (!Lease || Lease->Ticket.Device.Revision != D.Revision) continue;
 			auto Old = ActivityCursors.find(D.Id);
 			FActivityCursor Reading;
@@ -402,8 +515,8 @@ private:
 						FActivityState Sample; Sample.Axes = Raw.Axes;
 						if (*Kind == EDeviceKind::Keyboard) Sample.Buttons = Raw.VirtualKeys;
 						else for (std::size_t B = 0; B < 32; ++B) Sample.Buttons[B] = (Raw.GamepadButtons & (std::uint32_t(1) << B)) != 0;
-						return Activity->Observe(D.Id, D.Revision, Raw.TimestampMicroseconds, Sample);
-					}, [](const FActionValues&) { return true; });
+						return Activity->Observe(D.Id,D.Revision,DesktopEnabled?Frame:Raw.TimestampMicroseconds,Sample);
+					}, [](const FActionValues&) { return true; }, nullptr, nullptr, &Availability);
 				if (Result.Status == EReadBatchStatus::Resynchronize || Result.Status == EReadBatchStatus::Error)
 				{
 					Activity->ResetDevice(D.Id); Reading.Cursor.Reset();
@@ -423,12 +536,17 @@ private:
 			if (It != ActivityCursors.end() && It->second.Revision == D.Revision && It->second.Disconnected)
 				D.Connected = false;
 		}
-		if (!Activity->Sync(Latest)) { Discovery->FailAcquisition(E_FAIL); return false; }
+        ObserveCatalogueAvailability(Latest);
+        if(!AddDesktopPolicyDevice(Latest)){Discovery->FailAcquisition(E_FAIL);return false;}
+        if (!Activity->Sync(Latest)) { Discovery->FailAcquisition(E_FAIL); return false; }
+        const auto Readable = Activity->ReadableDeviceCounts();
+        Availability.ReadableKeyboards = static_cast<std::uint32_t>(Readable.first);
+        Availability.ReadableGamepads = static_cast<std::uint32_t>(Readable.second);
 		const auto Choice = Activity->Decide(Frame);
 		if (Activity->IsFailed()) { Discovery->FailAcquisition(E_FAIL); return false; }
-		Pending.reset();
-		if (Choice) Pending = std::make_pair(Choice->Id, Choice->Kind);
-		HasPending = true; return true;
+        Pending.reset();DesktopSelected=DesktopEnabled&&Choice&&Choice->Id==DesktopPolicyId;
+        if(Choice)Pending=std::make_pair(Choice->Id,Choice->Kind);
+        HasPending=true;return true;
 	}
 	void PollLocked(FFrameNumber Frame)
 	{
@@ -500,6 +618,12 @@ private:
 	bool RawMode = false;
 	std::uint64_t LastAcquisitionTick = 0;
 	std::optional<FLease> Active;
+    V2::FNativeInputAvailability Availability;
+    bool DesktopEnabled=false,DesktopSelected=false,DesktopMouseActivity=false;
+    std::uint64_t DesktopProducer=0,DesktopPolicyRevision=0;
+    FDeviceId DesktopPolicyId{};
+    std::shared_ptr<const V2::FDesktopPublication> DesktopCandidate;
+    std::uint16_t ActiveVendorId=0;
 	std::optional<std::pair<FDeviceId, std::uint64_t>> Disconnected;
 	std::optional<FFrameNumber> LastFrame;
 	std::uint64_t Sequence = 0;

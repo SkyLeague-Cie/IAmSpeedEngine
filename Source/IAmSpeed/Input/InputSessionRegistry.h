@@ -27,6 +27,7 @@ struct FSessionDescriptor
     std::uint32_t ResumeRearmMask = 0; // Menu-consumed Boolean actions wait for release after pause.
     std::vector<FSessionActor> Actors;
     std::vector<FInputFrame> Scenario;
+    bool EnableDesktop=false;
     bool AllowScenarioAppend = false; // Test owner only, never a GT producer callback.
 };
 enum class EBoundaryOperation : std::uint8_t { Bind, PauseAll, Resume, Detach, RetireAll };
@@ -145,6 +146,9 @@ private:
         if (D.Contract) for (const auto V : D.Contract->GetFingerprint()) Add(V);
         for (const auto V : D.Processing.Step) Add(V);
         Add(D.ResumeRearmMask);
+        // Preserve legacy identities. Explicit Desktop adds its versioned
+        // contract marker before the bounded actor count (never this value).
+        if(D.EnableDesktop){Add(0x44534b544f505631ULL);Add(FDesktopPublication::ContractFingerprint);}
         Add(D.Actors.size()); for (const auto& A : D.Actors) { Add(A.Id); Add(A.Generation); }
         Add(D.AllowScenarioAppend); Add(D.Scenario.size());
         for (const auto& F : D.Scenario)
@@ -662,6 +666,7 @@ private:
             || (D.Kind != EProducerContract::Device && D.Kind != EProducerContract::ExactScenario && D.Kind != EProducerContract::AI)
             || (D.AllowScenarioAppend && D.Kind != EProducerContract::ExactScenario)
             || (D.ResumeRearmMask && D.Kind != EProducerContract::Device)
+            || (D.EnableDesktop && D.Kind != EProducerContract::Device)
             || ((D.Kind == EProducerContract::ExactScenario || D.Kind == EProducerContract::AI) && !FInputSessionCommands::ExactPolicy(D.Kind, D.Processing)))
         { R.Receipt.Status = EBoundaryStatus::Rejected; return; }
         std::sort(D.Actors.begin(), D.Actors.end());
@@ -708,7 +713,9 @@ private:
             Source = FTestInputProducer::Create(D.Contract, {D.Epoch}, {EProducerKind::Device,D.Producer}, D.First, D.Scenario);
         else if (D.Kind == EProducerContract::AI)
             Source = FAIInputProducer::Create(AI, D.Contract, {D.Epoch}, {EProducerKind::AI,D.Producer}, D.First);
-        else Source = FDeviceInputProducer::Create(Journal, D.Contract, {D.Epoch}, {EProducerKind::Device,D.Producer}, D.First, D.ResumeRearmMask);
+        else Source = D.EnableDesktop
+            ? FDeviceInputProducer::CreateDesktop(Journal,D.Contract,{D.Epoch},{EProducerKind::Device,D.Producer},D.First,D.ResumeRearmMask)
+            : FDeviceInputProducer::Create(Journal,D.Contract,{D.Epoch},{EProducerKind::Device,D.Producer},D.First,D.ResumeRearmMask);
         if (!Source) { Sessions.erase(Slot); R.Receipt.Status = EBoundaryStatus::Rejected; return; }
         ++Constructed;
         FOwnerInputBinding Binding{D.Id, {D.Kind == EProducerContract::AI ? EProducerKind::AI : EProducerKind::Device,D.Producer}, {D.Epoch}, D.Contract, D.Processing, D.Kind};

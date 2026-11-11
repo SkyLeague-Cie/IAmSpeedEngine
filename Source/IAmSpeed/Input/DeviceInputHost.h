@@ -37,6 +37,7 @@ struct FDeviceInputHostConfig
 	std::vector<FControlBinding> Controls;
 	std::uint32_t ResumeRearmMask = 0;
 	std::shared_ptr<FDeviceInputWarmContext> WarmContext;
+    bool EnableDesktop=false; // Explicit typed keyboard+mouse participant.
 };
 // Acquisition-only construction for a menu-owned journal. This does not
 // create a physical descriptor/registry/mapper, start a worker, poll a device,
@@ -47,7 +48,18 @@ struct FDeviceRawAcquisitionConfig
 {
     FActivityConfig Activity{};
     std::shared_ptr<FDeviceInputWarmContext> WarmContext;
+    bool EnableDesktop=false;
 };
+// The product may bridge an additional platform transport on the SAME acquisition
+// worker and journal. The native factory supplied to it bypasses this hook;
+// neither registration nor construction may poll hardware or produce a frame.
+using FDeviceRawAcquisitionFactory = std::shared_ptr<IInputAcquisition>(*)(
+    std::uint64_t, std::shared_ptr<FRawAcquisitionJournal>, const FDeviceRawAcquisitionConfig&);
+using FDeviceRawAcquisitionBridge = std::shared_ptr<IInputAcquisition>(*)(
+    std::uint64_t, std::shared_ptr<FRawAcquisitionJournal>, const FDeviceRawAcquisitionConfig&,
+    FDeviceRawAcquisitionFactory);
+IAMSPEED_API bool RegisterDeviceRawAcquisitionBridge(FDeviceRawAcquisitionBridge Bridge);
+IAMSPEED_API void UnregisterDeviceRawAcquisitionBridge(FDeviceRawAcquisitionBridge Bridge);
 IAMSPEED_API std::shared_ptr<IInputAcquisition> CreateDeviceRawAcquisition(
     std::uint64_t ProducerId, std::shared_ptr<FRawAcquisitionJournal> Journal,
     const FDeviceRawAcquisitionConfig& Config);

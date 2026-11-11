@@ -16,6 +16,19 @@ PRAGMA_POP_PLATFORM_DEFAULT_PACKING
 
 namespace Speed::Input::V2
 {
+namespace { std::atomic<FDeviceRawAcquisitionBridge> ProductRawBridge{nullptr}; }
+bool RegisterDeviceRawAcquisitionBridge(FDeviceRawAcquisitionBridge Bridge)
+{
+    check(IsInGameThread());
+    if (!Bridge) return false;
+    FDeviceRawAcquisitionBridge Expected = nullptr;
+    return ProductRawBridge.compare_exchange_strong(Expected, Bridge);
+}
+void UnregisterDeviceRawAcquisitionBridge(FDeviceRawAcquisitionBridge Bridge)
+{
+    check(IsInGameThread());
+    ProductRawBridge.compare_exchange_strong(Bridge, nullptr);
+}
 #if PLATFORM_WINDOWS && !UE_SERVER
 namespace
 {
@@ -25,8 +38,8 @@ class FNativeGameInputAcquisition final : public IInputAcquisition
 {
 public:
     FNativeGameInputAcquisition(uint64_t Id, FActivityConfig Config, std::shared_ptr<FRawAcquisitionJournal> J,
-        std::shared_ptr<Windows::FGameInputWarmContext> InWarm)
-        : Producer(Id), Activity(Config), Journal(std::move(J)), Warm(std::move(InWarm)) {}
+        std::shared_ptr<Windows::FGameInputWarmContext> InWarm,bool Desktop)
+        : Producer(Id), Activity(Config), Journal(std::move(J)), Warm(std::move(InWarm)),EnableDesktop(Desktop) {}
     EAcquisitionPumpResult Pump() override
     {
         if (Closed) return EAcquisitionPumpResult::Closed;
@@ -46,7 +59,7 @@ public:
                 const HRESULT Created = GameInput::v3::GameInputCreate(Api.GetAddressOf());
                 UE_LOG(LogTemp, Display, TEXT("[InputAcquisitionStage] session=%llu stage=create_exit hresult=0x%08X"), Producer, uint32(Created));
                 if (FAILED(Created))
-                { UE_LOG(LogTemp, Error, TEXT("Independent input GameInputCreate failed: 0x%08X"), uint32(Created)); return EAcquisitionPumpResult::Rejected; }
+                { UE_LOG(LogTemp, Error, TEXT("Independent input GameInputCreate failed: 0x%08X"), uint32(Created)); return EAcquisitionPumpResult::RetryableUnavailable; }
             }
 #if !UE_BUILD_SHIPPING
             const double CreatedAt = FPlatformTime::Seconds();
@@ -72,8 +85,8 @@ public:
                 : Windows::FGameInputSelectedSource::CreateRaw(Api.Get(), Producer, Activity, true);
             UE_LOG(LogTemp, Display, TEXT("[InputAcquisitionStage] session=%llu stage=discovery_exit source=%d"), Producer, int32(bool(Raw)));
             if (!Raw)
-            { ReportWarmFailure(); UE_LOG(LogTemp, Error, TEXT("Independent input GameInput discovery rejected")); return EAcquisitionPumpResult::Rejected; }
-            Source=std::make_unique<Windows::FGameInputRawAcquisition>(std::move(Raw),Journal);
+            { ReportWarmFailure(); UE_LOG(LogTemp, Error, TEXT("Independent input GameInput discovery rejected")); return EAcquisitionPumpResult::RetryableUnavailable; }
+            Source=std::make_unique<Windows::FGameInputRawAcquisition>(std::move(Raw),Journal,EnableDesktop);
 #if !UE_BUILD_SHIPPING
             UE_LOG(LogTemp, Display, TEXT("[InputAcquisitionStartup] game_input_create_ms=%.3f discovery_ms=%.3f catalogue_reused=%d"),
                 1000.0 * (CreatedAt - StartedAt), 1000.0 * (FPlatformTime::Seconds() - CreatedAt), int32(Reused));
@@ -101,6 +114,12 @@ public:
             Report(TEXT("discovery"), Fatal.Discovery);
             Report(TEXT("warm"), Fatal.Warm);
 		}
+        // Poll/neutralization has already fenced cached raw values. A failed
+        // backend cannot recover merely by polling its latched failure again.
+        // Hand retirement to the host: it quiesces/detaches before this owner's
+        // Close runs, then retries a fresh session and a fresh catalogue.
+        if (const auto Fatal = Source->ReadFailureDiagnostics(); Fatal.Discovery || Fatal.Warm)
+            return EAcquisitionPumpResult::RetryableUnavailable;
 #if !UE_BUILD_SHIPPING
         // Observe the installed source only on selection changes. Never poll,
         // select, alter focus or inject a value for this diagnostic.
@@ -119,11 +138,17 @@ public:
 #endif
 		return Result;
     }
+    std::optional<FNativeInputAvailability> ReadNativeAvailabilityDiagnostic() override
+    {
+        return Source ? Source->ReadNativeAvailabilityDiagnostic() : std::nullopt;
+    }
     bool Close() override
     {
         Journal->Close();
         if (Source && !Source->Close()) return false;
-        Source.reset(); Closed=true; return true;
+        Source.reset();
+        if (Warm && !Warm->RetireFailedCatalogue()) return false;
+        Closed=true; return true;
     }
 private:
     uint64_t Producer;
@@ -134,7 +159,7 @@ private:
 #if !UE_BUILD_SHIPPING
     std::optional<FDeviceId> LastReportedDevice;
 #endif
-    bool Closed=false;
+    bool Closed=false,EnableDesktop=false;
 };
 }
 #endif
@@ -167,7 +192,7 @@ std::shared_ptr<FDeviceInputWarmContext> CreateDeviceInputWarmContext()
 {
     return FDeviceInputWarmContext::Create();
 }
-std::shared_ptr<IInputAcquisition> CreateDeviceRawAcquisition(std::uint64_t ProducerId,
+static std::shared_ptr<IInputAcquisition> CreateNativeDeviceRawAcquisition(std::uint64_t ProducerId,
     std::shared_ptr<FRawAcquisitionJournal> Journal, const FDeviceRawAcquisitionConfig& Config)
 {
 #if PLATFORM_WINDOWS && !UE_SERVER
@@ -180,11 +205,19 @@ std::shared_ptr<IInputAcquisition> CreateDeviceRawAcquisition(std::uint64_t Prod
     // The concrete source defers GameInput creation and all native access to
     // Pump on its acquisition worker, exactly as in the existing device host.
     return std::make_shared<FNativeGameInputAcquisition>(ProducerId, Config.Activity,
-        std::move(Journal), std::move(Warm));
+        std::move(Journal), std::move(Warm),Config.EnableDesktop);
 #else
     (void)ProducerId; (void)Journal; (void)Config;
     return {};
 #endif
+}
+
+std::shared_ptr<IInputAcquisition> CreateDeviceRawAcquisition(std::uint64_t ProducerId,
+    std::shared_ptr<FRawAcquisitionJournal> Journal, const FDeviceRawAcquisitionConfig& Config)
+{
+    if (const auto Bridge = ProductRawBridge.load())
+        return Bridge(ProducerId, std::move(Journal), Config, &CreateNativeDeviceRawAcquisition);
+    return CreateNativeDeviceRawAcquisition(ProducerId, std::move(Journal), Config);
 }
 
 FStreamEpoch AllocateInputStreamEpoch()
@@ -201,7 +234,7 @@ std::shared_ptr<FInputHostSession> CreateDeviceInputHost(const FDeviceInputHostC
 #if PLATFORM_WINDOWS && !UE_SERVER
 	if (!Config.Contract)
 	{ UE_LOG(LogTemp, Error, TEXT("Independent input host rejected: contract missing")); return {}; }
-	if (const auto Unsupported = FActionMapper::UnsupportedContract(*Config.Contract))
+	if (const auto Unsupported = Config.EnableDesktop?FActionMapper::UnsupportedDesktopContract(*Config.Contract):FActionMapper::UnsupportedContract(*Config.Contract))
 	{
 		const auto* Action = Config.Contract->Find(Unsupported->Action);
 		const FString Name = Action ? UTF8_TO_TCHAR(Action->Name.c_str()) : TEXT("<unknown>");
@@ -234,7 +267,7 @@ std::shared_ptr<FInputHostSession> CreateDeviceInputHost(const FDeviceInputHostC
 	Binding.Id = Binding.Epoch = Binding.Controller = Binding.Producer = Binding.Journal = Epoch.Value;
 	Binding.First = Config.FirstFrame; Binding.Kind = EProducerContract::Device;
 	Binding.Contract = Config.Contract; Binding.Processing = Config.Processing;
-	Binding.ResumeRearmMask = Config.ResumeRearmMask;
+	Binding.ResumeRearmMask = Config.ResumeRearmMask;Binding.EnableDesktop=Config.EnableDesktop;
 	// Producer construction is deferred to the physical registry worker.
 	auto Host = FInputHostSession::CreateDescriptor(std::move(Binding));
 	if (!Host)
@@ -250,7 +283,10 @@ std::shared_ptr<FInputHostSession> CreateDeviceInputHost(const FDeviceInputHostC
 		? std::static_pointer_cast<Windows::FGameInputWarmContext>(Config.WarmContext->PlatformState()) : nullptr;
 	if (Config.WarmContext && !Warm)
 	{ UE_LOG(LogTemp, Error, TEXT("Independent input host rejected: warm context already closed")); return {}; }
-	auto Acquisition = std::make_shared<FNativeGameInputAcquisition>(Identity.Id, Config.Activity, Journal, std::move(Warm));
+	FDeviceRawAcquisitionConfig RawConfig;
+    RawConfig.Activity = Config.Activity; RawConfig.WarmContext = Config.WarmContext;RawConfig.EnableDesktop=Config.EnableDesktop;
+    auto Acquisition = CreateDeviceRawAcquisition(Identity.Id, Journal, RawConfig);
+    if (!Acquisition) return {};
 	Host->Acquisition = std::make_unique<FInputAcquisitionWorker>(std::move(Acquisition));
 	Host->AcquisitionStartupTimeout = Config.StartupTimeout;
 	if (!Host->Acquisition->Start(Config.Cadence))
@@ -263,3 +299,7 @@ std::shared_ptr<FInputHostSession> CreateDeviceInputHost(const FDeviceInputHostC
 #endif
 }
 }
+
+#if WITH_DEV_AUTOMATION_TESTS
+#include "DeviceInputHostRecoveryTests.inl"
+#endif

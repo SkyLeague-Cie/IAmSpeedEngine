@@ -2,6 +2,8 @@
 
 #include "InputFrameV2.h"
 #include "InputPresentationScope.h"
+#include "DesktopMappingParticipant.h"
+#include <functional>
 
 namespace Speed::Input::V2
 {
@@ -43,6 +45,22 @@ public:
 				return FUnsupportedContract{EUnsupportedContractReason::MouseButton, B.Action};
 		return std::nullopt;
 	}
+    static std::optional<FUnsupportedContract> UnsupportedDesktopContract(const FInputActionContract& Candidate)
+    {
+        for(const auto& A:Candidate.GetDescription().Actions)
+            if(A.Exponent!=1.0f&&A.Exponent!=2.0f)
+                return FUnsupportedContract{EUnsupportedContractReason::Exponent,A.Id,A.Exponent};
+        return {};
+    }
+    static bool SupportsDesktopContract(const FInputActionContract& Candidate)
+    {return !UnsupportedDesktopContract(Candidate);}
+    static std::unique_ptr<FActionMapper> CreateDesktop(std::shared_ptr<const FInputActionContract> Candidate,
+        FStreamEpoch InEpoch,FProducerIdentity InProducer,FFrameNumber FirstFrame=0)
+    {
+        if(!Candidate||!SupportsDesktopContract(*Candidate)||!InEpoch.Value||!InProducer.Id
+            ||InProducer.Kind!=EProducerKind::Device)return {};
+        return std::unique_ptr<FActionMapper>(new FActionMapper(std::move(Candidate),InEpoch,InProducer,FirstFrame,true));
+    }
 	static bool SupportsContract(const FInputActionContract& Candidate)
 	{ return !UnsupportedContract(Candidate); }
 	static std::unique_ptr<FActionMapper> Create(std::shared_ptr<const FInputActionContract> Candidate,
@@ -53,22 +71,29 @@ public:
 		return std::unique_ptr<FActionMapper>(new FActionMapper(std::move(Candidate), InEpoch, InProducer, FirstFrame));
 	}
 	FActionMapper(std::shared_ptr<const FInputActionContract> InContract,
-		FStreamEpoch InEpoch, FProducerIdentity InProducer, FFrameNumber FirstFrame = 0)
-		: Contract(std::move(InContract)), Epoch(InEpoch), Producer(InProducer), NextFrame(FirstFrame) {}
+		FStreamEpoch InEpoch, FProducerIdentity InProducer, FFrameNumber FirstFrame = 0,bool InDesktopAware=false)
+		: Contract(std::move(InContract)), Epoch(InEpoch), Producer(InProducer), NextFrame(FirstFrame),DesktopAware(InDesktopAware) {}
 	const std::shared_ptr<const FInputActionContract>& GetContract() const { return Contract; }
 	// Sole owner, at an acknowledged boundary. Preserve the next physical
 	// address; the raw source must supply a genuinely fresh Resync baseline.
 	void RequireFreshBaseline() { NeedsResync = true; }
-	FMappingResult Map(const FRawInputSample& Sample, FFrameNumber Frame)
+    const std::vector<FDesktopActionTerminal>& DesktopTerminals()const{return Desktop.Terminals();}
+    FMappingResult Map(const FRawInputSample& Sample,FFrameNumber Frame){return MapInternal(Sample,Frame,false);}
+    using FDesktopFrameFinalizer=std::function<bool(FInputFrameData&)>;
+    FMappingResult MapDesktop(const FRawInputSample& Sample,FFrameNumber Frame,const FDesktopFrameFinalizer& Finalize={})
+    {return MapInternal(Sample,Frame,true,Finalize);}
+private:
+	FMappingResult MapInternal(const FRawInputSample& Sample, FFrameNumber Frame,bool TypedDesktop,const FDesktopFrameFinalizer& Finalize={})
 	{
 		if (FPresentationInputScope::IsActive()) return {EMappingStatus::PresentationForbidden, {}};
-		if (!Contract || !SupportsContract(*Contract) || !Epoch.Value || !Producer.Id || Producer.Kind != EProducerKind::Device)
+        const bool DesktopPath=DesktopAware&&(TypedDesktop||Sample.Kind!=ERawDeviceKind::Desktop);
+		if ((TypedDesktop&&!DesktopAware)||!Contract || !(DesktopPath?SupportsDesktopContract(*Contract):SupportsContract(*Contract)) || !Epoch.Value || !Producer.Id || Producer.Kind != EProducerKind::Device)
 			return {EMappingStatus::InvalidConfiguration, {}}; // No state/frame mutation.
 		if (Exhausted || Frame != NextFrame) return Reject(EMappingStatus::WrongFrame);
 		if (Sample.Status == ERawSampleStatus::Overflow || Sample.Changes.size() > FRawInputSample::MaxChanges)
 			return Reject(EMappingStatus::Overflow);
 		if (!Sample.IsValid()) return Reject(EMappingStatus::InvalidRaw);
-		if (Sample.Kind == ERawDeviceKind::Desktop) return Reject(EMappingStatus::UnsupportedControl);
+		if (Sample.Kind == ERawDeviceKind::Desktop && (!TypedDesktop||!DesktopAware)) return Reject(EMappingStatus::UnsupportedControl);
 		const bool Reset = Sample.Status == ERawSampleStatus::Resync;
 		if (NeedsResync && !Reset) return Reject(EMappingStatus::ResyncRequired);
 		if (!Reset && (!SameDevice(Sample) || !SameCapabilities(Sample))) return Reject(EMappingStatus::DeviceChanged);
@@ -77,6 +102,14 @@ public:
 			return Reject(EMappingStatus::StaleBaseline);
 		if (!Reset && !Continuous(Sample)) return Reject(EMappingStatus::SequenceGap);
 
+        std::optional<FDesktopMappingParticipant::FPrepared> Metadata;
+        if(DesktopPath)
+        {
+            Metadata=Sample.Kind==ERawDeviceKind::Desktop
+                ?Desktop.Prepare(Sample,*Contract,Epoch,Frame,Producer)
+                :Desktop.PrepareReplacement(*Contract,Epoch,Frame,Producer);
+            if(!Metadata)return Reject(EMappingStatus::InvalidRaw);
+        }
 		FInputFrameData Output;
 		Output.SourceSequence = Sample.Sequence; Output.ConsumptionFrame = Frame;
 		Output.Producer = Producer; Output.StreamEpoch = Epoch; Output.DeviceGeneration = Sample.Generation; Output.Reset = Reset;
@@ -84,7 +117,7 @@ public:
 		std::uint32_t Active = Reset ? 0 : HeldActive;
 		if (Reset)
 		{
-			if (!Evaluate(Working, Active, Output.Values, Output.ActiveMask)) return Reject(EMappingStatus::InvalidValue);
+			if (!Evaluate(Working, Active, Output.Values, Output.ActiveMask,Sample.Kind)) return Reject(EMappingStatus::InvalidValue);
 		}
 		else
 		{
@@ -99,8 +132,9 @@ public:
 				if (!Found) return Reject(EMappingStatus::UnsupportedControl);
 				if (Change.AtomicGroup && ChangeIndex + 1 < Sample.Changes.size()
 					&& Sample.Changes[ChangeIndex + 1].AtomicGroup == Change.AtomicGroup) continue;
+                if(Metadata&&Sample.Kind==ERawDeviceKind::Desktop&&!Metadata->Advance(Change.AtomicGroup))return Reject(EMappingStatus::Overflow);
 				std::uint32_t NextActive = 0;
-				if (!Evaluate(Working, Active, Values, NextActive)) return Reject(EMappingStatus::InvalidValue);
+				if (!Evaluate(Working, Active, Values, NextActive,Sample.Kind)) return Reject(EMappingStatus::InvalidValue);
 				if (TransitionSequence != Change.Order.Sequence) { TransitionSequence = Change.Order.Sequence; TransitionOrdinal = 0; }
 				// Re-number generated events rather than reusing raw event ordinals:
 				// one key may change several actions. Action IDs are catalogue-sorted.
@@ -111,6 +145,12 @@ public:
 					if (Output.Transitions.size() == MaxEdges) return Reject(EMappingStatus::Overflow);
 					Output.Transitions.push_back({A.Id, (NextActive & Bit) ? ETransition::Started : ETransition::Completed,
 						Values[A.Id], {TransitionSequence, TransitionOrdinal++}});
+                    if(Metadata&&Sample.Kind==ERawDeviceKind::Desktop)
+                    {
+                        const FInputEdgeIdentity Identity{Epoch.Value,Frame,Sample.Sequence,
+                            static_cast<std::uint32_t>(Output.Transitions.size()-1),A.Id,Producer.Kind,Producer.Id};
+                        if(!Metadata->Transition(A.Id,Output.Transitions.back().State,Identity))return Reject(EMappingStatus::Overflow);
+                    }
 				}
 				Active = NextActive;
 			}
@@ -118,9 +158,20 @@ public:
 				if (Working[I].Value != Sample.FinalState[I].Value) return Reject(EMappingStatus::UnexplainedState);
 			Output.Values = Values; Output.ActiveMask = Active;
 		}
+        const auto BeforeFinalization=Output;
+        if(Finalize&&!Finalize(Output))return Reject(EMappingStatus::InvalidValue);
 		FInputFrame Result(Contract, Output);
 		if (!Result.IsValidFor(*Contract)) return Reject(EMappingStatus::InvalidValue);
-		Held = std::move(Working); HeldActive = Output.ActiveMask; HeldValues = Output.Values;
+        if(Metadata&&(!Metadata->Finish(Output)||!Metadata->RebindFrameEdges(BeforeFinalization,Output)))return Reject(EMappingStatus::Overflow);
+        // The physical result and all terminal metadata have passed validation.
+        // These moves cannot allocate: no rejected frame can retire the ledger.
+        if(Metadata&&!Desktop.Commit(std::move(*Metadata)))return Reject(EMappingStatus::InvalidRaw);
+        // Resume suppression is an output policy. Keep canonical raw/action
+        // history internally so the genuine release still emits Completed for
+        // the producer to consume as rearm, even when the previous final frame
+        // deliberately exposed a neutral value. Metadata identities refer to
+        // the validated final frame; these held values refer to the raw mapper.
+		Held = std::move(Working); HeldActive = BeforeFinalization.ActiveMask; HeldValues = BeforeFinalization.Values;
 		LastDevice = Sample.DeviceId; Kind = Sample.Kind; Generation = Sample.Generation; LastSequence = Sample.Sequence;
 		HasBaseline = true; NeedsResync = false;
 		Exhausted = Frame == std::numeric_limits<FFrameNumber>::max();
@@ -170,10 +221,9 @@ private:
 		return Current == S.Sequence;
 	}
 	bool Evaluate(const std::vector<FRawValue>& Raw, std::uint32_t PriorActive,
-		FActionValues& Values, std::uint32_t& Active) const
+		FActionValues& Values, std::uint32_t& Active,ERawDeviceKind DeviceKind) const
 	{
 		Values = {}; Active = 0;
-		const auto DeviceKind = Raw.front().Control.Kind == ERawControlKind::KeyboardUsage ? ERawDeviceKind::Keyboard : ERawDeviceKind::Gamepad;
 		for (const auto& A : Contract->GetDescription().Actions)
 		{
 			if (A.Wiring == EActionWiring::Unwired) continue;
@@ -181,10 +231,13 @@ private:
 			for (const auto& B : Contract->GetDescription().Mapping)
 			{
 				if (B.Action != A.Id) continue;
-				if ((B.Control.Kind == ERawControlKind::KeyboardUsage) != (DeviceKind == ERawDeviceKind::Keyboard)) continue;
+				if (!IsControlKindForDevice(B.Control.Kind,DeviceKind)) continue;
 				const FRawValue* Found = nullptr;
 				for (const auto& S : Raw) if (S.Control == B.Control) { Found = &S; break; }
-				if (!Found) return false;
+                // A validated Desktop registry can contain only one of its
+                // real subsources after hotplug. Absent capabilities contribute
+                // no action; no raw keyboard/mouse values are manufactured.
+				if (!Found) {if(DeviceKind==ERawDeviceKind::Desktop)continue;return false;}
 				if (A.Type == EActionType::Bool) { if (Found->Value != 0) Sum = 1; }
 				else
 				{
@@ -215,6 +268,8 @@ private:
 	const FStreamEpoch Epoch;
 	const FProducerIdentity Producer;
 	FFrameNumber NextFrame;
+    const bool DesktopAware=false;
+    FDesktopMappingParticipant Desktop;
 	bool Exhausted = false, NeedsResync = true, HasBaseline = false;
 	std::uint64_t LastDevice = 0, LastSequence = 0;
 	ERawDeviceKind Kind = ERawDeviceKind::Keyboard;

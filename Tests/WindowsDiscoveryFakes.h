@@ -8,6 +8,8 @@ public:
 	struct Event { ComPtr<FakeDevice> Device; uint64_t Stamp; bool Connected; };
 	std::vector<Event> Initial;
 	bool AllKinds = false;
+    GameInputKind LastRegisteredKinds = static_cast<GameInputKind>(0);
+    GameInputEnumerationKind LastEnumeration = static_cast<GameInputEnumerationKind>(0);
 	void FireDevice(FakeDevice* Device, uint64_t Stamp, bool Connected)
 	{
 		GameInputDeviceCallback Function; void* Data;
@@ -18,6 +20,7 @@ public:
 	HRESULT STDMETHODCALLTYPE RegisterDeviceCallback(IGameInputDevice* Device, GameInputKind Kind, GameInputDeviceStatus Status,
 		GameInputEnumerationKind Enumeration, void* Data, GameInputDeviceCallback Function, GameInputCallbackToken* Token) override
 	{
+        LastRegisteredKinds = Kind; LastEnumeration = Enumeration;
 		AllKinds = !Device && (Kind & GameInputKindKeyboard) && (Kind & GameInputKindGamepad)
 			&& (Kind & GameInputKindMouse) && (Kind & GameInputKindRawDeviceReport)
 			&& Status == GameInputDeviceConnected && Enumeration == GameInputBlockingEnumeration;

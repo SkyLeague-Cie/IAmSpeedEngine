@@ -61,6 +61,9 @@ bool ASpeedController::QueueRegistryInputCommand(Speed::Input::V2::EBoundaryOper
     if (Session->PendingCommand) Session->SupersededCommands.push_back(Session->PendingCommand);
     Session->PendingCommand = Command.Id; Session->PendingOperation = Operation;
     Session->ResumePending = Operation == EBoundaryOperation::Resume;
+    if (Operation == EBoundaryOperation::Bind)
+        Driver->ObservePrivateInputStartup(EPrivateInputStartupObservation::BindEnqueued,
+            Command.Id, Command.Session, Command.Epoch);
     TracePrivateInputState(TEXT("Registry.Enqueued"));
     return true;
 }

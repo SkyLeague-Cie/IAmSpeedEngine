@@ -60,46 +60,70 @@ public:
 		if (!Mapper) return {};
 		return std::unique_ptr<FDeviceInputProducer>(new FDeviceInputProducer(std::move(Raw), std::move(Mapper), ResumeRearmMask));
 	}
+	static std::unique_ptr<FDeviceInputProducer> CreateDesktop(std::shared_ptr<IRawInputSource> Raw,
+		std::shared_ptr<const FInputActionContract> Contract, FStreamEpoch Epoch,
+		FProducerIdentity Identity, FFrameNumber FirstFrame = 0, std::uint32_t ResumeRearmMask = 0)
+	{
+		if (FPresentationInputScope::IsActive() || !Raw || !Contract) return {};
+		for (FActionId Action = 0; Action < ActionCount; ++Action)
+		{
+			if (!(ResumeRearmMask & (std::uint32_t{1} << Action))) continue;
+			const auto* Definition = Contract->Find(Action);
+			if (!Definition || Definition->Wiring != EActionWiring::Wired || Definition->Type != EActionType::Bool) return {};
+		}
+		auto Mapper = FActionMapper::CreateDesktop(Contract, Epoch, Identity, FirstFrame);
+		if (!Mapper) return {};
+		return std::unique_ptr<FDeviceInputProducer>(new FDeviceInputProducer(std::move(Raw), std::move(Mapper), ResumeRearmMask,true));
+	}
+    const std::vector<FDesktopActionTerminal>& DesktopTerminals()const{return Mapper->DesktopTerminals();}
 	std::optional<FInputFrame> Produce(FFrameNumber Frame) override
 	{
 		if (FPresentationInputScope::IsActive()) return {};
 		auto Sample = Raw->Poll(Frame);
 		if (!Sample) return {};
+        auto PreparedPending=PendingRearmMask;
+        const auto Finalize=[&](FInputFrameData& Data)
+        {
+            if(!PreparedPending)return true;
+            if(!Data.Reset)
+            {
+                std::vector<FActionTransition> Kept;Kept.reserve(Data.Transitions.size());
+                for(const auto& Edge:Data.Transitions)
+                {
+                    const auto Bit=std::uint32_t{1}<<Edge.Action;
+                    if(PreparedPending&Bit)
+                    {
+                        if(Edge.State==ETransition::Completed)PreparedPending&=~Bit;
+                        continue;
+                    }
+                    Kept.push_back(Edge);
+                }
+                Data.Transitions=std::move(Kept);
+            }
+            for(FActionId Action=0;Action<ActionCount;++Action)
+            {
+                const auto Bit=std::uint32_t{1}<<Action;if(!(PreparedPending&Bit))continue;
+                if(!(Data.ActiveMask&Bit)){PreparedPending&=~Bit;continue;}
+                Data.Values[Action]=0;Data.ActiveMask&=~Bit;
+            }
+            return true;
+        };
+        if(DesktopAware)
+        {
+            auto Mapped=Mapper->MapDesktop(*Sample,Frame,Finalize).Frame;
+            if(!Mapped)return {};
+            PendingRearmMask=PreparedPending;HasProduced=true;return Mapped;
+        }
+        // Preserve the legacy entry and its existing post-mapping filter. Only
+        // the explicit Desktop participant needs the final frame before commit.
 		auto Mapped = Mapper->Map(*Sample, Frame).Frame;
 		if (!Mapped) return {};
 		if (!PendingRearmMask) { HasProduced = true; return Mapped; }
-		auto Data = Mapped->GetData();
-		auto Pending = PendingRearmMask;
-		if (!Data.Reset)
-		{
-			std::vector<FActionTransition> Kept;
-			Kept.reserve(Data.Transitions.size());
-			for (const auto& Edge : Data.Transitions)
-			{
-				const auto Bit = std::uint32_t{1} << Edge.Action;
-				if (Pending & Bit)
-				{
-					if (Edge.State == ETransition::Completed) Pending &= ~Bit;
-					continue;
-				}
-				Kept.push_back(Edge);
-			}
-			Data.Transitions = std::move(Kept);
-		}
-		for (FActionId Action = 0; Action < ActionCount; ++Action)
-		{
-			const auto Bit = std::uint32_t{1} << Action;
-			if (!(Pending & Bit)) continue;
-			if (!(Data.ActiveMask & Bit)) { Pending &= ~Bit; continue; }
-			Data.Values[Action] = 0;
-			Data.ActiveMask &= ~Bit;
-		}
-		FInputFrame Filtered(Mapper->GetContract(), std::move(Data));
-		if (!Filtered.IsValidFor(*Mapper->GetContract())) return {};
-		PendingRearmMask = Pending;
-		HasProduced = true;
-		return Filtered;
-	}
+        auto Data=Mapped->GetData();if(!Finalize(Data))return {};
+        FInputFrame Filtered(Mapper->GetContract(),std::move(Data));
+        if(!Filtered.IsValidFor(*Mapper->GetContract()))return {};
+        PendingRearmMask=PreparedPending;HasProduced=true;return Filtered;
+    }
 	std::optional<FInputPollCutoff> FreezeForOwner(FFrameNumber N) override
 	{
 		auto* Fence = Raw->PollFence();
@@ -141,11 +165,12 @@ public:
 	}
 private:
 	FDeviceInputProducer(std::shared_ptr<IRawInputSource> InRaw, std::unique_ptr<FActionMapper> InMapper,
-		std::uint32_t InResumeRearmMask)
-		: Raw(std::move(InRaw)), Mapper(std::move(InMapper)), ResumeRearmMask(InResumeRearmMask) {}
+		std::uint32_t InResumeRearmMask,bool InDesktopAware=false)
+		: Raw(std::move(InRaw)), Mapper(std::move(InMapper)), ResumeRearmMask(InResumeRearmMask),DesktopAware(InDesktopAware) {}
 	const std::shared_ptr<IRawInputSource> Raw;
 	const std::unique_ptr<FActionMapper> Mapper;
 	const std::uint32_t ResumeRearmMask = 0;
+    const bool DesktopAware=false;
 	std::uint32_t PendingRearmMask = 0;
 	bool HasProduced = false;
 	bool RearmOnNextResume = false;

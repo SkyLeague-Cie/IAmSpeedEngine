@@ -35,6 +35,19 @@ public:
         return Catalogue;
     }
 
+    // Called by the acquisition owner only after its view has detached.
+    // A failed OS catalogue must not poison every later pawn/session. Keep
+    // healthy shared catalogues and refuse retirement while a view is live.
+    bool RetireFailedCatalogue()
+    {
+        std::lock_guard<std::mutex> Lock(Gate);
+        if (Closed) return false;
+        if (!Catalogue || SUCCEEDED(Catalogue->GetError())) return true;
+        if (!Catalogue->Shutdown()) return false;
+        Catalogue.reset();
+        return true;
+    }
+
     bool Close()
     {
         std::lock_guard<std::mutex> Lock(Gate);
