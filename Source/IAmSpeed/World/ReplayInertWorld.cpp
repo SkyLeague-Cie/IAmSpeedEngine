@@ -13,10 +13,19 @@
 #include "GameFramework/GameModeBase.h"
 #include "Components/ActorComponent.h"
 #include "Components/PrimitiveComponent.h"
+#include "Components/StaticMeshComponent.h"
+#include "Engine/CollisionProfile.h"
 #include "HAL/PlatformProperties.h"
 #include "Misc/PackageName.h"
 #include "UObject/ObjectKey.h"
 #include "PhysicsEngine/BodyInstance.h"
+#if WITH_DEV_AUTOMATION_TESTS && WITH_EDITOR
+#include "Engine/StaticMesh.h"
+#include "Misc/AutomationTest.h"
+#include "PhysicsEngine/BodySetup.h"
+#include "UObject/Package.h"
+#include "UObject/StrongObjectPtr.h"
+#endif
 namespace Speed::ReplayIsolation
 {
 namespace
@@ -103,6 +112,21 @@ bool Topology(const Scope& S,UWorld& World,FString& Why)
     if(Rerun){Why=TEXT("inert replay refuses a map that will rerun construction scripts");return false;}
     return true;
 }
+// GT, pristine destination instances only. Both the real pre-registration
+// fence and its native registration boundary fixture use this exact helper.
+// The complete original-set validation precedes this call; no existing physics
+// state is destroyed or repaired here and no shared asset/BodySetup is changed.
+void ConfigureOriginalInertReplayPrimitive(UPrimitiveComponent& Primitive)
+{
+    // Static mesh registration can reimport its asset profile after the old
+    // SetCollisionEnabled-only fence. The virtual setter disables that reload
+    // and clears its external BodySetup profile on this component instance.
+    if(auto* Mesh=Cast<UStaticMeshComponent>(&Primitive))
+        Mesh->SetCollisionProfileName(UCollisionProfile::NoCollision_ProfileName,false);
+    Primitive.bAlwaysCreatePhysicsState=false;
+    Primitive.SetCollisionEnabled(ECollisionEnabled::NoCollision);
+    Primitive.SetGenerateOverlapEvents(false);Primitive.SetSimulatePhysics(false);
+}
 void BeforeWorldInitialization(UWorld* World,const UWorld::InitializationValues)
 {
     check(IsInGameThread());if(!World)return;Scope* S=Find(World);if(!S)return;
@@ -172,9 +196,7 @@ void BeforeWorldInitialization(UWorld* World,const UWorld::InitializationValues)
             if(Body||S->DeferredOriginalComponents.Contains(FObjectKey(C)))C->bAutoRegister=false;
             if(auto* Primitive=Cast<UPrimitiveComponent>(C))
             {
-                Primitive->bAlwaysCreatePhysicsState=false;
-                Primitive->SetCollisionEnabled(ECollisionEnabled::NoCollision);
-                Primitive->SetGenerateOverlapEvents(false);Primitive->SetSimulatePhysics(false);
+                ConfigureOriginalInertReplayPrimitive(*Primitive);
                 if(Primitive->bAlwaysCreatePhysicsState||Primitive->GetCollisionEnabled()!=ECollisionEnabled::NoCollision||Primitive->IsSimulatingPhysics())
                 {Failure(*S,*World,TEXT("pre-registration setters: ")+FString::Printf(TEXT("inert replay original primitive collision changed: %s class=%s registered=%d physics=%d always=%d collision=%d sim=%d"),*C->GetPathName(),*C->GetClass()->GetPathName(),int32(C->IsRegistered()),int32(C->IsPhysicsStateCreated()),int32(Primitive->bAlwaysCreatePhysicsState),int32(Primitive->GetCollisionEnabled()),int32(Primitive->IsSimulatingPhysics())));return;}
             }
@@ -218,7 +240,24 @@ bool Audit(Scope& S,UWorld& World,AGameModeBase& Mode,FString& Why)
                 }
             }
             if(!IsValid(C)||!S.Components.Contains(FObjectKey(C))||C->IsPhysicsStateCreated()||C->IsComponentTickEnabled()||C->IsActive()||C->bAutoActivate||C->bWantsInitializeComponent)
-            {Why=TEXT("inert replay original component set/physics/tick changed");return Failure(S,World,Why);}
+            {
+                // Preserve the first violating original and each refusal bit.
+                // This changes diagnostics only; no post-registration repair,
+                // component exemption or liveness predicate is introduced.
+                const bool Valid=IsValid(C);
+                Why=FString::Printf(TEXT("inert replay original component set/physics/tick changed: owner=%s component=%s class=%s valid=%d known=%d physics=%d tick=%d active=%d autoActivate=%d wantsInitialize=%d registered=%d preRegistered=%d preRegistering=%d autoRegister=%d deferred=%d"),
+                    *A->GetPathName().Left(768),Valid?*C->GetPathName().Left(768):TEXT("invalid"),
+                    Valid?*C->GetClass()->GetPathName().Left(512):TEXT("invalid"),
+                    int32(Valid),int32(Valid&&S.Components.Contains(FObjectKey(C))),
+                    Valid?int32(C->IsPhysicsStateCreated()):-1,
+                    Valid?int32(C->IsComponentTickEnabled()):-1,
+                    Valid?int32(C->IsActive()):-1,Valid?int32(C->bAutoActivate):-1,
+                    Valid?int32(C->bWantsInitializeComponent):-1,
+                    Valid?int32(C->IsRegistered()):-1,Valid?int32(C->IsPreRegistered()):-1,
+                    Valid?int32(C->IsPreRegistering()):-1,Valid?int32(C->bAutoRegister):-1,
+                    int32(Valid&&S.DeferredOriginalComponents.Contains(FObjectKey(C))));
+                return Failure(S,World,Why);
+            }
             if(auto* Primitive=Cast<UPrimitiveComponent>(C))
                 if(Primitive->bAlwaysCreatePhysicsState||Primitive->GetCollisionEnabled()!=ECollisionEnabled::NoCollision||Primitive->IsSimulatingPhysics())
                 {Why=FString::Printf(TEXT("inert replay original primitive collision changed: %s class=%s registered=%d physics=%d always=%d collision=%d sim=%d"),*C->GetPathName(),*C->GetClass()->GetPathName(),int32(C->IsRegistered()),int32(C->IsPhysicsStateCreated()),int32(Primitive->bAlwaysCreatePhysicsState),int32(Primitive->GetCollisionEnabled()),int32(Primitive->IsSimulatingPhysics()));return Failure(S,World,Why);}
@@ -284,4 +323,77 @@ bool CompleteInertReplayBootstrap(UWorld& World,AGameModeBase& Mode,FString& Why
     {Why=TEXT("inert replay native lifecycle not completed");return Failure(*S,World,Why);}
     S->Ready=true;return true;
 }
+
+#if WITH_DEV_AUTOMATION_TESTS && WITH_EDITOR
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FInertStaticMeshProfileBoundary16,
+    "IAmSpeed.Replay.InertStaticMeshProfileBoundary",
+    EAutomationTestFlags::EditorContext|EAutomationTestFlags::CommandletContext|EAutomationTestFlags::EngineFilter)
+bool FInertStaticMeshProfileBoundary16::RunTest(const FString&)
+{
+    // Real native UObjects and Engine registration. No mocks, installed asset
+    // mutations, invented PIE flags, replay mode or fabricated Audit admission.
+    const auto Options=UWorld::InitializationValues().AllowAudioPlayback(false)
+        .RequiresHitProxies(false).CreatePhysicsScene(true).ShouldSimulatePhysics(false)
+        .EnableTraceCollision(false).CreateNavigation(false).CreateAISystem(false).SetTransactional(false);
+    UWorld* World=UWorld::CreateWorld(EWorldType::EditorPreview,false,NAME_None,nullptr,true,ERHIFeatureLevel::Num,&Options);
+    if(!TestNotNull(TEXT("private native registration world"),World))return false;
+    struct FWorldCleanup{UWorld* Value;~FWorldCleanup(){Value->DestroyWorld(false);}} Cleanup{World};
+    if(!TestNotNull(TEXT("actual physics scene exists, so no-state is not vacuous"),World->GetPhysicsScene()))return false;
+    TestFalse(TEXT("editor trace collision is disabled as in the production fence"),World->bEnableTraceCollision);
+
+    TStrongObjectPtr<UStaticMesh> Mesh(NewObject<UStaticMesh>(GetTransientPackage(),NAME_None,RF_Transient));
+    UBodySetup* Setup=NewObject<UBodySetup>(Mesh.Get(),NAME_None,RF_Transient);
+    Mesh->SetBodySetup(Setup);
+    FKBoxElem Box;Box.X=Box.Y=Box.Z=100.f;Setup->AggGeom.BoxElems.Add(Box);
+    Setup->CollisionTraceFlag=CTF_UseSimpleAsComplex;
+    Setup->DefaultInstance.SetCollisionProfileName(UCollisionProfile::BlockAllDynamic_ProfileName);
+    const FName OriginalAssetProfile=Setup->DefaultInstance.GetCollisionProfileName();
+    const auto OriginalAssetCollision=Setup->DefaultInstance.GetCollisionEnabled(false);
+    if(!TestTrue(TEXT("transient asset really has a non-NoCollision default"),OriginalAssetCollision!=ECollisionEnabled::NoCollision))return false;
+    TestTrue(TEXT("asset and BodySetup are transient and exclusively owned"),Mesh->HasAnyFlags(RF_Transient)&&Setup->HasAnyFlags(RF_Transient)&&Setup->GetOuter()==Mesh.Get());
+
+    AActor* Owner=World->SpawnActor<AActor>();
+    if(!TestNotNull(TEXT("plain native fixture actor"),Owner))return false;
+    Owner->SetActorEnableCollision(false);Owner->PrimaryActorTick.bStartWithTickEnabled=false;Owner->SetActorTickEnabled(false);
+    const auto NewComponent=[&]()
+    {
+        UStaticMeshComponent* Component=NewObject<UStaticMeshComponent>(Owner,NAME_None,RF_Transient);
+        Owner->AddInstanceComponent(Component);Component->SetStaticMesh(Mesh.Get());
+        Component->bAutoActivate=false;Component->bWantsInitializeComponent=false;
+        Component->PrimaryComponentTick.bStartWithTickEnabled=false;Component->SetComponentTickEnabled(false);
+        Component->bUseDefaultCollision=true;Component->UpdateCollisionFromStaticMesh();
+        return Component;
+    };
+
+    UStaticMeshComponent* Old=NewComponent();
+    TestFalse(TEXT("old-recipe counterexample begins pristine"),Old->IsRegistered()||Old->IsPhysicsStateCreated());
+    // Exact old production recipe. Invoke the real public Engine method called
+    // by OnRegister and ShouldIncrementalPreRegister, not a model of its logic.
+    Old->bAlwaysCreatePhysicsState=false;Old->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+    Old->SetGenerateOverlapEvents(false);Old->SetSimulatePhysics(false);
+    TestEqual(TEXT("old setters initially disable instance collision"),int32(Old->BodyInstance.GetCollisionEnabled(false)),int32(ECollisionEnabled::NoCollision));
+    Old->UpdateCollisionFromStaticMesh();
+    TestTrue(TEXT("real Engine asset-profile reload reproduces old-fence defect"),Old->BodyInstance.GetCollisionEnabled(false)!=ECollisionEnabled::NoCollision);
+    TestTrue(TEXT("old setters left mesh-default collision enabled"),bool(Old->bUseDefaultCollision));
+
+    UStaticMeshComponent* Fixed=NewComponent();Owner->SetRootComponent(Fixed);
+    ConfigureOriginalInertReplayPrimitive(*Fixed); // SAME production helper.
+    TestFalse(TEXT("new fence disables mesh-default collision before registration"),bool(Fixed->bUseDefaultCollision));
+    Fixed->UpdateCollisionFromStaticMesh();
+    TestEqual(TEXT("actual reload cannot undo explicit NoCollision"),int32(Fixed->BodyInstance.GetCollisionEnabled(false)),int32(ECollisionEnabled::NoCollision));
+    Fixed->RegisterComponentWithWorld(World); // Real registration -> OnRegister.
+    if(!TestTrue(TEXT("fixed component really registered"),Fixed->IsRegistered()))return false;
+    const UPrimitiveComponent* Primitive=Fixed; // Public base API, real virtual predicate.
+    TestFalse(TEXT("registered component refuses physics creation"),Primitive->ShouldCreatePhysicsState());
+    TestFalse(TEXT("registration created no physics state"),Fixed->IsPhysicsStateCreated());
+    TestEqual(TEXT("registered raw instance collision remains NoCollision"),int32(Fixed->BodyInstance.GetCollisionEnabled(false)),int32(ECollisionEnabled::NoCollision));
+    TestFalse(TEXT("registration did not restore asset-default collision"),bool(Fixed->bUseDefaultCollision));
+    TestFalse(TEXT("no simulate/always/overlap flags returned"),Fixed->IsSimulatingPhysics()||Fixed->bAlwaysCreatePhysicsState||Fixed->GetGenerateOverlapEvents());
+    TestFalse(TEXT("no live tick/activation/initialization returned"),Fixed->IsComponentTickEnabled()||Fixed->IsActive()||Fixed->bAutoActivate||Fixed->bWantsInitializeComponent);
+    TestTrue(TEXT("shared transient asset default was never changed"),Mesh->GetBodySetup()==Setup&&Setup->DefaultInstance.GetCollisionProfileName()==OriginalAssetProfile&&Setup->DefaultInstance.GetCollisionEnabled(false)==OriginalAssetCollision&&Setup->AggGeom.BoxElems.Num()==1);
+    TestFalse(TEXT("fixture never established actual replay bootstrap admission"),IsInertBootstrapReady(World));
+    UE_LOG(LogTemp,Display,TEXT("[InertStaticMeshProfileBoundary] RealEngineReload=1 OldRecipeRestoresCollision=1 SharedProductionHelper=1 Registered=%d PhysicsState=%d AssetDefaultUnchanged=1 ReplayScopeArmed=0 DarkCityRuntime=NOT_TESTED"),int32(Fixed->IsRegistered()),int32(Fixed->IsPhysicsStateCreated()));
+    return !HasAnyErrors();
+}
+#endif
 }

@@ -3,6 +3,7 @@
 #pragma once
 
 #include "SolidSubBody.h"
+#include "ShowFlags.h"
 #include "IAmSpeed/SubBodies/Common/IBoxSweeper.h"
 #include "IAmSpeed/SubBodies/Common/ISolidSweeper.h"
 #include "UObject/ObjectMacros.h"
@@ -126,7 +127,20 @@ public:
     bool GetLatchedEdgeWS(FVector& OutA, FVector& OutB) const;
     bool IsPointSupportedByPersistentContact(const FVector& P, float Margin = 2.f) const;
 
+    // Vehicle opt-in; generic boxes and all body/body materials are unchanged.
+    UPROPERTY(EditAnywhere, Category="Physics|Material")
+    bool bPersistentFloorFrictionOnly = false;
+    float GetStaticWorldContactFriction(const Speed::IStaticCollisionWorld* World, const FVector& Normal) const;
+
     bool HasPersistentGroundContact() const;
+    // Diagnostic eligibility: the floor support exists in both completed prior
+    // tick cache and currently validated support. New same-tick impacts fail.
+    bool HasContinuingFloorContact2778() const
+    {
+        return PreviousFrameGroundContactsWS.Num()>0 && bHasGroundContact &&
+            bGroundPlaneValid && GroundComp.IsValid() && GroundPlaneN.Z>=0.999999;
+    }
+
     bool HasPhysicsTickGroundContact() const;
     bool HasRoofSurfaceTraversalSupport() const;
     void UpdatePersistentGroundContact(const float& delta, bool bDirectSupportSolved = false);

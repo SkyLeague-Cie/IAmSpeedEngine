@@ -54,6 +54,7 @@ class IAMSPEED_API USpeedWheeledComponent : public UChaosWheeledVehicleMovementC
 	GENERATED_BODY()
 #if WITH_DEV_AUTOMATION_TESTS
 	friend struct FLocalNormalCameraFixtureAccess;
+    friend struct FRocketSimGroundHandlingFixtureAccess;
 #endif
 
 #if !UE_BUILD_SHIPPING
@@ -385,6 +386,9 @@ protected:
 	// Vehicle presets may snapshot the rigid/wheel state immediately before the
 	// suspension update without replacing the component tick ordering.
 	virtual void BeforeSuspensionUpdate(float DeltaTime) {}
+	// Optional vehicle policy. False preserves the generic application exactly.
+	virtual bool TryApplyWheelSuspensionForce(const USWheelSubBody& Wheel,
+        float Load) { return false; }
 	virtual void HandlePhysicsAutoRecover();
 	virtual void HandleAcceleration();
 	virtual void HandleSteering(const float& delta);
@@ -396,6 +400,8 @@ protected:
 	float ComputeBrakeAccel() const;
 	float ComputeDriveAccel() const;
 	void ApplyDriveAcceleration(float Accel);
+    void ApplyRocketSimGroundLateralFriction(float Delta);
+    void ApplyRocketSimGroundDriveAcceleration();
 	virtual bool IsAcceleratingForWheelFriction() const;
 	virtual bool HasDriveInputForGroundFriction() const;
 	virtual bool IsHandbrakingForWheelFriction() const;
@@ -462,6 +468,14 @@ protected:
 	virtual void RecordPhysicsState();
 	TObjectPtr<UNetworkPhysicsSettingsDataAsset> NetDataAsset = nullptr;
 public:
+
+    // Version 1 selects the pinned RocketSim ground tire/drive law per instance.
+    // Zero preserves the pre-existing law; set only at an unadmitted/reset boundary.
+    UPROPERTY(BlueprintReadWrite, Category = Steering, EditDefaultsOnly, meta = (ClampMin = "0", ClampMax = "1"))
+    int32 RocketSimGroundHandlingVersion = 0;
+    void ConfigureRocketSimGroundHandlingDefaults();
+    // Derived gameplay owners expose their recorded raw boost request and actual fuel.
+    virtual bool HasBoostThrottleForRocketSimGroundHandling() const { return false; }
 
 	//=========== Configuration parameters for the movement component ===========
 	// Time in seconds before the component can move at the start of the simulation or after being reset (e.g. after a respawn)
@@ -620,6 +634,17 @@ public:
 	// Additional impulse relaxation applied to wheel-frame lateral friction while handbraking.
 	UPROPERTY(BlueprintReadWrite, Category = Steering, EditDefaultsOnly)
 	float WheelFrameHandbrakeLateralImpulseScale = 1.0f;
+	// Per-component handling selections; console values >= 0 explicitly override these.
+	// Model 0 preserves the contact-arm denominator; model 1 uses application/contact arms.
+	UPROPERTY(BlueprintReadWrite, Category = Steering, EditDefaultsOnly, meta = (ClampMin = "0", ClampMax = "1"))
+	int32 WheelFrameHBContactResponseModel = 0;
+	UPROPERTY(BlueprintReadWrite, Category = Steering, EditDefaultsOnly, meta = (ClampMin = "0.0"))
+	float WheelFrameHandbrakeDriveForceScale = 1.0f;
+	// Negative endpoint fractions preserve inherited handbrake calibration.
+	UPROPERTY(BlueprintReadWrite, Category = Steering, EditDefaultsOnly, meta = (ClampMin = "-1.0", ClampMax = "0.60"))
+	float WheelFrameHandbrakeHalfInputFraction = -1.0f;
+	UPROPERTY(BlueprintReadWrite, Category = Steering, EditDefaultsOnly, meta = (ClampMin = "-1.0", ClampMax = "0.45"))
+	float WheelFrameHandbrakeQuarterInputFraction = -1.0f;
 	// Optional absolute handbrake impulse scale by lateral slip ratio. Empty preserves the scalar above.
 	UPROPERTY(BlueprintReadWrite, Category = Steering, EditDefaultsOnly)
 	TArray<FVector2D> HandbrakeLateralImpulseScaleCurve;
@@ -633,6 +658,12 @@ public:
 	// the existing per-vehicle curve path; positive uses actual hardpoints.
 	UPROPERTY(BlueprintReadWrite, Category = Steering, EditDefaultsOnly, meta = (ClampMin = "0.0"))
 	float WheelFrameSteeringReferenceWheelbaseCm = 0.0f;
+	// Optional normal-steering endpoint fractions. Negative preserves inherited calibration.
+	// Console overrides remain available; active/residual handbrake bypasses the normal helper.
+	UPROPERTY(BlueprintReadWrite, Category = Steering, EditDefaultsOnly)
+	float WheelFrameNormalInputFullFraction = -1.0f;
+	UPROPERTY(BlueprintReadWrite, Category = Steering, EditDefaultsOnly)
+	float WheelFrameNormalHalfInputFraction = -1.0f;
 	// Scales the forward/backward component produced by wheel-frame lateral friction.
 	UPROPERTY(BlueprintReadWrite, Category = Steering, EditDefaultsOnly)
 	float WheelFrameLateralForwardLossScale = 1.0f;
@@ -787,6 +818,9 @@ private:
 
 		return UChaosVehicleMovementComponent::CreatePhysicsVehicle();
 	}
+
+	// Shared fixed-COM authoring rule for initial setup and BeginPlay.
+	void ResolveFixedCenterOfMassFromConfiguration();
 
 	void SetupSpeedSuspension(TUniquePtr<Chaos::FSimpleWheeledVehicle>& PVehicle);
 	// Rebind wheel sub-bodies whenever Chaos recreates the vehicle. The

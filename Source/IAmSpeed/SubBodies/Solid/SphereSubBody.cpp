@@ -2,6 +2,12 @@
 
 
 #include "SphereSubBody.h"
+#include "CarBallContactImpulse.h"
+#include "Engine/World.h"
+#include "PrimitiveViewRelevance.h"
+#include "PrimitiveSceneProxy.h"
+#include "SceneManagement.h"
+#include "SceneView.h"
 #include "IAmSpeed/World/Analytic/StaticWorldQueryAudit.h"
 #include "BoxSubBody.h"
 #include "SWheelSubBody.h"
@@ -38,11 +44,14 @@ namespace
     }
 
     FVector IAmSpeedSphereStaticResponsePoint(
-        const FVector& SphereCenter, const float Radius, const SHitResult& Hit)
+        const FVector& SphereCenter, const float Radius, const SHitResult& Hit,
+        const float StaticContactOffsetCm = 0.0f)
     {
-        if (Hit.SurfaceId != 0 && Hit.bSurfaceNormalMayVary &&
-            !Hit.bStartPenetrating)
+        if (StaticContactOffsetCm > 0.0f ||
+            (Hit.SurfaceId != 0 && Hit.bSurfaceNormalMayVary && !Hit.bStartPenetrating))
         {
+            // A static skin changes separation, never the physical response arm.
+            // Preserve the authored surface witness for support and diagnostics.
             // A certified curved provider retains its chord witness while
             // reporting the authored smooth normal. Its positional witness
             // therefore need not be radial to that normal. The sphere's own
@@ -219,12 +228,15 @@ void USphereSubBody::ResolveCurrentHitPrv(const float& delta, const float& SimTi
         return;
     }
 
-    if (CurrentHit.SurfaceId != 0 && CurrentHit.bSurfaceNormalMayVary &&
-        !CurrentHit.bStartPenetrating)
+    const bool bWorldStaticContact = CurrentHit.SurfaceId != 0 ||
+        (CurrentHit.Component.IsValid() &&
+         CurrentHit.Component->GetCollisionObjectType() == ECC_WorldStatic);
+    if (bWorldStaticContact && (GetWorldStaticContactOffsetCm() > 0.0f ||
+        (CurrentHit.bSurfaceNormalMayVary && !CurrentHit.bStartPenetrating)))
     {
         RegisterContactAsConstraint(
             IAmSpeedSphereStaticResponsePoint(GetKinematicState().Location,
-                GetRadius(), CurrentHit),
+                GetRadius(), CurrentHit, GetWorldStaticContactOffsetCm()),
             CurrentHit.ImpactNormal, CurrentHit.Component.Get(), nullptr,
             CurrentHit.PenetrationDepth, CurrentHit.TOI, false);
     }
@@ -261,7 +273,7 @@ void USphereSubBody::ResolveHitVsGround(const float& delta, const float& SimTime
 {
     const FVector N = CurrentHit.ImpactNormal.GetSafeNormal();
     const FVector P = IAmSpeedSphereStaticResponsePoint(
-        GetKinematicState().Location, GetRadius(), CurrentHit);
+        GetKinematicState().Location, GetRadius(), CurrentHit, GetWorldStaticContactOffsetCm());
 
     // Velocity at contact point
     const FVector Vp = ParentComponent->GetPhysVelocityAtPoint(P);
@@ -303,7 +315,7 @@ void USphereSubBody::ResolveHitVsGround(const float& delta, const float& SimTime
             float jt = -vTmag * mEff;
 
             // Coulomb clamp
-            const float mu = GetStaticFriction();
+            const float mu = GetWorldStaticImpactFriction();
             const float jtMax = mu * jn;
             jt = FMath::Clamp(jt, -jtMax, jtMax);
 
@@ -407,8 +419,12 @@ void USphereSubBody::ResolveHitVsBox(UBoxSubBody& OtherBox, const float& delta, 
         *this,
         OtherBox,
         MixRestitution(GetRestitution(), OtherBox.GetRestitution(), EMixMode::E_Max));
+    const bool bAerialContact = UsesAerialShotContactModel() &&
+        OtherBox.UsesAerialShotContactModel();
     const float MixedFriction = ResolveSphereBoxFriction(*this, OtherBox,
-        MixFriction(GetStaticFriction(), OtherBox.GetStaticFriction(), EMixMode::E_Max));
+        bAerialContact
+            ? MixFriction(GetDynamicFriction(), OtherBox.GetDynamicFriction(), EMixMode::E_Max)
+            : MixFriction(GetStaticFriction(), OtherBox.GetStaticFriction(), EMixMode::E_Max));
 	const FVector PreSpherePointVelocity = IAmSpeedSphereVelocityAtPointFromKS(
 		SphereKS, CurrentHit.ImpactPoint);
 	const FVector PreBoxPointVelocity = IAmSpeedSphereVelocityAtPointFromKS(
@@ -418,7 +434,7 @@ void USphereSubBody::ResolveHitVsBox(UBoxSubBody& OtherBox, const float& delta, 
 		CurrentHit.ImpactNormal.GetSafeNormal()));
 
 	// Compute collision impulse at TOI
-    const bool bUsePostNormalFriction =
+    const bool bUsePostNormalFriction = bAerialContact ||
         UsesPostNormalFrictionImpulse() || OtherBox.UsesPostNormalFrictionImpulse();
     const SKinematic& ImpulseSphereKS = bUsePostNormalFriction
         ? FakePhysicsContext.SelfParentKinematics
@@ -440,14 +456,28 @@ void USphereSubBody::ResolveHitVsBox(UBoxSubBody& OtherBox, const float& delta, 
         ImpThis,
         ImpOther,
         GetImpactThreshold(),
-        (UsesCoupledContactImpulse() || OtherBox.UsesCoupledContactImpulse()) &&
+        bAerialContact || ((UsesCoupledContactImpulse() || OtherBox.UsesCoupledContactImpulse()) &&
         AllowsCoupledContactImpulseFor(SphereKS) &&
-        OtherBox.AllowsCoupledContactNormal(BoxLocalContactNormal),
-        bUsePostNormalFriction
+        OtherBox.AllowsCoupledContactNormal(BoxLocalContactNormal)),
+        bUsePostNormalFriction && !bAerialContact
     );
 
     if (ok)
     {
+        if (bAerialContact && ParentComponent && OtherBox.GetParentComponent())
+        {
+            Speed::CarBallContact::FCapAware576Diagnostic Diagnostic;
+            if (Speed::CarBallContact::CapAwareFullStick576(
+                ImpulseBoxKS, OtherBox.GetMass(), OtherBox.ComputeWorldInvInertiaTensor(),
+                OtherBox.GetParentComponent()->GetPhysMaxAngularSpeed(),
+                ImpulseSphereKS, GetMass(), ComputeWorldInvInertiaTensor(),
+                ParentComponent->GetPhysMaxAngularSpeed(),
+                CurrentHit.ImpactPoint, CurrentHit.ImpactNormal.GetSafeNormal(),
+                MixedRestitution, MixedFriction, ImpThis, Diagnostic))
+            {
+                ImpOther = -ImpThis;
+            }
+        }
 #if !UE_BUILD_SHIPPING
         if (IAmSpeedSphereBoxImpulseDebugEnabled())
         {
@@ -832,7 +862,7 @@ bool USphereSubBody::ProjectOutOfWorldStatic()
     // the physical radius.
     constexpr float PublishedPoseQuantizationClearanceCm = 0.015f;
     const FCollisionShape ProjectionShape = FCollisionShape::MakeSphere(
-        GetRadius() + PublishedPoseQuantizationClearanceCm);
+        GetWorldStaticSupportRadius() + PublishedPoseQuantizationClearanceCm);
     FVector Center = ParentComponent->GetPhysLocation();
     FVector CorrectedVelocity = ParentComponent->GetPhysCOMVelocity();
     bool bMoved = false;
@@ -912,7 +942,7 @@ bool USphereSubBody::ProjectOutOfWorldStatic()
         const float PhysicalPenetrationDepth = FMath::Max(
             0.0f,
             DeepestHit->PenetrationDepth -
-                PublishedPoseQuantizationClearanceCm);
+                PublishedPoseQuantizationClearanceCm - GetWorldStaticContactOffsetCm());
 		if (WorldStaticPenetrationDiagnostics.bEnabled &&
 			PhysicalPenetrationDepth > 0.0f)
 		{
@@ -942,7 +972,7 @@ bool USphereSubBody::ProjectOutOfWorldStatic()
                 ? 0
                 : (FMath::Abs(ProjectionNormal.Y) == MaximumNormalAxis ? 1 : 2);
             const FVector TangentCenter =
-                DeepestHit->ImpactPoint + ProjectionNormal * GetRadius();
+                DeepestHit->ImpactPoint + ProjectionNormal * GetWorldStaticSupportRadius();
             constexpr double PositionQuantizationScale = 100.0;
             const double ScaledTangent =
                 TangentCenter[Axis] * PositionQuantizationScale;
@@ -1088,7 +1118,10 @@ void USphereSubBody::ApplySphereBoxImpulse(
 {
 	// SphereState can alias this subbody's live kinematics. Snapshot eligibility
 	// before applying the rigid impulse.
-	const bool bEligible = IsTangentialContactArmEligible(SphereState, BoxState);
+	// The Aerial solve already uses the full physical contact arm and native
+    // angular limits. Do not apply the old fitted torque reduction afterwards.
+    const bool bEligible = !UsesAerialShotContactModel() &&
+        IsTangentialContactArmEligible(SphereState, BoxState);
 
 	ApplyImpulse(LinearImpulse, WorldPoint);
 
@@ -1394,6 +1427,20 @@ bool FIAmSpeedSphereStaticResponseWitnessTest::RunTest(const FString& Parameters
             FMath::Abs(DeltaAngular.X - 1.5) < 1.0e-9);
         TestTrue(TEXT("provider witness is preserved"), Hit.ImpactPoint == OriginalWitness);
     }
+    // Static skin must not extend the physical torque arm, even for a flat
+    // plane or an initial overlap. The mesh witness itself remains untouched.
+    Hit.bSurfaceNormalMayVary = false;
+    for (const bool bOverlap : {false, true})
+    {
+        Hit.bStartPenetrating = bOverlap;
+        Hit.ImpactPoint = Center - (Radius + 1.9f) * N;
+        const FVector Witness = Hit.ImpactPoint;
+        const FVector Response = IAmSpeedSphereStaticResponsePoint(Center, Radius, Hit, 1.9f);
+        TestTrue(TEXT("static skin retains physical response radius"),
+            FMath::Abs((Response - Center).Size() - Radius) < 1.0e-9);
+        TestTrue(TEXT("static skin retains actual surface witness"), Hit.ImpactPoint == Witness);
+    }
+    Hit.bSurfaceNormalMayVary = true;
     Hit.bStartPenetrating = true;
     TestTrue(TEXT("initial overlap keeps its measured MTD witness"),
         IAmSpeedSphereStaticResponsePoint(Center, Radius, Hit) == Hit.ImpactPoint);

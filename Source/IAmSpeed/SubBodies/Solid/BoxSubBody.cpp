@@ -2,10 +2,19 @@
 
 
 #include "BoxSubBody.h"
+#include "Misc/CommandLine.h"
+#include "Misc/Parse.h"
+#include "Misc/ScopeExit.h"
+#include "Engine/World.h"
+#include "PrimitiveViewRelevance.h"
+#include "PrimitiveSceneProxy.h"
+#include "SceneManagement.h"
+#include "SceneView.h"
 #include "IAmSpeed/World/Collision/BoxRestingSupport.h"
 #include "IAmSpeed/World/Collision/ResolvedPairSet.h"
 #include "IAmSpeed/World/Collision/ReciprocalBoxContact.h"
 #include "IAmSpeed/World/Collision/PlanarContactImpulse.h"
+#include "IAmSpeed/World/Collision/BoundedPlanarContact.h"
 #include "IAmSpeed/World/Analytic/StaticWorldQueryAudit.h"
 #include "IAmSpeed/Base/SpeedConstant.h"
 #include "IAmSpeed/Base/SUtils.h"
@@ -14,6 +23,7 @@
 #include "IAmSpeed/World/Collision/StaticCollisionWorld.h"
 #include "IAmSpeed/World/Collision/CollisionResponseMask.h"
 #include "SphereSubBody.h"
+#include "CarBallContactImpulse.h"
 #include "SWheelSubBody.h"
 #include "Configs/SubBodyConfig.h"
 #include "PhysicsEngine/BoxElem.h"
@@ -22,6 +32,27 @@
 #include "Math/QuatRotationTranslationMatrix.h"
 
 DEFINE_LOG_CATEGORY(BoxSubBodyLog);
+static TAutoConsoleVariable<int32> CVarIAmSpeedCoupledContactSpeedLimits(
+ TEXT("p.IAmSpeed.Contact.CoupledSpeedLimits"),1,
+ TEXT("Solve box/analytic-plane contact impulses and linear/angular speed-limit reactions together. 0 selects legacy independent clipping for comparison."));
+static TAutoConsoleVariable<float> CVarIAmSpeedBoxContactResponseTime(
+ TEXT("p.IAmSpeed.Box.ContactResponseTime"),0.001f,
+ TEXT("Physical contact regularization horizon in seconds, independent of frame dt. Critical effective spring/damper CFM and positive-gap candidate closing bounds. 0 selects rigid contacts. No positional snapping or adjusted TOI."));
+
+
+float UBoxSubBody::GetStaticWorldContactFriction(const Speed::IStaticCollisionWorld* World, const FVector& Normal) const
+{
+    // Only static analytical floor reactions use this policy. Pair/ball/other
+    // object contacts keep the material coefficient and their existing path.
+    if (bPersistentFloorFrictionOnly && World && Normal.Z >= 0.999999 &&
+        !HasContinuingFloorContact2778()) return 0.0f;
+    return GetDynamicFriction();
+}
+
+// Experimental initial-overlap manifold. Zero preserves existing selection.
+static TAutoConsoleVariable<int32> CVarIAmSpeedBoxInitialOverlapManifold(
+    TEXT("p.IAmSpeed.Box.InitialOverlapManifold"), 0,
+    TEXT("Experimental: include non-separated planar vertices on an initial overlap impact (maximum four). Default 0 preserves minimum-gap selection."), ECVF_Default);
 namespace
 {
 template<class AllocatorType>
@@ -499,12 +530,12 @@ FVector UBoxSubBody::GetStaticRestingReaction(const Speed::IStaticCollisionWorld
 
 double UBoxSubBody::GetStaticSupportStopTimeCandidate() const
 {
-    if (!ParentComponent || !HasToApplyRestForce() || GetDynamicFriction() <= 0) return TNumericLimits<double>::Max();
+    if (!ParentComponent || !HasToApplyRestForce() || GetStaticWorldContactFriction( ParentComponent ? ParentComponent->GetStaticCollisionWorldForFrame() : nullptr, FVector::UpVector) <= 0) return TNumericLimits<double>::Max();
     const SKinematic& State = ParentComponent->GetKinematicState();
     const double Load = State.Acceleration.Size(), Speed = State.Velocity.Size();
     if (Load == 0 || Speed == 0 || !State.AngularVelocity.IsZero() || !State.AngularAcceleration.IsZero() ||
         FVector::DotProduct(State.Velocity, State.Acceleration) != 0) return TNumericLimits<double>::Max();
-    return Speed / (GetDynamicFriction() * Load);
+    return Speed / (GetStaticWorldContactFriction( ParentComponent ? ParentComponent->GetStaticCollisionWorldForFrame() : nullptr, FVector::UpVector) * Load);
 }
 
 bool UBoxSubBody::HasExactStaticRestingSupport(const Speed::IStaticCollisionWorld& World, const FVector& Load) const
@@ -695,7 +726,7 @@ bool UBoxSubBody::EvaluateStaticBoxSupport(const Speed::IStaticCollisionWorld& W
     return !bIncludeMotion || State.Velocity.IsZero()
         ? Speed::TryBuildBoxRestingSupport(World, Query, State.Location, ExternalAcceleration, OutSupport)
         : Speed::TryBuildBoxSlidingSupport(World, Query, State.Location, ExternalAcceleration,
-            State.Velocity, GetDynamicFriction(), OutSupport, HorizonSeconds);
+            State.Velocity, GetStaticWorldContactFriction( &World, FVector::UpVector), OutSupport, HorizonSeconds);
 }
 
 void UBoxSubBody::PostPhysicsUpdate()
@@ -2095,7 +2126,9 @@ void UBoxSubBody::ResolveHitVsSphere(USphereSubBody& Sphere, const float& delta)
 		IAmSpeedVelocityAtPointFromKS(BoxKS, CurrentHit.ImpactPoint),
 		CurrentHit.ImpactNormal.GetSafeNormal()));
 
-    const bool bUsePostNormalFriction =
+    const bool bAerialContact = UsesAerialShotContactModel() &&
+        Sphere.UsesAerialShotContactModel();
+    const bool bUsePostNormalFriction = bAerialContact ||
         UsesPostNormalFrictionImpulse() || Sphere.UsesPostNormalFrictionImpulse();
     const SKinematic& ImpulseBoxKS = bUsePostNormalFriction
         ? FakePhysicsContext.SelfParentKinematics
@@ -2116,14 +2149,29 @@ void UBoxSubBody::ResolveHitVsSphere(USphereSubBody& Sphere, const float& delta)
         ImpThis,
         ImpOther,
         GetImpactThreshold(),
-        (UsesCoupledContactImpulse() || Sphere.UsesCoupledContactImpulse()) &&
+        bAerialContact || ((UsesCoupledContactImpulse() || Sphere.UsesCoupledContactImpulse()) &&
         Sphere.AllowsCoupledContactImpulseFor(SphereKS0) &&
-        AllowsCoupledContactNormal(BoxLocalContactNormal),
-        bUsePostNormalFriction
+        AllowsCoupledContactNormal(BoxLocalContactNormal)),
+        bUsePostNormalFriction && !bAerialContact
     );
 
     if (!ok)
         return;
+
+    if (bAerialContact && ParentComponent && Sphere.GetParentComponent())
+    {
+        Speed::CarBallContact::FCapAware576Diagnostic Diagnostic;
+        if (Speed::CarBallContact::CapAwareFullStick576(
+            ImpulseBoxKS, GetMass(), ComputeWorldInvInertiaTensor(),
+            ParentComponent->GetPhysMaxAngularSpeed(),
+            ImpulseSphereKS, Sphere.GetMass(), Sphere.ComputeWorldInvInertiaTensor(),
+            Sphere.GetParentComponent()->GetPhysMaxAngularSpeed(),
+            CurrentHit.ImpactPoint, -CurrentHit.ImpactNormal.GetSafeNormal(),
+            MixedRestitution, MixedFriction, ImpOther, Diagnostic))
+        {
+            ImpThis = -ImpOther;
+        }
+    }
 
 #if !UE_BUILD_SHIPPING
     if (CVarIAmSpeedCollisionDebugSphereBoxImpulse.GetValueOnAnyThread() != 0)
@@ -3227,7 +3275,7 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
             const float BudgetBefore = RemainingFreshSupportImpulse;
 
             // friction (Coulomb) on supporting contact
-            const float mu = GetDynamicFriction();
+            const float mu = GetStaticWorldContactFriction( ParentComponent ? ParentComponent->GetStaticCollisionWorldForFrame() : nullptr, Hit.ImpactNormal);
             if (mu > 0.f)
             {
                 const FVector vT = Vp - vN * N;
@@ -3375,7 +3423,7 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
             ParentComponent->NumFrame(),
             NumC,
             Iter,
-            GetDynamicFriction(),
+            GetStaticWorldContactFriction( ParentComponent ? ParentComponent->GetStaticCollisionWorldForFrame() : nullptr, Hit.ImpactNormal),
             bFreshSweepSupport ? 1 : 0,
             bContinuingEdgeSupport ? 1 : 0,
             *COMVelocityBeforeSolve.ToString(),
@@ -4257,7 +4305,7 @@ bool UBoxSubBody::TryGetStaticContactAcceleration(FVector& Linear, FVector& Angu
         const auto Response = Speed::SolvePlanarSlidingReaction(MakeArrayView(Points, Count), N,
             State.Location, State.Velocity, State.AngularVelocity, State.Acceleration,
             State.AngularAcceleration, 1.0 / ParentComponent->GetPhysMass(), InvI,
-            GetDynamicFriction(), ParentComponent->GetStaticSupportFrameHorizon());
+            GetStaticWorldContactFriction( World, N), ParentComponent->GetStaticSupportFrameHorizon());
         if (!Response.bSolved) return false;
         Linear = Response.DeltaVelocity; Angular = Response.DeltaAngularVelocity;
         return true;
@@ -4271,7 +4319,7 @@ bool UBoxSubBody::TryGetStaticContactAcceleration(FVector& Linear, FVector& Angu
         const auto Sliding = Speed::SolvePlanarSlidingReaction(MakeArrayView(Points, Count), N,
             State.Location, State.Velocity, State.AngularVelocity, State.Acceleration,
             State.AngularAcceleration, 1.0 / ParentComponent->GetPhysMass(), InvI,
-            GetDynamicFriction(), ParentComponent->GetStaticSupportFrameHorizon());
+            GetStaticWorldContactFriction( World, N), ParentComponent->GetStaticSupportFrameHorizon());
         if (Sliding.bSolved)
         {
             Linear = Sliding.DeltaVelocity; Angular = Sliding.DeltaAngularVelocity;
@@ -4288,7 +4336,7 @@ bool UBoxSubBody::TryGetStaticContactAcceleration(FVector& Linear, FVector& Angu
     const auto Response = bSticking && Count <= 2
         ? Speed::SolvePlanarCoulombImpulse(MakeArrayView(Points, Count), N, State.Location,
             State.Acceleration + CommonCentripetal, State.AngularAcceleration,
-            1.0 / ParentComponent->GetPhysMass(), InvI, 0, GetDynamicFriction())
+            1.0 / ParentComponent->GetPhysMass(), InvI, 0, GetStaticWorldContactFriction( World, N))
         : Speed::SolvePlanarNormalImpulse(MakeArrayView(Points, Count), N, State.Location,
             State.Acceleration, State.AngularAcceleration, 1.0 / ParentComponent->GetPhysMass(), InvI, 0,
             MakeArrayView(Centripetal, Count));
@@ -4512,7 +4560,12 @@ bool UBoxSubBody::TryResolveExactPlanarImpact(bool bNotifyImpact)
         Gaps[Corner] = FVector::DotProduct(Vertices[Corner] - CurrentHit.ImpactPoint, N);
         MinimumGap = FMath::Min(MinimumGap, Gaps[Corner]);
     }
+    const bool bInitialOverlapManifold = bNotifyImpact && CurrentHit.TOI == 0 && MinimumGap < -Roundoff
+        && CVarIAmSpeedBoxInitialOverlapManifold.GetValueOnAnyThread() != 0;
     FVector Points[4];
+    double ContactGaps2996[4]={};
+    const bool Coupled2996=CVarIAmSpeedCoupledContactSpeedLimits.GetValueOnAnyThread()!=0;
+    double ResponseTime2996=Coupled2996 && bNotifyImpact ? FMath::Max(0.,double(CVarIAmSpeedBoxContactResponseTime.GetValueOnAnyThread())) : 0.;
     int32 Count = 0;
     Speed::Analytic::FWorldQuery Probe;
     Probe.Shape = Speed::Analytic::EQueryShape::Ray;
@@ -4527,7 +4580,12 @@ bool UBoxSubBody::TryResolveExactPlanarImpact(bool bNotifyImpact)
     Probe.InitialOverlapTolerance = 0;
     for (int32 Corner = 0; Corner < 8; ++Corner)
     {
-        if (Gaps[Corner] - MinimumGap > Roundoff) continue;
+        if (bInitialOverlapManifold ? Gaps[Corner] > Roundoff : Gaps[Corner] - MinimumGap > Roundoff)
+        {
+            const FVector VP2996=State.Velocity+FVector::CrossProduct(State.AngularVelocity,Vertices[Corner]-State.Location);
+            const double Closing2996=FMath::Max(0.,-FVector::DotProduct(VP2996,N));
+            if(bInitialOverlapManifold || ResponseTime2996<=0 || Gaps[Corner]<0 || Gaps[Corner]>Closing2996*ResponseTime2996)continue;
+        }
         if (Count == 4) return false;
         const double Span = FMath::Abs(Gaps[Corner]) + 0.01;
         Probe.Start = Vertices[Corner] + Span * N;
@@ -4536,6 +4594,10 @@ bool UBoxSubBody::TryResolveExactPlanarImpact(bool bNotifyImpact)
         if (!Witness.bHit || Witness.bStartPenetrating || Witness.bSurfaceNormalMayVary ||
             Witness.GeometricErrorBoundCm != 0 || Witness.SurfaceFeatureKind != Speed::EContactFeatureKind::Face ||
             !Witness.Normal.Equals(N, 32 * DBL_EPSILON)) return false;
+        // The existing exact manifold already classified these points as
+        // touching within transform roundoff. Do not turn that same witness
+        // into a separated speculative constraint through a positive ulp gap.
+        ContactGaps2996[Count]=(bInitialOverlapManifold || Gaps[Corner]-MinimumGap<=Roundoff) ? 0. : FMath::Max(0.,Gaps[Corner]);
         Points[Count++] = Witness.Point;
     }
     if (Count == 0 || ParentComponent->GetPhysMass() <= 0) return false;
@@ -4545,8 +4607,29 @@ bool UBoxSubBody::TryResolveExactPlanarImpact(bool bNotifyImpact)
     // Restitution belongs to an actual CCD impact, never a post-transport
     // velocity-feasibility projection (which must not replay a bounce).
     const double ImpactRestitution = bNotifyImpact && Closing < -GetImpactThreshold() ? GetRestitution() : 0;
-    const auto Response = Speed::SolvePlanarCoulombImpulse(MakeArrayView(Points, Count), N,
-        State.Location, State.Velocity, State.AngularVelocity, InvMass, InvI, ImpactRestitution, GetDynamicFriction());
+    // Speculative near-corner grouping exists to make a binding speed-limit
+    // reaction simultaneous. When the exact actual-contact response already
+    // respects both bounds, retain ordinary physical CCD arrivals: adding a
+    // separated point there can create repeated artificial micro-impacts.
+    if(Coupled2996 && ResponseTime2996>0){
+        FVector ActualPoints[4];int32 ActualCount=0;
+        for(int32 I=0;I<Count;++I)if(ContactGaps2996[I]==0)ActualPoints[ActualCount++]=Points[I];
+        if(ActualCount>0 && ActualCount<Count){
+            const auto Actual=Speed::SolvePlanarCoulombImpulse(MakeArrayView(ActualPoints,ActualCount),N,State.Location,State.Velocity,State.AngularVelocity,InvMass,InvI,ImpactRestitution,GetStaticWorldContactFriction(World,N));
+            if(Actual.bSolved && (State.Velocity+Actual.DeltaVelocity).SizeSquared()<=FMath::Square(double(ParentComponent->GetPhysMaxSpeed())) && (State.AngularVelocity+Actual.DeltaAngularVelocity).SizeSquared()<=FMath::Square(double(ParentComponent->GetPhysMaxAngularSpeed()))){
+                Count=ActualCount;for(int32 I=0;I<Count;++I){Points[I]=ActualPoints[I];ContactGaps2996[I]=0;}ResponseTime2996=0;
+            }
+        }
+    }
+    Speed::FPlanarNormalImpulse Response;
+    Speed::FBoundedPlanarContact Bounded2996;
+    if(Coupled2996){
+        Bounded2996=Speed::SolveBoundedPlanarContact(MakeArrayView(Points,Count),MakeArrayView(ContactGaps2996,Count),N,State.Location,State.Velocity,State.AngularVelocity,InvMass,InvI,ImpactRestitution,GetStaticWorldContactFriction(World,N),ParentComponent->GetPhysMaxSpeed(),ParentComponent->GetPhysMaxAngularSpeed(),ResponseTime2996);
+        Response=Bounded2996.Contact;
+        if(!Response.bSolved)UE_LOG(BoxSubBodyLog,Warning,TEXT("[CoupledContact2996Rejected] frame=%u count=%d responseTime=%.17g"),ParentComponent->NumFrame(),Count,ResponseTime2996);
+    }else{
+        Response=Speed::SolvePlanarCoulombImpulse(MakeArrayView(Points,Count),N,State.Location,State.Velocity,State.AngularVelocity,InvMass,InvI,ImpactRestitution,GetStaticWorldContactFriction(World,N));
+    }
 #if !UE_BUILD_SHIPPING
     if (CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread() != 0)
         UE_LOG(BoxSubBodyLog, Display, TEXT("[ExactPlanarAcquisition] frame=%u impact=%d solved=%d count=%d gap=%.17g pose=%s q=%s v=%s w=%s a=%s alpha=%s dv=%s dw=%s toi=%.17g speed=%.17g spin=%.17g next_spin=%.17g"),
@@ -4555,6 +4638,21 @@ bool UBoxSubBody::TryResolveExactPlanarImpact(bool bNotifyImpact)
             *State.Acceleration.ToString(), *State.AngularAcceleration.ToString(),
             *Response.DeltaVelocity.ToString(), *Response.DeltaAngularVelocity.ToString(), double(CurrentHit.TOI),
             State.Velocity.Size(), State.AngularVelocity.Size(), (State.AngularVelocity + Response.DeltaAngularVelocity).Size());
+#endif
+
+#if !UE_BUILD_SHIPPING
+    if (CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread() != 0)
+    {
+        UE_LOG(BoxSubBodyLog, Display, TEXT("[ExactPlanarManifold] frame=%u mode=%d mu=%.17g e=%.17g roundoff=%.17g gaps=[%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g] Wbefore=[%.17g,%.17g,%.17g] Wresponse=[%.17g,%.17g,%.17g]"),
+            ParentComponent->NumFrame(), bInitialOverlapManifold ? 1 : 0, double(GetStaticWorldContactFriction( World, N)), ImpactRestitution, Roundoff,
+            Gaps[0], Gaps[1], Gaps[2], Gaps[3], Gaps[4], Gaps[5], Gaps[6], Gaps[7],
+            State.AngularVelocity.X, State.AngularVelocity.Y, State.AngularVelocity.Z,
+            (State.AngularVelocity + Response.DeltaAngularVelocity).X, (State.AngularVelocity + Response.DeltaAngularVelocity).Y, (State.AngularVelocity + Response.DeltaAngularVelocity).Z);
+        for (int32 I = 0; I < Count; ++I)
+            UE_LOG(BoxSubBodyLog, Display, TEXT("[ExactPlanarManifoldPoint] frame=%u mode=%d point=%d P=[%.17g,%.17g,%.17g] Jn=%.17g Jt=[%.17g,%.17g,%.17g]"),
+                ParentComponent->NumFrame(), bInitialOverlapManifold ? 1 : 0, I, Points[I].X, Points[I].Y, Points[I].Z,
+                Response.Impulses[I], Response.TangentImpulses[I].X, Response.TangentImpulses[I].Y, Response.TangentImpulses[I].Z);
+    }
 #endif
 
     if (!Response.bSolved)
@@ -4567,7 +4665,7 @@ bool UBoxSubBody::TryResolveExactPlanarImpact(bool bNotifyImpact)
                 double(N.X), double(N.Y), double(N.Z), *State.Rotation.ToString());
             UE_LOG(BoxSubBodyLog, Display, TEXT("[ExactPlanarSolveInput] com=(%.17g,%.17g,%.17g) v=(%.17g,%.17g,%.17g) w=(%.17g,%.17g,%.17g) invmass=%.17g mu=%.17g restitution=%.17g invI=(%.17g,%.17g,%.17g;%.17g,%.17g,%.17g;%.17g,%.17g,%.17g)"),
                 State.Location.X, State.Location.Y, State.Location.Z, State.Velocity.X, State.Velocity.Y, State.Velocity.Z,
-                State.AngularVelocity.X, State.AngularVelocity.Y, State.AngularVelocity.Z, InvMass, double(GetDynamicFriction()), ImpactRestitution,
+                State.AngularVelocity.X, State.AngularVelocity.Y, State.AngularVelocity.Z, InvMass, double(GetStaticWorldContactFriction( World, N)), ImpactRestitution,
                 InvI.M[0][0], InvI.M[0][1], InvI.M[0][2], InvI.M[1][0], InvI.M[1][1], InvI.M[1][2], InvI.M[2][0], InvI.M[2][1], InvI.M[2][2]);
             for (int32 I = 0; I < Count; ++I)
                 UE_LOG(BoxSubBodyLog, Display, TEXT("[ExactPlanarSolvePoint] index=%d p=(%.17g,%.17g,%.17g)"), I, Points[I].X, Points[I].Y, Points[I].Z);
@@ -4582,7 +4680,7 @@ bool UBoxSubBody::TryResolveExactPlanarImpact(bool bNotifyImpact)
     // certificate uses incoming energy and fresh geometry, not a cached face.
     const bool bCloseMicroRocking = bNotifyImpact && Count == 4 &&
         Speed::CanStabilizeBoxMicroRocking(*World, MakeSupportBoxQuery(State), State,
-            InvI, InvMass, ImpactRestitution, GetDynamicFriction());
+            InvI, InvMass, ImpactRestitution, GetStaticWorldContactFriction( World, N));
     State.Velocity += Response.DeltaVelocity;
     State.AngularVelocity += Response.DeltaAngularVelocity;
     if (Count == 4 && ImpactRestitution == 0)
@@ -4602,7 +4700,7 @@ bool UBoxSubBody::TryResolveExactPlanarImpact(bool bNotifyImpact)
             // threshold. Separating/bouncing faces cannot enter this branch.
             State.Velocity -= FVector::DotProduct(State.Velocity, N) * N;
             State.AngularVelocity = FVector::DotProduct(State.AngularVelocity, N) * N;
-            if (GetDynamicFriction() > 0 && bAllSlipSolved)
+            if (GetStaticWorldContactFriction( World, N) > 0 && bAllSlipSolved)
             {
                 State.Velocity = FVector::ZeroVector;
                 State.AngularVelocity = FVector::ZeroVector;
@@ -4614,6 +4712,11 @@ bool UBoxSubBody::TryResolveExactPlanarImpact(bool bNotifyImpact)
         State.Velocity = FVector::ZeroVector;
         State.AngularVelocity = FVector::ZeroVector;
     }
+#if !UE_BUILD_SHIPPING
+    if (CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread() != 0)
+        UE_LOG(BoxSubBodyLog, Display, TEXT("[ExactPlanarManifoldApplied] frame=%u mode=%d count=%d W=[%.17g,%.17g,%.17g]"),
+            ParentComponent->NumFrame(), bInitialOverlapManifold ? 1 : 0, Count, State.AngularVelocity.X, State.AngularVelocity.Y, State.AngularVelocity.Z);
+#endif
     ParentComponent->SetPhysCOMLocation(State.Location);
     ParentComponent->SetPhysRotationPreserveCOM(State.Rotation);
     ParentComponent->SetPhysCOMVelocity(State.Velocity);
@@ -5540,7 +5643,8 @@ FMatrix UBoxSubBody::InitInvInertiaTensor() const
         SSBox::ComputeInertiaTensor(BoxExtent, GetMass(), InertiaScale);
 
     const FMatrix I_atCOM =
-        SSBox::ConvertBoxInertiaToCOM(Idiag, d_in_box, GetMass());
+        SSBox::ConvertBoxInertiaToCOM(Idiag,
+            UsesAerialShotContactModel() ? FVector::ZeroVector : d_in_box, GetMass());
 
     return I_atCOM.InverseFast();
 }

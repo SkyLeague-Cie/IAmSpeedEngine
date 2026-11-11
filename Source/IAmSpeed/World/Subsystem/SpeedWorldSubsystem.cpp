@@ -3,6 +3,7 @@
 // USpeedWorldSubsystem.cpp
 
 #include "SpeedWorldSubsystem.h"
+#include "IAmSpeed/World/Analytic/SpeedAnalyticContactComponent.h"
 #include "IAmSpeed/World/Simulation/CcdPoseAudit.h"
 #include "IAmSpeed/World/Simulation/SubBodyKinematicsTasks.h"
 #include "IAmSpeed/World/Simulation/JoinedActorKinematics1213.h"
@@ -171,6 +172,24 @@ void USpeedWorldSubsystem::BuildAnalyticWorldFromLoadedSources()
 		return;
 	}
 	++AnalyticWorldBuildAttempt;
+	// No provisional owner mappings escape a failed build or a deferred retry.
+	TMap<uint64, TWeakObjectPtr<UPrimitiveComponent>> PendingSourceComponents;
+	auto TryBindSource = [&PendingSourceComponents](uint64 Id, UPrimitiveComponent* Component)
+	{
+		if (Id == 0 || !Component) return false;
+		if (const auto* Existing = PendingSourceComponents.Find(Id))
+		{
+			if (Existing->Get() != Component)
+			{
+				REPLAY_ANALYTIC_LOG(LogTemp, Error,
+					TEXT("[AnalyticSourceBinding] Conflicting SourceId=%016llX"), Id);
+				return false;
+			}
+			return true;
+		}
+		PendingSourceComponents.Add(Id, Component);
+		return true;
+	};
 
 	TArray<ALandscapeProxy*> Landscapes;
 	for (TActorIterator<ALandscapeProxy> It(World); It; ++It)
@@ -208,19 +227,47 @@ void USpeedWorldSubsystem::BuildAnalyticWorldFromLoadedSources()
 	TArray<UStaticMeshComponent*> AnalyticMeshComponents;
 	const USpeedAnalyticCollisionAsset* ExplicitBakedAsset = nullptr;
 	FString ExplicitBakedAssetPath;
+	TMap<uint64, const USpeedAnalyticSourceComponent*> AuthoredDeclarations;
 	for (const AActor* SourceActor : AnalyticMeshSourceActors)
 	{
 		TArray<UStaticMeshComponent*> MeshComponents;
-		const USpeedAnalyticSourceComponent* SourceComponent =
-			SourceActor->FindComponentByClass<USpeedAnalyticSourceComponent>();
-		if (const ASpeedStaticActor* SpeedStaticActor =
-			Cast<ASpeedStaticActor>(SourceActor))
+		TArray<USpeedAnalyticSourceComponent*> SourceComponents;
+		SourceActor->GetComponents<USpeedAnalyticSourceComponent>(SourceComponents);
+		if (SourceComponents.Num() != 1)
 		{
-			SpeedStaticActor->GatherAnalyticStaticMeshes(MeshComponents);
+			REPLAY_ANALYTIC_LOG(LogTemp, Error,
+				TEXT("[AnalyticSourceBinding] Ambiguous declarations Owner=%s Count=%d"),
+				*SourceActor->GetPathName(), SourceComponents.Num());
+			return;
 		}
-		else if (SourceComponent)
+		const USpeedAnalyticSourceComponent* SourceComponent = SourceComponents[0];
+		if (SourceComponent->AuthoredSourceId != 0)
 		{
-			SourceComponent->GatherOwnedStaticMeshes(MeshComponents);
+			if (SourceComponent->bIncludeOwnedStaticMeshes ||
+				SourceComponent->AnalyticCollisionAsset.IsNull() ||
+				SourceComponent->AuthoredContactComponentPath.IsEmpty() ||
+				AuthoredDeclarations.Contains(SourceComponent->AuthoredSourceId))
+			{
+				REPLAY_ANALYTIC_LOG(LogTemp, Error,
+					TEXT("[AnalyticSourceBinding] Incomplete or duplicate declaration Owner=%s"),
+					*SourceActor->GetPathName());
+				return;
+			}
+			AuthoredDeclarations.Add(SourceComponent->AuthoredSourceId, SourceComponent);
+		}
+		else
+		{
+			if (!SourceComponent->AuthoredContactComponentPath.IsEmpty())
+			{
+				REPLAY_ANALYTIC_LOG(LogTemp, Error,
+					TEXT("[AnalyticSourceBinding] Contact path without authored SourceId Owner=%s"),
+					*SourceActor->GetPathName());
+				return;
+			}
+			if (const ASpeedStaticActor* SpeedStaticActor = Cast<ASpeedStaticActor>(SourceActor))
+				SpeedStaticActor->GatherAnalyticStaticMeshes(MeshComponents);
+			else
+				SourceComponent->GatherOwnedStaticMeshes(MeshComponents);
 		}
 		if (SourceComponent && !SourceComponent->AnalyticCollisionAsset.IsNull())
 		{
@@ -258,9 +305,8 @@ void USpeedWorldSubsystem::BuildAnalyticWorldFromLoadedSources()
 				const_cast<UStaticMeshComponent*>(MeshComponent));
 			const FString ActorPath = AuthoredObjectPath(*SourceActor);
 			const FString ComponentPath = AuthoredObjectPath(*MeshComponent);
-			AnalyticSourceComponents.Add(
-				Speed::Analytic::StableStringId(ComponentPath),
-				const_cast<UStaticMeshComponent*>(MeshComponent));
+			if (!TryBindSource(Speed::Analytic::StableStringId(ComponentPath),
+				const_cast<UStaticMeshComponent*>(MeshComponent))) return;
 			const FString StableIdentity = FString::Printf(
 				TEXT("%s|%s|%s|%s"), *ActorPath,
 				*ComponentPath, *Mesh->GetPathName(),
@@ -302,6 +348,41 @@ void USpeedWorldSubsystem::BuildAnalyticWorldFromLoadedSources()
 	}
 	if (BakedAsset)
 	{
+		if (BakedAsset->AuthoredSources.Num() != AuthoredDeclarations.Num() ||
+			(!BakedAsset->AuthoredSources.IsEmpty() && !bUsesExplicitBake))
+		{
+			REPLAY_ANALYTIC_LOG(LogTemp, Error,
+				TEXT("[AnalyticSourceBinding] Authored source inventory mismatch or implicit asset."));
+			return;
+		}
+		for (const FSpeedAnalyticAuthoredSourceRecord& Record : BakedAsset->AuthoredSources)
+		{
+			const auto* Declaration = AuthoredDeclarations.Find(Record.SourceId);
+			FString BindingReason;
+			UPrimitiveComponent* Contact = Declaration
+				? (*Declaration)->ResolveAuthoredContact(Record, *BakedAsset, &BindingReason) : nullptr;
+			if (!Contact)
+			{
+				REPLAY_ANALYTIC_LOG(LogTemp, Error,
+					TEXT("[AnalyticSourceBinding] Rejected SourceId=%016llX Detail=%s"),
+					Record.SourceId, Declaration ? *BindingReason : TEXT("Declaration missing."));
+				return;
+			}
+            // Source/component registration order must not leave a stale empty
+            // bounds cache. Refresh once after exact binding, never per query.
+            if (auto* AnalyticContact = Cast<USpeedAnalyticContactComponent>(Contact))
+            {
+                bool BoundsReady = false;
+                AnalyticContact->RefreshAuthoredBounds(BoundsReady, BindingReason);
+                if (!BoundsReady)
+                {
+                    REPLAY_ANALYTIC_LOG(LogTemp, Error, TEXT("[AnalyticSourceBinding] Invalid analytic contact bounds: %s"), *BindingReason);
+                    return;
+                }
+            }
+			if (!TryBindSource(Record.SourceId, Contact)) return;
+		}
+
 		int32 SerializedPlaneAuthorityCount = 0;
 		for (const FSpeedAnalyticBoundedPlaneRecord& Plane :
 			BakedAsset->BoundedPlanes)
@@ -457,9 +538,8 @@ void USpeedWorldSubsystem::BuildAnalyticWorldFromLoadedSources()
 					break;
 				}
 				ClaimedComponents.Add(MatchedComponent);
-				AnalyticSourceComponents.Add(
-					Source.SourceId,
-					const_cast<UStaticMeshComponent*>(MatchedComponent));
+				if (!TryBindSource(Source.SourceId,
+					const_cast<UStaticMeshComponent*>(MatchedComponent))) return;
 			}
 		}
 		if (BakedRuntime && bInventoryMatches)
@@ -487,7 +567,8 @@ void USpeedWorldSubsystem::BuildAnalyticWorldFromLoadedSources()
 		AnalyticMeshSourceActors.Num(), MeshSourceComponentCount,
 		MeshSourceInventoryHash, bMeshBakeLoaded ? 1 : 0,
 		BakedRuntimeWorld ? BakedRuntimeWorld->Triangles.Num() : Imported->Triangles.Num());
-	if (MeshSourceComponentCount > 0 && !bMeshBakeLoaded)
+	if ((MeshSourceComponentCount > 0 || !AuthoredDeclarations.IsEmpty() ||
+		ExplicitBakedAsset != nullptr) && !bMeshBakeLoaded)
 	{
 		REPLAY_ANALYTIC_LOG(LogTemp, Error,
 			TEXT("[AnalyticAuthorityCoverageMissing] World=%s Components=%d Hash=%016llX Detail=The strict analytical world will remain unavailable until the authored source inventory has a matching immutable bake."),
@@ -505,9 +586,8 @@ void USpeedWorldSubsystem::BuildAnalyticWorldFromLoadedSources()
 			Landscape->CollisionComponents[0])
 		{
 			const FString LandscapePath = AuthoredObjectPath(*Landscape);
-			AnalyticSourceComponents.Add(
-				Speed::Analytic::StableStringId(LandscapePath),
-				Landscape->CollisionComponents[0]);
+			if (!TryBindSource(Speed::Analytic::StableStringId(LandscapePath),
+				Landscape->CollisionComponents[0])) return;
 		}
 		const FString LandscapePath = AuthoredObjectPath(*Landscape);
 		const uint64 LandscapeSourceId =
@@ -593,7 +673,8 @@ void USpeedWorldSubsystem::BuildAnalyticWorldFromLoadedSources()
             Speed::Analytic::FTorusSurface Torus;FString Error;
             if (!Ring->BuildStaticTorus(Id,Torus,Error))
             { REPLAY_ANALYTIC_LOG(LogTemp,Error,TEXT("[AnalyticTorusRejected] %s: %s"),*Ring->GetPathName(),*Error); return; }
-            AuthoredTori.Add(Torus);AnalyticSourceComponents.Add(Id,Ring);
+            AuthoredTori.Add(Torus);
+            if (!TryBindSource(Id, Ring)) return;
         }
     }
     if (!AuthoredTori.IsEmpty())
@@ -678,6 +759,7 @@ void USpeedWorldSubsystem::BuildAnalyticWorldFromLoadedSources()
 		ExtrudedFacetCount, ExtrudedFacetBoundsAllocatedBytes, ExtrudedFacetGeometryAllocatedBytes);
 #endif
     AnalyticWorldData = MoveTemp(FinalizedWorld);
+    AnalyticSourceComponents = MoveTemp(PendingSourceComponents);
     const Speed::FFrameParallelSettings ParallelSettings = Speed::CaptureFrameParallelSettings();
     SimulationWorld.SetStaticCollisionWorld(MakeUnique<Speed::FAnalyticStaticCollisionWorld>(
         *AnalyticWorldData, ParallelSettings.LaneLimit, ParallelSettings.MinQueryItems,
