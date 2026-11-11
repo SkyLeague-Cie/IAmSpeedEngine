@@ -390,8 +390,8 @@ inline bool TrigPolynomialBounds(Interval x,Interval& scale,Interval& cosine)
     constexpr double nativeScaleThreshold=1.e-8;
     if(x.Lower<nativeScaleThreshold)
     {
-        const Interval small{x.Lower,FMath::Min(x.Upper,nativeScaleThreshold),true};
-        const auto p2=Add(Subtract(Interval::Exact(.5),DividePositive(small,48.)),DividePositive(Square(small),3840.));
+        const Interval smallScaleInput{x.Lower,FMath::Min(x.Upper,nativeScaleThreshold),true};
+        const auto p2=Add(Subtract(Interval::Exact(.5),DividePositive(smallScaleInput,48.)),DividePositive(Square(smallScaleInput),3840.));
         scale=Hull(scale,p2);
     }
     return Valid(scale)&&Valid(cosine);

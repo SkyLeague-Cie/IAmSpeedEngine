@@ -7236,7 +7236,7 @@ bool BuildCase202Serial3CurveArrival(const FNativeSolidStaticRequest& request,
         Analytic::EAnalyticNumericContract::Binary64NearestAllowFlush).ControlFingerprint();
     auto seal=Case202Serial3::ReviewedLoadedImageVerifier::TrySeal(*manifest,
         Case202Serial3::TrustedReviewerPublicKey,sizeof(Case202Serial3::TrustedReviewerPublicKey),
-        integrateAddress,reinterpret_cast<const void*>(&SBox::IntegrateRotation),
+        integrateAddress,reinterpret_cast<const void*>(&::Speed::SBox::IntegrateRotation),
         reinterpret_cast<const void*>(&C::BoxGraphFirstArrival::FProof::TryBuildSerial3),numeric,serial3.Live);
     if(!seal)
     {
@@ -8649,9 +8649,9 @@ bool FInstantMotionNativeFamiliesTest::RunTest(const FString&)
             for(int32 step=0;step<=16;++step)
             {
                 const float t=float(double(v.Horizon)*double(step)/16.);
-                const auto ownerQ=SBox::IntegrateRotation(v.OwnerState.Rotation,v.OwnerState.AngularVelocity,v.OwnerState.AngularAcceleration,t);
+                const auto ownerQ=::Speed::SBox::IntegrateRotation(v.OwnerState.Rotation,v.OwnerState.AngularVelocity,v.OwnerState.AngularAcceleration,t);
                 if(!TestTrue(TEXT("literal native normalization and ThetaZero included"),Contains(v.OwnerState.Rotation,delta,ownerQ)))return false;
-                const auto ownerP=SBox::AdvancePosition(v.OwnerState.Location,v.OwnerState.Velocity,v.OwnerState.Acceleration,t);
+                const auto ownerP=::Speed::SBox::AdvancePosition(v.OwnerState.Location,v.OwnerState.Velocity,v.OwnerState.Acceleration,t);
                 const auto bodyP=(ownerP-ownerQ.RotateVector(v.LocalCOM))+ownerQ.RotateVector(v.LocalOffset);
                 const auto bodyQ=ownerQ*v.LocalRotation;
                 const double td=double(t);
@@ -8806,8 +8806,8 @@ bool FCorrelatedNativeGroupsTest::RunTest(const FString&)
                 for(int32 step=0;step<=8;++step)
                 {
                     const float t=float(double(v.Horizon)*double(step)/8.);
-                    const auto ownerQ=SBox::IntegrateRotation(v.OwnerState.Rotation,v.OwnerState.AngularVelocity,v.OwnerState.AngularAcceleration,t);
-                    const auto ownerP=SBox::AdvancePosition(v.OwnerState.Location,v.OwnerState.Velocity,v.OwnerState.Acceleration,t);
+                    const auto ownerQ=::Speed::SBox::IntegrateRotation(v.OwnerState.Rotation,v.OwnerState.AngularVelocity,v.OwnerState.AngularAcceleration,t);
+                    const auto ownerP=::Speed::SBox::AdvancePosition(v.OwnerState.Location,v.OwnerState.Velocity,v.OwnerState.Acceleration,t);
                     auto pose=v.Query;pose.Start=pose.End=(ownerP-ownerQ.RotateVector(v.LocalCOM))+ownerQ.RotateVector(v.LocalOffset);
                     pose.Rotation=ownerQ*v.LocalRotation;
                     if(!TestTrue(TEXT("actual native endpoint complete groups fit current correlated regions"),
@@ -8824,7 +8824,7 @@ bool FCorrelatedNativeGroupsTest::RunTest(const FString&)
             if(!InstantMotionClearanceDetail::GetStaticNumericalBounds(constants)||
                 !InstantMotionClearanceDetail::BoundOwnerQuaternionDeltaRange(cancelled,1.f/512.f,3.f/512.f,constants,delta))return false;
             if(!TestTrue(TEXT("positive-time exact angular cancellation keeps original q0 instead of rebasing"),
-                InstantMotionClearanceTests::Contains(cancelled.Rotation,delta,SBox::IntegrateRotation(cancelled.Rotation,
+                InstantMotionClearanceTests::Contains(cancelled.Rotation,delta,::Speed::SBox::IntegrateRotation(cancelled.Rotation,
                     cancelled.AngularVelocity,cancelled.AngularAcceleration,1.f/256.f))))return false;
             FDistanceBudget shortWork{119,17};FGroupedBoxVolumeBounds absent;
             if(!TestTrue(TEXT("partial bounded build never refunds work or publishes an incomplete volume"),
@@ -8948,8 +8948,8 @@ bool FCorrelatedTrueCornerRolesTest::RunTest(const FString&)
                 for(int32 step=0;step<=8;++step)
                 {
                     const float t=range.Key+(range.Value-range.Key)*(float(step)/8.f);const double td=double(t);
-                    const auto ownerQ=SBox::IntegrateRotation(v.OwnerState.Rotation,v.OwnerState.AngularVelocity,v.OwnerState.AngularAcceleration,t);
-                    const auto ownerP=SBox::AdvancePosition(v.OwnerState.Location,v.OwnerState.Velocity,v.OwnerState.Acceleration,t);
+                    const auto ownerQ=::Speed::SBox::IntegrateRotation(v.OwnerState.Rotation,v.OwnerState.AngularVelocity,v.OwnerState.AngularAcceleration,t);
+                    const auto ownerP=::Speed::SBox::AdvancePosition(v.OwnerState.Location,v.OwnerState.Velocity,v.OwnerState.Acceleration,t);
                     const auto bodyP=(ownerP-ownerQ.RotateVector(v.LocalCOM))+ownerQ.RotateVector(v.LocalOffset);
                     const auto bodyQ=ownerQ*v.LocalRotation;
                     const auto theta=v.OwnerState.AngularVelocity*td+.5*v.OwnerState.AngularAcceleration*(td*td);
@@ -9564,8 +9564,8 @@ bool FNativeDirectionalCompleteFamiliesTest::RunTest(const FString&)
    for(int32 step=0;step<=8;++step)
    {
     const float time=float(double(v.Horizon)*double(step)/8.);
-    const auto ownerQ=SBox::IntegrateRotation(v.OwnerState.Rotation,v.OwnerState.AngularVelocity,v.OwnerState.AngularAcceleration,time);
-    const auto ownerP=SBox::AdvancePosition(v.OwnerState.Location,v.OwnerState.Velocity,v.OwnerState.Acceleration,time);
+    const auto ownerQ=::Speed::SBox::IntegrateRotation(v.OwnerState.Rotation,v.OwnerState.AngularVelocity,v.OwnerState.AngularAcceleration,time);
+    const auto ownerP=::Speed::SBox::AdvancePosition(v.OwnerState.Location,v.OwnerState.Velocity,v.OwnerState.Acceleration,time);
     const auto bodyP=(ownerP-ownerQ.RotateVector(v.LocalCOM))+ownerQ.RotateVector(v.LocalOffset);const auto bodyQ=ownerQ*v.LocalRotation;
     const double td=double(time);const auto theta=v.OwnerState.AngularVelocity*td+.5*v.OwnerState.AngularAcceleration*(td*td);
     FQuat referenceOwner=v.OwnerState.Rotation;
