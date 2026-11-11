@@ -1,7 +1,15 @@
 #include "ISpeedComponent.h"
+#include "IAmSpeed/World/Collision/PreparedNativeOwnerPoseMutation.h"
+#include "IAmSpeed/World/Collision/PreparedNativeWheelProbe.h"
+#include "IAmSpeed/SubBodies/Common/SweepTOISelection.h"
+#include "IAmSpeed/Base/OriginKinematicStateValues.h"
+#include <stdexcept>
+#include "IAmSpeed/World/Collision/PreparedSweepEvidence.h"
 #include "IAmSpeed/SubBodies/Solid/SolidSubBody.h"
 #include "IAmSpeed/World/Analytic/AnalyticWorldData.h"
 #include "Misc/ScopeExit.h"
+#include "IAmSpeed/World/Simulation/CcdPoseAudit.h"
+#include "IAmSpeed/World/Analytic/AnalyticNumericContext.h"
 #include <cmath>
 
 namespace
@@ -120,7 +128,46 @@ void ISpeedComponent::IntegrateKinematicsPrv(const float& SubDelta)
 {
     // BasePhysicsState is the rigid body's COM state. No origin compensation
     // belongs in the integrator; origin data is derived at the geometry boundary.
+#if WITH_DEV_AUTOMATION_TESTS
+    Speed::Testing::FCcdPrimitiveCapture Captured;
+    const bool bCapture=Speed::Testing::IsCcdPrimitiveCaptureEnabledForCurrentThread(this);
+    if(bCapture)
+    {
+        const auto Before=GetKinematicState();Captured.OwnerIdentity=this;
+        const auto Stamp=Speed::Testing::NextCcdPrimitiveCaptureStampForCurrentThread();
+        Captured.Serial=Stamp.Serial;Captured.RunGeneration=Stamp.RunGeneration;
+        Captured.OwnerFrame=NumFrame();Captured.Delta=SubDelta;
+        Captured.Owner={Before.Location,Before.Velocity,Before.Acceleration};
+        const auto Numeric=Speed::Analytic::InspectCurrentAnalyticNumericContext(Speed::Analytic::EAnalyticNumericContract::Binary64NearestAllowFlush);
+        Captured.NumericControlFingerprint=Numeric.ControlFingerprint();Captured.NumericContextSupported=Numeric.Status==Speed::Analytic::EAnalyticNumericStatus::Complete;
+        Captured.LocalCenterOfMass=GetPhysCenterOfMassLocal();
+        Speed::Testing::ObserveCcdPrimitiveForCurrentThread(Speed::Testing::ECcdPoseAuditStage::BeforePrimitiveIntegrate,Captured);
+        const auto Current=GetKinematicState();const auto CurrentCOM=GetPhysCenterOfMassLocal();
+        const Speed::Testing::FCcdLinearStateValue CurrentPVA{Current.Location,Current.Velocity,Current.Acceleration};
+        const auto CurrentNumeric=Speed::Analytic::InspectCurrentAnalyticNumericContext(Speed::Analytic::EAnalyticNumericContract::Binary64NearestAllowFlush);
+        if(!Speed::Testing::CcdLinearValuesHaveEqualBits(Captured.Owner,CurrentPVA)||Captured.OwnerFrame!=NumFrame()||
+            FMemory::Memcmp(&Captured.LocalCenterOfMass,&CurrentCOM,sizeof(CurrentCOM))||
+            Captured.NumericControlFingerprint!=CurrentNumeric.ControlFingerprint()) Speed::Testing::MarkCcdPrimitiveCaptureViolationForCurrentThread();
+    }
+#endif
     SetKinematicState(GetKinematicState().Integrate(SubDelta));
+#if WITH_DEV_AUTOMATION_TESTS
+    if(bCapture)
+    {
+        const auto After=GetKinematicState();Captured.OwnerFrame=NumFrame();
+        Captured.Owner={After.Location,After.Velocity,After.Acceleration};
+        const auto Numeric=Speed::Analytic::InspectCurrentAnalyticNumericContext(Speed::Analytic::EAnalyticNumericContract::Binary64NearestAllowFlush);
+        Captured.NumericControlFingerprint=Numeric.ControlFingerprint();Captured.NumericContextSupported=Numeric.Status==Speed::Analytic::EAnalyticNumericStatus::Complete;
+        Captured.LocalCenterOfMass=GetPhysCenterOfMassLocal();
+        Speed::Testing::ObserveCcdPrimitiveForCurrentThread(Speed::Testing::ECcdPoseAuditStage::AfterPrimitiveIntegrate,Captured);
+        const auto Current=GetKinematicState();const auto CurrentCOM=GetPhysCenterOfMassLocal();
+        const Speed::Testing::FCcdLinearStateValue CurrentPVA{Current.Location,Current.Velocity,Current.Acceleration};
+        const auto CurrentNumeric=Speed::Analytic::InspectCurrentAnalyticNumericContext(Speed::Analytic::EAnalyticNumericContract::Binary64NearestAllowFlush);
+        if(!Speed::Testing::CcdLinearValuesHaveEqualBits(Captured.Owner,CurrentPVA)||Captured.OwnerFrame!=NumFrame()||
+            FMemory::Memcmp(&Captured.LocalCenterOfMass,&CurrentCOM,sizeof(CurrentCOM))||
+            Captured.NumericControlFingerprint!=CurrentNumeric.ControlFingerprint()) Speed::Testing::MarkCcdPrimitiveCaptureViolationForCurrentThread();
+    }
+#endif
 #if !UE_BUILD_SHIPPING
 	if (IsPhysicsPhaseObservationEnabled())
 		ObservePhysicsPhase(ESpeedPhysicsObservationPhase::PostForcePredictor, SubDelta);
@@ -245,36 +292,64 @@ void ISpeedComponent::GetStaticContactAcceleration(FVector& Linear, FVector& Ang
 
 void ISpeedComponent::IntegrateKinematics(const float& SubDelta)
 {
-	if (IsFrozen())
-		return;
-
-	if (SubDelta <= 0.f)
-		return;
+    Speed::PreparedExecution::FNativeIntegrationPathValues NativePath;NativePath.Delta=SubDelta;
+    const auto postIntegrate=[&]()
+    {
+        Speed::PreparedExecution::FOrdinaryOwnerProbePhaseScope probes(
+            Speed::PreparedExecution::ENativeOwnerProbePhase::PostIntegrate,*this,SubDelta);
+        PostIntegrateKinematics(SubDelta);probes.Returned();
+    };
+    const auto projectEstablished=[&](float actualDelta)
+    {
+        // This is the actual internal integration projection, with its own
+        // lexical identity. It is not the world's later final projection.
+        Speed::PreparedExecution::FOrdinaryOwnerProbePhaseScope probes(
+            Speed::PreparedExecution::ENativeOwnerProbePhase::IntegrationProjection,*this,actualDelta);
+        const bool projected=ProjectEstablishedStaticContacts(actualDelta);
+        probes.Returned();return projected;
+    };
+    if (IsFrozen())
+    {
+        NativePath.Path=Speed::PreparedExecution::ENativeIntegrationPath::Frozen;
+        Speed::PreparedExecution::FStepScope::ObserveOrdinaryIntegrationPath(*this,NativePath);return;
+    }
+    if (SubDelta <= 0.f)
+    {
+        NativePath.Path=Speed::PreparedExecution::ENativeIntegrationPath::NonpositiveDelta;
+        Speed::PreparedExecution::FStepScope::ObserveOrdinaryIntegrationPath(*this,NativePath);return;
+    }
 
     // A mechanical track is kinematically imposed. Static support, friction
     // stop events, transport and depenetration cannot deflect it; evaluating
     // those free-body routines on large authored movers was pure overhead.
     if(IsPrescribedMotion())
     {
-        PostIntegrateKinematics(SubDelta);
-        return;
+        postIntegrate();
+        Speed::PreparedExecution::FStepScope::ObserveOrdinaryIntegrationStage(*this,Speed::PreparedExecution::ENativeIntegrationStage::PostReturn,SubDelta);
+        NativePath.Path=Speed::PreparedExecution::ENativeIntegrationPath::Prescribed;
+        Speed::PreparedExecution::FStepScope::ObserveOrdinaryIntegrationPath(*this,NativePath);return;
     }
 
 	// Apply only during this segment. Restoring the external load afterwards
 	// lets a later TOI impulse/torque release support immediately in this frame.
 	double StopAfterSeconds = TNumericLimits<double>::Max();
-	FVector RestingReaction = GetStaticRestingReaction(&StopAfterSeconds);
-	FVector AngularReaction = FVector::ZeroVector;
-	if (RestingReaction.IsZero()) GetStaticContactAcceleration(RestingReaction, AngularReaction);
+    FVector RestingReaction = GetStaticRestingReaction(&StopAfterSeconds);
+    FVector AngularReaction = FVector::ZeroVector;
+    if (RestingReaction.IsZero())
+    {NativePath.ContactReactionCalled=true;GetStaticContactAcceleration(RestingReaction, AngularReaction);}
+    NativePath.ReactionsComputed=true;NativePath.RestingReaction=RestingReaction;
+    NativePath.AngularReaction=AngularReaction;NativePath.StopAfterSeconds=StopAfterSeconds;
 	if (!RestingReaction.IsZero()) SetPhysAcceleration(GetPhysAcceleration() + RestingReaction);
 	if (!AngularReaction.IsZero()) SetPhysAngularAcceleration(GetPhysAngularAcceleration() + AngularReaction);
 	ON_SCOPE_EXIT
 	{
 		if (!RestingReaction.IsZero() || !AngularReaction.IsZero())
 		{
-			SetPhysAcceleration(GetPhysAcceleration() - RestingReaction);
-			SetPhysAngularAcceleration(GetPhysAngularAcceleration() - AngularReaction);
-			UpdateSubBodiesKinematics();
+            Speed::PreparedExecution::FStepScope::BeginOrdinaryIntegrationRestoration(*this);
+            SetPhysAcceleration(GetPhysAcceleration() - RestingReaction);
+            SetPhysAngularAcceleration(GetPhysAngularAcceleration() - AngularReaction);
+            UpdateSubBodiesKinematics();
+            Speed::PreparedExecution::FStepScope::EndOrdinaryIntegrationRestoration(*this,SubDelta);
 		}
 	};
 
@@ -292,13 +367,18 @@ void ISpeedComponent::IntegrateKinematics(const float& SubDelta)
 		ObservePhysicsPhase(ESpeedPhysicsObservationPhase::PostForcePredictor, SubDelta);
 #endif
 		UpdateSubBodiesKinematics();
-		ProjectEstablishedStaticContacts(SubDelta);
-		PostIntegrateKinematics(SubDelta);
-		return;
+        const bool NativeProjected=projectEstablished(SubDelta);
+        Speed::PreparedExecution::FStepScope::ObserveOrdinaryIntegrationStage(*this,Speed::PreparedExecution::ENativeIntegrationStage::ProjectionReturn,SubDelta,INDEX_NONE,0,NativeProjected);
+        postIntegrate();
+        Speed::PreparedExecution::FStepScope::ObserveOrdinaryIntegrationStage(*this,Speed::PreparedExecution::ENativeIntegrationStage::PostReturn,SubDelta);
+        NativePath.Path=Speed::PreparedExecution::ENativeIntegrationPath::CoulombStop;
+        Speed::PreparedExecution::FStepScope::ObserveOrdinaryIntegrationPath(*this,NativePath);return;
 	}
 
-	if (IsPhysicsSleeping())
-	{
+    const bool NativeSleeping=IsPhysicsSleeping();
+    NativePath.SleepingComputed=true;NativePath.SleepingResult=NativeSleeping;
+    if (NativeSleeping)
+    {
 #if !UE_BUILD_SHIPPING
 		++Speed::FSimulationSleepState::ThreadIntegrationSkips();
 #endif
@@ -308,11 +388,13 @@ void ISpeedComponent::IntegrateKinematics(const float& SubDelta)
 #endif
 		// Keep support bookkeeping and all collision detection alive. Only the
 		// unchanged rigid pose and its redundant transport/projection are skipped.
-		PostIntegrateKinematics(SubDelta);
-		return;
-	}
+        postIntegrate();
+        Speed::PreparedExecution::FStepScope::ObserveOrdinaryIntegrationStage(*this,Speed::PreparedExecution::ENativeIntegrationStage::PostReturn,SubDelta);
+        NativePath.Path=Speed::PreparedExecution::ENativeIntegrationPath::Sleeping;
+        Speed::PreparedExecution::FStepScope::ObserveOrdinaryIntegrationPath(*this,NativePath);return;
+    }
 
-	bool bRequiresContactTransport = false;
+    bool bRequiresContactTransport = false;
 	for (const USSubBody* SubBody : GetSubBodies())
 	{
 		if (SubBody && SubBody->RequiresEstablishedStaticContactTransport())
@@ -336,20 +418,28 @@ void ISpeedComponent::IntegrateKinematics(const float& SubDelta)
 			1, MaximumContactTransportSteps)
 		: 1;
 	const float TransportDelta = SubDelta / static_cast<float>(TransportSteps);
+    NativePath.TransportComputed=true;NativePath.RequiresTransport=bRequiresContactTransport;
+    NativePath.TransportSteps=TransportSteps;NativePath.TransportDelta=TransportDelta;
 	for (int32 Step = 0; Step < TransportSteps; ++Step)
 	{
+        Speed::PreparedExecution::FStepScope::ObserveOrdinaryIntegrationStage(*this,Speed::PreparedExecution::ENativeIntegrationStage::PrimitiveEnter,TransportDelta,Step,TransportSteps);
 		IntegrateKinematicsPrv(TransportDelta);
+        Speed::PreparedExecution::FStepScope::ObserveOrdinaryIntegrationStage(*this,Speed::PreparedExecution::ENativeIntegrationStage::PrimitiveReturn,TransportDelta,Step,TransportSteps);
 
 		// Enforce limits directly on the canonical COM state.
 		SetPhysCOMVelocity(GetPhysCOMVelocity());
 		SetPhysAngularVelocity(GetPhysAngularVelocity());
 
 		UpdateSubBodiesKinematics();
-		ProjectEstablishedStaticContacts(TransportDelta);
+        const bool NativeProjected=projectEstablished(TransportDelta);
+        Speed::PreparedExecution::FStepScope::ObserveOrdinaryIntegrationStage(*this,Speed::PreparedExecution::ENativeIntegrationStage::ProjectionReturn,TransportDelta,Step,TransportSteps,NativeProjected);
 	}
 
 	// update physics state after integrating kinematics to the time of impact (e.g update suspension traces for wheels, update hit info for hitboxes, etc.)
-	PostIntegrateKinematics(SubDelta);
+	postIntegrate();
+    Speed::PreparedExecution::FStepScope::ObserveOrdinaryIntegrationStage(*this,Speed::PreparedExecution::ENativeIntegrationStage::PostReturn,SubDelta);
+    NativePath.Path=Speed::PreparedExecution::ENativeIntegrationPath::Transport;
+    Speed::PreparedExecution::FStepScope::ObserveOrdinaryIntegrationPath(*this,NativePath);
     // UE_LOG(LogTemp, Log, TEXT("[IntegrateKinematics] NumFrame = %d, SubDelta = %f. Kinematics = %s"), NumFrame(), SubDelta, *GetKinematicState().ToString());
 }
 
@@ -375,10 +465,12 @@ void ISpeedComponent::UpdateSubBodiesKinematics()
 {
     // Every child observes the same parent state; derive origin from COM once.
     const SKinematic OriginState = GetOriginKinematicState();
+    Speed::PreparedExecution::FNativePlanarResponseCommitScope::BeforeChildSync(*this,OriginState);
     for (USSubBody* SubBody : GetSubBodies())
     {
         SubBody->UpdateKinematicsFromOwner(OriginState);
     }
+    Speed::PreparedExecution::FStepScope::ObserveOrdinaryIntegrationChildSync(*this,OriginState);
 }
 
 SKinematic ISpeedComponent::GetOriginKinematicState() const
@@ -386,15 +478,18 @@ SKinematic ISpeedComponent::GetOriginKinematicState() const
 	return GetOriginKinematicStateForFrame(NumFrame());
 }
 
+namespace Speed
+{
+FKinematicState CalculateOriginKinematicStateValues(const FKinematicState& com,FVector localCOM)
+{
+    FKinematicState origin=com;const FOriginKinematicView view(com,localCOM);
+    origin.Location=view.Location();origin.Velocity=view.Velocity();origin.Acceleration=view.Acceleration();return origin;
+}
+}
 SKinematic ISpeedComponent::GetOriginKinematicStateForFrame(const unsigned int& NumFrameToRead) const
 {
 	const SKinematic& COMState = GetKinematicStateForFrame(NumFrameToRead);
-	SKinematic OriginState = COMState;
-	const FOriginKinematicView Origin(COMState, GetPhysCenterOfMassLocal());
-	OriginState.Location = Origin.Location();
-	OriginState.Velocity = Origin.Velocity();
-	OriginState.Acceleration = Origin.Acceleration();
-	return OriginState;
+	return Speed::CalculateOriginKinematicStateValues(COMState,GetPhysCenterOfMassLocal());
 }
 
 void ISpeedComponent::ResetForFrame(const float& Delta)
@@ -435,6 +530,8 @@ SComponentTOI ISpeedComponent::SweepTOISubBodies(
 	FVector RestingReaction = GetStaticRestingReaction();
 	FVector AngularReaction = FVector::ZeroVector;
 	if (RestingReaction.IsZero()) GetStaticContactAcceleration(RestingReaction, AngularReaction);
+    Speed::PreparedExecution::FStepScope::ValidateTerminalRsReactions(*this,RestingReaction,AngularReaction);
+    Speed::PreparedExecution::FStepScope::ObserveOrdinarySweepReactions(*this,RestingReaction,AngularReaction);
 	if (!RestingReaction.IsZero() || !AngularReaction.IsZero())
 	{
 		SetPhysAcceleration(GetPhysAcceleration() + RestingReaction);
@@ -467,26 +564,31 @@ SComponentTOI ISpeedComponent::SweepTOISubBodies(
     Best.TOI = RemainingDelta;
 
     const TArray<USSubBody*>& InSubBodies = GetSubBodies();
+    Speed::PreparedExecution::FComponentSweepScope PreparedSweep(*this);
 
 #if !UE_BUILD_SHIPPING
 	int32 DiagnosticSweepOrder = INDEX_NONE;
 #endif
-    for (USSubBody* Sweeper : InSubBodies)
+    for (int32 BodyIndex=0;BodyIndex<InSubBodies.Num();++BodyIndex)
     {
+        USSubBody* Sweeper=InSubBodies[BodyIndex];
+        PreparedSweep.BeginBody(BodyIndex,Sweeper);
 #if !UE_BUILD_SHIPPING
 		if (bCaptureDiagnostics)
 		{
 			++DiagnosticSweepOrder;
 		}
 #endif
-        if (!Sweeper) continue;
+        if (!Sweeper) {PreparedSweep.ObserveBody(nullptr,false,RemainingDelta);continue;}
 
         float TOI = RemainingDelta;
         constexpr float MinSubDelta = 0.0f;
         // if (LastSubDelta > MinSubDelta)
         {
-            if (!Sweeper->SweepTOI(RemainingDelta, TOI))
-                continue;
+            const bool ReportedHit=Sweeper->SweepTOI(RemainingDelta, TOI);
+            // Collect BEFORE both false-return and TOI-winner pruning.
+            PreparedSweep.ObserveBody(Sweeper,ReportedHit,TOI);
+            if(!ReportedHit)continue;
         }
         /*else if (Sweeper->WillHit())
         {
@@ -509,7 +611,7 @@ SComponentTOI ISpeedComponent::SweepTOISubBodies(
 		}
 #endif
 
-        if (TOI >= Best.TOI)
+        if (!Speed::ShouldSelectSweepTOI(TOI, Best.TOI, Best.bHit))
             continue;
 
         const SHitResult& H = Sweeper->GetFutureHit();
@@ -530,28 +632,13 @@ SComponentTOI ISpeedComponent::SweepTOISubBodies(
 			Best.DiagnosticBestCandidate = Best.DiagnosticCandidates.Num() - 1;
 		}
 #endif
-        Best.PairKey = USSubBody::MakePairKey(
-            Resolver ? Resolver : Sweeper, HR.Component.Get());
-        // One static component may own several adjacent analytical providers.
-        // Suppress repeated event resolution only within the same immutable
-        // provider; a genuine seam transition must remain independently visible.
-        const uint64 ProviderId = HR.CanonicalGroupId != 0
-            ? HR.CanonicalGroupId : HR.SurfaceId;
-        if (ProviderId != 0)
-        {
-            Best.PairKey = Speed::Analytic::CombineStableIds(
-                Best.PairKey, ProviderId);
-        }
-        if (StaticRestingWorld && HR.SurfaceId != 0 && !HR.bSurfaceNormalMayVary &&
-            HR.ContactFeatureThis == Speed::EContactFeatureKind::Vertex && HR.ContactFeatureIndexThis >= 0)
-        {
-            // A newly arriving vertex is a new event on the same plane, not
-            // a repeated resolution of its already-established old contact.
-            Best.PairKey = Speed::Analytic::CombineStableIds(Best.PairKey,
-                0x504c414e00000000ull | static_cast<uint64>(HR.ContactFeatureIndexThis + 1));
-        }
+        if(HR.PreparedGroundEvidence)
+            throw std::runtime_error("Prepared static full event identity consumer is not installed");
+        Best.PairKey = USSubBody::MakeComponentSweepPairKey(Resolver ? Resolver : Sweeper, HR, StaticRestingWorld!=nullptr);
+        PreparedSweep.ObserveWinner(BodyIndex,H,HR,Best.Resolver,Resolver,Best.PairKey);
     }
 
+    Best.PreparedEvidence=PreparedSweep.Finish(Best);
     return Best;
 }
 
@@ -662,7 +749,9 @@ void ISpeedComponent::SetPhysCOMVelocity(const FVector& NewCOMVelocity)
 		return;
 	}
 
-	const FVector ClampedCOMVelocity = NewCOMVelocity.GetClampedToMaxSize(GetPhysMaxSpeed());
+	const auto ActualMaxSpeed = GetPhysMaxSpeed();
+	const FVector ClampedCOMVelocity = NewCOMVelocity.GetClampedToMaxSize(ActualMaxSpeed);
+    Speed::PreparedExecution::FNativePlanarResponseCommitScope::ObserveNativeClamp(*this,NewCOMVelocity,double(ActualMaxSpeed),ClampedCOMVelocity,false);
 	SetPhysCOMVelocityRaw(ClampedCOMVelocity);
 }
 
@@ -689,7 +778,10 @@ void ISpeedComponent::SetPhysAngularVelocity(const FVector& NewAngularVelocity)
 	{
 		return;
 	}
-	SetPhysAngularVelocityRaw(NewAngularVelocity.GetClampedToMaxSize(GetPhysMaxAngularSpeed()));
+	const auto ActualMaxAngularSpeed = GetPhysMaxAngularSpeed();
+    const FVector ClampedAngularVelocity = NewAngularVelocity.GetClampedToMaxSize(ActualMaxAngularSpeed);
+    Speed::PreparedExecution::FNativePlanarResponseCommitScope::ObserveNativeClamp(*this,NewAngularVelocity,double(ActualMaxAngularSpeed),ClampedAngularVelocity,true);
+    SetPhysAngularVelocityRaw(ClampedAngularVelocity);
 }
 
 void ISpeedComponent::SetPhysVelocityAtPoint(const FVector& NewVelocity, const FVector& Point)

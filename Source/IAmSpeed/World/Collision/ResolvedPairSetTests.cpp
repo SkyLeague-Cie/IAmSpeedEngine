@@ -1,5 +1,6 @@
 #if WITH_DEV_AUTOMATION_TESTS
 #include "ResolvedPairSet.h"
+#include "EarliestCollisionBatch.h"
 #include "Misc/AutomationTest.h"
 #include "Math/RandomStream.h"
 #include "HAL/PlatformTime.h"
@@ -11,6 +12,54 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FIAmSpeedResolvedPairSetTest,
 
 bool FIAmSpeedResolvedPairSetTest::RunTest(const FString& Parameters)
 {
+    // The WORLD selector's true minimum is independent of owner traversal.
+    // Binary32 neighbours within the existing 1e-9 band exposed a late
+    // integration time in the old first-anchor implementation.
+    {
+        struct FEntry {float TOI=0,RawHitTOI=0;int32 Id=0;};
+        constexpr float Tolerance=1.0e-9f;
+        const auto FromBits=[](uint32 Bits){float Value;FMemory::Memcpy(&Value,&Bits,4);return Value;};
+        const FEntry Inputs[]={{FromBits(0x3a83126fu),FromBits(0x3a83126fu),0},
+            {FromBits(0x3a831277u),FromBits(0x3a831277u),1},
+            {FromBits(0x3a831267u),FromBits(0x3a831267u),2}};
+        const int32 Orders[][3]={{0,1,2},{0,2,1},{1,0,2},{1,2,0},{2,0,1},{2,1,0}};
+        for(const auto& Order:Orders)
+        {
+            TArray<FEntry,TInlineAllocator<4>> Batch;float Earliest=1.f/300.f;
+            for(int32 Index:Order)Speed::Collision::AppendEarliestCollision(Inputs[Index],Inputs[Index].TOI,Tolerance,Batch,Earliest);
+            TestEqual(TEXT("batch integration time is actual minimum in every owner order"),Earliest,Inputs[2].TOI);
+            TestEqual(TEXT("chain of near-equal times cannot retain outside-band late event"),Batch.Num(),2);
+            bool Near=false,Minimum=false,Outside=false;
+            for(const auto& Entry:Batch)
+            {
+                Near|=Entry.Id==0;Outside|=Entry.Id==1;Minimum|=Entry.Id==2;
+                TestEqual(TEXT("batch grouping does not retime original hit payload"),Entry.RawHitTOI,Inputs[Entry.Id].RawHitTOI);
+            }
+            TestTrue(TEXT("only minimum and its near neighbour survive"),Near&&Minimum&&!Outside);
+        }
+        for(bool Reverse:{false,true})
+        {
+            const FEntry A{FromBits(0x3a83126fu),FromBits(0x3a83126fu),0};
+            const FEntry B{FromBits(0x3a83126eu),FromBits(0x3a83126eu),1};
+            TArray<FEntry> Batch;float Earliest=1.f/300.f;
+            for(const auto& Entry:Reverse?TArray<FEntry>{B,A}:TArray<FEntry>{A,B})
+                Speed::Collision::AppendEarliestCollision(Entry,Entry.TOI,Tolerance,Batch,Earliest);
+            TestEqual(TEXT("one-ULP earlier second contact is never integrated past"),Earliest,B.TOI);
+            TestEqual(TEXT("both one-ULP contacts remain grouped"),Batch.Num(),2);
+            Batch.Reset();Earliest=1.f/300.f;
+            const FEntry Positive{5.0e-10f,5.0e-10f,0},Zero{0.f,0.f,1};
+            for(const auto& Entry:Reverse?TArray<FEntry>{Zero,Positive}:TArray<FEntry>{Positive,Zero})
+                Speed::Collision::AppendEarliestCollision(Entry,Entry.TOI,Tolerance,Batch,Earliest);
+            TestEqual(TEXT("time-zero arrival prevents every positive advance"),Earliest,0.f);
+            TestEqual(TEXT("existing simultaneous band is preserved at zero"),Batch.Num(),2);
+        }
+        TArray<FEntry> Batch;float Earliest=1.f/300.f;
+        const FEntry Endpoint{Earliest,Earliest,7},Tie{Earliest,Earliest,8};
+        Speed::Collision::AppendEarliestCollision(Endpoint,Endpoint.TOI,Tolerance,Batch,Earliest);
+        Speed::Collision::AppendEarliestCollision(Tie,Tie.TOI,Tolerance,Batch,Earliest);
+        TestEqual(TEXT("closed horizon still supplies an actual batch"),Batch.Num(),2);
+        TestTrue(TEXT("equal-time entries retain caller order before existing World sort"),Batch.Num()==2&&Batch[0].Id==7&&Batch[1].Id==8);
+    }
 	{
 		Speed::Collision::FResolvedPairSet Generations;
 		TestTrue(TEXT("new exact identity may resolve initially"), Generations.CanResolve(91, true));

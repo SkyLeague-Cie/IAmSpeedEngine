@@ -2,10 +2,16 @@
 
 #include "IAmSpeed/World/Analytic/AnalyticWorldQuery.h"
 #include "StaticQueryBatch.h"
+#include "OrdinaryC2DiagnosticScene.h"
 #include <atomic>
+
+class USpeedWorldSubsystem;
 
 namespace Speed
 {
+class FPreparedWorldSnapshot;
+class FPreparedCanonicalStaticQueryService;
+class FPreparedNativeFrameConsumer;
 
 enum class EStaticCollisionBackend : uint8
 {
@@ -18,6 +24,16 @@ class IAMSPEED_API IStaticCollisionWorld
 {
 public:
 	virtual ~IStaticCollisionWorld() = default;
+    // Typed native snapshot access. A backend enum never proves a derived type.
+    virtual TSharedPtr<const FPreparedWorldSnapshot,ESPMode::ThreadSafe> GetPreparedSnapshot() const {return {};}
+    virtual TSharedPtr<const FPreparedCanonicalStaticQueryService,ESPMode::ThreadSafe> GetPreparedQueryService() const {return {};}
+    virtual TSharedPtr<const FPreparedNativeFrameConsumer,ESPMode::ThreadSafe> GetPreparedNativeFrameConsumer() const {return {};}
+
+    // Geometry may be prepared/published before its typed physical consumer is
+    // implemented. Presence alone must never release a canonical frame.
+    virtual bool IsReadyForPhysicsStep() const { return true; }
+    virtual Analytic::EAnalyticNumericContract GetNumericContract() const
+    { return Analytic::EAnalyticNumericContract::Unspecified; }
 	virtual Analytic::FWorldHit SweepSingle(
 		const Analytic::FWorldQuery& Query) const = 0;
     // Caller has already proved query independence. Synchronous barrier; index
@@ -31,6 +47,10 @@ public:
     virtual bool SweepPrefetchBatch1075(TConstArrayView<Analytic::FWorldQuery>,
         TArrayView<Analytic::FWorldHit>, FIndependentQueryBatchStats* = nullptr) const { return false; }
     virtual FImmutableStaticQueryIdentity1075 GetImmutableQueryIdentity1075() const { return {}; }
+#if WITH_EDITOR && !UE_BUILD_SHIPPING
+    virtual const FOrdinaryC2DiagnosticScene* TryReadOrdinaryC2DiagnosticScene(
+        const Analytic::FBoundedPlane*& Landscape) const { Landscape=nullptr;return nullptr; }
+#endif
     virtual int32 GetMinimumIndependentQueryItems() const { return 2; }
     // Owner-only observations at a joined frame barrier, never during dispatch.
     virtual Analytic::FFacetParallelTotals GetFacetParallelTotals() const { return {}; }
@@ -110,6 +130,7 @@ public:
     bool SweepPrefetchBatch1075(TConstArrayView<Analytic::FWorldQuery> Queries,
         TArrayView<Analytic::FWorldHit> OutHits,
         FIndependentQueryBatchStats* OutStats = nullptr) const override;
+    Analytic::EAnalyticNumericContract GetNumericContract() const override { return WorldData.NumericContract; }
     FImmutableStaticQueryIdentity1075 GetImmutableQueryIdentity1075() const override
     { return {&WorldData, &QueryService, ImmutableQueryGeneration1075}; }
     int32 GetMinimumIndependentQueryItems() const override { return MinimumIndependentQueryItems; }
@@ -174,7 +195,30 @@ public:
 		return QueryService.IsPlanarSupportTranslationCertified(Query, Points, Normal, Translation);
 	}
 
+#if WITH_EDITOR && !UE_BUILD_SHIPPING
+    const FOrdinaryC2DiagnosticScene& ReadOrdinaryC2DiagnosticScene() const { return OrdinaryC2DiagnosticScene; }
+    const FOrdinaryC2DiagnosticScene* TryReadOrdinaryC2DiagnosticScene(
+        const Analytic::FBoundedPlane*& Landscape) const override
+    {
+        Landscape=nullptr;
+        const auto& Packet=OrdinaryC2DiagnosticScene;
+        if (!Packet.Nominal || !Packet.ExternalLandscapePrimitive ||
+            Packet.SceneGeneration!=ImmutableQueryGeneration1075 || Packet.FinalSourceHash!=WorldData.SourceHash)
+            return nullptr;
+        for (const auto& Plane : WorldData.Planes)
+            if (Plane.PrimitiveId==Packet.ExternalLandscapePrimitive)
+            {
+                if (Landscape) { Landscape=nullptr;return nullptr; }
+                Landscape=&Plane;
+            }
+        return Landscape?&Packet:nullptr;
+    }
+#endif
 private:
+#if WITH_EDITOR && !UE_BUILD_SHIPPING
+    friend class ::USpeedWorldSubsystem;
+    FOrdinaryC2DiagnosticScene OrdinaryC2DiagnosticScene;
+#endif
     bool SweepIndependentBatchImpl1075(TConstArrayView<Analytic::FWorldQuery> Queries,
         TArrayView<Analytic::FWorldHit> OutHits, FIndependentQueryBatchStats* OutStats,
         bool bRejectSerialFallback) const;

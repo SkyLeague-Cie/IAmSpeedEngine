@@ -6,6 +6,8 @@
 #include "IAmSpeed/SubBodies/Solid/SolidSubBody.h"
 
 class ISpeedComponent;
+namespace Speed { class FHostedGTStaticWorldLease; }
+namespace Speed::PreparedExecution { class FCanonicalFramePreflight; }
 enum class ECanonicalFrameAbortReason : uint8;
 enum class ECanonicalPublicationResult : uint8 { Completed, ValidationFailed, PublicationFailed, CommitInvariantFailed };
 class USSubBody;
@@ -93,6 +95,8 @@ namespace Speed
 	 */
 	class IAMSPEED_API FSimulationWorld final
 	{
+        friend class PreparedExecution::FCanonicalFramePreflight;
+        friend class FHostedGTStaticWorldLease;
 	public:
 #if !UE_BUILD_SHIPPING
         bool InspectBodyContactPairsForTesting(const USolidSubBody& Body,uint64 PreparingFrame,FBodyContactPairInspection& Out) const;
@@ -139,6 +143,7 @@ namespace Speed
 		TArray<FDynamicContactPair>& GetDynamicContactPairs() { return DynamicContactPairs; }
 		const TArray<FDynamicContactPair>& GetDynamicContactPairs() const { return DynamicContactPairs; }
 		TArray<FDynamicContactPair>& GetPendingRollingContactPairs() { return PendingRollingContactPairs; }
+        const TArray<FDynamicContactPair>& GetPendingRollingContactPairs() const { return PendingRollingContactPairs; }
 		/** Resolves an active persistent pair by its canonical key in average O(1). */
 		FDynamicContactPair* FindDynamicContactPair(uint64 PairKey);
 		const FDynamicContactPair* FindDynamicContactPair(uint64 PairKey) const;

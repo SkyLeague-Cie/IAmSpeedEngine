@@ -7,7 +7,9 @@
 
 class UWorld;
 class USpeedWorldSubsystem;
+namespace Speed { class IStaticCollisionWorld; }
 struct FHitResult;
+namespace Speed::PreparedExecution {class FNativeSphereProjectionScope;}
 
 namespace Speed::Analytic
 {
@@ -34,6 +36,7 @@ struct FStaticWorldQueryCounters
 	uint32 LegacySweepCount = 0;
 	uint32 AuthorityAttemptCount = 0;
 	uint32 AuthorityCoveredCount = 0;
+    uint32 CanonicalPoseClearCount = 0;
 	uint32 AuthorityFallbackCount = 0;
 	uint32 StrictMissingWorldCount = 0;
 	// Wall-clock time consumed by the generic analytical authority path.  This
@@ -102,12 +105,31 @@ public:
 		const FCollisionShape& Shape, uint64 ObjectTypes,
 		TArray<FHitResult>& OutHits,
 		FWorldHit* OutAnalyticHit = nullptr);
+	static bool TryCompactAuthorityMulti(
+		UWorld* World,
+		const FVector& Start, const FVector& End, const FQuat& Rotation,
+		const FCollisionShape& Shape, uint64 ObjectTypes,
+		TArray<FHitResult>& OutHits, FWorldHit* OutAnalyticHit,
+		const PreparedExecution::FNativeSphereProjectionScope* Projection);
 
 	static void BeginFrame(uint64 Frame, const FAnalyticWorldData* WorldData,
 		const USpeedWorldSubsystem* RuntimeBridge);
 	static FStaticWorldQueryCounters GetCurrentFrameCounters();
+#if !UE_BUILD_SHIPPING
+    static bool IsQualificationContactTraceFrame(uint64 Frame);
+    static bool TryObserveStrictFrame(UWorld* World, uint64& OutFrame, uint64& OutSceneGeneration);
+#if WITH_EDITOR
+    static const Speed::IStaticCollisionWorld* ReadStrictFrameProviderForObservation(
+        UWorld* World, uint64 Frame, uint64 Generation);
+#endif
+#endif
 	static void EndFrame();
 	static void RecordLegacySweep();
+    // Observe already executed prepared probe values; never resolve a token,
+    // replay a query, construct Legacy comparison or grant physical authority.
+    static uint32 BeginPreparedProbeQuery(bool FirstQueryInProbe);
+    static void EndPreparedProbeQuery(EStaticQuerySite,const FWorldQuery&,const FWorldHit&,
+        uint32 Attempt,double ElapsedMilliseconds,bool Completed);
 
 #if !UE_BUILD_SHIPPING
 	/** Logs an already evaluated persistent-contact projection; never replays the

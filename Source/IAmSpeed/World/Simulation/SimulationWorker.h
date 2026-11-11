@@ -4,6 +4,9 @@
 #include "HAL/Runnable.h"
 #include "LiveSimulationBoundary.h"
 #include <mutex>
+#include "OnePausedCanonicalWork.h"
+struct FOnePausedWorkRequest;
+namespace Speed::OnePausedWork {class FNativeFrameStreamScope;}
 
 #if WITH_DEV_AUTOMATION_TESTS
 namespace Speed::Testing
@@ -40,7 +43,20 @@ enum class ESimulationWorkerResult : uint8
 	Idle,
 	Complete,
 	Failed,
+    PreparationPrefixStopped, // Terminal preparation only; never a completed physical frame.
+    PostPrepareInitialPositionStopped, // Distinct terminal position operation; no WorldStep/frame advance.
+    TerminalStepSyncStopped, // Actual Step entry/reset only; no CCD, integration or frame publication.
+    TerminalSphereRsCaptureStopped, // Actual first sphere query captured and interrupted; no hit/advance/response.
+    TerminalConsumedPrefixAdvanceStopped,
+    TerminalRsContactAdvanceStopped, // One proved free-prefix integration of every owner; no response or full frame.
+    TerminalRsResponseStopped, // One proved first Rs response only; no full frame or rolling admission.
+    TerminalRsResponseSyncStopped, // One actual response plus body synchronization; no next sweep/fullframe.
+    TerminalPostSyncRsCaptureStopped, // Actual second sphere query captured after response1/sync; no advance2/full frame.
 };
+static_assert(uint8(ESimulationWorkerResult::TerminalPostSyncRsCaptureStopped)==12,"Post-sync Rs capture result wire value must stay12");
+static_assert(uint8(ESimulationWorkerResult::TerminalRsResponseSyncStopped)==11,"Rs response-sync result wire value must stay11");
+static_assert(uint8(ESimulationWorkerResult::TerminalRsResponseStopped)==10,"Rs response result wire value must stay10");
+static_assert(uint8(ESimulationWorkerResult::TerminalConsumedPrefixAdvanceStopped)==8&&uint8(ESimulationWorkerResult::TerminalRsContactAdvanceStopped)==9,"Terminal worker result wire values8/9 must stay stable");
 
 // Waiting keeps the lane alive to service lifecycle commands, but forbids physics
 // and pause acknowledgment until the requested boundary has actually completed.
@@ -127,6 +143,9 @@ public:
 	bool IsRunning() const { return bRunning.Load(); }
 	bool IsPaused() const { return bPaused.Load(); }
 
+#if WITH_DEV_AUTOMATION_TESTS
+    Speed::OnePausedWork::FResult RunOnePausedWorkForTesting(uint32 TimeoutMilliseconds);
+#endif
 private:
     friend class ASpeedPhysicsSimulation;
     friend class FIAmSpeedLiveBoundary01621Test;
@@ -140,6 +159,17 @@ private:
     uint64 LiveBoundaryRequestSerial = 0;
     FCloseOnWorker StructuralBoundaryReleased;
 	uint32 Run() override;
+    friend class Speed::FHostedGTStaticWorldLease;
+    friend class Speed::OnePausedWork::FNativeFrameStreamScope;
+    Speed::OnePausedWork::FResult RunOnePausedWork(
+        const Speed::OnePausedWork::FCanonicalIdentity& Identity,
+        TFunctionRef<void()> ReleaseGTFence,uint32 TimeoutMilliseconds);
+    TAtomic<FOnePausedWorkRequest*> PendingOneWork{nullptr};
+    TAtomic<bool> OneWorkReturnFence{false};
+    TAtomic<uint64> OneWorkParkedNonce{0};
+    uint64 NextOneWorkNonce=0; // GT or actual worker under BoundaryControlMutex; never reset by Start.
+    FCriticalSection BoundaryControlMutex; // Arm and public check+mutation linearize here.
+    FCriticalSection JoinMutex; // Never acquired by CloseOnWorker.
 	void Stop() override;
 
 	FWork Work;
@@ -149,6 +179,9 @@ private:
 	TAtomic<bool> bStopRequested = false;
 	TAtomic<bool> bPaused = false;
 	TAtomic<bool> bRunning = false;
+#if !UE_BUILD_SHIPPING
+	TAtomic<bool> bClosedAfterNaturalCompletion = false;
+#endif
 	TAtomic<uint64> PauseRequestSerial = 0;
 	TAtomic<uint64> PauseAckSerial = 0;
 	TAtomic<bool> bBoundaryServiceSuspended = false;

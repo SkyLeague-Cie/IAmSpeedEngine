@@ -41,6 +41,9 @@ public:
     bool CaptureReplaySensorState(Speed::Replay::FSensorReplayState& Out) const;
     UPrimitiveComponent* GetFirstOverlappingComponent() const;
 	bool HasOverlaps() const { return OverlapsOrdered.Num() > 0; }
+    // Owner-lane token observation only. Never resolves weak objects or
+    // authorizes an overlap; the retained native consumer joins each target.
+    void VisitNativeOverlapTargetTokens(TFunctionRef<void(const FWeakObjectPtr&)>) const;
 
     DECLARE_MULTICAST_DELEGATE_TwoParams(FOnSensorOverlap, USensorSubBody* /*Sensor*/, UPrimitiveComponent* /*Other*/);
 #if !UE_BUILD_SHIPPING

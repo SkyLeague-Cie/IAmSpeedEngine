@@ -1,7 +1,18 @@
 #include "IAmSpeed/Components/SpeedWheeledComponent.h"
+
+#if !UE_BUILD_SHIPPING
+#include "HAL/PlatformTime.h"
+namespace RoofPostProfile
+{
+struct FCallbackRecord;
+extern thread_local FCallbackRecord* CallbackCurrent;
+void ObserveCallbackStage(uint32 stage,uint64 start);
+}
+#endif
 #include "Components/SkeletalMeshComponent.h"
 #include "Engine/Engine.h"
 #include "IAmSpeed/World/ReplayInertWorld.h"
+#include "IAmSpeed/World/Collision/PreparedNativeOwnerPoseMutation.h"
 // Fill out your copyright notice in the Description page of Project Settings.
 
 #include "IAmSpeed/Components/SpeedWheeledComponent.h"
@@ -1246,19 +1257,37 @@ float USpeedWheeledComponent::GetPhysMaxAngularSpeed() const
 
 void USpeedWheeledComponent::PostPhysicsUpdatePrv(const float& delta)
 {
+#if !UE_BUILD_SHIPPING
+    const uint64 roofCorrection=::RoofPostProfile::CallbackCurrent?FPlatformTime::Cycles64():0;
+#endif
 	ISpeedWheeledComponent::PostPhysicsUpdatePrv(delta);
+#if !UE_BUILD_SHIPPING
+    if(roofCorrection)::RoofPostProfile::ObserveCallbackStage(0,roofCorrection);
+#endif
 	ApplyNetworkCorrection(delta);
 	RegisterWheelState();
 #if !UE_BUILD_SHIPPING
 	if (IsPhysicsPhaseObservationEnabled())
 		ObservePhysicsPhase(ESpeedPhysicsObservationPhase::PostContact, delta);
 #endif
+#if !UE_BUILD_SHIPPING
+    const uint64 roofQuantize=::RoofPostProfile::CallbackCurrent?FPlatformTime::Cycles64():0;
+#endif
 	QuantizePhysicalState();
+#if !UE_BUILD_SHIPPING
+    if(roofQuantize)::RoofPostProfile::ObserveCallbackStage(1,roofQuantize);
+#endif
 #if !UE_BUILD_SHIPPING
 	if (IsPhysicsPhaseObservationEnabled())
 		ObservePhysicsPhase(ESpeedPhysicsObservationPhase::PostQuantization, delta);
 #endif
+#if !UE_BUILD_SHIPPING
+    const uint64 roofRecord=::RoofPostProfile::CallbackCurrent?FPlatformTime::Cycles64():0;
+#endif
 	RecordPhysicsState();
+#if !UE_BUILD_SHIPPING
+    if(roofRecord)::RoofPostProfile::ObserveCallbackStage(2,roofRecord);
+#endif
 }
 
 void USpeedWheeledComponent::SetIsUpsideDown(bool bUpsideDown)
@@ -1297,7 +1326,9 @@ void USpeedWheeledComponent::RcvImpactOnSubBody(const USSubBody& SubBody, const 
 
 void USpeedWheeledComponent::SetKinematicState(const SKinematic& NewKinematicState)
 {
+    Speed::PreparedExecution::FNativeOwnerPoseMutationScope assignment(*this,BasePhysicsState.Kinematic,NewKinematicState);
 	BasePhysicsState.Kinematic = NewKinematicState;
+    assignment.Returned();
 }
 
 void USpeedWheeledComponent::RegisterTestVelocity(const FVector& InitialVelocity)

@@ -1,4 +1,7 @@
 #include "SimulationWorld.h"
+#include "IAmSpeed/World/Collision/PreparedPhysicalExecution.h"
+#include "OnePausedCanonicalWork.h"
+#include <stdexcept>
 #if !UE_BUILD_SHIPPING
 #include "FrameAppliedCommandWitness.h"
 #endif
@@ -191,8 +194,10 @@ namespace Speed
 
 	void FSimulationWorld::RebuildOrderedAdapters()
 	{
-		if (!bOrderDirty) return;
-		Adapters.Remove(nullptr);
+        if (PreparedExecution::RejectPreparedOrderMutation(PreparedExecution::Requested() && OnePausedWork::IsActive(), bOrderDirty))
+            throw std::runtime_error("Prepared native dirty registry ordering refused before callbacks or table mutation");
+        if (!bOrderDirty) return;
+        Adapters.Remove(nullptr);
 		OrderedAdapters = Adapters;
 		Bodies.Reset(OrderedAdapters.Num());
 		StableSubBodyIds.Reset();

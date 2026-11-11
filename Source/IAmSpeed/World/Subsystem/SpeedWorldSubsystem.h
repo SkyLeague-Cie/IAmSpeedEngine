@@ -10,6 +10,11 @@
 #include "IAmSpeed/World/Simulation/SimulationWorld.h"
 #include "SpeedWorldSubsystem.generated.h"
 
+namespace Speed { class FHostedGTStaticWorldLease; class FPreparedExternalLandscape; namespace Analytic::Prepared { class FScene; } }
+namespace Speed::PreparedExecution { class FCanonicalFramePreflight; class FStepScope; }
+namespace Speed::PreparationPrefix { class FClosedSourceProducer; }
+class ASpeedPhysicsSimulation;
+class USpeedAnalyticCollisionAsset;
 class ISpeedComponent;
 #if !UE_BUILD_SHIPPING
 namespace Speed { class FFramePointerRegistry; }
@@ -63,6 +68,10 @@ UCLASS()
 class IAMSPEED_API USpeedWorldSubsystem : public UWorldSubsystem
 {
 	GENERATED_BODY()
+    friend class Speed::FHostedGTStaticWorldLease;
+    friend class Speed::PreparationPrefix::FClosedSourceProducer;
+    friend class Speed::PreparedExecution::FCanonicalFramePreflight;
+    friend class Speed::PreparedExecution::FStepScope;
 #if WITH_DEV_AUTOMATION_TESTS
 	friend struct FLocalNormalCameraFixtureAccess;
 	friend class FIAmSpeedCollisionMatrix042Test;
@@ -144,6 +153,13 @@ public:
 	{
 		return SimulationWorld.GetStaticCollisionWorld();
 	}
+    // Preparation publication only. It keeps physical stepping closed until
+    // the typed consumer is qualified; no asset eligibility flag is changed.
+    bool TryPublishPreparedIntervalWorld(const Speed::FHostedGTStaticWorldLease& Lease,
+        const USpeedAnalyticCollisionAsset& Asset,
+        TSharedPtr<const Speed::Analytic::Prepared::FScene,ESPMode::ThreadSafe> Scene,FString& Reason);
+    TSharedPtr<const Speed::Analytic::Prepared::FScene,ESPMode::ThreadSafe> ReadPreparedIntervalWorldAtBoundary(
+        const Speed::FHostedGTStaticWorldLease& Lease) const;
 	const FSpeedStepDiagnostics& GetLastStepDiagnostics() const
 	{
 		return LastStepDiagnostics;
@@ -153,6 +169,12 @@ public:
 	void NotifyCanonicalFramePublished(uint64 NumFrame);
 	ECanonicalPublicationResult PublishCanonicalFrame(uint64 Frame, TFunctionRef<bool()> Publish);
 	void AbortCanonicalFrame(uint64 Frame, ECanonicalFrameAbortReason Reason) noexcept;
+    // Actual terminal input cancellation for the private preparation purpose.
+    // No Complete/Publish, physical rollback or restart is implied.
+    // Distinct terminal position purpose. Holds the actual registry lock
+    // across Source prediction, paired native copies and post-effect readback.
+    bool DispatchPostPrepareInitialPosition(const ASpeedPhysicsSimulation& Host);
+    bool RetirePreparationInputTransactions(const FCanonicalFrameContext& Context);
 	/** Restores one validated canonical snapshot without advancing simulation time. */
 	bool RestoreSimulationSnapshot(
 		const FSimulationSnapshot& Snapshot,
@@ -202,6 +224,15 @@ private:
 		bool bSolveFirstSeenFrame = false);
 	void ProjectDynamicContactPairs();
 
-    FCriticalSection PendingCS;
+    TSharedPtr<const Speed::Analytic::Prepared::FScene,ESPMode::ThreadSafe> PreparedIntervalScene;
+    TWeakObjectPtr<USpeedAnalyticCollisionAsset> PreparedIntervalAsset;
+    uint32 StaticWorldPublicationDepth=0; // GT only while worker service is acknowledged parked.
+    bool bPreparedWorldResetComplete=false;
+    bool bPreparedIntervalRouteRequested=false;
+    bool ValidatePreparedIntervalSources(const USpeedAnalyticCollisionAsset& Asset,
+        const Speed::Analytic::Prepared::FScene& Scene,
+        TMap<uint64,TWeakObjectPtr<UPrimitiveComponent>>& Out,FString& Reason,
+        const Speed::FPreparedExternalLandscape* ExternalLandscape=nullptr) const;
+    mutable FCriticalSection PendingCS;
     TArray<FPendingOp> PendingOps;
 };

@@ -514,8 +514,9 @@ namespace
 		const FVector3d ControlPoints[8], const double T0, const double T1,
 		const double ToleranceCm, const int32 Depth,
 		TArray<FVector3d>& Points, TArray<double>& Parameters,
-		double& MaximumAcceptedErrorCm)
+		double& MaximumAcceptedErrorCm, const int32 MaximumSegments)
 	{
+		if (Points.Num() > MaximumSegments) return false;
 		const double ErrorCm = BezierChordErrorCm(ControlPoints);
 		if (ErrorCm <= ToleranceCm)
 		{
@@ -532,9 +533,9 @@ namespace
 		SplitBezierHalf(ControlPoints, Left, Right);
 		const double MiddleT = 0.5 * (T0 + T1);
 		return AppendCertifiedBezierChords(Left, T0, MiddleT, ToleranceCm,
-			Depth + 1, Points, Parameters, MaximumAcceptedErrorCm) &&
+			Depth + 1, Points, Parameters, MaximumAcceptedErrorCm, MaximumSegments) &&
 			AppendCertifiedBezierChords(Right, MiddleT, T1, ToleranceCm,
-				Depth + 1, Points, Parameters, MaximumAcceptedErrorCm);
+				Depth + 1, Points, Parameters, MaximumAcceptedErrorCm, MaximumSegments);
 	}
 
 	double Cross2D(const FVector2d& A, const FVector2d& B)
@@ -1215,6 +1216,12 @@ FVector3d FExtrudedQuinticPatch::EvaluateSectionDerivative(const double T) const
 bool FExtrudedQuinticPatch::BuildQueryApproximation(
 	const double ChordToleranceCm)
 {
+	return BuildQueryApproximationBounded(ChordToleranceCm, MAX_int32);
+}
+
+bool FExtrudedQuinticPatch::BuildQueryApproximationBounded(
+	const double ChordToleranceCm, const int32 MaximumSegments)
+{
 	SectionPolyline.Reset();
 	SectionParameters.Reset();
 	SectionSegmentBounds.Reset();
@@ -1222,7 +1229,7 @@ bool FExtrudedQuinticPatch::BuildQueryApproximation(
 	SectionSegmentBvhNodes.Reset();
 	SectionSegmentBvhIndices.Reset();
 	MaximumChordErrorCm = TNumericLimits<double>::Max();
-	if (!FMath::IsFinite(ChordToleranceCm) || ChordToleranceCm <= 0.0)
+	if (!FMath::IsFinite(ChordToleranceCm) || ChordToleranceCm <= 0.0 || MaximumSegments <= 0)
 	{
 		return false;
 	}
@@ -1256,7 +1263,7 @@ bool FExtrudedQuinticPatch::BuildQueryApproximation(
 	double AcceptedErrorCm = 0.0;
 	if (!AppendCertifiedBezierChords(DegreeSeven, 0.0, 1.0,
 		ChordToleranceCm, 0, SectionPolyline, SectionParameters,
-		AcceptedErrorCm))
+		AcceptedErrorCm, MaximumSegments))
 	{
 		SectionPolyline.Reset();
 		SectionParameters.Reset();
@@ -1605,9 +1612,13 @@ namespace
 			}
 		}
 		// The difference between the tensor surface and the degree-elevated
-		// bilinear corner patch is itself a Bezier surface. Its complete image is
-		// inside the convex hull of these difference control points.
-		return FMath::Sqrt(MaximumSquaredError);
+		// bilinear corner patch is inside the hull of these difference controls.
+		// Queries use the two corner triangles, not the bilinear patch. With
+		// the U0V0--U1V1 diagonal, the difference weights have magnitudes
+		// v*(1-u) where v<=u, or u*(1-v) where u<=v; both are <= 1/4.
+		// The same parameter correspondence bounds both Hausdorff directions.
+		const FVector3d Twist = (U0V0 - U0V1) - (U1V0 - U1V1);
+		return FMath::Sqrt(MaximumSquaredError) + 0.25 * Twist.Length();
 	}
 
 	void SplitBezierControlPolygonHalf(
@@ -2404,6 +2415,7 @@ bool FPiecewiseTensorBezierPatch::IsValid(FString* OutReason) const
 bool FAnalyticWorldData::FinalizeAndValidate(
 	FString* OutReason, const double TensorQueryApproximationToleranceCm)
 {
+	if (!ValidateCurrentAnalyticNumericContext(NumericContract, OutReason)) return false;
 	if (!FMath::IsFinite(TensorQueryApproximationToleranceCm) ||
 		TensorQueryApproximationToleranceCm <= 0.0)
 	{
@@ -2695,6 +2707,7 @@ bool FAnalyticWorldData::FinalizeAndValidate(
 bool FAnalyticWorldData::AppendFinalizedNonCompactPlanes(
 	TArray<FBoundedPlane> AdditionalPlanes, FString* OutReason)
 {
+	if (!ValidateCurrentAnalyticNumericContext(NumericContract, OutReason)) return false;
 	const double StartSeconds = FPlatformTime::Seconds();
 	auto Fail = [OutReason](const FString& Reason)
 	{
