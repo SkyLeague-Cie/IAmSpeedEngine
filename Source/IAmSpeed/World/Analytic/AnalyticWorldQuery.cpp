@@ -139,6 +139,9 @@ namespace Speed::Analytic::Private
 namespace
 {
 #if !UE_BUILD_SHIPPING
+	TAutoConsoleVariable<int32> CVarIAmSpeedAnalyticWorldTensorProviderBoundsIndex(
+		TEXT("p.IAmSpeed.AnalyticWorld.TensorProviderBoundsIndex"), 0,
+		TEXT("Build a conservative ordered tensor-provider BVH when the query service is constructed."));
 	TAutoConsoleVariable<int32> CVarIAmSpeedAnalyticWorldCacheBucketMode(
 		TEXT("p.IAmSpeed.AnalyticWorld.CacheBucketMode"), 0,
 		TEXT("Experimental exact-cache placement. 0: original position hash (default); 1: discriminate shape, selection and provider policy. Same64 entries and full equality."),
@@ -402,6 +405,17 @@ FWorldQueryService::FWorldQueryService(const FAnalyticWorldData& InWorld,
 		PiecewiseBounds.Add(Patch.Bounds);
 	PiecewiseProviderIndex = Speed::Collision::FOrderedBoundsIndex::Create(PiecewiseBounds);
 #if !UE_BUILD_SHIPPING
+	if (CVarIAmSpeedAnalyticWorldTensorProviderBoundsIndex.GetValueOnAnyThread() != 0 &&
+		!World.TensorBezierPatches.IsEmpty())
+	{
+		TArray<FBox3d> TensorBounds;
+		TensorBounds.Reserve(World.TensorBezierPatches.Num());
+		for (const FTensorBezierPatch& Patch : World.TensorBezierPatches)
+			TensorBounds.Add(Patch.Bounds);
+		TensorProviderIndex = Speed::Collision::FOrderedBoundsIndex::CreateBvh(TensorBounds);
+		UE_LOG(LogTemp, Display, TEXT("[AnalyticTensorProviderBoundsIndex] Providers=%d Bytes=%llu"),
+			TensorBounds.Num(), uint64(TensorProviderIndex->GetAllocatedSize()));
+	}
 	if (CVarIAmSpeedAnalyticWorldPhaseTiming.GetValueOnAnyThread() != 0)
 		UE_LOG(LogTemp, Display, TEXT("[AnalyticQueryStorage] PiecewiseProviders=%d ProviderIndexBytes=%llu"),
 			PiecewiseBounds.Num(), uint64(PiecewiseProviderIndex->GetAllocatedSize()));
@@ -4746,13 +4760,26 @@ FWorldHit FWorldQueryService::SweepDetailed(
 			? FPlatformTime::Seconds()
 			: 0.0;
 #endif
-		for (const FTensorBezierPatch& Patch : World.TensorBezierPatches)
+		const auto SweepTensorProvider = [&](const FTensorBezierPatch& Patch)
 		{
-			if (Query.bAuthorityOnly && !Patch.bAuthorityEligible) continue;
-			if (Query.bExcludeAuthorityEligible && Patch.bAuthorityEligible) continue;
+			if (Query.bAuthorityOnly && !Patch.bAuthorityEligible) return;
+			if (Query.bExcludeAuthorityEligible && Patch.bAuthorityEligible) return;
 			const FWorldHit Candidate = SweepTensorBezier(
 				Query, QueryBounds, Patch, CurrentMaximumSearchTime(), Selection);
 			ConsiderProviderHit(Candidate);
+		};
+#if !UE_BUILD_SHIPPING
+		if (TensorProviderIndex)
+		{
+			Speed::Collision::FOrderedBoundsScratch TensorScratch;
+			for (const int32 Index : TensorProviderIndex->FindCandidates(QueryBounds, TensorScratch))
+				SweepTensorProvider(World.TensorBezierPatches[Index]);
+		}
+		else
+#endif
+		{
+			for (const FTensorBezierPatch& Patch : World.TensorBezierPatches)
+				SweepTensorProvider(Patch);
 		}
 #if !UE_BUILD_SHIPPING
 		if (bPhaseTimingEnabled)
