@@ -142,6 +142,9 @@ namespace
 	TAutoConsoleVariable<int32> CVarIAmSpeedAnalyticWorldTensorProviderBoundsIndex(
 		TEXT("p.IAmSpeed.AnalyticWorld.TensorProviderBoundsIndex"), 0,
 		TEXT("Build a conservative ordered tensor-provider BVH when the query service is constructed."));
+	TAutoConsoleVariable<int32> CVarTensorMovingSphereReuseEdges(
+		TEXT("p.IAmSpeed.AnalyticWorld.TensorMovingSphereReuseEdges"), 0,
+		TEXT("Reuse the moving-sphere tensor facet AB/AC for closest-point queries."));
 	TAutoConsoleVariable<int32> CVarIAmSpeedAnalyticWorldTensorSphereSlab(
 		TEXT("p.IAmSpeed.AnalyticWorld.TensorSphereSlab"), 0,
 		TEXT("Precompute the separating plane of axis-aligned direct tensor collision facets."));
@@ -714,13 +717,11 @@ namespace
 		}
 	}
 
-	FVector3d ClosestPointOnTriangle(
+	FVector3d ClosestPointOnTriangleWithEdges(
 		const FVector3d& Point, const FVector3d& A, const FVector3d& B,
-		const FVector3d& C, EContactFeatureKind* OutKind = nullptr,
-		int8* OutIndex = nullptr)
+		const FVector3d& C, const FVector3d& AB, const FVector3d& AC,
+		EContactFeatureKind* OutKind, int8* OutIndex)
 	{
-		const FVector3d AB = B - A;
-		const FVector3d AC = C - A;
 		const FVector3d AP = Point - A;
 		const double D1 = FVector3d::DotProduct(AB, AP);
 		const double D2 = FVector3d::DotProduct(AC, AP);
@@ -767,6 +768,16 @@ namespace
 		const double Denominator = 1.0 / (VA + VB + VC);
 		SetFeature(EContactFeatureKind::Face, 0);
 		return A + (VB * Denominator) * AB + (VC * Denominator) * AC;
+	}
+
+	FVector3d ClosestPointOnTriangle(
+		const FVector3d& Point, const FVector3d& A, const FVector3d& B,
+		const FVector3d& C, EContactFeatureKind* OutKind = nullptr,
+		int8* OutIndex = nullptr)
+	{
+		const FVector3d AB = B - A;
+		const FVector3d AC = C - A;
+		return ClosestPointOnTriangleWithEdges(Point, A, B, C, AB, AC, OutKind, OutIndex);
 	}
 
 	FVector3d ClosestPointOnBox(
@@ -1285,10 +1296,12 @@ namespace
 		return SweepBoxTriangleImpl573<-1>(Query, Triangle, OutHit, CachedContext, MaximumSearchTime, PrimarySatScope, CrossNormalScope);
 	}
 
+	template<bool bReuseEdges = false>
 	bool SweepSphereTriangleGeometry(
 		const FWorldQuery& Query, const FVector3d TriangleVertices[3],
 		const FVector3d& TriangleFaceNormal, FWorldHit& OutHit,
-		const double MaximumSearchTime = 1.0)
+		const double MaximumSearchTime = 1.0,
+		const FVector3d* EdgeAB = nullptr, const FVector3d* EdgeAC = nullptr)
 	{
 		// Conservative advancement against the convex triangle distance field
 		// covers face, edge, and vertex contacts for a linearly translated sphere.
@@ -1329,6 +1342,19 @@ namespace
 		int8 SurfaceIndex = INDEX_NONE;
 		double Distance = 0.0;
 		constexpr double ContactToleranceCm = 1.0e-8;
+		const auto ClosestPoint = [&](const FVector3d& Point)
+		{
+			if constexpr (bReuseEdges)
+			{
+				return ClosestPointOnTriangleWithEdges(Point, TriangleVertices[0],
+					TriangleVertices[1], TriangleVertices[2], *EdgeAB, *EdgeAC, &SurfaceKind, &SurfaceIndex);
+			}
+			else
+			{
+				return ClosestPointOnTriangle(Point, TriangleVertices[0],
+					TriangleVertices[1], TriangleVertices[2], &SurfaceKind, &SurfaceIndex);
+			}
+		};
 		const auto TrySegmentContact = [&]()
 		{
 			// Conservative advancement can reject a valid edge/vertex contact when
@@ -1345,9 +1371,7 @@ namespace
 			{
 				const double Local = Sample / 32.0;
 				const FVector3d Probe = FMath::Lerp(Begin, Query.End, Local);
-				const FVector3d ProbePoint = ClosestPointOnTriangle(Probe,
-					TriangleVertices[0], TriangleVertices[1], TriangleVertices[2],
-					&SurfaceKind, &SurfaceIndex);
+				const FVector3d ProbePoint = ClosestPoint(Probe);
 				if (FVector3d::Distance(Probe, ProbePoint) <= Radius + ContactToleranceCm)
 				{
 					Bracket = Sample;
@@ -1361,16 +1385,13 @@ namespace
 			{
 				const double Mid = 0.5 * (Low + High);
 				const FVector3d Probe = FMath::Lerp(Begin, Query.End, Mid);
-				const FVector3d ProbePoint = ClosestPointOnTriangle(Probe,
-					TriangleVertices[0], TriangleVertices[1], TriangleVertices[2],
-					&SurfaceKind, &SurfaceIndex);
+				const FVector3d ProbePoint = ClosestPoint(Probe);
 				if (FVector3d::Distance(Probe, ProbePoint) <= Radius + ContactToleranceCm) High = Mid;
 				else Low = Mid;
 			}
 			Time = BeginTime + Remaining * High;
 			Center = FMath::Lerp(Query.Start, Query.End, Time);
-			SurfacePoint = ClosestPointOnTriangle(Center, TriangleVertices[0],
-				TriangleVertices[1], TriangleVertices[2], &SurfaceKind, &SurfaceIndex);
+			SurfacePoint = ClosestPoint(Center);
 			const FVector3d Separation = Center - SurfacePoint;
 			Distance = Separation.Length();
 			Normal = Distance > UE_DOUBLE_SMALL_NUMBER ? Separation / Distance : TriangleFaceNormal.GetSafeNormal();
@@ -1389,9 +1410,7 @@ namespace
 		};
 		for (int32 Iteration = 0; Iteration < 32; ++Iteration)
 		{
-			SurfacePoint = ClosestPointOnTriangle(Center,
-				TriangleVertices[0], TriangleVertices[1], TriangleVertices[2],
-				&SurfaceKind, &SurfaceIndex);
+			SurfacePoint = ClosestPoint(Center);
 			const FVector3d Separation = Center - SurfacePoint;
 			Distance = Separation.Length();
 			Normal = Distance > UE_DOUBLE_SMALL_NUMBER
@@ -1419,9 +1438,7 @@ namespace
 			{
 				Time = SearchLimit;
 				Center = FMath::Lerp(Query.Start, Query.End, Time);
-				SurfacePoint = ClosestPointOnTriangle(Center,
-					TriangleVertices[0], TriangleVertices[1], TriangleVertices[2],
-					&SurfaceKind, &SurfaceIndex);
+				SurfacePoint = ClosestPoint(Center);
 				const FVector3d EndpointSeparation = Center - SurfacePoint;
 				Distance = EndpointSeparation.Length();
 				if (Distance <= Radius + ContactToleranceCm)
@@ -3542,6 +3559,10 @@ FWorldHit FWorldQueryService::SweepTensorBezierApproximation(
 	{
 		BoxSweepContext.Initialize(Query, CachedBoxAxes);
 	}
+#if !UE_BUILD_SHIPPING
+	const bool bReuseMovingSphereEdges = Query.Shape == EQueryShape::Sphere && Query.Start != Query.End &&
+		CVarTensorMovingSphereReuseEdges.GetValueOnAnyThread() != 0;
+#endif
 	Causal.MarkPrepared();
 	const auto SweepCell = [&](const int32 CellIndex)
 	{
@@ -3705,18 +3726,25 @@ FWorldHit FWorldQueryService::SweepTensorBezierApproximation(
 			}
 			else if (Query.Shape == EQueryShape::Sphere)
 			{
-				const FVector3d TriangleFaceNormal = FVector3d::CrossProduct(
-					TriangleVertices[1] - TriangleVertices[0],
-					TriangleVertices[2] - TriangleVertices[0]);
+				const FVector3d EdgeAB = TriangleVertices[1] - TriangleVertices[0];
+				const FVector3d EdgeAC = TriangleVertices[2] - TriangleVertices[0];
+				const FVector3d TriangleFaceNormal = FVector3d::CrossProduct(EdgeAB, EdgeAC);
 				// The runtime triangle is a bilinear approximation of the
 				// certified Bezier cell.  Its Hausdorff error is carried by the
 				// cell and must enlarge the swept shell during detection; using
 				// only the triangle itself creates false-negative contacts near
 				// tangent/end-point crossings.  Keep this allowance local to the
 				// approximation cell so exact providers are unaffected.
-				if (!SweepSphereTriangleGeometry(
-					Query, TriangleVertices, TriangleFaceNormal, Candidate,
-					CurrentMaximumSearchTime()))
+				const double SearchTime = CurrentMaximumSearchTime();
+#if !UE_BUILD_SHIPPING
+				const bool bHit = bReuseMovingSphereEdges
+					? SweepSphereTriangleGeometry<true>(Query, TriangleVertices, TriangleFaceNormal,
+						Candidate, SearchTime, &EdgeAB, &EdgeAC)
+					: SweepSphereTriangleGeometry(Query, TriangleVertices, TriangleFaceNormal, Candidate, SearchTime);
+#else
+				const bool bHit = SweepSphereTriangleGeometry(Query, TriangleVertices, TriangleFaceNormal, Candidate, SearchTime);
+#endif
+				if (!bHit)
 				{
 					continue;
 				}
