@@ -242,6 +242,13 @@ private:
 	TSharedPtr<const Speed::Collision::FOrderedBoundsIndex> PiecewiseProviderIndex;
 #if !UE_BUILD_SHIPPING
 	TSharedPtr<const Speed::Collision::FOrderedBoundsIndex> TensorProviderIndex;
+	struct FTensorSphereSlab
+	{
+		int32 Axis = INDEX_NONE;
+		double Coordinate = 0.0;
+		double CoordinateScale = 1.0;
+	};
+	TArray<FTensorSphereSlab> TensorSphereSlabs;
 #endif
 	TSharedPtr<const Speed::Collision::FOrderedBoundsIndex> PlaneProviderIndex;
 	TArray<FSourceAuthorityCoverage> SourceAuthorityCoverage;

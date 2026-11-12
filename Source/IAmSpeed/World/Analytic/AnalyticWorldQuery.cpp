@@ -142,6 +142,9 @@ namespace
 	TAutoConsoleVariable<int32> CVarIAmSpeedAnalyticWorldTensorProviderBoundsIndex(
 		TEXT("p.IAmSpeed.AnalyticWorld.TensorProviderBoundsIndex"), 0,
 		TEXT("Build a conservative ordered tensor-provider BVH when the query service is constructed."));
+	TAutoConsoleVariable<int32> CVarIAmSpeedAnalyticWorldTensorSphereSlab(
+		TEXT("p.IAmSpeed.AnalyticWorld.TensorSphereSlab"), 0,
+		TEXT("Precompute the separating plane of axis-aligned direct tensor collision facets."));
 	TAutoConsoleVariable<int32> CVarIAmSpeedAnalyticWorldCacheBucketMode(
 		TEXT("p.IAmSpeed.AnalyticWorld.CacheBucketMode"), 0,
 		TEXT("Experimental exact-cache placement. 0: original position hash (default); 1: discriminate shape, selection and provider policy. Same64 entries and full equality."),
@@ -413,6 +416,52 @@ FWorldQueryService::FWorldQueryService(const FAnalyticWorldData& InWorld,
 		for (const FTensorBezierPatch& Patch : World.TensorBezierPatches)
 			TensorBounds.Add(Patch.Bounds);
 		TensorProviderIndex = Speed::Collision::FOrderedBoundsIndex::CreateBvh(TensorBounds);
+		if (CVarIAmSpeedAnalyticWorldTensorSphereSlab.GetValueOnAnyThread() != 0)
+		{
+			const double SlabStart = FPlatformTime::Seconds();
+			TensorSphereSlabs.SetNum(World.TensorBezierPatches.Num());
+			int32 SlabCount = 0;
+			for (int32 Index = 0; Index < TensorSphereSlabs.Num(); ++Index)
+			{
+				const FTensorBezierPatch& Patch = World.TensorBezierPatches[Index];
+				const auto& Controls = Patch.Surface.ControlPoints;
+				if (!Patch.bApproximationCertified || Patch.ApproximationCells.IsEmpty() || Controls.IsEmpty()) continue;
+				const FVector3d Origin = Controls[0];
+				bool bConstantX = true;
+				bool bConstantY = true;
+				bool bConstantZ = true;
+				for (const FVector3d& Point : Controls)
+				{
+					bConstantX &= Point.X == Origin.X;
+					bConstantY &= Point.Y == Origin.Y;
+					bConstantZ &= Point.Z == Origin.Z;
+					if (!bConstantX && !bConstantY && !bConstantZ) break;
+				}
+				if (!bConstantX && !bConstantY && !bConstantZ) continue;
+				const int32 Axis = bConstantX ? 0 : (bConstantY ? 1 : 2);
+				const double Coordinate = Origin[Axis];
+				double CoordinateScale = 1.0;
+				bool bPlanar = true;
+				for (const FTensorBezierApproximationCell& Cell : Patch.ApproximationCells)
+				{
+					for (const FVector3d& Corner : Cell.Corners)
+					{
+						if (Corner.ContainsNaN() || Corner[Axis] != Coordinate)
+						{
+							bPlanar = false;
+							break;
+						}
+						CoordinateScale = FMath::Max(CoordinateScale, Corner.GetAbsMax());
+					}
+					if (!bPlanar) break;
+				}
+				if (!bPlanar) continue;
+				TensorSphereSlabs[Index] = {Axis, Coordinate, CoordinateScale};
+				++SlabCount;
+			}
+			UE_LOG(LogTemp, Display, TEXT("[AnalyticTensorSphereSlab] Providers=%d Bytes=%llu BuildMs=%.3f"),
+				SlabCount, uint64(TensorSphereSlabs.GetAllocatedSize()), (FPlatformTime::Seconds() - SlabStart) * 1000.0);
+		}
 		UE_LOG(LogTemp, Display, TEXT("[AnalyticTensorProviderBoundsIndex] Providers=%d Bytes=%llu"),
 			TensorBounds.Num(), uint64(TensorProviderIndex->GetAllocatedSize()));
 	}
@@ -4772,8 +4821,30 @@ FWorldHit FWorldQueryService::SweepDetailed(
 		if (TensorProviderIndex)
 		{
 			Speed::Collision::FOrderedBoundsScratch TensorScratch;
+			const bool bUseSlabs = Query.Shape == EQueryShape::Sphere && !TensorSphereSlabs.IsEmpty() &&
+				FMath::IsFinite(Query.Radius) && !Query.Start.ContainsNaN() && !Query.End.ContainsNaN();
+			const double QueryCoordinateScale = bUseSlabs
+				? FMath::Max(1.0, FMath::Max(Query.Start.GetAbsMax(), Query.End.GetAbsMax())) : 1.0;
 			for (const int32 Index : TensorProviderIndex->FindCandidates(QueryBounds, TensorScratch))
+			{
+				if (bUseSlabs)
+				{
+					const FTensorSphereSlab& Slab = TensorSphereSlabs[Index];
+					if (Slab.Axis != INDEX_NONE)
+					{
+						const double Start = Query.Start[Slab.Axis];
+						const double End = Query.End[Slab.Axis];
+						// Every facet has the same coordinate on this axis. Test the full center segment
+						// against the same radius as SweepSphereTriangleGeometry.
+						const double Radius = FMath::Max(0.0, Query.Radius) + 1.0e-8 +
+							1.0e-9 * FMath::Max(QueryCoordinateScale, Slab.CoordinateScale);
+						const double Gap = FMath::Max(FMath::Min(Start, End) - Slab.Coordinate,
+							Slab.Coordinate - FMath::Max(Start, End));
+						if (FMath::IsFinite(Gap) && Gap > Radius) continue;
+					}
+				}
 				SweepTensorProvider(World.TensorBezierPatches[Index]);
+			}
 		}
 		else
 #endif
