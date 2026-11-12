@@ -149,6 +149,11 @@ public:
 	{
 		return AnalyticWorldData.Get();
 	}
+    TSharedPtr<const Speed::Analytic::FAnalyticWorldData> RetainAnalyticWorldDataGT() const
+    {
+        check(IsInGameThread());
+        return AnalyticWorldData;
+    }
 	const Speed::IStaticCollisionWorld* GetStaticCollisionWorld() const
 	{
 		return SimulationWorld.GetStaticCollisionWorld();

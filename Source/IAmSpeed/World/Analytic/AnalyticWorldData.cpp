@@ -6,6 +6,7 @@
 #include "Algo/AnyOf.h"
 #include "Algo/Sort.h"
 #include "Async/ParallelFor.h"
+#include "IAmSpeed/World/Simulation/FrameFloatingPointContext.h"
 
 namespace Speed::Analytic
 {
@@ -2567,10 +2568,40 @@ bool FAnalyticWorldData::FinalizeAndValidate(
 	}
 	PreviousPrimitive = 0;
 	const double TensorStartSeconds = FPlatformTime::Seconds();
+    // Each tensor owns its approximation and BVH. Preserve the loader's
+    // arithmetic controls on workers, and keep validation/order on the caller.
+    enum class ETensorBuildResult : uint8 { Pending, Built, Failed, RestoreFailed };
+    TArray<ETensorBuildResult> TensorResults;
+    if (IsInGameThread() && TensorBezierPatches.Num() >= 256 &&
+        NumericContract == EAnalyticNumericContract::Binary64NearestAllowFlush)
+    {
+        const Speed::FFrameFloatingPointContext OwnerContext = Speed::CaptureFrameFloatingPointContext();
+        if (OwnerContext.bValid)
+        {
+            TensorResults.Init(ETensorBuildResult::Pending, TensorBezierPatches.Num());
+            ParallelFor(TensorBezierPatches.Num(), [&](int32 Index)
+            {
+                Speed::FScopedFrameFloatingPointContext Context(OwnerContext);
+                if (Context.IsApplied())
+                {
+                    TensorResults[Index] = TensorBezierPatches[Index].BuildQueryApproximation(
+                        TensorQueryApproximationToleranceCm) ? ETensorBuildResult::Built : ETensorBuildResult::Failed;
+                }
+                if (!Context.Restore()) TensorResults[Index] = ETensorBuildResult::RestoreFailed;
+            }, EParallelForFlags::Unbalanced);
+            if (TensorResults.Contains(ETensorBuildResult::RestoreFailed))
+            {
+                if (OutReason) *OutReason = TEXT("Could not restore tensor build worker arithmetic state.");
+                return false;
+            }
+        }
+    }
 	for (int32 Index = 0; Index < TensorBezierPatches.Num(); ++Index)
 	{
 		FTensorBezierPatch& Patch = TensorBezierPatches[Index];
-		if (!Patch.BuildQueryApproximation(TensorQueryApproximationToleranceCm))
+        const ETensorBuildResult Result = TensorResults.IsEmpty() ? ETensorBuildResult::Pending : TensorResults[Index];
+        if (Result == ETensorBuildResult::Failed || (Result == ETensorBuildResult::Pending &&
+            !Patch.BuildQueryApproximation(TensorQueryApproximationToleranceCm)))
 		{
 			if (OutReason)
 			{
