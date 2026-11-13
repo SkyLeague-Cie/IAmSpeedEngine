@@ -142,6 +142,12 @@ namespace
 	TAutoConsoleVariable<int32> CVarIAmSpeedAnalyticWorldTensorProviderBoundsIndex(
 		TEXT("p.IAmSpeed.AnalyticWorld.TensorProviderBoundsIndex"), 0,
 		TEXT("Build a conservative ordered tensor-provider BVH when the query service is constructed."));
+	TAutoConsoleVariable<int32> CVarTensorSphereFinalNormal(
+		TEXT("p.IAmSpeed.AnalyticWorld.TensorSphereFinalNormal"), 0,
+		TEXT("Smooth only the final tensor sphere sweep winner when its normal filter is unconditional."));
+	TAutoConsoleVariable<int32> CVarTensorSphereFinalNormalProfile(
+		TEXT("p.IAmSpeed.AnalyticWorld.TensorSphereFinalNormalProfile"), 0,
+		TEXT("Report eligible tensor sphere candidates and final smoothings. Passive diagnostics."));
 	TAutoConsoleVariable<int32> CVarTensorMovingSphereReuseEdges(
 		TEXT("p.IAmSpeed.AnalyticWorld.TensorMovingSphereReuseEdges"), 0,
 		TEXT("Reuse the moving-sphere tensor facet AB/AC for closest-point queries."));
@@ -3563,6 +3569,58 @@ FWorldHit FWorldQueryService::SweepTensorBezierApproximation(
 	const bool bReuseMovingSphereEdges = Query.Shape == EQueryShape::Sphere && Query.Start != Query.End &&
 		CVarTensorMovingSphereReuseEdges.GetValueOnAnyThread() != 0;
 #endif
+	static constexpr int32 CornerIndices[2][3] = {
+		{ 0, 2, 3 }, { 0, 3, 1 } };
+	const auto Smooth = [&](FWorldHit& Candidate, const FVector3d (&TriangleVertices)[3],
+		const FVector2d (&ParameterCorners)[4], int32 TriangleIndex)
+	{
+		const FVector3d A = TriangleVertices[0];
+		const FVector3d B = TriangleVertices[1];
+		const FVector3d C = TriangleVertices[2];
+		const FVector3d V0 = B - A;
+		const FVector3d V1 = C - A;
+		const FVector3d V2 = Candidate.Point - A;
+		const double D00 = FVector3d::DotProduct(V0, V0);
+		const double D01 = FVector3d::DotProduct(V0, V1);
+		const double D11 = FVector3d::DotProduct(V1, V1);
+		const double D20 = FVector3d::DotProduct(V2, V0);
+		const double D21 = FVector3d::DotProduct(V2, V1);
+		const double Denominator = D00 * D11 - D01 * D01;
+		if (FMath::Abs(Denominator) > 1.0e-18)
+		{
+			const double WeightB = (D11 * D20 - D01 * D21) /
+				Denominator;
+			const double WeightC = (D00 * D21 - D01 * D20) /
+				Denominator;
+			const double WeightA = 1.0 - WeightB - WeightC;
+			const FVector2d UV =
+				WeightA * ParameterCorners[CornerIndices[TriangleIndex][0]] +
+				WeightB * ParameterCorners[CornerIndices[TriangleIndex][1]] +
+				WeightC * ParameterCorners[CornerIndices[TriangleIndex][2]];
+			FVector3d SmoothNormal =
+				Patch.Surface->EvaluateNormal(UV.X, UV.Y);
+			if (FVector3d::DotProduct(SmoothNormal, Candidate.Normal) < 0.0)
+			{
+				SmoothNormal = -SmoothNormal;
+			}
+			if (!SmoothNormal.IsNearlyZero()) Candidate.Normal = SmoothNormal;
+			return true;
+		}
+		return false;
+	};
+#if !UE_BUILD_SHIPPING
+	const bool bRequested = CVarTensorSphereFinalNormal.GetValueOnAnyThread() != 0;
+	const bool bObserve = CVarTensorSphereFinalNormalProfile.GetValueOnAnyThread() != 0 &&
+		Query.Shape == EQueryShape::Sphere && Query.Start != Query.End;
+	const bool bEligible = (bRequested || bObserve) && Query.Shape == EQueryShape::Sphere &&
+		Query.Start != Query.End && Selection == EHitSelection::FirstSweepHit &&
+		Query.MinimumReferenceNormalDot <= -1.0 &&
+		InspectCurrentAnalyticNumericContext(EAnalyticNumericContract::Binary64NearestAllowFlush).Status ==
+			EAnalyticNumericStatus::Complete;
+	const bool bDefer = bRequested && bEligible;
+	uint64 EligibleCandidates = 0, ImmediateSmoothed = 0;
+	bool bFinalSmoothed = false;
+#endif
 	Causal.MarkPrepared();
 	const auto SweepCell = [&](const int32 CellIndex)
 	{
@@ -3588,8 +3646,6 @@ FWorldHit FWorldQueryService::SweepTensorBezierApproximation(
 		{
 			return;
 		}
-		static constexpr int32 CornerIndices[2][3] = {
-			{ 0, 2, 3 }, { 0, 3, 1 } };
 		const FVector2d ParameterCorners[4] = {
 			FVector2d(Cell.MinimumU, Cell.MinimumV),
 			FVector2d(Cell.MinimumU, Cell.MaximumV),
@@ -3789,37 +3845,16 @@ FWorldHit FWorldQueryService::SweepTensorBezierApproximation(
 			Candidate.bSurfaceNormalMayVary = true;
 			if (!Candidate.bStartPenetrating)
 			{
-				const FVector3d A = TriangleVertices[0];
-				const FVector3d B = TriangleVertices[1];
-				const FVector3d C = TriangleVertices[2];
-				const FVector3d V0 = B - A;
-				const FVector3d V1 = C - A;
-				const FVector3d V2 = Candidate.Point - A;
-				const double D00 = FVector3d::DotProduct(V0, V0);
-				const double D01 = FVector3d::DotProduct(V0, V1);
-				const double D11 = FVector3d::DotProduct(V1, V1);
-				const double D20 = FVector3d::DotProduct(V2, V0);
-				const double D21 = FVector3d::DotProduct(V2, V1);
-				const double Denominator = D00 * D11 - D01 * D01;
-				if (FMath::Abs(Denominator) > 1.0e-18)
+#if !UE_BUILD_SHIPPING
+				if (bObserve && bEligible) ++EligibleCandidates;
+				if (!bDefer)
 				{
-					const double WeightB = (D11 * D20 - D01 * D21) /
-						Denominator;
-					const double WeightC = (D00 * D21 - D01 * D20) /
-						Denominator;
-					const double WeightA = 1.0 - WeightB - WeightC;
-					const FVector2d UV =
-						WeightA * ParameterCorners[CornerIndices[TriangleIndex][0]] +
-						WeightB * ParameterCorners[CornerIndices[TriangleIndex][1]] +
-						WeightC * ParameterCorners[CornerIndices[TriangleIndex][2]];
-					FVector3d SmoothNormal =
-						Patch.Surface->EvaluateNormal(UV.X, UV.Y);
-					if (FVector3d::DotProduct(SmoothNormal, Candidate.Normal) < 0.0)
-					{
-						SmoothNormal = -SmoothNormal;
-					}
-					if (!SmoothNormal.IsNearlyZero()) Candidate.Normal = SmoothNormal;
+					const bool bSmoothed = Smooth(Candidate, TriangleVertices, ParameterCorners, TriangleIndex);
+					if (bObserve && bSmoothed) ++ImmediateSmoothed;
 				}
+#else
+				Smooth(Candidate, TriangleVertices, ParameterCorners, TriangleIndex);
+#endif
 			}
 			const bool bSameInitialOverlap = Best.bHit &&
 				Candidate.bStartPenetrating && Best.bStartPenetrating &&
@@ -3885,6 +3920,25 @@ FWorldHit FWorldQueryService::SweepTensorBezierApproximation(
 			if (Node.LeftChild != INDEX_NONE) NodeStack.Add(Node.LeftChild);
 		}
 	}
+#if !UE_BUILD_SHIPPING
+	if (bDefer && Best.bHit && !Best.bStartPenetrating)
+	{
+		const auto& Cell = (*Patch.ApproximationCells)[BestApproximationIndex];
+		const FVector3d TriangleVertices[3] = {
+			Cell.Corners[CornerIndices[BestTriangleIndex][0]],
+			Cell.Corners[CornerIndices[BestTriangleIndex][1]],
+			Cell.Corners[CornerIndices[BestTriangleIndex][2]] };
+		const FVector2d ParameterCorners[4] = {
+			FVector2d(Cell.MinimumU, Cell.MinimumV), FVector2d(Cell.MinimumU, Cell.MaximumV),
+			FVector2d(Cell.MaximumU, Cell.MinimumV), FVector2d(Cell.MaximumU, Cell.MaximumV) };
+		bFinalSmoothed = Smooth(Best, TriangleVertices, ParameterCorners, BestTriangleIndex);
+	}
+	if (bObserve && (EligibleCandidates || ImmediateSmoothed || bFinalSmoothed))
+	{
+		UE_LOG(LogTemp, Display, TEXT("[TensorSphereFinalNormal] Provider=%016llx Eligible=%d Deferred=%d EligibleCandidates=%llu ImmediateSmoothed=%llu FinalSmoothed=%d"),
+			Patch.PrimitiveId, int32(bEligible), int32(bDefer), EligibleCandidates, ImmediateSmoothed, int32(bFinalSmoothed));
+	}
+#endif
 	if (Best.bStartPenetrating && Query.Shape == EQueryShape::Box &&
 		BestApproximationIndex != INDEX_NONE &&
 		FMath::Abs(FVector3d::DotProduct(Best.Point-Best.QueryPoint,Best.Normal)-
