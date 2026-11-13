@@ -12,7 +12,7 @@ class FIAmSpeedPlaneSweepTest;
 namespace Speed::Analytic
 {
 
-namespace Private { struct FBoxSweepContext; struct FBoxBoundsSweepContext; struct FPrimarySatProjectionScope; struct FExactCrossNormalScope; }
+namespace Private { struct FTensorCellObliqueIndex; struct FBoxSweepContext; struct FBoxBoundsSweepContext; struct FPrimarySatProjectionScope; struct FExactCrossNormalScope; }
 
 using EContactFeatureKind = Speed::EContactFeatureKind;
 
@@ -235,6 +235,9 @@ private:
 	};
 
 	const FAnalyticWorldData& World;
+#if PLATFORM_WINDOWS && defined(_MSC_VER) && defined(_M_X64) && !defined(__clang__) && !defined(_M_ARM64EC)
+    TSharedPtr<const Private::FTensorCellObliqueIndex> TensorCellObliqueIndex;
+#endif
     int32 FacetLanes = 1;
     int32 MinimumFacetItems = 32;
     mutable FFacetParallelTotals FacetParallelTotals;
@@ -332,13 +335,21 @@ private:
 		const FWorldQuery& Query, const FBox3d& QueryBounds,
 		const FTensorBezierPatch& Patch,
 		double MaximumSearchTime = 1.0,
-		EHitSelection Selection = EHitSelection::FirstSweepHit);
+		EHitSelection Selection = EHitSelection::FirstSweepHit
+#if PLATFORM_WINDOWS && defined(_MSC_VER) && defined(_M_X64) && !defined(__clang__) && !defined(_M_ARM64EC)
+        , const Private::FTensorCellObliqueIndex* CellObliqueIndex = nullptr
+#endif
+        );
 	static FWorldHit SweepTensorBezierApproximation(
 		const FWorldQuery& Query, const FBox3d& QueryBounds,
 		const FTensorBezierQueryView& Patch,
 		double MaximumSearchTime = 1.0,
 		const FVector3d* CachedBoxAxes = nullptr,
-		EHitSelection Selection = EHitSelection::FirstSweepHit);
+		EHitSelection Selection = EHitSelection::FirstSweepHit
+#if PLATFORM_WINDOWS && defined(_MSC_VER) && defined(_M_X64) && !defined(__clang__) && !defined(_M_ARM64EC)
+        , const Private::FTensorCellObliqueIndex* CellObliqueIndex = nullptr
+#endif
+        );
 	static FWorldHit SweepPiecewiseTensorBezier(
 		const FWorldQuery& Query, const FBox3d& QueryBounds,
 		const FPiecewiseTensorBezierPatch& Patch,

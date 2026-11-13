@@ -1,4 +1,7 @@
 #include "AnalyticWorldQuery.h"
+#if PLATFORM_WINDOWS && defined(_MSC_VER) && defined(_M_X64) && !defined(__clang__) && !defined(_M_ARM64EC)
+#include "TensorCellObliqueBounds.h"
+#endif
 #include "TorusWorldQuery.h"
 #include "IAmSpeed/World/Collision/StaticQueryBatch.h"
 #include "JoinedPiecewiseProviderWave1075.h"
@@ -26,6 +29,10 @@
 
 namespace
 {
+#if PLATFORM_WINDOWS && defined(_MSC_VER) && defined(_M_X64) && !defined(__clang__) && !defined(_M_ARM64EC)
+TAutoConsoleVariable<int32> CVarTensorCellObliqueBounds(
+    TEXT("p.IAmSpeed.AnalyticWorld.TensorCellObliqueBounds"),UE_BUILD_SHIPPING ? 0 : 1,TEXT("Authenticated direct tensor cell-oblique filter; default ON in non-Shipping, OFF in Shipping."));
+#endif
 TAutoConsoleVariable<int32> CVarPiecewiseAdmissionBounds1146(
     TEXT("p.IAmSpeed.Parallel.PiecewiseAdmissionBounds1146"), 0,
     TEXT("Scheduling experiment, default0. Reject cheap provider misses from speculative admission only. Original provider loop and bound remain authoritative."));
@@ -406,6 +413,23 @@ FWorldQueryService::FWorldQueryService(const FAnalyticWorldData& InWorld,
       MinimumFacetItems(FMath::Max(2, InMinimumFacetItems))
 {
     RequireCurrentAnalyticNumericContext(World.NumericContract);
+#if PLATFORM_WINDOWS && defined(_MSC_VER) && defined(_M_X64) && !defined(__clang__) && !defined(_M_ARM64EC)
+    // Always prepare once for this immutable world; enabling the CVar later is supported.
+    TensorCellObliqueIndex=Private::BuildTensorCellObliqueIndex(World);
+#if !UE_BUILD_SHIPPING
+    const auto CellObliqueNumeric=InspectCurrentAnalyticNumericContext(World.NumericContract);
+    int32 CellObliqueProviders=0,CellObliqueCells=0;
+    if (TensorCellObliqueIndex)
+    {
+        CellObliqueProviders=TensorCellObliqueIndex->Children.Num();
+        for (const auto& Child:TensorCellObliqueIndex->Children)
+            CellObliqueCells+=Child->Cells.Num();
+    }
+    UE_LOG(LogTemp,Display,TEXT("[TensorCellObliqueInit] WorldHash=%016llx Providers=%d Cells=%d NumericStatus=%u Fingerprint=%016llx X87=%08x Mxcsr=%08x"),
+        uint64(World.SourceHash),CellObliqueProviders,CellObliqueCells,uint32(CellObliqueNumeric.Status),
+        uint64(CellObliqueNumeric.ControlFingerprint()),CellObliqueNumeric.ScalarControl,CellObliqueNumeric.VectorControl);
+#endif
+#endif
 
 	TArray<FBox3d> PlaneBounds;
 	PlaneBounds.Reserve(World.Planes.Num());
@@ -3501,7 +3525,11 @@ FWorldHit FWorldQueryService::TestRetainedExtrudedSweep938(
 FWorldHit FWorldQueryService::SweepTensorBezier(
 	const FWorldQuery& Query, const FBox3d& QueryBounds,
 	const FTensorBezierPatch& Patch, const double MaximumSearchTime,
-	const EHitSelection Selection)
+	const EHitSelection Selection
+#if PLATFORM_WINDOWS && defined(_MSC_VER) && defined(_M_X64) && !defined(__clang__) && !defined(_M_ARM64EC)
+    , const Private::FTensorCellObliqueIndex* CellObliqueIndex
+#endif
+    )
 {
     FScopedAnalyticCausalObservation1075 Causal(EAnalyticCausalKind1075::TensorProvider);
     Causal.SetItems(1);
@@ -3531,13 +3559,21 @@ FWorldHit FWorldQueryService::SweepTensorBezier(
 	View.bApproximationCertified = Patch.bApproximationCertified;
 	View.bAuthorityEligible = Patch.bAuthorityEligible;
 	return SweepTensorBezierApproximation(
-		Query, QueryBounds, View, MaximumSearchTime, nullptr, Selection);
+		Query, QueryBounds, View, MaximumSearchTime, nullptr, Selection
+#if PLATFORM_WINDOWS && defined(_MSC_VER) && defined(_M_X64) && !defined(__clang__) && !defined(_M_ARM64EC)
+        , CellObliqueIndex
+#endif
+        );
 }
 
 FWorldHit FWorldQueryService::SweepTensorBezierApproximation(
 	const FWorldQuery& Query, const FBox3d& QueryBounds,
 	const FTensorBezierQueryView& Patch, const double MaximumSearchTime,
-	const FVector3d* CachedBoxAxes, const EHitSelection Selection)
+	const FVector3d* CachedBoxAxes, const EHitSelection Selection
+#if PLATFORM_WINDOWS && defined(_MSC_VER) && defined(_M_X64) && !defined(__clang__) && !defined(_M_ARM64EC)
+    , const Private::FTensorCellObliqueIndex* CellObliqueIndex
+#endif
+    )
 {
     FScopedAnalyticCausalObservation1075 Causal(EAnalyticCausalKind1075::TensorApproximation);
     Causal.SetItems(0);
@@ -3621,6 +3657,10 @@ FWorldHit FWorldQueryService::SweepTensorBezierApproximation(
 	uint64 EligibleCandidates = 0, ImmediateSmoothed = 0;
 	bool bFinalSmoothed = false;
 #endif
+#if PLATFORM_WINDOWS && defined(_MSC_VER) && defined(_M_X64) && !defined(__clang__) && !defined(_M_ARM64EC)
+    const double CellObliqueShell=CellObliqueIndex ? Query.Radius+1.e-8+(0.001+
+        1.e-9*FMath::Max(Query.Start.GetAbsMax(),Query.End.GetAbsMax())) : 0.;
+#endif
 	Causal.MarkPrepared();
 	const auto SweepCell = [&](const int32 CellIndex)
 	{
@@ -3646,6 +3686,10 @@ FWorldHit FWorldQueryService::SweepTensorBezierApproximation(
 		{
 			return;
 		}
+#if PLATFORM_WINDOWS && defined(_MSC_VER) && defined(_M_X64) && !defined(__clang__) && !defined(_M_ARM64EC)
+        if (CellObliqueIndex && CellObliqueIndex->Cells.IsValidIndex(CellIndex) &&
+            Private::IsTensorCellObliqueMiss(CellObliqueIndex->Cells[CellIndex],Query,CellObliqueShell)) return;
+#endif
 		const FVector2d ParameterCorners[4] = {
 			FVector2d(Cell.MinimumU, Cell.MinimumV),
 			FVector2d(Cell.MinimumU, Cell.MaximumV),
@@ -4895,8 +4939,22 @@ FWorldHit FWorldQueryService::SweepDetailed(
 		{
 			if (Query.bAuthorityOnly && !Patch.bAuthorityEligible) return;
 			if (Query.bExcludeAuthorityEligible && Patch.bAuthorityEligible) return;
-			const FWorldHit Candidate = SweepTensorBezier(
-				Query, QueryBounds, Patch, CurrentMaximumSearchTime(), Selection);
+#if PLATFORM_WINDOWS && defined(_MSC_VER) && defined(_M_X64) && !defined(__clang__) && !defined(_M_ARM64EC)
+            const Private::FTensorCellObliqueIndex* CellObliqueIndex=nullptr;
+            if (CVarTensorCellObliqueBounds.GetValueOnAnyThread()==1 && TensorCellObliqueIndex &&
+                !bCollectAuthorityProviderHits &&
+#if !UE_BUILD_SHIPPING
+                CVarTensorMovingSphereReuseEdges.GetValueOnAnyThread()!=0 &&
+#endif
+                Private::IsTensorCellObliqueQuery(Query,Selection==EHitSelection::FirstSweepHit,World.NumericContract))
+                CellObliqueIndex=TensorCellObliqueIndex->Find(World,Patch);
+#endif
+            const FWorldHit Candidate = SweepTensorBezier(
+                Query, QueryBounds, Patch, CurrentMaximumSearchTime(), Selection
+#if PLATFORM_WINDOWS && defined(_MSC_VER) && defined(_M_X64) && !defined(__clang__) && !defined(_M_ARM64EC)
+                , CellObliqueIndex
+#endif
+                );
 			ConsiderProviderHit(Candidate);
 		};
 #if !UE_BUILD_SHIPPING
