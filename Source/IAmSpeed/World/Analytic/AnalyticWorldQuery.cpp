@@ -30,6 +30,11 @@
 namespace
 {
 #if PLATFORM_WINDOWS && defined(_MSC_VER) && defined(_M_X64) && !defined(__clang__) && !defined(_M_ARM64EC)
+#if !UE_BUILD_SHIPPING
+TAutoConsoleVariable<int32> CVarTensorPanelPrefixBoundsActive(
+    TEXT("p.IAmSpeed.AnalyticWorld.TensorPanelPrefixBoundsActive"),1,
+    TEXT("Private experimental authenticated42F0 strict incumbent-prefix bound. Startup0OFF/1prepare; runtime0OFF/1use. CP theorem UNKNOWN. No default/public qualification."));
+#endif
 TAutoConsoleVariable<int32> CVarTensorCellObliqueBounds(
     TEXT("p.IAmSpeed.AnalyticWorld.TensorCellObliqueBounds"),UE_BUILD_SHIPPING ? 0 : 1,TEXT("Authenticated direct tensor cell-oblique filter; default ON in non-Shipping, OFF in Shipping."));
 #endif
@@ -415,7 +420,20 @@ FWorldQueryService::FWorldQueryService(const FAnalyticWorldData& InWorld,
     RequireCurrentAnalyticNumericContext(World.NumericContract);
 #if PLATFORM_WINDOWS && defined(_MSC_VER) && defined(_M_X64) && !defined(__clang__) && !defined(_M_ARM64EC)
     // Always prepare once for this immutable world; enabling the CVar later is supported.
-    TensorCellObliqueIndex=Private::BuildTensorCellObliqueIndex(World);
+    bool bPreparePrefix=false;
+#if !UE_BUILD_SHIPPING
+    bPreparePrefix=CVarTensorPanelPrefixBoundsActive.GetValueOnAnyThread()==1;
+#endif
+    TensorCellObliqueIndex=Private::BuildTensorCellObliqueIndex(World,bPreparePrefix);
+#if !UE_BUILD_SHIPPING
+    if (bPreparePrefix)
+    {
+        const auto PrefixNumeric=InspectCurrentAnalyticNumericContext(World.NumericContract);
+        const bool bReady=TensorCellObliqueIndex && TensorCellObliqueIndex->PrefixEnvelope && TensorCellObliqueIndex->PrefixEnvelope->bReady;
+        UE_LOG(LogTemp,Display,TEXT("[TensorPanelPrefixActiveStartup] Active=1 Prepared=%d Provider=42f0db19591de3de Supports=4 WorldHash=%016llx WorldHashAdmission=0 NumericStatus=%u Fingerprint=%016llx CPTheorem=UNKNOWN"),
+            int32(bReady),uint64(World.SourceHash),uint32(PrefixNumeric.Status),uint64(PrefixNumeric.ControlFingerprint()));
+    }
+#endif
 #if !UE_BUILD_SHIPPING
     const auto CellObliqueNumeric=InspectCurrentAnalyticNumericContext(World.NumericContract);
     int32 CellObliqueProviders=0,CellObliqueCells=0;
@@ -4940,6 +4958,17 @@ FWorldHit FWorldQueryService::SweepDetailed(
 			if (Query.bAuthorityOnly && !Patch.bAuthorityEligible) return;
 			if (Query.bExcludeAuthorityEligible && Patch.bAuthorityEligible) return;
 #if PLATFORM_WINDOWS && defined(_MSC_VER) && defined(_M_X64) && !defined(__clang__) && !defined(_M_ARM64EC)
+#if !UE_BUILD_SHIPPING
+            // Cheap ID prefilter is not authority. Authenticated provider binding,
+            // original three guards, numeric/query scope and actual B/H follow.
+            if (Patch.PrimitiveId==0x42f0db19591de3deull &&
+                CVarTensorPanelPrefixBoundsActive.GetValueOnAnyThread()==1 &&
+                TensorCellObliqueIndex && TensorCellObliqueIndex->PrefixEnvelope &&
+                !bCollectAuthorityProviderHits && CVarTensorMovingSphereReuseEdges.GetValueOnAnyThread()!=0 &&
+                Private::IsTensorCellObliqueQuery(Query,Selection==EHitSelection::FirstSweepHit,World.NumericContract) &&
+                PatchPassesFilter(Query,Patch) && Patch.Bounds.Intersect(QueryBounds) && Patch.bApproximationCertified &&
+                Private::TensorPanelPrefixBounds::IsSeparated(*TensorCellObliqueIndex->PrefixEnvelope,Patch,Query,Best,CurrentMaximumSearchTime())) return;
+#endif
             const Private::FTensorCellObliqueIndex* CellObliqueIndex=nullptr;
             if (CVarTensorCellObliqueBounds.GetValueOnAnyThread()==1 && TensorCellObliqueIndex &&
                 !bCollectAuthorityProviderHits &&

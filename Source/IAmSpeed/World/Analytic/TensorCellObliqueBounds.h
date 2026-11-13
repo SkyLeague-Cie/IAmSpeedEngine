@@ -3,6 +3,9 @@
 // Private preview implementation, included only on the qualified Win64 target, including Shipping.
 // No asset serialization or per-query mutable shared state.
 #include "Hash/Blake3.h"
+#if !UE_BUILD_SHIPPING
+#include "TensorPanelPrefixBounds.h"
+#endif
 
 namespace Speed::Analytic::Private
 {
@@ -104,6 +107,9 @@ struct FTensorCellObliqueIndex
     int32 ProviderIndex=INDEX_NONE;
     TArray<FSupport> Cells;
     TArray<TSharedPtr<const FTensorCellObliqueIndex>> Children;
+#if !UE_BUILD_SHIPPING
+    TSharedPtr<const TensorPanelPrefixBounds::FEnvelope> PrefixEnvelope;
+#endif
 
     const FTensorCellObliqueIndex* Find(const FAnalyticWorldData& World,
         const FTensorBezierPatch& Patch) const
@@ -148,7 +154,7 @@ inline bool PrepareTensorCellObliqueProvider(const FTensorBezierPatch& Patch,
     return true;
 }
 
-inline TSharedPtr<const FTensorCellObliqueIndex> BuildTensorCellObliqueIndex(const FAnalyticWorldData& World)
+inline TSharedPtr<const FTensorCellObliqueIndex> BuildTensorCellObliqueIndex(const FAnalyticWorldData& World,bool bPreparePrefix=false)
 {
     const auto Numeric=InspectCurrentAnalyticNumericContext(World.NumericContract);
     if (Numeric.Status!=EAnalyticNumericStatus::Complete ||
@@ -180,6 +186,27 @@ inline TSharedPtr<const FTensorCellObliqueIndex> BuildTensorCellObliqueIndex(con
         if (PrepareTensorCellObliqueProvider(Patch,*Child))
             Index->Children.Add(Child);
     }
+#if !UE_BUILD_SHIPPING
+    if (bPreparePrefix)
+    {
+        const auto Saved=Speed::CaptureFrameFloatingPointContext();
+        Speed::FScopedFrameFloatingPointContext Restore(Saved);
+        if (Restore.IsApplied())
+        {
+            const FTensorBezierPatch* Target=nullptr;bool bAmbiguous=false;
+            for (const auto& Patch:World.TensorBezierPatches)
+                if (TensorPanelPrefixBounds::MatchesIdentity(Patch))
+                { if (Target) bAmbiguous=true;else Target=&Patch; }
+            if (Target && !bAmbiguous)
+            {
+                auto Envelope=MakeShared<TensorPanelPrefixBounds::FEnvelope>();
+                if (Envelope->Prepare(*Target,World.NumericContract)) Index->PrefixEnvelope=Envelope;
+            }
+        }
+        RequireAnalyticNumericTransfer(World.NumericContract,Restore.Restore(),EAnalyticNumericFailure::ContextRestoration);
+    }
+#endif
+    (void)bPreparePrefix;
     if (Index->Children.IsEmpty()) return {};
     return Index;
 }
