@@ -330,6 +330,11 @@ static TAutoConsoleVariable<int32> CVarIAmSpeedWheelContactSolverMode(
 	TEXT("Grouped-wheel solver: 0 keeps the legacy shared snapshot, 1 solves inward contacts as one deterministic block."),
 	ECVF_Default);
 
+static TAutoConsoleVariable<int32> CVarIAmSpeedFrontBumpPivot(
+    TEXT("p.IAmSpeed.WheelSupport.FrontBumpPivot"), 0,
+    TEXT("Use a bounded front bump-stop rotation around grounded rear contacts on four-wheel vehicles."),
+    ECVF_Default);
+
 static TAutoConsoleVariable<int32> CVarIAmSpeedWheelSupportTransactionalProjection(
 	TEXT("p.IAmSpeed.WheelSupport.TransactionalProjection"),
 	1,
@@ -1014,11 +1019,13 @@ void ISpeedWheeledComponent::ResolveGroupedWheelGroundContacts(const float& delt
 
 bool ISpeedWheeledComponent::ProjectWheelSupportNonPenetration()
 {
+	const bool bPivotFrontBump = CVarIAmSpeedFrontBumpPivot.GetValueOnAnyThread() != 0;
 	bool bProjected = false;
 	for (int32 Pass = 0; Pass < 4; ++Pass)
 	{
 		float LargestPenetration = 0.01f;
 		FVector CorrectionNormal = FVector::ZeroVector;
+		const USWheelSubBody* LeadingWheel = nullptr;
 		for (const USWheelSubBody* Wheel : GetWheelSubBodies())
 		{
 			if (!Wheel || !Wheel->IsOnGround() || !Wheel->IsAtSuspensionBumpStop())
@@ -1033,12 +1040,42 @@ bool ISpeedWheeledComponent::ProjectWheelSupportNonPenetration()
 			{
 				LargestPenetration = Penetration;
 				CorrectionNormal = Normal;
+				LeadingWheel = Wheel;
 			}
 		}
 		if (CorrectionNormal.IsNearlyZero())
 		{
 			break;
 		}
+
+		// Rotate about the rear contact midpoint before falling back to the existing translation.
+        if (bPivotFrontBump && LeadingWheel && LeadingWheel->Idx() < 2)
+        {
+            const auto& Wheels = GetWheelSubBodies();
+            if (Wheels.Num() == 4 && Wheels[2] && Wheels[3] && Wheels[2]->IsOnGround() && Wheels[3]->IsOnGround())
+            {
+                const FVector Pivot = (Wheels[2]->GetHitContactPoint() + Wheels[3]->GetHitContactPoint()) * 0.5;
+                const FVector Axis = GetPhysRightVector().GetSafeNormal();
+                const FVector Lever = LeadingWheel->WorldPos() - Pivot;
+                const double Derivative = FVector::DotProduct(FVector::CrossProduct(Axis, Lever), CorrectionNormal);
+                if (FMath::Abs(Derivative) > 20.0)
+                {
+                    const double Angle = LargestPenetration / Derivative;
+                    if (FMath::Abs(Angle) <= FMath::DegreesToRadians(2.0))
+                    {
+                        const FQuat Turn(Axis, Angle);
+                        SKinematic Pose = GetKinematicState();
+                        Pose.Location = Pivot + Turn.RotateVector(Pose.Location - Pivot);
+                        Pose.Rotation = (Turn * Pose.Rotation).GetNormalized();
+                        Speed::PreparedExecution::FNativeFinalWheelSupportScope correction(*this, Pass);
+                        SetKinematicState(Pose);
+                        UpdateSubBodiesKinematics();
+                        bProjected = true;
+                        continue;
+                    }
+                }
+            }
+        }
 		{
 			Speed::PreparedExecution::FNativeFinalWheelSupportScope correction(*this,Pass);
 			AddPhysLocation(LargestPenetration * CorrectionNormal);
