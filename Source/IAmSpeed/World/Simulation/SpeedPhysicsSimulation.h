@@ -345,8 +345,9 @@ private:
     Speed::Diagnostics::CaseCoverage276::FDriverLedger IndependentFastCoverage276;
 #endif
 	bool bPublishPresentation = false;
-	// Immutable after BeginPlay, before worker creation. Native qualification remains separate.
+	// Fixed at BeginPlay, before the owned worker starts; disabled by default.
 	bool bPublishCompletedWorldInput = false;
+	std::shared_ptr<const Speed::FCompletedSimulationSource> CompletedPublicationSource;
 	TSharedRef<TAtomic<bool>, ESPMode::ThreadSafe> PresentationRetiredAfterJoin = MakeShared<TAtomic<bool>, ESPMode::ThreadSafe>(false);
 	bool bPresentationBindingClosed = false;
 	TAtomic<bool> bReplayCaptureRequested{false};

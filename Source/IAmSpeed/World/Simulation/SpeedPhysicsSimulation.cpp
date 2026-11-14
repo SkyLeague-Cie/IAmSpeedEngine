@@ -280,6 +280,8 @@ void ASpeedPhysicsSimulation::BeginPlay()
 	// Fixed before the worker starts; diagnostics never change the canonical payload.
 	bPublishPresentation = FParse::Param(FCommandLine::Get(), TEXT("SpeedPublishPresentation"));
 	bPublishCompletedWorldInput = FParse::Param(FCommandLine::Get(), TEXT("SpeedPublishCompletedWorldInput"));
+	if (bPublishCompletedWorldInput)
+		CompletedPublicationSource.reset(new Speed::FCompletedSimulationSource(InputWorkerGeneration));
 	RefreshExecutionMode();
 }
 
@@ -797,7 +799,10 @@ bool ASpeedPhysicsSimulation::PrepareControlledInputRun()
 		auto NextCommands = std::make_shared<Speed::Input::V2::FInputSessionCommands>();
 		const auto Generation = NextInputWorkerGeneration.fetch_add(1);
 		if (!Generation || Generation == MAX_uint64) return false;
+		std::shared_ptr<const Speed::FCompletedSimulationSource> NextSource;
+		if (bPublishCompletedWorldInput) NextSource.reset(new Speed::FCompletedSimulationSource(Generation));
 		InputSessionCommands = std::move(NextCommands);
+		CompletedPublicationSource = std::move(NextSource);
 		InputWorkerGeneration = Generation; NextInputCommandId = 1;
 	}
 	catch (...) { return false; }
@@ -1931,14 +1936,17 @@ bool ASpeedPhysicsSimulation::StepCanonicalFrame(const FCanonicalFrameContext& C
         {
             ExceptionStage = TEXT("CompletedWorldInputPrepare");
             const auto Installed = bHasInputSessions ? InputSessionRegistry->ReadInstalled() : nullptr;
-            // ReadRegistry() produces an observation copy. Bind the common view to
-            // the exact registry retained by PrepareFrame, never a later sample.
+            // ReadRegistry produces an observation copy. PrepareFrame retains its
+            // own registry identity, which must accompany the installed endpoint.
             const auto CapturedRegistry = Installed ? Installed->Registry : InputView;
-            if (!Speed::FCompletedSimulationPublication::CanPrepare(Snapshot, CapturedRegistry, Installed))
+            if (!Speed::FCompletedSimulationPublication::CanPrepare(
+                Snapshot, CompletedPublicationSource, CapturedRegistry, Installed))
                 throw std::runtime_error("completed world/input preparation rejected");
-            CompletedDraft.reset(new Speed::FCompletedSimulationPublication(Snapshot, CapturedRegistry, Installed));
+            CompletedDraft.reset(new Speed::FCompletedSimulationPublication(
+                Snapshot, CompletedPublicationSource, CapturedRegistry, Installed));
         }
-        const auto PublishCompletedWorldInput = [&](const std::shared_ptr<const Speed::Input::V2::FRegistryFrame>& Completed)
+        const auto PublishCompletedWorldInput =
+            [&](const std::shared_ptr<const Speed::Input::V2::FRegistryFrame>& Completed)
         {
             if (!CompletedDraft) return true;
             if (!CompletedDraft->MatchesCompleted(Completed)
