@@ -2,6 +2,7 @@
 
 
 #include "BoxSubBody.h"
+#include "Misc/ScopeExit.h"
 
 #if !UE_BUILD_SHIPPING
 #include "HAL/PlatformTime.h"
@@ -51,6 +52,12 @@ void ObserveCallbackStage(uint32 stage,uint64 start);
 #include "Math/QuatRotationTranslationMatrix.h"
 
 DEFINE_LOG_CATEGORY(BoxSubBodyLog);
+#if !UE_BUILD_SHIPPING
+static TAutoConsoleVariable<int32> CVarHitboxNativeProjectionTrace(
+    TEXT("p.IAmSpeed.Hitbox.NativeProjectionTrace"), 0,
+    TEXT("Private exact observation of existing box projections at the positive backboard; no extra collision queries."));
+#endif
+
 #if !UE_BUILD_SHIPPING
 namespace Speed::PreparedExecution::NativeSolidDetail
 {
@@ -1189,6 +1196,7 @@ bool UBoxSubBody::RequiresEstablishedStaticContactTransport() const
 bool UBoxSubBody::ProjectEstablishedStaticContactImpl(
     const float& Delta, const bool bProjectVelocity)
 {
+
     if (!ParentComponent || Delta < 0.0f ||
         !Speed::Analytic::FStaticWorldQueryAudit::IsSurfaceAnalyticBackend())
     {
@@ -1355,6 +1363,50 @@ bool UBoxSubBody::ProjectEstablishedStaticContactImpl(
         Correction += FVector(Projection.Hit.Normal) * (RoundingFactor * DBL_EPSILON * Scale);
     }
     const bool bHasCorrection = bExactPlanarSeed ? !Correction.IsZero() : !Correction.IsNearlyZero();
+#if !UE_BUILD_SHIPPING
+    const bool bTraceProjection = bHasCorrection &&
+        CVarHitboxNativeProjectionTrace.GetValueOnAnyThread() != 0 &&
+        ParentComponent->GetPhysCOM().X >= 4800. && ParentComponent->GetPhysCOM().X <= 5300. &&
+        ParentComponent->GetPhysCOM().Z <= 250.;
+    const SKinematic ProjectionTraceBefore = bTraceProjection ? ParentComponent->GetKinematicState() : SKinematic{};
+    ON_SCOPE_EXIT
+    {
+        if (!bTraceProjection) return;
+        static thread_local uint64 TraceSerial = 0;
+        const uint64 Serial = ++TraceSerial;
+        if (Serial > 2048)
+        {
+            if (Serial == 2049) UE_LOG(BoxSubBodyLog, Display, TEXT("[HitboxNativeProjectionLimit] MaxRecords=2048 CoverageIncomplete=1"));
+            return;
+        }
+        uint64 CanonicalFrame = 0, SceneGeneration = 0;
+        const bool bHasCanonical = Speed::Analytic::FStaticWorldQueryAudit::TryObserveStrictFrame(
+            GetWorld(), CanonicalFrame, SceneGeneration);
+        const auto After = ParentComponent->GetKinematicState();
+        const auto& Before = ProjectionTraceBefore;
+        UE_LOG(BoxSubBodyLog, Display,
+            TEXT("[HitboxNativeProjection] Schema=2 Serial=%llu Owner=%llu OwnerFrame=%u CanonicalValid=%d Canonical=%llu Scene=%llu SubBody=%d Dt=%.17g ProjectVelocity=%d Planar=%d "
+                 "Source=%016llX Surface=%016llX Primitive=%016llX Group=%016llX Feature=%016llX Hit=%d Overlap=%d Converged=%d Iterations=%u MaxDepth=%.17g Residual=%.17g Error=%.17g "
+                 "Box=(%.17g,%.17g,%.17g) BoxQ=(%.17g,%.17g,%.17g,%.17g) Extent=(%.17g,%.17g,%.17g) "
+                 "Point=(%.17g,%.17g,%.17g) QueryPoint=(%.17g,%.17g,%.17g) Normal=(%.17g,%.17g,%.17g) Correction=(%.17g,%.17g,%.17g) "
+                 "PreCOM=(%.17g,%.17g,%.17g) PreQ=(%.17g,%.17g,%.17g,%.17g) PreV=(%.17g,%.17g,%.17g) PreW=(%.17g,%.17g,%.17g) "
+                 "PostCOM=(%.17g,%.17g,%.17g) PostQ=(%.17g,%.17g,%.17g,%.17g) PostV=(%.17g,%.17g,%.17g) PostW=(%.17g,%.17g,%.17g)"),
+            Serial, ParentComponent->GetPublishedSimulationStableId(), ParentComponent->NumFrame(), bHasCanonical ? 1 : 0, CanonicalFrame, SceneGeneration,
+            ParentComponent->GetSubBodies().IndexOfByKey(this), double(Delta), bProjectVelocity ? 1 : 0, bExactPlanarSeed ? 1 : 0,
+            Projection.Hit.SourceId, Projection.Hit.SurfaceId, Projection.Hit.PrimitiveId, Projection.Hit.CanonicalGroupId, Projection.Hit.FeatureId,
+            Projection.Hit.bHit ? 1 : 0, Projection.Hit.bStartPenetrating ? 1 : 0, Projection.bConverged ? 1 : 0, Projection.CorrectionIterations,
+            Projection.MaximumPenetrationDepth, Projection.ResidualPenetrationDepth, Projection.Hit.GeometricErrorBoundCm,
+            Query.Start.X, Query.Start.Y, Query.Start.Z, Query.Rotation.X, Query.Rotation.Y, Query.Rotation.Z, Query.Rotation.W,
+            Query.HalfExtent.X, Query.HalfExtent.Y, Query.HalfExtent.Z,
+            Projection.Hit.Point.X, Projection.Hit.Point.Y, Projection.Hit.Point.Z,
+            Projection.Hit.QueryPoint.X, Projection.Hit.QueryPoint.Y, Projection.Hit.QueryPoint.Z,
+            Projection.Hit.Normal.X, Projection.Hit.Normal.Y, Projection.Hit.Normal.Z, Correction.X, Correction.Y, Correction.Z,
+            Before.Location.X, Before.Location.Y, Before.Location.Z, Before.Rotation.X, Before.Rotation.Y, Before.Rotation.Z, Before.Rotation.W,
+            Before.Velocity.X, Before.Velocity.Y, Before.Velocity.Z, Before.AngularVelocity.X, Before.AngularVelocity.Y, Before.AngularVelocity.Z,
+            After.Location.X, After.Location.Y, After.Location.Z, After.Rotation.X, After.Rotation.Y, After.Rotation.Z, After.Rotation.W,
+            After.Velocity.X, After.Velocity.Y, After.Velocity.Z, After.AngularVelocity.X, After.AngularVelocity.Y, After.AngularVelocity.Z);
+    };
+#endif
     if (bHasCorrection)
     {
         ParentComponent->SetPhysCOMLocation(

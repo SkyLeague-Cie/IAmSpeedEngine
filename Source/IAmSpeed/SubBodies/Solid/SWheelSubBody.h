@@ -154,7 +154,8 @@ public:
     { return GetClass() == USWheelSubBody::StaticClass(); }
     bool TryCaptureGroundQuery1075(float Delta, Speed::Analytic::FAnalyticPrefetchQuery1075& Out) const;
 	bool ProbeSuspensionOnGround(SHitResult& OutHit, float Delta) const;
-	void GetSuspensionSweepSegment(float Delta, FVector& OutStart, FVector& OutEnd) const;
+	void GetSuspensionSweepSegment(float Delta, FVector& OutStart, FVector& OutEnd,
+        float* ObservedPrediction = nullptr) const;
 	virtual bool SweepSuspensionAlongNormal(
 		const FVector& Normal, float SearchDistance, float Delta, SHitResult& OutHit) const;
 

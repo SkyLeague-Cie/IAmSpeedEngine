@@ -396,6 +396,16 @@ static TAutoConsoleVariable<int32> CVarIAmSpeedWheelSupportProjectionCoherentSpr
 	TEXT("Experimental atomic projection/contact displacement transaction. Requires PreserveProbeHits; disabled until qualification."),
 	ECVF_Default);
 
+static TAutoConsoleVariable<int32> CVarIAmSpeedFrontBumpTrace(
+    TEXT("p.IAmSpeed.WheelSupport.FrontBumpTrace"), 0,
+    TEXT("Trace wheel support projection decisions during a diagnostic run."),
+    ECVF_Default);
+
+static TAutoConsoleVariable<int32> CVarIAmSpeedFrontBumpPivot(
+    TEXT("p.IAmSpeed.WheelSupport.FrontBumpPivot"), 1,
+    TEXT("Use a bounded front bump-stop rotation around grounded rear contacts on four-wheel vehicles."),
+    ECVF_Default);
+
 static TAutoConsoleVariable<int32> CVarIAmSpeedWheelSupportProjectionDebug(
 	TEXT("p.IAmSpeed.WheelSupport.ProjectionDebug"),
 	0,
@@ -1014,11 +1024,24 @@ void ISpeedWheeledComponent::ResolveGroupedWheelGroundContacts(const float& delt
 
 bool ISpeedWheeledComponent::ProjectWheelSupportNonPenetration()
 {
+	const bool bPivotFrontBump = CVarIAmSpeedFrontBumpPivot.GetValueOnAnyThread() != 0;
+    const bool bTracePivot = CVarIAmSpeedFrontBumpTrace.GetValueOnAnyThread() != 0;
+    int32 SupportMask = 0;
+    if (bTracePivot)
+    {
+        for (const USWheelSubBody* Wheel : GetWheelSubBodies())
+            if (Wheel && Wheel->Idx() >= 0 && Wheel->Idx() < 4 && Wheel->IsOnGround())
+                SupportMask |= 1 << Wheel->Idx();
+        UE_LOG(LogTemp, Display, TEXT("[FrontBumpSupport] Frame=%u Enabled=%d Mask=%d COM=%s Velocity=%s Omega=%s"),
+            NumFrame(), bPivotFrontBump, SupportMask, *GetPhysCOM().ToString(),
+            *GetPhysVelocity().ToString(), *GetPhysAngularVelocity().ToString());
+    }
 	bool bProjected = false;
 	for (int32 Pass = 0; Pass < 4; ++Pass)
 	{
 		float LargestPenetration = 0.01f;
 		FVector CorrectionNormal = FVector::ZeroVector;
+		const USWheelSubBody* LeadingWheel = nullptr;
 		for (const USWheelSubBody* Wheel : GetWheelSubBodies())
 		{
 			if (!Wheel || !Wheel->IsOnGround() || !Wheel->IsAtSuspensionBumpStop())
@@ -1033,16 +1056,85 @@ bool ISpeedWheeledComponent::ProjectWheelSupportNonPenetration()
 			{
 				LargestPenetration = Penetration;
 				CorrectionNormal = Normal;
+				LeadingWheel = Wheel;
 			}
 		}
 		if (CorrectionNormal.IsNearlyZero())
 		{
 			break;
 		}
+
+        const TCHAR* Decision = !bPivotFrontBump ? TEXT("disabled") : TEXT("leading_not_front");
+        double Derivative = 0.0;
+        double Angle = 0.0;
+		// Rotate about the rear contact midpoint before falling back to the existing translation.
+        if (bPivotFrontBump && LeadingWheel && LeadingWheel->Idx() < 2)
+        {
+            Decision = TEXT("rear_support_unavailable");
+            const auto& Wheels = GetWheelSubBodies();
+            if (Wheels.Num() == 4 && Wheels[2] && Wheels[3] && Wheels[2]->IsOnGround() && Wheels[3]->IsOnGround())
+            {
+                const FVector Pivot = (Wheels[2]->GetHitContactPoint() + Wheels[3]->GetHitContactPoint()) * 0.5;
+                const FVector Axis = GetPhysRightVector().GetSafeNormal();
+                const FVector Lever = LeadingWheel->WorldPos() - Pivot;
+                Decision = TEXT("lever_too_short");
+                Derivative = FVector::DotProduct(FVector::CrossProduct(Axis, Lever), CorrectionNormal);
+                if (FMath::Abs(Derivative) > 20.0)
+                {
+                    Decision = TEXT("angle_limit");
+                    Angle = LargestPenetration / Derivative;
+                    if (FMath::Abs(Angle) <= FMath::DegreesToRadians(2.0))
+                    {
+                        if (bTracePivot)
+                            UE_LOG(LogTemp, Display, TEXT("[FrontBumpDecision] Frame=%u Pass=%d Lead=%d Mask=%d Penetration=%.6f Derivative=%.6f AngleDeg=%.6f Action=pivot"),
+                                NumFrame(), Pass, LeadingWheel->Idx(), SupportMask, LargestPenetration, Derivative, FMath::RadiansToDegrees(Angle));
+                        const FQuat Turn(Axis, Angle);
+                        SKinematic Pose = GetKinematicState();
+                        Pose.Location = Pivot + Turn.RotateVector(Pose.Location - Pivot);
+                        Pose.Rotation = (Turn * Pose.Rotation).GetNormalized();
+                        Speed::PreparedExecution::FNativeFinalWheelSupportScope correction(*this, Pass);
+#if !UE_BUILD_SHIPPING
+                        const FVector BeforeCorrectionCOM = GetPhysCOM();
+#endif
+                        SetKinematicState(Pose);
+                        UpdateSubBodiesKinematics();
+#if !UE_BUILD_SHIPPING
+                        if (bTracePivot)
+                        {
+                            UE_LOG(LogTemp, Display,
+                                TEXT("[WheelBumpPoseWrite] Frame=%u Pass=%d Mode=pivot Lead=%d Mask=%d Penetration=%.17g Normal=%s BeforeCOM=%s AfterCOM=%s"),
+                                NumFrame(), Pass, LeadingWheel->Idx(), SupportMask, double(LargestPenetration),
+                                *CoupledPoseDiagnosticVector(CorrectionNormal), *CoupledPoseDiagnosticVector(BeforeCorrectionCOM),
+                                *CoupledPoseDiagnosticVector(GetPhysCOM()));
+                        }
+#endif
+                        bProjected = true;
+                        continue;
+                    }
+                }
+            }
+        }
+        if (bTracePivot)
+            UE_LOG(LogTemp, Display, TEXT("[FrontBumpDecision] Frame=%u Pass=%d Lead=%d Mask=%d Penetration=%.6f Derivative=%.6f AngleDeg=%.6f Action=translate Reason=%s"),
+                NumFrame(), Pass, LeadingWheel ? LeadingWheel->Idx() : -1, SupportMask,
+                LargestPenetration, Derivative, FMath::RadiansToDegrees(Angle), Decision);
 		{
 			Speed::PreparedExecution::FNativeFinalWheelSupportScope correction(*this,Pass);
+#if !UE_BUILD_SHIPPING
+            const FVector BeforeCorrectionCOM = GetPhysCOM();
+#endif
 			AddPhysLocation(LargestPenetration * CorrectionNormal);
 			UpdateSubBodiesKinematics();
+#if !UE_BUILD_SHIPPING
+            if (bTracePivot)
+            {
+                UE_LOG(LogTemp, Display,
+                    TEXT("[WheelBumpPoseWrite] Frame=%u Pass=%d Mode=translate Lead=%d Mask=%d Penetration=%.17g Normal=%s BeforeCOM=%s AfterCOM=%s"),
+                    NumFrame(), Pass, LeadingWheel ? LeadingWheel->Idx() : -1, SupportMask,
+                    double(LargestPenetration), *CoupledPoseDiagnosticVector(CorrectionNormal),
+                    *CoupledPoseDiagnosticVector(BeforeCorrectionCOM), *CoupledPoseDiagnosticVector(GetPhysCOM()));
+            }
+#endif
 		}
 		bProjected = true;
 	}

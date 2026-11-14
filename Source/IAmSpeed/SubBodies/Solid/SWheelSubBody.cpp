@@ -2,6 +2,7 @@
 
 
 #include "SWheelSubBody.h"
+#include "IAmSpeed/World/Collision/BackboardNativeTrace.h"
 #include "IAmSpeed/World/Collision/PreparedNativeOwnerPoseMutation.h"
 #include "IAmSpeed/World/Collision/PreparedNativeWheelProbe.h"
 #include "Engine/World.h"
@@ -522,7 +523,7 @@ bool USWheelSubBody::SweepSuspensionAlongNormal(
 }
 
 void USWheelSubBody::GetSuspensionSweepSegment(
-    const float Delta, FVector& OutStart, FVector& OutEnd) const
+    const float Delta, FVector& OutStart, FVector& OutEnd, float* ObservedPrediction) const
 {
     const FTransform ChassisTM(
         ParentComponent->GetPhysRotation(), ParentComponent->GetPhysLocation());
@@ -530,6 +531,7 @@ void USWheelSubBody::GetSuspensionSweepSegment(
     const FVector WorldRest = ChassisTM.TransformPosition(GetLocalOffset());
     OutStart = WorldRest + SuspensionMaxRaise() * CarUp;
     const float NewDisplacement = PredictNextDisplacement(Delta);
+    if (ObservedPrediction) *ObservedPrediction = NewDisplacement;
     OutEnd = WorldPos()
         + (NewDisplacement - SpringDisplacement() - CollisionMargin()) * CarUp;
 }
@@ -564,7 +566,34 @@ bool USWheelSubBody::ProbeSuspensionOnGround(
     Speed::Analytic::FScopedAnalyticPrefetchConsumer1075 Consumer(this, Delta);
     FVector Start = FVector::ZeroVector;
     FVector End = FVector::ZeroVector;
+#if !UE_BUILD_SHIPPING
+    const int32 TraceSequence = Speed::BackboardNativeTrace::Take(ParentComponent->GetPhysCOM());
+    float ObservedPrediction = 0.0f;
+    GetSuspensionSweepSegment(Delta, Start, End, TraceSequence ? &ObservedPrediction : nullptr);
+    const float TraceDisplacement = TraceSequence ? GetLastDisplacement() : 0.0f;
+    const auto ObserveActualProbe = [&](bool Result, const TCHAR* Backend)
+    {
+        if (!TraceSequence) return;
+        const SHitResult NoHit;
+        const SHitResult& Hit = Result ? OutHit : NoHit;
+        const auto& Pose = ParentComponent->GetKinematicState();
+        UE_LOG(WheelSubBodyLog, Display,
+            TEXT("[BackboardWheelProbeExact] %s Wheel=%d Backend=%s Dt=%.17g Result=%d Start=%s End=%s Radius=%.17g LastDisp=%.17g PredictedDisp=%.17g Up=%s COM=%s Q=%s V=%s W=%s Source=%016llx Surface=%016llx Feature=%016llx Primitive=%016llx Group=%016llx TOI=%.17g HitLocation=%s HitPoint=%s HitNormal=%s ErrorCm=%.17g"),
+            *Speed::BackboardNativeTrace::Identity(TraceSequence, ParentComponent->NumFrame(), ParentComponent, this,
+                ParentComponent->GetPublishedSimulationStableId(), ParentComponent->GetSubBodies().IndexOfByKey(this), GetWorld()),
+            Idx(), Backend, double(Delta), int(Result),
+            *Speed::BackboardNativeTrace::Vector(Start), *Speed::BackboardNativeTrace::Vector(End),
+            double(GetCollisionShape().GetSphereRadius()), double(TraceDisplacement), double(ObservedPrediction),
+            *Speed::BackboardNativeTrace::Vector(ParentComponent->GetPhysUpVector()),
+            *Speed::BackboardNativeTrace::Vector(Pose.Location), *Speed::BackboardNativeTrace::Quat(Pose.Rotation),
+            *Speed::BackboardNativeTrace::Vector(Pose.Velocity), *Speed::BackboardNativeTrace::Vector(Pose.AngularVelocity),
+            Hit.SourceId, Hit.SurfaceId, Hit.FeatureId, Hit.PrimitiveId, Hit.CanonicalGroupId, double(Hit.TOI),
+            *Speed::BackboardNativeTrace::Vector(Hit.Location), *Speed::BackboardNativeTrace::Vector(Hit.ImpactPoint),
+            *Speed::BackboardNativeTrace::Vector(Hit.ImpactNormal), double(Hit.GeometricErrorBoundCm));
+    };
+#else
     GetSuspensionSweepSegment(Delta, Start, End);
+#endif
 
     FCollisionQueryParams Params(NAME_None, false);
     Params.bReturnFaceIndex = true;
@@ -574,8 +603,15 @@ bool USWheelSubBody::ProbeSuspensionOnGround(
         Params.AddIgnoredActor(VehicleOwner);
     }
 
-    if(PreparedProbe.IsActive())return PreparedProbe.Sweep(Start,End,Kinematics.Rotation,GetCollisionShape(),Params,
-        Speed::Analytic::EStaticQuerySite::WheelSuspensionProbe,OutHit);
+    if (PreparedProbe.IsActive())
+    {
+        const bool Result = PreparedProbe.Sweep(Start, End, Kinematics.Rotation, GetCollisionShape(), Params,
+            Speed::Analytic::EStaticQuerySite::WheelSuspensionProbe, OutHit);
+#if !UE_BUILD_SHIPPING
+        ObserveActualProbe(Result, TEXT("prepared"));
+#endif
+        return Result;
+    }
     FHitResult UnrealHit;
 	bool bHit = false;
 	Speed::Analytic::FWorldHit AnalyticHit;
@@ -614,6 +650,9 @@ bool USWheelSubBody::ProbeSuspensionOnGround(
 		static_cast<uint8>(GetCollisionChannel()), GetResponseParams(), bHit, UnrealHit);
 	if (!bHit)
     {
+#if !UE_BUILD_SHIPPING
+        ObserveActualProbe(false, bUsedAnalyticAuthority ? TEXT("analytic") : TEXT("unreal"));
+#endif
 		if (bUsedAnalyticAuthority && CVarSkyLeagueSuspensionForceDebug.GetValueOnAnyThread() != 0)
 		{
 			UE_LOG(WheelSubBodyLog, Warning,
@@ -635,6 +674,9 @@ bool USWheelSubBody::ProbeSuspensionOnGround(
 			AnalyticHit, Delta, UnrealHit.Component.Get())
 		: SHitResult::FromUnrealHit(UnrealHit, Delta);
     OutHit.ImpactNormal = Speed::QuantizeUnitNormal(OutHit.ImpactNormal);
+#if !UE_BUILD_SHIPPING
+    ObserveActualProbe(true, bUsedAnalyticAuthority ? TEXT("analytic") : TEXT("unreal"));
+#endif
     return true;
 }
 
