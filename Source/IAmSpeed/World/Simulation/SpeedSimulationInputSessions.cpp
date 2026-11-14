@@ -54,6 +54,12 @@ std::shared_ptr<const Speed::Input::V2::FInputRegistryView> ASpeedPhysicsSimulat
 std::shared_ptr<const Speed::Input::V2::FRegistryFrame> ASpeedPhysicsSimulation::ReadCompletedInputFrame() const
 { return PublishedInputFrame.load(std::memory_order_seq_cst); }
 
+std::shared_ptr<const Speed::FCompletedSimulationPublication> ASpeedPhysicsSimulation::ReadCompletedWorldAndInputFrame() const
+{
+    if (bInputOwnerRetired.Load() || bOwnedWorkerTerminal.Load() || bCanonicalPublicationTerminal.Load()) return {};
+    return PublishedCompletedWorldInput.load(std::memory_order_seq_cst);
+}
+
 ESimulationBoundaryResult ASpeedPhysicsSimulation::ServiceInputSessionBoundary(bool bPauseRequested)
 {
     if (!ValidateAnalyticNumericOwner()) return ESimulationBoundaryResult::Failed;
@@ -108,11 +114,16 @@ ESimulationBoundaryResult ASpeedPhysicsSimulation::ServiceInputSessionBoundary(b
             if (!Bound) { I->second->Deactivate(); I = InputObservations.erase(I); }
             else { if (bPauseRequested) I->second->Pause(); ++I; }
         }
-        if (bPauseRequested) PublishedInputFrame.store(std::shared_ptr<const FRegistryFrame>{}, std::memory_order_seq_cst);
+        if (bPauseRequested)
+        {
+            PublishedInputFrame.store(std::shared_ptr<const FRegistryFrame>{}, std::memory_order_seq_cst);
+            PublishedCompletedWorldInput.store({}, std::memory_order_seq_cst);
+        }
         return Ready ? ESimulationBoundaryResult::Ready : ESimulationBoundaryResult::Waiting;
     }
     catch (...)
     {
+        PublishedCompletedWorldInput.store({}, std::memory_order_seq_cst);
         bOwnedWorkerTerminal.Store(true);
         bCanonicalPublicationTerminal.Store(true);
         return ESimulationBoundaryResult::Failed;
@@ -121,6 +132,7 @@ ESimulationBoundaryResult ASpeedPhysicsSimulation::ServiceInputSessionBoundary(b
 
 void ASpeedPhysicsSimulation::CloseInputSessionsOnWorker()
 {
+    PublishedCompletedWorldInput.store({}, std::memory_order_seq_cst);
     const bool AdaptersRetired = !SpeedWorldSubsystem || SpeedWorldSubsystem->RetireInputProcessingOnWorker();
     if (!AdaptersRetired) bCanonicalPublicationTerminal.Store(true);
     using namespace Speed::Input::V2;
