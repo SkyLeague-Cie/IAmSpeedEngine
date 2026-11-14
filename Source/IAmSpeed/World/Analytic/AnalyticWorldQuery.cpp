@@ -1862,7 +1862,8 @@ bool FWorldQueryService::EvaluateCheckedFinitePlaneGeometry(const FWorldQuery& q
         if(!FMath::IsFinite(query.Radius)||query.Radius<=0)return false;break;
     case EQueryShape::Box:
         if(query.HalfExtent.ContainsNaN()||query.HalfExtent.GetMin()<=0||
-            !FMath::IsFinite(query.HalfExtent.SizeSquared()))return false;break;
+            !FMath::IsFinite(query.HalfExtent.SizeSquared()))return false;
+        break;
     default:return false;
     }
     if(deepest&&query.Start!=query.End)return false;

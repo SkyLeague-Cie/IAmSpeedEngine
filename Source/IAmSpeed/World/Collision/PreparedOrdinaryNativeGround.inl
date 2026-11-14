@@ -430,10 +430,10 @@ bool FComponentSweepScope::EvaluateOrdinaryNativeBoxGround(const UWorld* world,c
             RevalidateNativeSolidCCD(*request))
         {
             const auto* returns=StepScope->OrdinaryReturns.Get();
-            const auto* world=returns&&returns->World?returns->World.Get():nullptr;
-            const auto* pairs=world&&!world->Closed?world->PairsIdentity:nullptr;
+            const auto* returnWorld=returns&&returns->World?returns->World.Get():nullptr;
+            const auto* pairs=returnWorld&&!returnWorld->Closed?returnWorld->PairsIdentity:nullptr;
             FStepIdentity now;
-            if(pairs&&ReadCurrentStep(now)&&OrdinaryWorldDetail::Epoch(world->Entry,now)&&
+            if(pairs&&ReadCurrentStep(now)&&OrdinaryWorldDetail::Epoch(returnWorld->Entry,now)&&
                 OrdinaryWorldDetail::Epoch(request->GetStep(),now)&&now.QuerySerial==request->GetStep().QuerySerial)
             {
                 const auto key=USSubBody::MakeComponentSweepPairKey(body,hit,true);

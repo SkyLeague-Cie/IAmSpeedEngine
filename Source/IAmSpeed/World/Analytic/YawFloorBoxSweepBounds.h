@@ -157,7 +157,8 @@ inline FQuaternion Hamilton(const FQuaternion& a,const FQuaternion& b)
 inline FPoint Cross(const FPoint& a,const FPoint& b)
 {
     FPoint out;for(int32 d=0;d<3;++d)out.Axis[d]=Difference(
-        Product(a.Axis[(d+1)%3],b.Axis[(d+2)%3]),Product(a.Axis[(d+2)%3],b.Axis[(d+1)%3]));return out;
+        Product(a.Axis[(d+1)%3],b.Axis[(d+2)%3]),Product(a.Axis[(d+2)%3],b.Axis[(d+1)%3]));
+    return out;
 }
 inline FPoint Rotate(const FQuaternion& q,const FVector& point)
 {

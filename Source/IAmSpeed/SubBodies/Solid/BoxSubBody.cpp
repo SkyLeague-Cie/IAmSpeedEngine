@@ -874,7 +874,9 @@ bool UBoxSubBody::EvaluateStaticBoxSupport(const Speed::IStaticCollisionWorld& W
     const SKinematic& State = ParentComponent->GetKinematicState();
     const auto Query = MakeSupportBoxQuery(State);
     const bool Resting = !bIncludeMotion || State.Velocity.IsZero();
-    const float Friction = Resting ? 0.0f : GetStaticWorldContactFriction(&World, FVector::UpVector);
+    // The continuous solver certifies current finite support before returning
+    // a reaction. Its friction does not depend on the legacy impact latch.
+    const float Friction = Resting ? 0.0f : GetDynamicFriction();
 #if !UE_BUILD_SHIPPING
     TOptional<FBoxSupportObservation> Observation;
     FBoxSupportMatch Match{};
@@ -4660,7 +4662,7 @@ bool UBoxSubBody::TryGetStaticContactAcceleration(FVector& Linear, FVector& Angu
         const auto Response = Speed::SolvePlanarSlidingReaction(MakeArrayView(Points, Count), N,
             State.Location, State.Velocity, State.AngularVelocity, State.Acceleration,
             State.AngularAcceleration, 1.0 / ParentComponent->GetPhysMass(), InvI,
-            GetStaticWorldContactFriction( World, N), ParentComponent->GetStaticSupportFrameHorizon());
+            GetDynamicFriction(), ParentComponent->GetStaticSupportFrameHorizon());
         if (!Response.bSolved) return false;
         Linear = Response.DeltaVelocity; Angular = Response.DeltaAngularVelocity;
         return true;
@@ -4674,7 +4676,7 @@ bool UBoxSubBody::TryGetStaticContactAcceleration(FVector& Linear, FVector& Angu
         const auto Sliding = Speed::SolvePlanarSlidingReaction(MakeArrayView(Points, Count), N,
             State.Location, State.Velocity, State.AngularVelocity, State.Acceleration,
             State.AngularAcceleration, 1.0 / ParentComponent->GetPhysMass(), InvI,
-            GetStaticWorldContactFriction( World, N), ParentComponent->GetStaticSupportFrameHorizon());
+            GetDynamicFriction(), ParentComponent->GetStaticSupportFrameHorizon());
         if (Sliding.bSolved)
         {
             Linear = Sliding.DeltaVelocity; Angular = Sliding.DeltaAngularVelocity;

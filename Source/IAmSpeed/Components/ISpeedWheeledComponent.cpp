@@ -1943,7 +1943,50 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 					}
 				}
 			}
-			const bool bAcceptProjectedPose = bWithinBounds && bPreservedProbeHits && bCoherentStateValid;
+			// A wheel-only recovery on one exact floor face cannot establish
+			// support by putting the principal chassis through static geometry.
+			// Curved/mixed manifolds keep their existing coupled-pose path.
+			bool bExactFloorRecovery = bWithinBounds && bPreservedProbeHits &&
+				bCoherentStateValid && !EstablishedMisses.IsEmpty() &&
+				Speed::Analytic::FStaticWorldQueryAudit::IsSurfaceAnalyticBackend();
+			const SHitResult& RecoveryPlane = Probes[EstablishedMisses[0]].PreviousHit;
+			for (int32 ProbeIndex = 0; ProbeIndex < Probes.Num() && bExactFloorRecovery; ++ProbeIndex)
+			{
+				const FGroundProbe& Probe = Probes[ProbeIndex];
+				if (!Probe.bHasProbeHit && !EstablishedMisses.Contains(ProbeIndex)) continue;
+				const SHitResult& Hit = Probe.bHasProbeHit ? Probe.ProbeHit : Probe.PreviousHit;
+				bExactFloorRecovery = Hit.SourceId != 0 && Hit.SurfaceId != 0 &&
+					Hit.SourceId == RecoveryPlane.SourceId && Hit.SurfaceId == RecoveryPlane.SurfaceId &&
+					!Hit.bSurfaceNormalMayVary && Hit.GeometricErrorBoundCm == 0 &&
+					Hit.ContactFeatureOther == Speed::EContactFeatureKind::Face &&
+					Hit.ImpactNormal.Z >= 0.999999;
+			}
+			bool bChassisPoseFeasible = true;
+			if (bExactFloorRecovery)
+			{
+				for (USSubBody* Body : GetSubBodies())
+				{
+					const UBoxSubBody* Box = Cast<UBoxSubBody>(Body);
+					if (!Box || Box->GetSubBodyType() != USSubBody::ESubBodyType::Hitbox) continue;
+					TArray<FHitResult> Penetrations;
+					Box->GatherStaticPenetrationHits(Penetrations);
+					for (const FHitResult& Hit : Penetrations)
+					{
+						if (Hit.PenetrationDepth > 0)
+						{
+							bChassisPoseFeasible = false;
+#if !UE_BUILD_SHIPPING
+							if (CVarIAmSpeedWheelSupportProjectionDebug.GetValueOnAnyThread() != 0)
+								UE_LOG(LogTemp, Log, TEXT("[WheelSupportProjectionChassisRejected] Frame=%u Depth=%.17g"),
+									NumFrame(), double(Hit.PenetrationDepth));
+#endif
+							break;
+						}
+					}
+					break;
+				}
+			}
+			const bool bAcceptProjectedPose = bWithinBounds && bPreservedProbeHits && bCoherentStateValid && bChassisPoseFeasible;
 			if (!bAcceptProjectedPose)
 			{
 				if (bPoseAdmitted)

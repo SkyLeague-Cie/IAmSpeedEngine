@@ -2630,16 +2630,18 @@ bool FAnalyticContactRootLruTest::RunTest(const FString&)
             FIntervalBezierCenterPath path;
             if(!CenterDetail::Linear(FVector3d(0,0,1),FVector3d(0,0,-1),path))return false;
             int32 oracleCalls=0;
-            FContactEnclosureFilter oracleFilter=[&](const FTensorSphereContactEnclosure&)
+            const auto oracleCallback=[&](const FTensorSphereContactEnclosure&)
             {++oracleCalls;return oracleCalls==1?EContactEnclosureDecision::Refine:EContactEnclosureDecision::Accept;};
+            const FContactEnclosureFilter oracleFilter=oracleCallback;
             VectorSetControlRegister((original&~uint32(0x807f))|flush|flags);
             FDistanceBudget referenceBudget{limit,7,0};
             const auto reference=BoundTensorSphereFirstContact(surfaces,path,.25,referenceBudget,1./65536.,1.e-7,256,.01,.05,24,&oracleFilter,nullptr);
             const auto referenceBits=ContactMemo71Signature(reference);const uint32 expectedFlags=VectorGetControlRegister();
             for(int32 repeat=0;repeat<2;++repeat)
             {
-                int32 calls=0;FContactEnclosureFilter filter=[&](const FTensorSphereContactEnclosure&)
+                int32 calls=0;const auto callback=[&](const FTensorSphereContactEnclosure&)
                 {++calls;return calls==1?EContactEnclosureDecision::Refine:EContactEnclosureDecision::Accept;};
+                const FContactEnclosureFilter filter=callback;
                 VectorSetControlRegister((original&~uint32(0x807f))|flush|flags);
                 FDistanceBudget work{limit,7,0};
                 const auto result=BoundTensorSphereFirstContact(surfaces,path,.25,work,1./65536.,1.e-7,256,.01,.05,24,&filter,&contactMemo);

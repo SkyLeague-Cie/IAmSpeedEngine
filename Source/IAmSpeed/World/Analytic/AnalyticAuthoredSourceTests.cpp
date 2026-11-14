@@ -141,7 +141,8 @@ bool FIAmSpeedAuthoredProvenanceTest::RunTest(const FString&)
 	Asset->AuthoredSourceSchemaVersion = 2;
 	TestFalse(TEXT("unknown provenance version rejected"), Asset->ValidateGeneratedData(&Reason));
 	Asset->AuthoredSourceSchemaVersion = 1;
-	Asset->AuthoredSources.Add(Asset->AuthoredSources[0]);
+	const FSpeedAnalyticAuthoredSourceRecord DuplicateAuthoredSource = Asset->AuthoredSources[0];
+	Asset->AuthoredSources.Add(DuplicateAuthoredSource);
 	TestFalse(TEXT("duplicate authored id rejected"), Asset->ValidateGeneratedData(&Reason));
 	Asset->AuthoredSources.SetNum(1);
 	Asset->AuthoredSources[0].RecipeSha256 = TEXT("missing");

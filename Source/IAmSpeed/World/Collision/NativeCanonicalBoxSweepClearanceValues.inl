@@ -4519,7 +4519,16 @@ uint32 Slot(const FKey& key)
 }
 struct FEntry{FKey Key;FGeneralBoxMotionBounds Value;uint8 Route=2;bool Ready=false;};
 struct FCache{FEntry Entries[16];uint64 Hits=0,Misses=0;};
-FCache& Cache(){static thread_local FCache cache;return cache;}
+FCache& Cache()
+{
+#if PLATFORM_LINUX
+    static thread_local const TUniquePtr<FCache> cacheStorage = MakeUnique<FCache>();
+    return *cacheStorage;
+#else
+    static thread_local FCache cache;
+    return cache;
+#endif
+}
 struct FRow{std::atomic<uint64> Calls{0},Finished{0},Hits{0},Misses{0},CrossRouteHits{0},Stores{0},False{0},Ticks{0},BuildTicks{0};};
 FRow Rows[3];
 bool Observe()
@@ -8364,7 +8373,8 @@ static bool SameFamily(const GeneralBoxPrologueReuse::FFamily& a,const GeneralBo
 {
     if(!SamePoint(a.Center,b.Center))return false;
     for(int32 d=0;d<4;++d)if(!GroupedBoxDetail::SameInterval(a.Rotation.Axis[d].Range,b.Rotation.Axis[d].Range)||
-        A::Bits(a.Rotation.Axis[d].Error)!=A::Bits(b.Rotation.Axis[d].Error))return false;return true;
+        A::Bits(a.Rotation.Axis[d].Error)!=A::Bits(b.Rotation.Axis[d].Error))return false;
+    return true;
 }
 static bool SameWhole(const FGeneralBoxMotionBounds& a,const FGeneralBoxMotionBounds& b)
 {

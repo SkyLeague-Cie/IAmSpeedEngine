@@ -14,6 +14,7 @@
 #include <stdexcept>
 namespace Speed
 {
+namespace PreparedExecution { class FComponentSweepScope; }
 namespace CanonicalBoxOverlapReuseDetail
 {
 using EContract=Analytic::EAnalyticNumericContract;

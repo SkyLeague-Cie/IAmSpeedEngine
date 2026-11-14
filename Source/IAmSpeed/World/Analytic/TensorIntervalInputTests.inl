@@ -636,7 +636,7 @@ bool FAnalyticIntervalMultiplyExtremaEquivalenceTest::RunTest(const FString&)
     {
         const uint32 controls=(original & ~uint32(0x8040)) | flush;
         bool same=true;
-        for(uint64 x:edges)for(uint64 y:edges)for(uint64 sx:{uint64(0),Sign})for(uint64 sy:{uint64(0),Sign})
+        for(uint64 x:edges)for(uint64 y:edges)for(uint64 sx:{uint64(0),uint64(Sign)})for(uint64 sy:{uint64(0),uint64(Sign)})
         {
             const double a=FromBits(x ^ sx),b=FromBits(y ^ sy);
             same &= compare(Interval::Exact(a),Interval::Exact(b),controls);
@@ -697,7 +697,7 @@ bool FAnalyticHalfSum72EquivalenceTest::RunTest(const FString&)
     for(uint32 flush:{0u,64u,32768u,32832u})for(uint32 sticky:{0u,1u,2u,4u,8u,16u,32u,63u})
     {
         const uint32 controls=(original&~uint32(0x807f))|flush|sticky;bool ok=true;
-        for(uint64 x:edges)for(uint64 y:edges)for(uint64 sx:{uint64(0),Sign})for(uint64 sy:{uint64(0),Sign})
+        for(uint64 x:edges)for(uint64 y:edges)for(uint64 sx:{uint64(0),uint64(Sign)})for(uint64 sy:{uint64(0),uint64(Sign)})
         {
             const double a=FromBits(x^sx),b=FromBits(y^sy);
             ok&=compare(Interval::Exact(a),Interval::Exact(b),controls);
@@ -811,7 +811,7 @@ bool FAnalyticSquareTwoProductsEquivalenceTest::RunTest(const FString&)
     for(uint32 flush:{0u,64u,32768u,32832u})for(uint32 sticky:{0u,1u,2u,4u,8u,16u,32u,63u})
     {
         const uint32 controls=(original&~uint32(0x807f))|flush|sticky;bool ok=true;
-        for(uint64 x:edges)for(uint64 y:edges)for(uint64 sx:{uint64(0),Sign})for(uint64 sy:{uint64(0),Sign})
+        for(uint64 x:edges)for(uint64 y:edges)for(uint64 sx:{uint64(0),uint64(Sign)})for(uint64 sy:{uint64(0),uint64(Sign)})
         {
             uint64 lo=x^sx,hi=y^sy;if(key(lo)>key(hi))Swap(lo,hi);
             ok&=compare(Interval{FromBits(lo),FromBits(hi),true},controls);
@@ -899,7 +899,7 @@ bool FAnalyticIntervalMultiplySingletonEquivalenceTest::RunTest(const FString&)
     for(uint32 flush:{0u,64u,32768u,32832u})for(uint32 sticky:{0u,1u,2u,4u,8u,16u,32u,63u})
     {
         const uint32 controls=(original&~uint32(0x807f))|flush|sticky;bool ok=true;
-        for(uint64 x:edges)for(uint64 y:edges)for(uint64 sx:{uint64(0),Sign})for(uint64 sy:{uint64(0),Sign})
+        for(uint64 x:edges)for(uint64 y:edges)for(uint64 sx:{uint64(0),uint64(Sign)})for(uint64 sy:{uint64(0),uint64(Sign)})
         {
             const uint64 xb=x^sx,yb=y^sy;uint64 lo=xb,hi=yb;if(order(lo)>order(hi))Swap(lo,hi);
             const Interval scalarX{FromBits(xb),FromBits(xb),true};

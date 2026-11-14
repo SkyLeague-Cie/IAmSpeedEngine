@@ -1,4 +1,7 @@
 #include "CanonicalFixedSphereWheelProbe.h"
+#if PLATFORM_LINUX
+#include "Templates/UniquePtr.h"
+#endif
 #include "BoundedApproxFixedWheelProbe.h"
 #include "IAmSpeed/World/Analytic/AnalyticWorldData.h"
 #include "Math/VectorRegister.h"
@@ -1241,7 +1244,16 @@ public:
         ::HistoricalQueryCache94::AddBytes(e.Bytes);::HistoricalQueryCache94::Add(::HistoricalQueryCache94::Inserts);Next[bucket]=(Next[bucket]+1)&3u;
     }
 };
-FHistoricalQueryCache94& ThreadHistoricalQueryCache94(){static thread_local FHistoricalQueryCache94 cache;return cache;}
+FHistoricalQueryCache94& ThreadHistoricalQueryCache94()
+{
+#if PLATFORM_LINUX
+    static thread_local const TUniquePtr<FHistoricalQueryCache94> cacheStorage = MakeUnique<FHistoricalQueryCache94>();
+    return *cacheStorage;
+#else
+    static thread_local FHistoricalQueryCache94 cache;
+    return cache;
+#endif
+}
 
 #if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
 // Independent cache of explicitly APPROXIMATE geometry. No exact94 entry,
@@ -1427,7 +1439,14 @@ public:
 FCache& ThreadCache()
 {
     static const bool registered=[](){FCoreDelegates::OnPreExit.AddStatic(&Publish);return true;}();
-    (void)registered;static thread_local FCache cache;return cache;
+    (void)registered;
+#if PLATFORM_LINUX
+    static thread_local const TUniquePtr<FCache> cacheStorage = MakeUnique<FCache>();
+    return *cacheStorage;
+#else
+    static thread_local FCache cache;
+    return cache;
+#endif
 }
 }
 #endif

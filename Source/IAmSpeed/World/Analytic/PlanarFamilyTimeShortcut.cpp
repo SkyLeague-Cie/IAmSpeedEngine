@@ -1,4 +1,7 @@
 #include "PlanarFamilyTimeShortcut.h"
+#if PLATFORM_LINUX
+#include "Templates/UniquePtr.h"
+#endif
 #include "AnalyticWorldData.h"
 #include "DirectionalMotionStrictSeparation.h"
 #include "CanonicalAxialPlaneBounds.h"
@@ -233,7 +236,14 @@ struct FCurvePropertyCache
 };
 static FCurvePropertyCache& CurvePropertyCache()
 {
-    static thread_local FCurvePropertyCache cache;return cache;
+#if PLATFORM_LINUX
+    // Keep cache entries out of the static TLS required by every Linux worker.
+    static thread_local const TUniquePtr<FCurvePropertyCache> cacheStorage = MakeUnique<FCurvePropertyCache>();
+    return *cacheStorage;
+#else
+    static thread_local FCurvePropertyCache cache;
+    return cache;
+#endif
 }
 static bool BuildCurveProperties(const FCurve& c,FCurveProperties& out)
 {
@@ -4982,7 +4992,16 @@ struct FEntry
     uint64 Control=0,Hash=0;uint32 RequiredSticky=0;int32 Normal=INDEX_NONE;bool Ready=false;
 };
 struct FCache {FEntry Entries[64];};
-static FCache& Cache(){static thread_local FCache value;return value;}
+static FCache& Cache()
+{
+#if PLATFORM_LINUX
+    static thread_local const TUniquePtr<FCache> valueStorage = MakeUnique<FCache>();
+    return *valueStorage;
+#else
+    static thread_local FCache value;
+    return value;
+#endif
+}
 struct FCounters
 {
     std::atomic<uint64> Calls{0},Hits{0},Misses{0},Covered{0},Outside{0},Domains{0},NotApplicable{0},Ticks{0};
@@ -5339,7 +5358,16 @@ TAutoConsoleVariable<int32> Enabled(TEXT("p.IAmSpeed.AnalyticWorld.ImmutablePlan
 struct FModel {FIntervalPoint Constant,U,V;uint8 Kind=0;};
 struct FEntry {FIntervalTensorSurface Surface;FModel Model;uint64 Hash=0,Control=0;uint32 Sticky=0;bool Ready=false;};
 struct FCache {FEntry Entries[64];uint64 Hits=0,Misses=0,StickyMisses=0;};
-static FCache& Cache(){static thread_local FCache value;return value;}
+static FCache& Cache()
+{
+#if PLATFORM_LINUX
+    static thread_local const TUniquePtr<FCache> valueStorage = MakeUnique<FCache>();
+    return *valueStorage;
+#else
+    static thread_local FCache value;
+    return value;
+#endif
+}
 struct FCounters {std::atomic<uint64> Calls{0},Hits{0},Misses{0},Bilinear{0},Global{0},Fallback{0},Ticks{0};};
 static FCounters Counts;
 static bool Pay(FDistanceBudget& budget,int32 count)
@@ -6202,7 +6230,8 @@ inline FIntervalTensorSurface Line()
 inline bool SamePoint(const FIntervalPoint& a,const FIntervalPoint& b)
 {
     for(int32 d=0;d<3;++d)if(a.Axis[d].Known!=b.Axis[d].Known||AnalyticCertified::Bits(a.Axis[d].Lower)!=AnalyticCertified::Bits(b.Axis[d].Lower)||
-        AnalyticCertified::Bits(a.Axis[d].Upper)!=AnalyticCertified::Bits(b.Axis[d].Upper))return false;return true;
+        AnalyticCertified::Bits(a.Axis[d].Upper)!=AnalyticCertified::Bits(b.Axis[d].Upper))return false;
+    return true;
 }
 }
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FDirectCurveCompleteGeometryTest,
@@ -9544,7 +9573,8 @@ bool FStaticBodyHierarchyDomainTest::RunTest(const FString&)
   {
    int32 match=INDEX_NONE;for(int32 i=0;i<expected.Num();++i)if(T::SameNode(leaf.Cell,expected[i])){match=i;break;}
    if(!TestTrue(TEXT("leaf controls and global dyadic domain match literal original restrictions in deterministic order"),
-    match>prior&&match!=INDEX_NONE&&leaf.ActiveGroups==(1u<<13)))return false;prior=match;
+    match>prior&&match!=INDEX_NONE&&leaf.ActiveGroups==(1u<<13)))return false;
+   prior=match;
   }
   for(int32 k=0;k<=64;++k)
   {
@@ -9696,7 +9726,8 @@ bool FStaticBodyHierarchyReducedIntegrationTest::RunTest(const FString&)
    int32 match=INDEX_NONE;for(int32 i=0;i<expected.Num();++i)if(T::SameNode(leaf.Cell,expected[i])){match=i;break;}
    if(!TestTrue(TEXT("actual12CP metadata, deterministic domains and inherited final-group mask"),
     leaf.Cell.DegreeU==(transpose?5:1)&&leaf.Cell.DegreeV==(transpose?1:5)&&leaf.Cell.Net.Num()==12&&
-    match>prior&&match!=INDEX_NONE&&leaf.ActiveGroups==(1u<<13)))return false;prior=match;
+    match>prior&&match!=INDEX_NONE&&leaf.ActiveGroups==(1u<<13)))return false;
+   prior=match;
   }
   for(int32 k=0;k<=64;++k)
   {
@@ -10038,7 +10069,8 @@ bool FStaticHierarchyPublicationStickyIndependenceTest::RunTest(const FString&)
    {
     int32 match=INDEX_NONE;for(int32 i=0;i<expected.Num();++i)if(T::SameNode(leaf.Cell,expected[i])){match=i;break;}
     if(!TestTrue(TEXT("fresh frontier still equals the literal closed restriction oracle and correct source representation"),
-     match!=INDEX_NONE&&match>prior&&leaf.ActiveGroups==(1u<<13)&&leaf.Cell.Net.Num()==(reduced?12:36)))return false;prior=match;
+     match!=INDEX_NONE&&match>prior&&leaf.ActiveGroups==(1u<<13)&&leaf.Cell.Net.Num()==(reduced?12:36)))return false;
+    prior=match;
    }
    ++queries;
   }
@@ -10373,7 +10405,8 @@ bool FClosedGroupedVolumeBudgetTest::RunTest(const FString&)
             FDistanceBudget a{cap+floor,13,floor},b=a;FReferenceBoxVolumeStrictSeparationPtr x=fullProof,y=fullProof;
             const bool ka=T::Prove(partition,volume,{},a,x),kb=T::Prove(partition,volume,closed,b,y);
             if(!TestTrue(TEXT("every partial accounting prefix agrees; no atomic preflight or refund"),ka==kb&&a.Used==b.Used&&a.Remaining==b.Remaining&&
-                bool(x)==bool(y)&&b.Remaining>=floor&&b.ConsumptionFloor==floor))return false;++pairs;
+                bool(x)==bool(y)&&b.Remaining>=floor&&b.ConsumptionFloor==floor))return false;
+            ++pairs;
         }
         for(uint64 tail:{0ull,1ull,19ull,20ull,117ull,118ull,201ull,202ull})
         {

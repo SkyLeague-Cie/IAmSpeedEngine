@@ -1,4 +1,7 @@
 #include "PreparedPhysicalExecution.h"
+#if PLATFORM_LINUX
+#include "Templates/UniquePtr.h"
+#endif
 #include <type_traits>
 #if WITH_DEV_AUTOMATION_TESTS
 #include "Misc/AutomationTest.h"
@@ -225,7 +228,7 @@ void RecordPreparedPoison(const char* site,const char* detail=nullptr,uint64 ord
             CurrentWorker,HostScope,StepScope,MemberSweepScope,OwnerProbePhase,WheelProbeScope,ordinal,serial,wheel,uint32(phase),queryOpen,used,expectedUncaught,std::uncaught_exceptions());
     }catch(...){} // Diagnostics cannot replace the original failure/cleanup.
 }
-void Refuse(const char* why)
+[[noreturn]] void Refuse(const char* why)
 {
     try{UE_LOG(LogTemp,Display,TEXT("[PreparedContextRefusal] Reason=%hs CapturedFrame=%llu CapturedStep=%llu Thread=%u Poisoned=%d"),
         why,PoisonDiagnosticFrame,StepScope?PoisonDiagnosticStep:0,FPlatformTLS::GetCurrentThreadId(),Poisoned);}catch(...){}
@@ -1103,7 +1106,8 @@ bool CaptureSphereCCD(const UWorld* world,const USolidSubBody* solid,FVector sta
     TSharedPtr<const Analytic::Prepared::FScene,ESPMode::ThreadSafe> scene;TSharedPtr<const FPreparedPhysicalQueryDomain,ESPMode::ThreadSafe> filters;
     TSharedPtr<const FPreparedWorldSnapshot,ESPMode::ThreadSafe> snapshot;
     if(!ReadCurrentSnapshot(snapshot)||!ReadCurrentInputs(scene,filters)||snapshot->GetNominalScene()!=scene||
-        snapshot->GetFilters()!=filters||!snapshot->GetGeometrySelection()||!snapshot->GetGeometrySelection()->HasValidAliases())return false;FSphereValues values;
+        snapshot->GetFilters()!=filters||!snapshot->GetGeometrySelection()||!snapshot->GetGeometrySelection()->HasValidAliases())return false;
+    FSphereValues values;
     if(!ReadSphereValues(world,solid,start,end,shape,horizon,step,*filters,values))return false;
     TSharedPtr<FNativeSphereRequest,ESPMode::ThreadSafe> value(new FNativeSphereRequest);value->Step=step;value->Values=values;value->Scene=scene;value->Filters=filters;value->Snapshot=snapshot;value->Geometry=snapshot->GetGeometrySelection();
     if(!Analytic::Certified::BuildZeroOffsetKinematicCenterReference(values.BodyState.Location,values.BodyState.Velocity,values.BodyState.Acceleration,
