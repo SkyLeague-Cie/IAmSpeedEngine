@@ -31,6 +31,9 @@ namespace
 {
 #if PLATFORM_WINDOWS && defined(_MSC_VER) && defined(_M_X64) && !defined(__clang__) && !defined(_M_ARM64EC)
 #if !UE_BUILD_SHIPPING
+TAutoConsoleVariable<int32> CVarTensorGenericCellStripBounds(
+    TEXT("p.IAmSpeed.AnalyticWorld.TensorGenericCellStripBounds"),1,
+    TEXT("Finite tensor-cell full-chord strip miss filter; default ON on supported Win64/MSVC non-Shipping builds. Startup0 disables preparation; runtime0 keeps native traversal. Computed CP theorem UNKNOWN."));
 TAutoConsoleVariable<int32> CVarTensorPanelPrefixBoundsActive(
     TEXT("p.IAmSpeed.AnalyticWorld.TensorPanelPrefixBoundsActive"),1,
     TEXT("Private experimental authenticated42F0 strict incumbent-prefix bound. Startup0OFF/1prepare; runtime0OFF/1use. CP theorem UNKNOWN. No default/public qualification."));
@@ -420,12 +423,18 @@ FWorldQueryService::FWorldQueryService(const FAnalyticWorldData& InWorld,
     RequireCurrentAnalyticNumericContext(World.NumericContract);
 #if PLATFORM_WINDOWS && defined(_MSC_VER) && defined(_M_X64) && !defined(__clang__) && !defined(_M_ARM64EC)
     // Always prepare once for this immutable world; enabling the CVar later is supported.
-    bool bPreparePrefix=false;
+    bool bPreparePrefix=false,bPrepareGeneric=false;
 #if !UE_BUILD_SHIPPING
     bPreparePrefix=CVarTensorPanelPrefixBoundsActive.GetValueOnAnyThread()==1;
+    bPrepareGeneric=CVarTensorGenericCellStripBounds.GetValueOnAnyThread()==1;
 #endif
-    TensorCellObliqueIndex=Private::BuildTensorCellObliqueIndex(World,bPreparePrefix);
+    TensorCellObliqueIndex=Private::BuildTensorCellObliqueIndex(World,bPreparePrefix,bPrepareGeneric);
 #if !UE_BUILD_SHIPPING
+    if(bPrepareGeneric)
+    {
+        const auto* GenericReady=TensorCellObliqueIndex ? TensorCellObliqueIndex->GenericIndex.Get() : nullptr;
+        UE_LOG(LogTemp,Display,TEXT("[TensorGenericCellStripStartup] Requested=1 Prepared=%d Providers=%d Cells=%lld ValidSupports=%lld SupportBytes=56 WorldHash=%016llx CPTheorem=UNKNOWN"),int32(GenericReady!=nullptr),GenericReady?GenericReady->PreparedProviders:0,GenericReady?GenericReady->PreparedCells:0ll,GenericReady?GenericReady->ValidSupports:0ll,uint64(World.SourceHash));
+    }
     if (bPreparePrefix)
     {
         const auto PrefixNumeric=InspectCurrentAnalyticNumericContext(World.NumericContract);
@@ -3677,7 +3686,17 @@ FWorldHit FWorldQueryService::SweepTensorBezierApproximation(
 	bool bFinalSmoothed = false;
 #endif
 #if PLATFORM_WINDOWS && defined(_MSC_VER) && defined(_M_X64) && !defined(__clang__) && !defined(_M_ARM64EC)
-    const double CellObliqueShell=CellObliqueIndex ? Query.Radius+1.e-8+(0.001+
+    const Private::FTensorCellObliqueIndex* LegacyObliqueIndex=CellObliqueIndex;
+#if !UE_BUILD_SHIPPING
+    const auto* GenericProvider=CellObliqueIndex ? CellObliqueIndex->GenericBinding : nullptr;
+    const auto* GenericContext=CellObliqueIndex ? CellObliqueIndex->GenericQuery : nullptr;
+    if(GenericProvider)LegacyObliqueIndex=CellObliqueIndex->LegacyAlias;
+    if(GenericProvider && (GenericProvider->Cells!=Patch.ApproximationCells->GetData() || GenericProvider->CellCount!=Patch.ApproximationCells->Num()))
+    {GenericProvider=nullptr;GenericContext=nullptr;}
+#endif
+#endif
+#if PLATFORM_WINDOWS && defined(_MSC_VER) && defined(_M_X64) && !defined(__clang__) && !defined(_M_ARM64EC)
+    const double CellObliqueShell=LegacyObliqueIndex ? Query.Radius+1.e-8+(0.001+
         1.e-9*FMath::Max(Query.Start.GetAbsMax(),Query.End.GetAbsMax())) : 0.;
 #endif
 	Causal.MarkPrepared();
@@ -3706,8 +3725,12 @@ FWorldHit FWorldQueryService::SweepTensorBezierApproximation(
 			return;
 		}
 #if PLATFORM_WINDOWS && defined(_MSC_VER) && defined(_M_X64) && !defined(__clang__) && !defined(_M_ARM64EC)
-        if (CellObliqueIndex && CellObliqueIndex->Cells.IsValidIndex(CellIndex) &&
-            Private::IsTensorCellObliqueMiss(CellObliqueIndex->Cells[CellIndex],Query,CellObliqueShell)) return;
+        if (LegacyObliqueIndex && LegacyObliqueIndex->Cells.IsValidIndex(CellIndex) &&
+            Private::IsTensorCellObliqueMiss(LegacyObliqueIndex->Cells[CellIndex],Query,CellObliqueShell)) return;
+#endif
+#if PLATFORM_WINDOWS && defined(_MSC_VER) && defined(_M_X64) && !defined(__clang__) && !defined(_M_ARM64EC) && !UE_BUILD_SHIPPING
+        if(GenericProvider && GenericContext && GenericProvider->Supports.IsValidIndex(CellIndex) &&
+            Private::TensorGenericCellStripBounds::IsMiss(GenericProvider->Supports[CellIndex],*GenericContext))return;
 #endif
 		const FVector2d ParameterCorners[4] = {
 			FVector2d(Cell.MinimumU, Cell.MinimumV),
@@ -4954,6 +4977,16 @@ FWorldHit FWorldQueryService::SweepDetailed(
 			? FPlatformTime::Seconds()
 			: 0.0;
 #endif
+#if PLATFORM_WINDOWS && defined(_MSC_VER) && defined(_M_X64) && !defined(__clang__) && !defined(_M_ARM64EC) && !UE_BUILD_SHIPPING
+        TOptional<Private::TensorGenericCellStripBounds::FQueryContext> GenericQuery;
+        bool bGenericQueryKnown=false;
+        const Private::TensorGenericCellStripBounds::FIndex* GenericIndex=nullptr;
+        if(CVarTensorGenericCellStripBounds.GetValueOnAnyThread()==1 && TensorCellObliqueIndex && TensorCellObliqueIndex->GenericIndex &&
+            Selection==EHitSelection::FirstSweepHit && Query.Shape==EQueryShape::Sphere && Query.Start!=Query.End &&
+            Query.bAuthorityOnly && Query.bIncludeCompactPatches &&
+            (Query.Radius==12.510000228881836 || Query.Radius==17.010000228881836))
+            GenericIndex=TensorCellObliqueIndex->GenericIndex.Get();
+#endif
 		const auto SweepTensorProvider = [&](const FTensorBezierPatch& Patch)
 		{
 			if (Query.bAuthorityOnly && !Patch.bAuthorityEligible) return;
@@ -4971,7 +5004,7 @@ FWorldHit FWorldQueryService::SweepDetailed(
                 Private::TensorPanelPrefixBounds::IsSeparated(*TensorCellObliqueIndex->PrefixEnvelope,Patch,Query,Best,CurrentMaximumSearchTime())) return;
 #endif
             const Private::FTensorCellObliqueIndex* CellObliqueIndex=nullptr;
-            if (CVarTensorCellObliqueBounds.GetValueOnAnyThread()==1 && TensorCellObliqueIndex &&
+            if (CVarTensorCellObliqueBounds.GetValueOnAnyThread()==1 && TensorCellObliqueIndex && !TensorCellObliqueIndex->Children.IsEmpty() &&
                 !bCollectAuthorityProviderHits &&
 #if !UE_BUILD_SHIPPING
                 CVarTensorMovingSphereReuseEdges.GetValueOnAnyThread()!=0 &&
@@ -4979,12 +5012,41 @@ FWorldHit FWorldQueryService::SweepDetailed(
                 Private::IsTensorCellObliqueQuery(Query,Selection==EHitSelection::FirstSweepHit,World.NumericContract))
                 CellObliqueIndex=TensorCellObliqueIndex->Find(World,Patch);
 #endif
-            const FWorldHit Candidate = SweepTensorBezier(
-                Query, QueryBounds, Patch, CurrentMaximumSearchTime(), Selection
-#if PLATFORM_WINDOWS && defined(_MSC_VER) && defined(_M_X64) && !defined(__clang__) && !defined(_M_ARM64EC)
-                , CellObliqueIndex
+            const FWorldHit Candidate = [&]()
+            {
+#if PLATFORM_WINDOWS && defined(_MSC_VER) && defined(_M_X64) && !defined(__clang__) && !defined(_M_ARM64EC) && !UE_BUILD_SHIPPING
+                if(GenericIndex && !CellObliqueIndex && (!bGenericQueryKnown || GenericQuery.IsSet()) &&
+                    PatchPassesFilter(Query,Patch) && Patch.Bounds.Intersect(QueryBounds) && Patch.bApproximationCertified)
+                {
+                    const auto* Provider=GenericIndex->Find(World,Patch);
+                    if(Provider)
+                    {
+                        if(!bGenericQueryKnown)
+                        {
+                            bGenericQueryKnown=true;
+                            GenericQuery.Emplace();
+                            if(!Private::TensorGenericCellStripBounds::PrepareQuery(Query,Selection==EHitSelection::FirstSweepHit,World.NumericContract,GenericQuery.GetValue()))
+                                GenericQuery.Reset();
+                        }
+                        if(GenericQuery.IsSet())
+                        {
+                            // Local non-owning binding; no shared mutable query cache or public ABI.
+                            Private::FTensorCellObliqueIndex Binding;
+                            Binding.LegacyAlias=CellObliqueIndex;
+                            Binding.GenericBinding=Provider;
+                            Binding.GenericQuery=&GenericQuery.GetValue();
+                            return SweepTensorBezier(Query,QueryBounds,Patch,CurrentMaximumSearchTime(),Selection,&Binding);
+                        }
+                    }
+                }
 #endif
-                );
+                return SweepTensorBezier(
+                    Query, QueryBounds, Patch, CurrentMaximumSearchTime(), Selection
+#if PLATFORM_WINDOWS && defined(_MSC_VER) && defined(_M_X64) && !defined(__clang__) && !defined(_M_ARM64EC)
+                    , CellObliqueIndex
+#endif
+                    );
+            }();
 			ConsiderProviderHit(Candidate);
 		};
 #if !UE_BUILD_SHIPPING

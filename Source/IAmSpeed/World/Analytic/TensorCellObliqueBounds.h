@@ -5,6 +5,7 @@
 #include "Hash/Blake3.h"
 #if !UE_BUILD_SHIPPING
 #include "TensorPanelPrefixBounds.h"
+#include "TensorGenericCellStripBounds.h"
 #endif
 
 namespace Speed::Analytic::Private
@@ -109,6 +110,10 @@ struct FTensorCellObliqueIndex
     TArray<TSharedPtr<const FTensorCellObliqueIndex>> Children;
 #if !UE_BUILD_SHIPPING
     TSharedPtr<const TensorPanelPrefixBounds::FEnvelope> PrefixEnvelope;
+    TSharedPtr<const TensorGenericCellStripBounds::FIndex> GenericIndex;
+    const FTensorCellObliqueIndex* LegacyAlias=nullptr;
+    const TensorGenericCellStripBounds::FProvider* GenericBinding=nullptr;
+    const TensorGenericCellStripBounds::FQueryContext* GenericQuery=nullptr;
 #endif
 
     const FTensorCellObliqueIndex* Find(const FAnalyticWorldData& World,
@@ -154,7 +159,7 @@ inline bool PrepareTensorCellObliqueProvider(const FTensorBezierPatch& Patch,
     return true;
 }
 
-inline TSharedPtr<const FTensorCellObliqueIndex> BuildTensorCellObliqueIndex(const FAnalyticWorldData& World,bool bPreparePrefix=false)
+inline TSharedPtr<const FTensorCellObliqueIndex> BuildTensorCellObliqueIndex(const FAnalyticWorldData& World,bool bPreparePrefix=false,bool bPrepareGeneric=false)
 {
     const auto Numeric=InspectCurrentAnalyticNumericContext(World.NumericContract);
     if (Numeric.Status!=EAnalyticNumericStatus::Complete ||
@@ -206,8 +211,23 @@ inline TSharedPtr<const FTensorCellObliqueIndex> BuildTensorCellObliqueIndex(con
         RequireAnalyticNumericTransfer(World.NumericContract,Restore.Restore(),EAnalyticNumericFailure::ContextRestoration);
     }
 #endif
-    (void)bPreparePrefix;
-    if (Index->Children.IsEmpty()) return {};
+#if !UE_BUILD_SHIPPING
+    if(Index->Children.IsEmpty())Index->PrefixEnvelope.Reset();
+    if(bPrepareGeneric)
+    {
+        const auto Saved=Speed::CaptureFrameFloatingPointContext();
+        if(Saved.bValid)
+        {
+            Speed::FScopedFrameFloatingPointContext Restore(Saved);
+            if(Restore.IsApplied())Index->GenericIndex=TensorGenericCellStripBounds::Build(World);
+            RequireAnalyticNumericTransfer(World.NumericContract,Restore.Restore(),EAnalyticNumericFailure::ContextRestoration);
+        }
+    }
+    if(Index->Children.IsEmpty() && !Index->GenericIndex)return {};
+#else
+    if(Index->Children.IsEmpty())return {};
+#endif
+    (void)bPreparePrefix;(void)bPrepareGeneric;
     return Index;
 }
 
