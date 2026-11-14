@@ -55,7 +55,7 @@ DEFINE_LOG_CATEGORY(BoxSubBodyLog);
 #if !UE_BUILD_SHIPPING
 static TAutoConsoleVariable<int32> CVarHitboxNativeProjectionTrace(
     TEXT("p.IAmSpeed.Hitbox.NativeProjectionTrace"), 0,
-    TEXT("Private exact observation of existing box projections at the positive backboard; no extra collision queries."));
+    TEXT("Private exact observation of existing box projections at either backboard; no extra collision queries."));
 #endif
 
 #if !UE_BUILD_SHIPPING
@@ -1366,7 +1366,7 @@ bool UBoxSubBody::ProjectEstablishedStaticContactImpl(
 #if !UE_BUILD_SHIPPING
     const bool bTraceProjection = bHasCorrection &&
         CVarHitboxNativeProjectionTrace.GetValueOnAnyThread() != 0 &&
-        ParentComponent->GetPhysCOM().X >= 4800. && ParentComponent->GetPhysCOM().X <= 5300. &&
+        FMath::Abs(ParentComponent->GetPhysCOM().X) >= 4800. && FMath::Abs(ParentComponent->GetPhysCOM().X) <= 5300. &&
         ParentComponent->GetPhysCOM().Z <= 250.;
     const SKinematic ProjectionTraceBefore = bTraceProjection ? ParentComponent->GetKinematicState() : SKinematic{};
     ON_SCOPE_EXIT
