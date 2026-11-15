@@ -101,6 +101,9 @@ public:
 	float GetMass() const { return Mass; }
 	void SetMass(float InMass) { Mass = InMass; }
 	virtual FMatrix ComputeWorldInvInertiaTensor() const;
+    // Exact cached configuration, independent of a future consumed pose.
+    // Reading this cache grants no response/impulse or reconstruction policy.
+    const FMatrix& GetCachedLocalInvInertiaTensor() const { return InvInertiaLocal; }
 	int Idx() const { return idx; }
 	void SetIdx(int InIdx) { idx = InIdx; }
 	bool IsMainSubBody() const { return bIsMainSubBody; }
@@ -110,6 +113,10 @@ public:
 	float GetSphereBoxFrictionOverride() const { return SphereBoxFrictionOverride; }
 	float GetSphereBoxManifoldFrictionOverride() const { return SphereBoxManifoldFrictionOverride; }
 	bool UsesCoupledContactImpulse() const { return bUseCoupledContactImpulse; }
+    // Startup policy shared only by the gameplay ball and car hitbox.
+    // Generic solid bodies retain their existing collision/inertia laws.
+    static bool IsAerialShotContactModelEnabled();
+    virtual bool UsesAerialShotContactModel() const { return false; }
 	bool UsesPostNormalFrictionImpulse() const { return bUsePostNormalFrictionImpulse; }
 	bool UsesPersistentBilateralContact() const { return bUsePersistentBilateralContact; }
 	bool AllowsCoupledContactImpulseFor(const SKinematic& State) const

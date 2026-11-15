@@ -109,7 +109,7 @@ void FCaseRecorder::Close(bool bCompleted,const TCHAR* Reason) noexcept
         CameraNativeMax=FMath::Max(CameraNativeMax,S.Work.CameraNativeMax);
         if(Mode==1)
         {
-            if(RawRowsWritten==65536){++Dropped;bInvalid=true;continue;}
+            if(RawRowsWritten==1048576){++Dropped;bInvalid=true;continue;}
             ++RawRowsWritten;
             UE_LOG(LogTemp,Display,TEXT("[IAmSpeedParallelFrameV1] Run=%s Driver=%llu Epoch=%llu Case=%d Frame=%llu Committed=%d Hz=300 QpcBegin=%llu QpcEnd=%llu QpcFrequency=%llu Requested=%d PolicyLanes=%d LogicalMax=%d NativeMax=%d FallbackMask=%u WorkKnown=%d FacetProviders=%llu ParallelFacetProviders=%llu EvaluatedFacets=%llu ParallelPrepareCalls=%llu ParallelQueryCalls=%llu ParallelCameraCalls=%llu FacetNativeMax=%d PrepareNativeMax=%d QueryNativeMax=%d CameraNativeMax=%d StateHash=%016llX InputHash=%016llX"),
                 *Run,Driver,Epoch,NativeCase,S.Frame,S.bCommitted?1:0,S.Begin,S.End,Frequency,

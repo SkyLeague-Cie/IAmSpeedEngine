@@ -1,4 +1,5 @@
 #include "ISphereSweeper.h"
+#include "SweepTOISelection.h"
 #include "IAmSpeed/Base/SpeedConstant.h"
 #include "IAmSpeed/Base/SUtils.h"
 #include "IAmSpeed/SubBodies/Solid/BoxSubBody.h"
@@ -138,7 +139,7 @@ bool ISphereSweeper::SweepVsSpheres(UWorld* World, SHitResult& OutHit, const flo
         if (!Hit.bHit)
             continue;
 
-        if (Hit.TOI < BestTOI)
+        if (Speed::ShouldSelectSweepTOI(Hit.TOI, BestTOI, bHit))
         {
             BestTOI = Hit.TOI;
             BestHit = Hit;
@@ -197,7 +198,7 @@ bool ISphereSweeper::SweepVsWheels(UWorld* World, SHitResult& OutHit, const floa
         if (!Hit.bHit)
             continue;
 
-        if (Hit.TOI < BestTOI)
+        if (Speed::ShouldSelectSweepTOI(Hit.TOI, BestTOI, bHit))
         {
             BestTOI = Hit.TOI;
             BestHit = Hit;

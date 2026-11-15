@@ -1,5 +1,9 @@
 #if WITH_DEV_AUTOMATION_TESTS
 #include "BoxRestingSupport.h"
+#include "IAmSpeed/World/Analytic/InheritedMotionReachBounds91.h"
+#include "IAmSpeed/World/Collision/PreparedNativeOwnerBindings.h"
+#include "IAmSpeed/World/Simulation/FrameFloatingPointContext.h"
+#include <cfenv>
 #include "IAmSpeed/Components/ISpeedComponent.h"
 #include "IAmSpeed/SubBodies/Configs/SubBodyConfig.h"
 #include "IAmSpeed/SubBodies/Solid/BoxSubBody.h"
@@ -867,4 +871,160 @@ bool FIAmSpeedBoxEquilibriumWorldTest::RunTest(const FString& Parameters)
 		SelectedCell.IsEmpty() ? Cells.Num() : 1);
 	return true;
 }
+
+// Source91: new exact registrations, not qualification of any older draft.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMotionInitialization91Test,
+    "IAmSpeed.AnalyticWorld.MotionLimits.InitializationAndImmutableTransfer",
+    EAutomationTestFlags::EditorContext|EAutomationTestFlags::EngineFilter)
+bool FMotionInitialization91Test::RunTest(const FString&)
+{
+    const UWorld::InitializationValues options=UWorld::InitializationValues().AllowAudioPlayback(false)
+        .CreatePhysicsScene(false).RequiresHitProxies(false).CreateNavigation(false)
+        .CreateAISystem(false).ShouldSimulatePhysics(false).SetTransactional(false);
+    UWorld* world=UWorld::CreateWorld(EWorldType::EditorPreview,false,NAME_None,nullptr,true,ERHIFeatureLevel::Num,&options);
+    if(!TestNotNull(TEXT("actual Initialize test world"),world))return false;
+    ON_SCOPE_EXIT{world->DestroyWorld(false);};
+    AActor* actor=world->SpawnActor<AActor>();if(!TestNotNull(TEXT("actual body owner"),actor))return false;
+    FBoxLawBody owner(*actor);
+    auto policy=owner.Box->GetInheritedMotionPolicyValues91();
+    TestTrue(TEXT("real Box Initialize captured existing default getters"),
+        policy.Captured&&policy.ParentMaxV==10000.f&&policy.ParentMaxOmega==100.f);
+    owner.MaxLinearSpeed=2300.f;owner.MaxAngularSpeed=5.5f;owner.Box->Initialize(&owner);
+    policy=owner.Box->GetInheritedMotionPolicyValues91();
+    TestTrue(TEXT("raw car policy captured without a new clamp"),policy.Captured&&policy.ParentMaxV==2300.f&&policy.ParentMaxOmega==5.5f);
+    Speed::FPreparedNativeBodyBinding immutableRow;
+    immutableRow.InheritedMotionPolicy91=policy;
+    owner.MaxLinearSpeed=6000.f;owner.MaxAngularSpeed=7.54f;
+    TestTrue(TEXT("later mode does not mutate the init-only policy"),
+        Speed::SameInheritedMotionPolicy91(immutableRow.InheritedMotionPolicy91,owner.Box->GetInheritedMotionPolicyValues91()));
+    owner.Box->Initialize(&owner);policy=owner.Box->GetInheritedMotionPolicyValues91();
+    TestTrue(TEXT("a genuine reinitialization captures ball/mode values"),
+        policy.ParentMaxV==6000.f&&policy.ParentMaxOmega==7.54f&&
+        !Speed::SameInheritedMotionPolicy91(immutableRow.InheritedMotionPolicy91,policy));
+    owner.MaxLinearSpeed=0;owner.MaxAngularSpeed=0;owner.Box->Initialize(&owner);
+    policy=owner.Box->GetInheritedMotionPolicyValues91();
+    TestTrue(TEXT("legitimate static zero/zero captured"),policy.Captured&&policy.ParentMaxV==0&&policy.ParentMaxOmega==0);
+    owner.Box->Initialize(nullptr);TestFalse(TEXT("null parent remains unavailable"),owner.Box->GetInheritedMotionPolicyValues91().Captured);
+    return !HasAnyErrors();
+}
+namespace MotionFixture91
+{
+namespace C=Speed::Analytic::Certified;
+namespace A=AnalyticCertified;
+inline Speed::Analytic::FWorldQuery Query(FVector3d start=FVector3d::ZeroVector,FVector3d end=FVector3d::ZeroVector)
+{
+    Speed::Analytic::FWorldQuery q;q.Shape=Speed::Analytic::EQueryShape::Sphere;
+    q.Start=start;q.End=end;q.Rotation=FQuat4d::Identity;q.Radius=1.;
+    q.DomainTolerance=0;q.InitialOverlapTolerance=0;return q;
+}
+inline C::FInheritedReachInput91 Input()
+{
+    C::FInheritedReachInput91 input;input.Available=true;
+    input.Policy.Captured=true;input.Policy.ParentMaxV=2300.f;input.Policy.ParentMaxOmega=5.5f;
+    input.Owner.Rotation=FQuat::Identity;input.Body.Rotation=FQuat::Identity;return input;
+}
+inline bool Scene(TArray<FVector3d> points,C::FIndexedIntervalUnionPtr& scene)
+{
+    TArray<C::FIntervalTensorSurface> surfaces;
+    for(const auto& point:points){C::FIntervalTensorSurface s;s.DegreeU=0;s.DegreeV=0;s.ControlPoints.Add(C::Detail::Point(point));surfaces.Add(s);}
+    C::FDistanceBudget work{256};return C::FIndexedIntervalUnion::Build(surfaces,work,scene)&&bool(scene);
+}
+}
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMotionContainment91Test,
+    "IAmSpeed.AnalyticWorld.MotionLimits.CompleteMotionContainmentAndModes",
+    EAutomationTestFlags::EditorContext|EAutomationTestFlags::EngineFilter)
+bool FMotionContainment91Test::RunTest(const FString&)
+{
+    namespace C=Speed::Analytic::Certified;using E=C::EInheritedReach91;
+    const auto original=Speed::CaptureFrameFloatingPointContext();Speed::FScopedFrameFloatingPointContext restore(original);std::fenv_t held;
+    if(!TestTrue(TEXT("guarded RNE fixture"),original.bValid&&restore.IsApplied()&&std::feholdexcept(&held)==0&&std::fesetround(FE_TONEAREST)==0))return false;
+    const uint32 controls=VectorGetControlRegister();
+    for(uint32 flush:{0u,0x40u,0x8000u,0x8040u})
+    {
+        VectorSetControlRegister((controls&~uint32(0x8040))|flush);
+        auto input=MotionFixture91::Input();input.Owner.Location=FVector(4,0,0);input.Body.Location=FVector(10,0,0);
+        auto q=MotionFixture91::Query(input.Body.Location,FVector3d(11,0,0));auto physical=q;physical.Radius=.5;
+        C::FIntervalPoint full,reach;
+        if(!TestTrue(TEXT("complete literal query volume"),C::BuildFixedWorldQueryVolumeBounds(q,full)))return false;
+        C::FDistanceBudget work{256};
+        TestTrue(TEXT("complete chord is contained before any rejection"),
+            C::BuildInheritedMotionReach91(input,q,physical,.01,0,full,work,reach)==E::Near&&work.Used==32);
+        const double theoretical=10.+1.+.01*(2300.+5.5*(6.+3.));
+        TestTrue(TEXT("COM arm is six, not origin arm ten"),
+            reach.Axis[0].Upper>=theoretical&&reach.Axis[0].Upper<theoretical+.01);
+        const double oldUpper=reach.Axis[0].Upper;
+        input.Body.Location.Z=5;q=MotionFixture91::Query(input.Body.Location,input.Body.Location);physical=q;physical.Radius=.5;
+        C::BuildFixedWorldQueryVolumeBounds(q,full);work={256};
+        TestTrue(TEXT("actual spring/body displacement enlarges the arm"),
+            C::BuildInheritedMotionReach91(input,q,physical,.01,0,full,work,reach)==E::Near&&reach.Axis[0].Upper>oldUpper);
+        input.Owner.Velocity=FVector(2400,0,0);work={256};
+        TestTrue(TEXT("outside captured policy keeps original path, debit retained"),
+            C::BuildInheritedMotionReach91(input,q,physical,.01,0,full,work,reach)==E::Outside&&work.Used==32);
+        input.Owner.Velocity=FVector::ZeroVector;input.Policy.ParentMaxV=0;input.Policy.ParentMaxOmega=0;
+        input.Owner.Location=input.Body.Location;work={256};
+        TestTrue(TEXT("stationary zero policy is not arithmetic Unknown"),
+            C::BuildInheritedMotionReach91(input,q,physical,0.,0.,full,work,reach)==E::Near);
+        q.End.X+=5;C::BuildFixedWorldQueryVolumeBounds(q,full);work={256};
+        TestTrue(TEXT("Delta zero never truncates a full suspension probe"),
+            C::BuildInheritedMotionReach91(input,q,physical,0.,0.,full,work,reach)==E::Outside&&work.Used==32);
+        input.Policy.ParentMaxV=2300;input.Policy.ParentMaxOmega=5.5;
+        full.Axis[0].Upper=1.e8;work={256};
+        TestTrue(TEXT("uncovered curved/reference/rounded excursion retains original"),
+            C::BuildInheritedMotionReach91(input,q,physical,.01,0.,full,work,reach)==E::Outside);
+        input.Available=false;work={0};
+        TestTrue(TEXT("unavailable before attempt consumes nothing"),
+            C::BuildInheritedMotionReach91(input,q,physical,.01,0.,full,work,reach)==E::Invalid&&work.Used==0);
+    }
+    TestTrue(TEXT("all four FTZ/DAZ contexts restored"),restore.Restore());return !HasAnyErrors();
+}
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMotionBudget91Test,
+    "IAmSpeed.AnalyticWorld.MotionLimits.StrictPartitionAndBudget",
+    EAutomationTestFlags::EditorContext|EAutomationTestFlags::EngineFilter)
+bool FMotionBudget91Test::RunTest(const FString&)
+{
+    namespace C=Speed::Analytic::Certified;namespace A=AnalyticCertified;using E=C::EInheritedReach91;
+    const auto original=Speed::CaptureFrameFloatingPointContext();Speed::FScopedFrameFloatingPointContext restore(original);std::fenv_t held;
+    if(!TestTrue(TEXT("RNE fixture"),original.bValid&&restore.IsApplied()&&std::feholdexcept(&held)==0&&std::fesetround(FE_TONEAREST)==0))return false;
+    const uint32 controls=VectorGetControlRegister();
+    for(uint32 flush:{0u,0x40u,0x8000u,0x8040u})
+    {
+        VectorSetControlRegister((controls&~uint32(0x8040))|flush);
+        C::FIndexedIntervalUnionPtr scene;
+        if(!TestTrue(TEXT("complete immutable scene"),MotionFixture91::Scene({FVector3d(100,0,0)},scene)))return false;
+        C::FIntervalPoint hull;for(int32 d=0;d<3;++d)hull.Axis[d]={-3,3,true};
+        C::FDistanceBudget work{8};
+        TestTrue(TEXT("all-provider empty proof pays exactly N"),
+            scene->EmptyBoundsProof91(hull,work)==C::EEmptyBounds91::Clear&&work.Used==1);
+        hull.Axis[0].Upper=100;work={8};
+        TestTrue(TEXT("touching bounds are retained"),scene->EmptyBoundsProof91(hull,work)==C::EEmptyBounds91::Near);
+        hull.Axis[0].Upper=3;
+        C::FIntervalBezierCenterPath path;C::CenterDetail::Linear(FVector3d::ZeroVector,FVector3d(1,0,0),path);
+        C::FReferenceCandidateSetPtr candidates;work={8};
+        TestTrue(TEXT("clear proof preserves complete original-order partition"),
+            C::FReferenceCandidateSet::SelectInheritedEmpty91(scene,path,1.,hull,work,candidates)==C::EEmptyBounds91::Clear&&
+            candidates&&candidates->GetCandidateIndices().IsEmpty()&&candidates->GetExcludedIndices().Num()==1&&
+            candidates->GetExcludedIndices()[0]==0&&work.Used==2);
+        path.ControlPoints[1]=C::Detail::Point(FVector3d(10,0,0));work={8};candidates.Reset();
+        TestTrue(TEXT("caller cannot seal a longer capsule than its proof"),
+            C::FReferenceCandidateSet::SelectInheritedEmpty91(scene,path,1.,hull,work,candidates)==C::EEmptyBounds91::Near&&!candidates&&work.Used==1);
+        work={1};work.ConsumptionFloor=1;
+        TestTrue(TEXT("provider floor cannot be bypassed"),
+            scene->EmptyBoundsProof91(hull,work)==C::EEmptyBounds91::Unknown&&work.Used==0&&work.Remaining==1&&!work.Consume());
+        auto input=MotionFixture91::Input();auto q=MotionFixture91::Query();auto physical=q;
+        C::FIntervalPoint full,reach;C::BuildFixedWorldQueryVolumeBounds(q,full);
+        work={40};work.ConsumptionFloor=10;
+        TestTrue(TEXT("partial precharge exhaustion is terminal, monotone and sticky"),
+            C::BuildInheritedMotionReach91(input,q,physical,.01,0.,full,work,reach)==E::Unknown&&
+            work.Used==30&&work.Remaining==10&&work.ConsumptionFloor==10&&!work.Consume());
+        C::FIndexedIntervalUnionPtr mixed;
+        if(!TestTrue(TEXT("mixed provider inventory"),MotionFixture91::Scene({FVector3d(100,0,0),FVector3d::ZeroVector},mixed)))return false;
+        work={8};TestTrue(TEXT("one near provider prevents whole-query rejection"),
+            mixed->EmptyBoundsProof91(hull,work)==C::EEmptyBounds91::Near&&work.Used==2);
+        full.Axis[0]={};work={128};
+        TestTrue(TEXT("attempted malformed full volume is terminal Unknown"),
+            C::BuildInheritedMotionReach91(input,q,physical,.01,0.,full,work,reach)==E::Unknown&&work.Used==32);
+    }
+    TestTrue(TEXT("context restored"),restore.Restore());return !HasAnyErrors();
+}
+
 #endif

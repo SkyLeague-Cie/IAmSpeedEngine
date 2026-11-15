@@ -96,15 +96,89 @@ def validate_report(exit_code, log, report, required=REQUIRED, expected_paths=No
     return {'tests': count, 'identities': sorted(paths)}
 
 
+
+CONTROLLER_LIFECYCLE_CASES = (
+    ('ControllerInputLifecycle', 'Legacy'),
+    ('DeviceV2Lifecycle2443', 'DeviceV2Lifecycle2443'),
+)
+
+
+def compact_cpp_registration(code):
+    # Whitespace inside a C++ string is part of the real native leaf/command.
+    return re.sub(r'("(?:\\.|[^"\\])*")|\s+', lambda match: match.group(1) or '', code)
+
+
+def controller_lifecycle_manifest(path, root, code):
+    """Enumerate only the reviewed literal GetTests registration, fail on drift."""
+    macro = r'\bIMPLEMENT_COMPLEX_AUTOMATION_TEST\s*\('
+    if not re.search(macro, code):
+        return [], code
+    if Path(path).relative_to(root).as_posix() != 'IAmSpeed/World/Simulation/ControllerInputLifecycleTests.cpp':
+        raise ValueError('Dynamic test registration needs explicit enumeration: ' + str(path))
+    declaration = re.compile(
+        r'\bIMPLEMENT_COMPLEX_AUTOMATION_TEST\s*\(\s*FIAmSpeedControllerInputLifecycleTest\s*,\s*'
+        r'"IAmSpeed\.Simulation"\s*,\s*EAutomationTestFlags_ApplicationContextMask\s*\|\s*'
+        r'EAutomationTestFlags::EngineFilter\s*\)')
+    registrations = list(declaration.finditer(code))
+    functions = re.findall(
+        r'\bvoid\s+FIAmSpeedControllerInputLifecycleTest::GetTests\s*\(\s*'
+        r'TArray<FString>\s*&\s*Names\s*,\s*TArray<FString>\s*&\s*Commands\s*\)\s*const\s*'
+        r'\{([^{}]*)\}', code)
+    expected = ''.join('Names.Add(TEXT("%s"));Commands.Add(TEXT("%s"));' % pair
+                       for pair in CONTROLLER_LIFECYCLE_CASES)
+    if (len(registrations) != 1 or len(re.findall(macro, code)) != 1 or len(functions) != 1
+            or compact_cpp_registration(functions[0]) != expected):
+        raise ValueError('Controller lifecycle exact two-leaf registration differs: ' + str(path))
+    match = registrations[0]
+    return ['IAmSpeed.Simulation.' + name for name, command in CONTROLLER_LIFECYCLE_CASES], (
+        code[:match.start()] + '\n' + code[match.end():])
+
+
+
+def automation_translation_units(root):
+    """Expand owned inlines so registrations keep their actual enclosing guards."""
+    root = Path(root).resolve()
+    reached = set()
+    registration = r'\b(?:IMPLEMENT_(?:SIMPLE|COMPLEX|CUSTOM_SIMPLE)_AUTOMATION_TEST|BEGIN_DEFINE_SPEC|DEFINE_SPEC)\s*\('
+    include = re.compile(r'^\s*#\s*include\s*"([^"\n]+\.inl)"\s*$', re.MULTILINE)
+
+    def expand(path, stack):
+        if path.is_symlink():
+            raise ValueError('Symlink inline source: ' + str(path))
+        path = path.resolve(strict=True)
+        if not path.is_relative_to(root) or path in stack or path.is_symlink():
+            raise ValueError('Unowned or cyclic inline source: ' + str(path))
+        reached.add(path)
+        code = path.read_text(encoding='utf-8-sig')
+
+        def replace(match):
+            relative = match.group(1)
+            candidates = [path.parent / relative, root / relative]
+            target = next((p for p in candidates if p.is_file()), None)
+            if target is None:
+                raise ValueError('Unresolved owned inline source: ' + relative)
+            return '\n' + expand(target, stack + (path,)) + '\n'
+
+        return include.sub(replace, code)
+
+    units = [(path, expand(path, ())) for path in sorted(root.rglob('*.cpp'))]
+    for suffix in ('*.inl', '*.h'):
+        for path in root.rglob(suffix):
+            if re.search(registration, path.read_text(encoding='utf-8-sig')) and path.resolve() not in reached:
+                raise ValueError('Test registration outside expanded translation units: ' + str(path))
+    return units
+
+
 def source_test_manifest(root):
-    # This checkout declares static SIMPLE tests. Refuse a future dynamic test
-    # registration until its enumeration is implemented, rather than omit it.
+    # Enumerate static SIMPLE tests plus the exact reviewed two-leaf complex test.
+    # Every other dynamic registration remains a blocking admission error.
     names = []
     pattern = r'IMPLEMENT_SIMPLE_AUTOMATION_TEST\s*\(\s*\w+\s*,\s*"([^"]+)"'
-    for path in Path(root).rglob('*.cpp'):
-        code = path.read_text(encoding='utf-8-sig')
-        # The Docker target is Linux. OwnedFrameAudit's eight Windows-only
-        # native sidecar tests are not compiled there. Track the exact guarded
+    for path, code in automation_translation_units(root):
+        if not re.search(r'\b(?:IMPLEMENT_(?:SIMPLE|COMPLEX|CUSTOM_SIMPLE)_AUTOMATION_TEST|BEGIN_DEFINE_SPEC|DEFINE_SPEC)\s*\(', code):
+            continue
+        # The Docker target is Linux. Exact PLATFORM_WINDOWS regions
+        # are not compiled there. Track their actual nested guarded
         # regions; never remove a report failure or infer eligibility from the
         # runtime result. Unknown platform guards around tests fail closed.
         frames, filtered = [], []
@@ -113,7 +187,7 @@ def source_test_manifest(root):
             if directive:
                 op, expression = directive.groups()
                 if op in ('if', 'ifdef', 'ifndef'):
-                    windows = expression.strip() == 'WITH_DEV_AUTOMATION_TESTS && PLATFORM_WINDOWS'
+                    windows = expression.strip() in ('PLATFORM_WINDOWS', 'WITH_DEV_AUTOMATION_TESTS && PLATFORM_WINDOWS', 'PLATFORM_WINDOWS && !UE_SERVER', 'WITH_DEV_AUTOMATION_TESTS && PLATFORM_WINDOWS && !UE_SERVER')
                     frames.append(dict(skip=windows, windows=windows,
                                        unknown_platform='PLATFORM_' in expression and not windows))
                 elif op in ('else', 'elif') and frames:
@@ -127,10 +201,12 @@ def source_test_manifest(root):
                 elif op == 'endif' and frames:
                     frames.pop()
             skipped = any(frame['skip'] for frame in frames)
-            if not skipped and 'IMPLEMENT_SIMPLE_AUTOMATION_TEST' in line and any(frame['unknown_platform'] for frame in frames):
+            if not skipped and re.search(r'IMPLEMENT_(?:SIMPLE|COMPLEX)_AUTOMATION_TEST', line) and any(frame['unknown_platform'] for frame in frames):
                 raise ValueError('Platform test registration needs explicit Linux enumeration: ' + str(path))
             filtered.append('\n' if skipped else line)
         code = ''.join(filtered)
+        complex_names, code = controller_lifecycle_manifest(path, root, code)
+        names.extend(complex_names)
         if re.search(r'\b(?:IMPLEMENT_COMPLEX_AUTOMATION_TEST|IMPLEMENT_CUSTOM_SIMPLE_AUTOMATION_TEST|BEGIN_DEFINE_SPEC|DEFINE_SPEC)\s*\(', code):
             raise ValueError('Dynamic test registration needs explicit enumeration: ' + str(path))
         matches = re.findall(pattern, code)

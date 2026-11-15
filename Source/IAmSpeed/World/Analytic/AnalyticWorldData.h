@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "AnalyticNumericContext.h"
 #include "TorusSurface.h"
 
 namespace Speed::Analytic
@@ -1284,6 +1285,9 @@ struct IAMSPEED_API FExtrudedQuinticPatch
 	FVector3d EvaluateSectionDerivative(double T) const;
 	bool BuildQueryApproximation(
 		double ChordToleranceCm = ExtrudedQuinticChordToleranceCm);
+	// Private comparison support: limits allocation before a chord is appended.
+	// Failure is unavailable geometry, never a collision miss. Existing API is unchanged.
+	bool BuildQueryApproximationBounded(double ChordToleranceCm, int32 MaximumSegments);
 	bool IsValid(FString* OutReason = nullptr) const;
 };
 
@@ -1501,6 +1505,9 @@ struct IAMSPEED_API FPiecewiseTensorBezierPatch
 
 struct IAMSPEED_API FAnalyticWorldData
 {
+	// Derived from the authored-source manifest before finalization; immutable at runtime.
+	// Not serialized, not part of geometric StableHash, and never authority eligibility.
+	EAnalyticNumericContract NumericContract = EAnalyticNumericContract::Unspecified;
 	uint32 SchemaVersion = AnalyticWorldSchemaVersion;
 	uint64 SourceHash = 0;
 	TArray<FBoundedPlane> Planes;

@@ -86,7 +86,8 @@ public:
         TConstArrayView<int32> ProviderIndices, int32 TotalCandidates, int32 Lanes,
         TFunctionRef<double()> CaptureBound,
         TFunctionRef<FWorldHit(int32,double)> Evaluate,
-        ETensorCellWindowReason1534 WindowReason1534=ETensorCellWindowReason1534::Legacy);
+        ETensorCellWindowReason1534 WindowReason1534=ETensorCellWindowReason1534::Legacy,
+        EAnalyticNumericContract InNumericContract=EAnalyticNumericContract::Unspecified);
     ~FJoinedTensorCellWave1213();
     FJoinedTensorCellWave1213(const FJoinedTensorCellWave1213&)=delete;
     FJoinedTensorCellWave1213& operator=(const FJoinedTensorCellWave1213&)=delete;
@@ -106,6 +107,7 @@ private:
     FBox3d CapturedBounds;
     FTensorCellWaveIdentity1213 CapturedIdentity;
     FFrameFloatingPointContext NumericContext;
+    EAnalyticNumericContract NumericContract=EAnalyticNumericContract::Unspecified;
     TArray<FRecord> Records;
     struct FLookup1213 { int32 Index=0; int32 Record=0; };
     // Sorting this private integer lookup never changes physical visitation.

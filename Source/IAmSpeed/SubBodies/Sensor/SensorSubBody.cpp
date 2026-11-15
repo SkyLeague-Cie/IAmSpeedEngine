@@ -59,6 +59,12 @@ void USensorSubBody::ResolveCurrentHitPrv(const float& Delta, const float& SimTi
     OnBeginOverlap.Broadcast(this, Other);
 }
 
+void USensorSubBody::VisitNativeOverlapTargetTokens(TFunctionRef<void(const FWeakObjectPtr&)> visit) const
+{
+    for(const auto& token:OverlapsOrdered)visit(static_cast<FWeakObjectPtr>(token));
+    for(const auto& token:OverlapsSet)visit(static_cast<FWeakObjectPtr>(token));
+    for(const auto& token:TouchedThisFrame)visit(static_cast<FWeakObjectPtr>(token));
+}
 void USensorSubBody::PostPhysicsUpdate()
 {
     // 1) EndOverlap: any previously overlapping component not touched this frame

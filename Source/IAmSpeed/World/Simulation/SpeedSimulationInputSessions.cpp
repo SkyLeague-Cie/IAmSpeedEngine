@@ -56,6 +56,7 @@ std::shared_ptr<const Speed::Input::V2::FRegistryFrame> ASpeedPhysicsSimulation:
 
 ESimulationBoundaryResult ASpeedPhysicsSimulation::ServiceInputSessionBoundary(bool bPauseRequested)
 {
+    if (!ValidateAnalyticNumericOwner()) return ESimulationBoundaryResult::Failed;
     if (SpeedWorldSubsystem && !SpeedWorldSubsystem->ServiceInputRetirementsAtBoundary())
         return ESimulationBoundaryResult::Failed;
     using namespace Speed::Input::V2;
@@ -120,16 +121,17 @@ ESimulationBoundaryResult ASpeedPhysicsSimulation::ServiceInputSessionBoundary(b
 
 void ASpeedPhysicsSimulation::CloseInputSessionsOnWorker()
 {
-    if (SpeedWorldSubsystem && !SpeedWorldSubsystem->RetireInputProcessingOnWorker())
-        bCanonicalPublicationTerminal.Store(true);
+    const bool AdaptersRetired = !SpeedWorldSubsystem || SpeedWorldSubsystem->RetireInputProcessingOnWorker();
+    if (!AdaptersRetired) bCanonicalPublicationTerminal.Store(true);
     using namespace Speed::Input::V2;
     PublishedInputFrame.store(std::shared_ptr<const FRegistryFrame>{}, std::memory_order_seq_cst);
     if (InputSessionRegistry)
     {
         const auto View = InputSessionRegistry->ReadRegistry();
-        if (View && SpeedWorldSubsystem && !SpeedWorldSubsystem->NeutralizeCanonicalInputs(*View))
-            bCanonicalPublicationTerminal.Store(true);
-        const bool Retired = InputSessionRegistry->CloseWorkerLedger();
+        const bool InputsNeutralized = !View || !SpeedWorldSubsystem || SpeedWorldSubsystem->NeutralizeCanonicalInputs(*View);
+        if (!InputsNeutralized) bCanonicalPublicationTerminal.Store(true);
+        const bool LedgerRetired = InputSessionRegistry->CloseWorkerLedger();
+        const bool Retired = LedgerRetired && AdaptersRetired && InputsNeutralized;
         PublishedInputRegistry.store(InputSessionRegistry->ReadRegistry(), std::memory_order_seq_cst);
         InputSessionRegistry.reset();
         for (const auto& Observation : InputObservations) Observation.second->Deactivate();

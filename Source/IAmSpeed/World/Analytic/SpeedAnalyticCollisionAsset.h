@@ -11,6 +11,42 @@ namespace Speed::Analytic
 struct FAnalyticWorldData;
 }
 
+UENUM()
+enum class ESpeedAnalyticSourceKind : uint8
+{
+	Unknown,
+	AuthoredAnalytic
+};
+
+/** Analytic construction provenance, independent of render meshes/triangles.
+ * Hashes identify the imported recipe and numeric payload; their presence is
+ * not a geometric certificate. The importer must verify their actual bytes.
+ */
+USTRUCT()
+struct IAMSPEED_API FSpeedAnalyticAuthoredSourceRecord
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, Category = "Analytic Collision") ESpeedAnalyticSourceKind Kind = ESpeedAnalyticSourceKind::Unknown;
+	UPROPERTY(EditAnywhere, Category = "Analytic Collision") uint64 SourceId = 0;
+	UPROPERTY(EditAnywhere, Category = "Analytic Collision") FString RecipeSchema;
+	UPROPERTY(EditAnywhere, Category = "Analytic Collision") FString RecipeSha256;
+	UPROPERTY(EditAnywhere, Category = "Analytic Collision") FString PayloadSha256;
+	// Relative to the declaring actor, so the same asset works in two maps/PIE.
+	UPROPERTY(EditAnywhere, Category = "Analytic Collision") FString SourceComponentPath;
+	UPROPERTY(EditAnywhere, Category = "Analytic Collision") FString ContactComponentPath;
+	// Geometry is already in world coordinates. These are checked, not applied.
+	UPROPERTY(EditAnywhere, Category = "Analytic Collision") FTransform OwnerWorldTransform = FTransform::Identity;
+	UPROPERTY(EditAnywhere, Category = "Analytic Collision") FTransform ContactWorldTransform = FTransform::Identity;
+	UPROPERTY(EditAnywhere, Category = "Analytic Collision") uint32 ObjectType = 0;
+	UPROPERTY(EditAnywhere, Category = "Analytic Collision") uint8 CollisionEnabled = 0;
+	UPROPERTY(EditAnywhere, Category = "Analytic Collision") bool bQueryCollisionEnabled = false;
+	UPROPERTY(EditAnywhere, Category = "Analytic Collision") uint64 BlockingChannels = 0;
+	UPROPERTY(EditAnywhere, Category = "Analytic Collision") uint64 OverlapChannels = 0;
+
+	bool IsValid(FString* OutReason = nullptr) const;
+};
+
 USTRUCT(BlueprintType)
 struct IAMSPEED_API FSpeedAnalyticMeshSourceRecord
 {
@@ -301,6 +337,14 @@ public:
 
 	UPROPERTY(VisibleAnywhere, Category = "Analytic Collision")
 	uint64 SourceHash = 0;
+
+	// Zero preserves legacy mesh-source assets. Version one requires explicit
+	// authored records and live contact-component bindings before admission.
+	UPROPERTY(EditAnywhere, Category = "Analytic Collision")
+	uint32 AuthoredSourceSchemaVersion = 0;
+
+	UPROPERTY(EditAnywhere, Category = "Analytic Collision")
+	TArray<FSpeedAnalyticAuthoredSourceRecord> AuthoredSources;
 
 	UPROPERTY(VisibleAnywhere, Category = "Analytic Collision")
 	TArray<FSpeedAnalyticMeshSourceRecord> MeshSources;

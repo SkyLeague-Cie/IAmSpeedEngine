@@ -1,6 +1,8 @@
 #if WITH_DEV_AUTOMATION_TESTS
 #include "IBoxSweeper.h"
 #include "ISphereSweeper.h"
+#include "SweepTOISelection.h"
+#include <limits>
 #include "IAmSpeed/SubBodies/Solid/BoxSubBody.h"
 #include "IAmSpeed/SubBodies/Solid/SphereSubBody.h"
 #include "IAmSpeed/SubBodies/Solid/SWheelSubBody.h"
@@ -24,9 +26,8 @@ namespace
 		const UPrimitiveComponent* Skipped = nullptr;
 		FCollisionResponseParams Responses;
 
-		bool Run(int32 Kind, SHitResult& Hit, float& TOI)
+		bool Run(int32 Kind, SHitResult& Hit, float& TOI, float Delta = 1.0f / 300.0f)
 		{
-			constexpr float Delta = 1.0f / 300.0f;
 			if (Kind == 0) return this->SweepVsBoxes(nullptr, Hit, Delta, TOI);
 			if (Kind == 1) return this->SweepVsSpheres(nullptr, Hit, Delta, TOI);
 			return this->SweepVsWheels(nullptr, Hit, Delta, TOI);
@@ -111,6 +112,43 @@ bool FIAmSpeedSweeperCandidatesTest::RunTest(const FString& Parameters)
 	Check(BoxFixture, BoxFixture.Boxes, BoxA.Get(), BoxB.Get(), 0, true, false);
 	Check(BoxFixture, BoxFixture.Spheres, SphereA.Get(), SphereB.Get(), 1, false, true);
 	Check(BoxFixture, BoxFixture.Wheels, WheelA.Get(), WheelB.Get(), 2, false, false);
+
+	// The pair kernel accepts the closed frame endpoint. The sweeper must
+	// retain its payload and first-partner priority at that same endpoint.
+	{
+		TCandidateFixture<ISphereSweeper> Endpoint;
+		Endpoint.State.Velocity = FVector(1.0, 0.0, 0.0);
+		SphereA->SetRadiusForConfiguration(.99f);
+		SphereB->SetRadiusForConfiguration(.99f);
+		SKinematic AtEndpoint;
+		AtEndpoint.Location = FVector(12.0, 0.0, 0.0);
+		SphereA->SetKinematicState(AtEndpoint);
+		SphereB->SetKinematicState(AtEndpoint);
+		Endpoint.Spheres = { SphereA.Get(), SphereB.Get() };
+		SHitResult Hit;
+		float TOI = -1.0f;
+		TestTrue(TEXT("sphere pair contact at frame endpoint is retained"), Endpoint.Run(1, Hit, TOI, 1.0f));
+		TestEqual(TEXT("closed endpoint remains exact"), TOI, 1.0f);
+		TestTrue(TEXT("first endpoint partner supplies the payload"), Hit.SubBody.Get() == SphereA.Get());
+		Endpoint.Spheres.Swap(0, 1);
+		TestTrue(TEXT("reordered endpoint pair still hits"), Endpoint.Run(1, Hit, TOI, 1.0f));
+		TestTrue(TEXT("equal endpoint keeps caller order"), Hit.SubBody.Get() == SphereB.Get());
+		AtEndpoint.Location.X = 11.5;
+		SphereA->SetKinematicState(AtEndpoint);
+		TestTrue(TEXT("earlier contact replaces first endpoint"), Endpoint.Run(1, Hit, TOI, 1.0f));
+		TestEqual(TEXT("strictly earlier pair wins"), TOI, .5f);
+		TestTrue(TEXT("earlier pair supplies its own payload"), Hit.SubBody.Get() == SphereA.Get());
+	}
+
+	// Shared member/component arbitration: the unselected initial horizon is
+	// not a prior hit. Once selected, ties retain the first candidate.
+	TestTrue(TEXT("first horizon candidate is eligible"), Speed::ShouldSelectSweepTOI(1.f, 1.f, false));
+	TestFalse(TEXT("selected horizon tie retains earlier candidate"), Speed::ShouldSelectSweepTOI(1.f, 1.f, true));
+	TestTrue(TEXT("strictly earlier candidate is eligible"), Speed::ShouldSelectSweepTOI(.5f, 1.f, true));
+	TestFalse(TEXT("equal interior tie retains earlier candidate"), Speed::ShouldSelectSweepTOI(.5f, .5f, true));
+	TestFalse(TEXT("later candidate cannot replace selection"), Speed::ShouldSelectSweepTOI(1.f, .5f, true));
+	TestFalse(TEXT("candidate beyond initial horizon is ineligible"), Speed::ShouldSelectSweepTOI(2.f, 1.f, false));
+	TestFalse(TEXT("unordered candidate cannot supply hit payload"), Speed::ShouldSelectSweepTOI(std::numeric_limits<float>::quiet_NaN(), 1.f, false));
 
 	// Real UBox peers: a consumed asymmetric contact must be excluded before
 	// minimum-TOI selection, leaving a different later collision discoverable.

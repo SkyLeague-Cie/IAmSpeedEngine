@@ -1,4 +1,7 @@
 #include "AnalyticWorldQuery.h"
+#if PLATFORM_WINDOWS && defined(_MSC_VER) && defined(_M_X64) && !defined(__clang__) && !defined(_M_ARM64EC)
+#include "TensorCellObliqueBounds.h"
+#endif
 #include "TorusWorldQuery.h"
 #include "IAmSpeed/World/Collision/StaticQueryBatch.h"
 #include "JoinedPiecewiseProviderWave1075.h"
@@ -26,6 +29,18 @@
 
 namespace
 {
+#if PLATFORM_WINDOWS && defined(_MSC_VER) && defined(_M_X64) && !defined(__clang__) && !defined(_M_ARM64EC)
+#if !UE_BUILD_SHIPPING
+TAutoConsoleVariable<int32> CVarTensorGenericCellStripBounds(
+    TEXT("p.IAmSpeed.AnalyticWorld.TensorGenericCellStripBounds"),1,
+    TEXT("Finite tensor-cell full-chord strip miss filter; default ON on supported Win64/MSVC non-Shipping builds. Startup0 disables preparation; runtime0 keeps native traversal. Computed CP theorem UNKNOWN."));
+TAutoConsoleVariable<int32> CVarTensorPanelPrefixBoundsActive(
+    TEXT("p.IAmSpeed.AnalyticWorld.TensorPanelPrefixBoundsActive"),1,
+    TEXT("Private experimental authenticated42F0 strict incumbent-prefix bound. Startup0OFF/1prepare; runtime0OFF/1use. CP theorem UNKNOWN. No default/public qualification."));
+#endif
+TAutoConsoleVariable<int32> CVarTensorCellObliqueBounds(
+    TEXT("p.IAmSpeed.AnalyticWorld.TensorCellObliqueBounds"),UE_BUILD_SHIPPING ? 0 : 1,TEXT("Authenticated direct tensor cell-oblique filter; default ON in non-Shipping, OFF in Shipping."));
+#endif
 TAutoConsoleVariable<int32> CVarPiecewiseAdmissionBounds1146(
     TEXT("p.IAmSpeed.Parallel.PiecewiseAdmissionBounds1146"), 0,
     TEXT("Scheduling experiment, default0. Reject cheap provider misses from speculative admission only. Original provider loop and bound remain authoritative."));
@@ -139,6 +154,21 @@ namespace Speed::Analytic::Private
 namespace
 {
 #if !UE_BUILD_SHIPPING
+	TAutoConsoleVariable<int32> CVarIAmSpeedAnalyticWorldTensorProviderBoundsIndex(
+		TEXT("p.IAmSpeed.AnalyticWorld.TensorProviderBoundsIndex"), 0,
+		TEXT("Build a conservative ordered tensor-provider BVH when the query service is constructed."));
+	TAutoConsoleVariable<int32> CVarTensorSphereFinalNormal(
+		TEXT("p.IAmSpeed.AnalyticWorld.TensorSphereFinalNormal"), 0,
+		TEXT("Smooth only the final tensor sphere sweep winner when its normal filter is unconditional."));
+	TAutoConsoleVariable<int32> CVarTensorSphereFinalNormalProfile(
+		TEXT("p.IAmSpeed.AnalyticWorld.TensorSphereFinalNormalProfile"), 0,
+		TEXT("Report eligible tensor sphere candidates and final smoothings. Passive diagnostics."));
+	TAutoConsoleVariable<int32> CVarTensorMovingSphereReuseEdges(
+		TEXT("p.IAmSpeed.AnalyticWorld.TensorMovingSphereReuseEdges"), 0,
+		TEXT("Reuse the moving-sphere tensor facet AB/AC for closest-point queries."));
+	TAutoConsoleVariable<int32> CVarIAmSpeedAnalyticWorldTensorSphereSlab(
+		TEXT("p.IAmSpeed.AnalyticWorld.TensorSphereSlab"), 0,
+		TEXT("Precompute the separating plane of axis-aligned direct tensor collision facets."));
 	TAutoConsoleVariable<int32> CVarIAmSpeedAnalyticWorldCacheBucketMode(
 		TEXT("p.IAmSpeed.AnalyticWorld.CacheBucketMode"), 0,
 		TEXT("Experimental exact-cache placement. 0: original position hash (default); 1: discriminate shape, selection and provider policy. Same64 entries and full equality."),
@@ -390,6 +420,44 @@ FWorldQueryService::FWorldQueryService(const FAnalyticWorldData& InWorld,
     : World(InWorld), FacetLanes(FMath::Clamp(InFacetLanes, 1, Speed::FFrameParallelPolicy::MaximumLanes)),
       MinimumFacetItems(FMath::Max(2, InMinimumFacetItems))
 {
+    RequireCurrentAnalyticNumericContext(World.NumericContract);
+#if PLATFORM_WINDOWS && defined(_MSC_VER) && defined(_M_X64) && !defined(__clang__) && !defined(_M_ARM64EC)
+    // Always prepare once for this immutable world; enabling the CVar later is supported.
+    bool bPreparePrefix=false,bPrepareGeneric=false;
+#if !UE_BUILD_SHIPPING
+    bPreparePrefix=CVarTensorPanelPrefixBoundsActive.GetValueOnAnyThread()==1;
+    bPrepareGeneric=CVarTensorGenericCellStripBounds.GetValueOnAnyThread()==1;
+#endif
+    TensorCellObliqueIndex=Private::BuildTensorCellObliqueIndex(World,bPreparePrefix,bPrepareGeneric);
+#if !UE_BUILD_SHIPPING
+    if(bPrepareGeneric)
+    {
+        const auto* GenericReady=TensorCellObliqueIndex ? TensorCellObliqueIndex->GenericIndex.Get() : nullptr;
+        UE_LOG(LogTemp,Display,TEXT("[TensorGenericCellStripStartup] Requested=1 Prepared=%d Providers=%d Cells=%lld ValidSupports=%lld SupportBytes=56 WorldHash=%016llx CPTheorem=UNKNOWN"),int32(GenericReady!=nullptr),GenericReady?GenericReady->PreparedProviders:0,GenericReady?GenericReady->PreparedCells:0ll,GenericReady?GenericReady->ValidSupports:0ll,uint64(World.SourceHash));
+    }
+    if (bPreparePrefix)
+    {
+        const auto PrefixNumeric=InspectCurrentAnalyticNumericContext(World.NumericContract);
+        const bool bReady=TensorCellObliqueIndex && TensorCellObliqueIndex->PrefixEnvelope && TensorCellObliqueIndex->PrefixEnvelope->bReady;
+        UE_LOG(LogTemp,Display,TEXT("[TensorPanelPrefixActiveStartup] Active=1 Prepared=%d Provider=42f0db19591de3de Supports=4 WorldHash=%016llx WorldHashAdmission=0 NumericStatus=%u Fingerprint=%016llx CPTheorem=UNKNOWN"),
+            int32(bReady),uint64(World.SourceHash),uint32(PrefixNumeric.Status),uint64(PrefixNumeric.ControlFingerprint()));
+    }
+#endif
+#if !UE_BUILD_SHIPPING
+    const auto CellObliqueNumeric=InspectCurrentAnalyticNumericContext(World.NumericContract);
+    int32 CellObliqueProviders=0,CellObliqueCells=0;
+    if (TensorCellObliqueIndex)
+    {
+        CellObliqueProviders=TensorCellObliqueIndex->Children.Num();
+        for (const auto& Child:TensorCellObliqueIndex->Children)
+            CellObliqueCells+=Child->Cells.Num();
+    }
+    UE_LOG(LogTemp,Display,TEXT("[TensorCellObliqueInit] WorldHash=%016llx Providers=%d Cells=%d NumericStatus=%u Fingerprint=%016llx X87=%08x Mxcsr=%08x"),
+        uint64(World.SourceHash),CellObliqueProviders,CellObliqueCells,uint32(CellObliqueNumeric.Status),
+        uint64(CellObliqueNumeric.ControlFingerprint()),CellObliqueNumeric.ScalarControl,CellObliqueNumeric.VectorControl);
+#endif
+#endif
+
 	TArray<FBox3d> PlaneBounds;
 	PlaneBounds.Reserve(World.Planes.Num());
 	for (const FBoundedPlane& Plane : World.Planes) PlaneBounds.Add(Plane.Bounds);
@@ -400,6 +468,63 @@ FWorldQueryService::FWorldQueryService(const FAnalyticWorldData& InWorld,
 		PiecewiseBounds.Add(Patch.Bounds);
 	PiecewiseProviderIndex = Speed::Collision::FOrderedBoundsIndex::Create(PiecewiseBounds);
 #if !UE_BUILD_SHIPPING
+	if (CVarIAmSpeedAnalyticWorldTensorProviderBoundsIndex.GetValueOnAnyThread() != 0 &&
+		!World.TensorBezierPatches.IsEmpty())
+	{
+		TArray<FBox3d> TensorBounds;
+		TensorBounds.Reserve(World.TensorBezierPatches.Num());
+		for (const FTensorBezierPatch& Patch : World.TensorBezierPatches)
+			TensorBounds.Add(Patch.Bounds);
+		TensorProviderIndex = Speed::Collision::FOrderedBoundsIndex::CreateBvh(TensorBounds);
+		if (CVarIAmSpeedAnalyticWorldTensorSphereSlab.GetValueOnAnyThread() != 0)
+		{
+			const double SlabStart = FPlatformTime::Seconds();
+			TensorSphereSlabs.SetNum(World.TensorBezierPatches.Num());
+			int32 SlabCount = 0;
+			for (int32 Index = 0; Index < TensorSphereSlabs.Num(); ++Index)
+			{
+				const FTensorBezierPatch& Patch = World.TensorBezierPatches[Index];
+				const auto& Controls = Patch.Surface.ControlPoints;
+				if (!Patch.bApproximationCertified || Patch.ApproximationCells.IsEmpty() || Controls.IsEmpty()) continue;
+				const FVector3d Origin = Controls[0];
+				bool bConstantX = true;
+				bool bConstantY = true;
+				bool bConstantZ = true;
+				for (const FVector3d& Point : Controls)
+				{
+					bConstantX &= Point.X == Origin.X;
+					bConstantY &= Point.Y == Origin.Y;
+					bConstantZ &= Point.Z == Origin.Z;
+					if (!bConstantX && !bConstantY && !bConstantZ) break;
+				}
+				if (!bConstantX && !bConstantY && !bConstantZ) continue;
+				const int32 Axis = bConstantX ? 0 : (bConstantY ? 1 : 2);
+				const double Coordinate = Origin[Axis];
+				double CoordinateScale = 1.0;
+				bool bPlanar = true;
+				for (const FTensorBezierApproximationCell& Cell : Patch.ApproximationCells)
+				{
+					for (const FVector3d& Corner : Cell.Corners)
+					{
+						if (Corner.ContainsNaN() || Corner[Axis] != Coordinate)
+						{
+							bPlanar = false;
+							break;
+						}
+						CoordinateScale = FMath::Max(CoordinateScale, Corner.GetAbsMax());
+					}
+					if (!bPlanar) break;
+				}
+				if (!bPlanar) continue;
+				TensorSphereSlabs[Index] = {Axis, Coordinate, CoordinateScale};
+				++SlabCount;
+			}
+			UE_LOG(LogTemp, Display, TEXT("[AnalyticTensorSphereSlab] Providers=%d Bytes=%llu BuildMs=%.3f"),
+				SlabCount, uint64(TensorSphereSlabs.GetAllocatedSize()), (FPlatformTime::Seconds() - SlabStart) * 1000.0);
+		}
+		UE_LOG(LogTemp, Display, TEXT("[AnalyticTensorProviderBoundsIndex] Providers=%d Bytes=%llu"),
+			TensorBounds.Num(), uint64(TensorProviderIndex->GetAllocatedSize()));
+	}
 	if (CVarIAmSpeedAnalyticWorldPhaseTiming.GetValueOnAnyThread() != 0)
 		UE_LOG(LogTemp, Display, TEXT("[AnalyticQueryStorage] PiecewiseProviders=%d ProviderIndexBytes=%llu"),
 			PiecewiseBounds.Num(), uint64(PiecewiseProviderIndex->GetAllocatedSize()));
@@ -649,13 +774,11 @@ namespace
 		}
 	}
 
-	FVector3d ClosestPointOnTriangle(
+	FVector3d ClosestPointOnTriangleWithEdges(
 		const FVector3d& Point, const FVector3d& A, const FVector3d& B,
-		const FVector3d& C, EContactFeatureKind* OutKind = nullptr,
-		int8* OutIndex = nullptr)
+		const FVector3d& C, const FVector3d& AB, const FVector3d& AC,
+		EContactFeatureKind* OutKind, int8* OutIndex)
 	{
-		const FVector3d AB = B - A;
-		const FVector3d AC = C - A;
 		const FVector3d AP = Point - A;
 		const double D1 = FVector3d::DotProduct(AB, AP);
 		const double D2 = FVector3d::DotProduct(AC, AP);
@@ -702,6 +825,16 @@ namespace
 		const double Denominator = 1.0 / (VA + VB + VC);
 		SetFeature(EContactFeatureKind::Face, 0);
 		return A + (VB * Denominator) * AB + (VC * Denominator) * AC;
+	}
+
+	FVector3d ClosestPointOnTriangle(
+		const FVector3d& Point, const FVector3d& A, const FVector3d& B,
+		const FVector3d& C, EContactFeatureKind* OutKind = nullptr,
+		int8* OutIndex = nullptr)
+	{
+		const FVector3d AB = B - A;
+		const FVector3d AC = C - A;
+		return ClosestPointOnTriangleWithEdges(Point, A, B, C, AB, AC, OutKind, OutIndex);
 	}
 
 	FVector3d ClosestPointOnBox(
@@ -1220,10 +1353,12 @@ namespace
 		return SweepBoxTriangleImpl573<-1>(Query, Triangle, OutHit, CachedContext, MaximumSearchTime, PrimarySatScope, CrossNormalScope);
 	}
 
+	template<bool bReuseEdges = false>
 	bool SweepSphereTriangleGeometry(
 		const FWorldQuery& Query, const FVector3d TriangleVertices[3],
 		const FVector3d& TriangleFaceNormal, FWorldHit& OutHit,
-		const double MaximumSearchTime = 1.0)
+		const double MaximumSearchTime = 1.0,
+		const FVector3d* EdgeAB = nullptr, const FVector3d* EdgeAC = nullptr)
 	{
 		// Conservative advancement against the convex triangle distance field
 		// covers face, edge, and vertex contacts for a linearly translated sphere.
@@ -1264,6 +1399,19 @@ namespace
 		int8 SurfaceIndex = INDEX_NONE;
 		double Distance = 0.0;
 		constexpr double ContactToleranceCm = 1.0e-8;
+		const auto ClosestPoint = [&](const FVector3d& Point)
+		{
+			if constexpr (bReuseEdges)
+			{
+				return ClosestPointOnTriangleWithEdges(Point, TriangleVertices[0],
+					TriangleVertices[1], TriangleVertices[2], *EdgeAB, *EdgeAC, &SurfaceKind, &SurfaceIndex);
+			}
+			else
+			{
+				return ClosestPointOnTriangle(Point, TriangleVertices[0],
+					TriangleVertices[1], TriangleVertices[2], &SurfaceKind, &SurfaceIndex);
+			}
+		};
 		const auto TrySegmentContact = [&]()
 		{
 			// Conservative advancement can reject a valid edge/vertex contact when
@@ -1280,9 +1428,7 @@ namespace
 			{
 				const double Local = Sample / 32.0;
 				const FVector3d Probe = FMath::Lerp(Begin, Query.End, Local);
-				const FVector3d ProbePoint = ClosestPointOnTriangle(Probe,
-					TriangleVertices[0], TriangleVertices[1], TriangleVertices[2],
-					&SurfaceKind, &SurfaceIndex);
+				const FVector3d ProbePoint = ClosestPoint(Probe);
 				if (FVector3d::Distance(Probe, ProbePoint) <= Radius + ContactToleranceCm)
 				{
 					Bracket = Sample;
@@ -1296,16 +1442,13 @@ namespace
 			{
 				const double Mid = 0.5 * (Low + High);
 				const FVector3d Probe = FMath::Lerp(Begin, Query.End, Mid);
-				const FVector3d ProbePoint = ClosestPointOnTriangle(Probe,
-					TriangleVertices[0], TriangleVertices[1], TriangleVertices[2],
-					&SurfaceKind, &SurfaceIndex);
+				const FVector3d ProbePoint = ClosestPoint(Probe);
 				if (FVector3d::Distance(Probe, ProbePoint) <= Radius + ContactToleranceCm) High = Mid;
 				else Low = Mid;
 			}
 			Time = BeginTime + Remaining * High;
 			Center = FMath::Lerp(Query.Start, Query.End, Time);
-			SurfacePoint = ClosestPointOnTriangle(Center, TriangleVertices[0],
-				TriangleVertices[1], TriangleVertices[2], &SurfaceKind, &SurfaceIndex);
+			SurfacePoint = ClosestPoint(Center);
 			const FVector3d Separation = Center - SurfacePoint;
 			Distance = Separation.Length();
 			Normal = Distance > UE_DOUBLE_SMALL_NUMBER ? Separation / Distance : TriangleFaceNormal.GetSafeNormal();
@@ -1324,9 +1467,7 @@ namespace
 		};
 		for (int32 Iteration = 0; Iteration < 32; ++Iteration)
 		{
-			SurfacePoint = ClosestPointOnTriangle(Center,
-				TriangleVertices[0], TriangleVertices[1], TriangleVertices[2],
-				&SurfaceKind, &SurfaceIndex);
+			SurfacePoint = ClosestPoint(Center);
 			const FVector3d Separation = Center - SurfacePoint;
 			Distance = Separation.Length();
 			Normal = Distance > UE_DOUBLE_SMALL_NUMBER
@@ -1354,9 +1495,7 @@ namespace
 			{
 				Time = SearchLimit;
 				Center = FMath::Lerp(Query.Start, Query.End, Time);
-				SurfacePoint = ClosestPointOnTriangle(Center,
-					TriangleVertices[0], TriangleVertices[1], TriangleVertices[2],
-					&SurfaceKind, &SurfaceIndex);
+				SurfacePoint = ClosestPoint(Center);
 				const FVector3d EndpointSeparation = Center - SurfacePoint;
 				Distance = EndpointSeparation.Length();
 				if (Distance <= Radius + ContactToleranceCm)
@@ -1673,6 +1812,85 @@ double FWorldQueryService::SupportRadius(
 	default:
 		return 0.0;
 	}
+}
+
+FValidatedFinitePlaneGeometryPtr FWorldQueryService::ValidateFinitePlaneGeometry(const FBoundedPlane& plane)
+{
+    const auto before=RequireCurrentAnalyticNumericContext(EAnalyticNumericContract::Binary64NearestAllowFlush);
+    TSharedPtr<FValidatedFinitePlaneGeometry,ESPMode::ThreadSafe> owned(
+        new FValidatedFinitePlaneGeometry(plane,before.ControlFingerprint()));
+    // Validate the COPY that will actually be published, DomainVertices and
+    // every provenance/material/filter/derived field included.
+    if(!owned->Plane.IsValid())return {};
+    const auto after=RequireCurrentAnalyticNumericContext(EAnalyticNumericContract::Binary64NearestAllowFlush);
+    if(after.ControlFingerprint()!=owned->NumericControl)return {};
+    return owned;
+}
+
+bool FWorldQueryService::EvaluateFinitePlaneGeometry(const FWorldQuery& query,
+    const FBoundedPlane& plane,bool deepest,FWorldHit& out)
+{
+    out={};
+    RequireCurrentAnalyticNumericContext(EAnalyticNumericContract::Binary64NearestAllowFlush);
+    // Preserve the generic wrapper's original short-circuit order.
+    if(!query.bAuthorityOnly||!plane.IsValid())return false;
+    return EvaluateCheckedFinitePlaneGeometry(query,plane,deepest,out);
+}
+
+bool FWorldQueryService::EvaluateValidatedFinitePlaneGeometry(const FWorldQuery& query,
+    const FValidatedFinitePlaneGeometryPtr& geometry,bool deepest,FWorldHit& out,EFinitePlaneValidationPath* path)
+{
+    out={};if(path)*path=EFinitePlaneValidationPath::Unavailable;
+    const auto current=RequireCurrentAnalyticNumericContext(EAnalyticNumericContract::Binary64NearestAllowFlush);
+    if(!geometry||!query.bAuthorityOnly)return false;
+    // Different FP controls select the ORIGINAL validation path before any
+    // plane/query arithmetic. An attempted failure is never swallowed.
+    if(current.ControlFingerprint()!=geometry->NumericControl)
+    {
+        if(path)*path=EFinitePlaneValidationPath::RevalidatedGeometry;
+        return EvaluateFinitePlaneGeometry(query,geometry->Plane,deepest,out);
+    }
+    if(path)*path=EFinitePlaneValidationPath::ReusedGeometry;
+    return EvaluateCheckedFinitePlaneGeometry(query,geometry->Plane,deepest,out);
+}
+
+bool FWorldQueryService::EvaluateCheckedFinitePlaneGeometry(const FWorldQuery& query,
+    const FBoundedPlane& plane,bool deepest,FWorldHit& out)
+{
+    if(query.Start.ContainsNaN()||query.End.ContainsNaN()||
+        (query.End-query.Start).ContainsNaN()||!FMath::IsFinite((query.End-query.Start).SizeSquared())||
+        query.Rotation.ContainsNaN()||!query.Rotation.IsNormalized()||
+        !FMath::IsFinite(query.DomainTolerance)||query.DomainTolerance<0||
+        !FMath::IsFinite(query.InitialOverlapTolerance)||query.InitialOverlapTolerance<0||
+        query.ReferenceNormal.ContainsNaN()||!FMath::IsFinite(query.MinimumReferenceNormalDot)||
+        query.MinimumReferenceNormalDot < -1||query.MinimumReferenceNormalDot>1)return false;
+    switch(query.Shape)
+    {
+    case EQueryShape::Ray:if(deepest)return false;break;
+    case EQueryShape::Sphere:
+        if(!FMath::IsFinite(query.Radius)||query.Radius<=0)return false;break;
+    case EQueryShape::Box:
+        if(query.HalfExtent.ContainsNaN()||query.HalfExtent.GetMin()<=0||
+            !FMath::IsFinite(query.HalfExtent.SizeSquared()))return false;
+        break;
+    default:return false;
+    }
+    if(deepest&&query.Start!=query.End)return false;
+    if(query.RejectsAllCollision()||(query.bExcludeAuthorityEligible&&plane.bAuthorityEligible)||
+        !PlanePassesFilter(query,plane))return true;
+    FWorldQuery effective=query;
+    if(deepest)
+    {
+        // Same pose-only operation as TryFindDeepestOverlap: no CCD release
+        // shell, no moving trajectory and no provider-eligibility mutation.
+        effective.bUseFiniteContactDomain=true;effective.InitialOverlapTolerance=0;
+    }
+    auto hit=SweepPlane(effective,plane,nullptr,nullptr,
+        deepest?EHitSelection::DeepestOverlap:EHitSelection::FirstSweepHit);
+    if(hit.bHit&&IsBetterHit(hit,FWorldHit{},
+        deepest?EHitSelection::DeepestOverlap:EHitSelection::FirstSweepHit)&&
+        HitPassesReferenceNormal(effective,hit))out=MoveTemp(hit);
+    return true;
 }
 
 FWorldHit FWorldQueryService::SweepPlane(
@@ -1994,6 +2212,8 @@ double FWorldQueryService::DistanceToCoplanarSemanticUnionBoundary(
 bool FWorldQueryService::IsPlanarSupportTranslationCertified(const FWorldQuery& Query,
 	TConstArrayView<FVector3d> Points, const FVector3d& Normal, const FVector3d& Translation) const
 {
+    RequireCurrentAnalyticNumericContext(World.NumericContract);
+
 	if (Points.IsEmpty() || Points.Num() > 4 || Normal.ContainsNaN() || Translation.ContainsNaN() ||
 		Query.RejectsAllCollision() || FMath::Abs(Normal.SizeSquared() - 1) > 64 * DBL_EPSILON) return false;
 	FBox3d Bounds(EForceInit::ForceInit);
@@ -2026,6 +2246,8 @@ bool FWorldQueryService::IsPlanarSupportTranslationCertified(const FWorldQuery& 
 void FWorldQueryService::VisitPlanarCandidates(const FWorldQuery& Query,
 	TFunctionRef<void(const FWorldHit&)> Visitor) const
 {
+    RequireCurrentAnalyticNumericContext(World.NumericContract);
+
 	if (Query.Shape != EQueryShape::Sphere || Query.Radius <= 0 || Query.RejectsAllCollision()) return;
 	FBox3d Bounds(Query.Start, Query.Start);
 	Bounds += Query.End;
@@ -2044,6 +2266,7 @@ void FWorldQueryService::VisitPlanarCandidates(const FWorldQuery& Query,
 		Candidate.MaterialId = Plane.MaterialId;
 		Candidate.SurfaceFeatureKind = EContactFeatureKind::Face;
 		Visitor(Candidate);
+        RequireCurrentAnalyticNumericContext(World.NumericContract);
 	}
 }
 
@@ -2327,8 +2550,9 @@ FWorldHit FWorldQueryService::SweepExtrudedQuintic(
 	const FExtrudedQuinticPatch& Patch, const EHitSelection Selection,
 	Private::FBoxBoundsSweepContext* CachedBoundsContext435,
     int32 InFacetLanes, int32 InMinimumFacetItems,
-    Speed::FIndependentQueryBatchStats* OutDispatch, int32* OutEvaluatedFacets)
+    Speed::FIndependentQueryBatchStats* OutDispatch, int32* OutEvaluatedFacets, const EAnalyticNumericContract NumericContract)
 {
+    RequireCurrentAnalyticNumericContext(NumericContract);
 #if !UE_BUILD_SHIPPING
 #if SL_ANALYTIC_QUERY_FINE_CPU_SCOPES659
     CaseSatDiagnostics::FScopedCpuPhase400 Phase400(CaseSatDiagnostics::ECpuPhase400::Extruded);
@@ -2723,6 +2947,7 @@ FWorldHit FWorldQueryService::SweepExtrudedQuintic(
     // Capture the existing owner environment once, before any worker dispatch.
     const Speed::FFrameFloatingPointContext OwnerNumericContext = bNumericSpeculationSafe1213
         ? Speed::CaptureFrameFloatingPointContext() : Speed::FFrameFloatingPointContext{};
+    if (bNumericSpeculationSafe1213) RequireAnalyticNumericTransfer(NumericContract,OwnerNumericContext.bValid);
     if (bNumericSpeculationSafe1213 && OwnerNumericContext.bValid)
     {
         constexpr int32 MaximumFacetBatch = 4096;
@@ -2762,16 +2987,20 @@ FWorldHit FWorldQueryService::SweepExtrudedQuintic(
                     Dispatch.NativeThreadIds[Lane] = FPlatformTLS::GetCurrentThreadId();
                     try
                     {
-                        if (!TaskScope.IsNumericContextApplied())
+                        RequireAnalyticNumericTransfer(NumericContract,TaskScope.IsNumericContextApplied());
+            if (!TaskScope.IsNumericContextApplied())
                             throw std::runtime_error("IAmSpeed facet numeric context unavailable");
+                        RequireCurrentAnalyticNumericContext(NumericContract);
                         FScopedAnalyticCycles1075 Numeric(Causal.NumericTarget(Lane));
                         for (int32 Index = WorkPlan.First(Lane); Index < WorkPlan.End(Lane); Index += WorkPlan.Stride())
+                        {
+                            RequireCurrentAnalyticNumericContext(NumericContract);
                             FacetHits[Index] = EvaluateSegment(OrderedSegments[Index], LaneContexts[Lane], nullptr, nullptr);
+                        }
                     }
                     catch (...) { Failures[Lane] = std::current_exception(); }
                     if (!TaskScope.RestoreNumericContext())
-                        Failures[Lane] = std::make_exception_ptr(std::runtime_error(
-                            "IAmSpeed facet numeric restoration failed"));
+                        Failures[Lane] = AnalyticNumericTransferException(NumericContract,EAnalyticNumericFailure::ContextRestoration,"IAmSpeed facet numeric restoration failed");
                 }, Causal.DispatchObservation());
             // A failed worker never contributes an unqualified partial hit.
             for (int32 Lane = 0; Lane < Dispatch.DispatchedLogicalLanes; ++Lane)
@@ -3324,7 +3553,11 @@ FWorldHit FWorldQueryService::TestRetainedExtrudedSweep938(
 FWorldHit FWorldQueryService::SweepTensorBezier(
 	const FWorldQuery& Query, const FBox3d& QueryBounds,
 	const FTensorBezierPatch& Patch, const double MaximumSearchTime,
-	const EHitSelection Selection)
+	const EHitSelection Selection
+#if PLATFORM_WINDOWS && defined(_MSC_VER) && defined(_M_X64) && !defined(__clang__) && !defined(_M_ARM64EC)
+    , const Private::FTensorCellObliqueIndex* CellObliqueIndex
+#endif
+    )
 {
     FScopedAnalyticCausalObservation1075 Causal(EAnalyticCausalKind1075::TensorProvider);
     Causal.SetItems(1);
@@ -3354,13 +3587,21 @@ FWorldHit FWorldQueryService::SweepTensorBezier(
 	View.bApproximationCertified = Patch.bApproximationCertified;
 	View.bAuthorityEligible = Patch.bAuthorityEligible;
 	return SweepTensorBezierApproximation(
-		Query, QueryBounds, View, MaximumSearchTime, nullptr, Selection);
+		Query, QueryBounds, View, MaximumSearchTime, nullptr, Selection
+#if PLATFORM_WINDOWS && defined(_MSC_VER) && defined(_M_X64) && !defined(__clang__) && !defined(_M_ARM64EC)
+        , CellObliqueIndex
+#endif
+        );
 }
 
 FWorldHit FWorldQueryService::SweepTensorBezierApproximation(
 	const FWorldQuery& Query, const FBox3d& QueryBounds,
 	const FTensorBezierQueryView& Patch, const double MaximumSearchTime,
-	const FVector3d* CachedBoxAxes, const EHitSelection Selection)
+	const FVector3d* CachedBoxAxes, const EHitSelection Selection
+#if PLATFORM_WINDOWS && defined(_MSC_VER) && defined(_M_X64) && !defined(__clang__) && !defined(_M_ARM64EC)
+    , const Private::FTensorCellObliqueIndex* CellObliqueIndex
+#endif
+    )
 {
     FScopedAnalyticCausalObservation1075 Causal(EAnalyticCausalKind1075::TensorApproximation);
     Causal.SetItems(0);
@@ -3388,6 +3629,76 @@ FWorldHit FWorldQueryService::SweepTensorBezierApproximation(
 	{
 		BoxSweepContext.Initialize(Query, CachedBoxAxes);
 	}
+#if !UE_BUILD_SHIPPING
+	const bool bReuseMovingSphereEdges = Query.Shape == EQueryShape::Sphere && Query.Start != Query.End &&
+		CVarTensorMovingSphereReuseEdges.GetValueOnAnyThread() != 0;
+#endif
+	static constexpr int32 CornerIndices[2][3] = {
+		{ 0, 2, 3 }, { 0, 3, 1 } };
+	const auto Smooth = [&](FWorldHit& Candidate, const FVector3d (&TriangleVertices)[3],
+		const FVector2d (&ParameterCorners)[4], int32 TriangleIndex)
+	{
+		const FVector3d A = TriangleVertices[0];
+		const FVector3d B = TriangleVertices[1];
+		const FVector3d C = TriangleVertices[2];
+		const FVector3d V0 = B - A;
+		const FVector3d V1 = C - A;
+		const FVector3d V2 = Candidate.Point - A;
+		const double D00 = FVector3d::DotProduct(V0, V0);
+		const double D01 = FVector3d::DotProduct(V0, V1);
+		const double D11 = FVector3d::DotProduct(V1, V1);
+		const double D20 = FVector3d::DotProduct(V2, V0);
+		const double D21 = FVector3d::DotProduct(V2, V1);
+		const double Denominator = D00 * D11 - D01 * D01;
+		if (FMath::Abs(Denominator) > 1.0e-18)
+		{
+			const double WeightB = (D11 * D20 - D01 * D21) /
+				Denominator;
+			const double WeightC = (D00 * D21 - D01 * D20) /
+				Denominator;
+			const double WeightA = 1.0 - WeightB - WeightC;
+			const FVector2d UV =
+				WeightA * ParameterCorners[CornerIndices[TriangleIndex][0]] +
+				WeightB * ParameterCorners[CornerIndices[TriangleIndex][1]] +
+				WeightC * ParameterCorners[CornerIndices[TriangleIndex][2]];
+			FVector3d SmoothNormal =
+				Patch.Surface->EvaluateNormal(UV.X, UV.Y);
+			if (FVector3d::DotProduct(SmoothNormal, Candidate.Normal) < 0.0)
+			{
+				SmoothNormal = -SmoothNormal;
+			}
+			if (!SmoothNormal.IsNearlyZero()) Candidate.Normal = SmoothNormal;
+			return true;
+		}
+		return false;
+	};
+#if !UE_BUILD_SHIPPING
+	const bool bRequested = CVarTensorSphereFinalNormal.GetValueOnAnyThread() != 0;
+	const bool bObserve = CVarTensorSphereFinalNormalProfile.GetValueOnAnyThread() != 0 &&
+		Query.Shape == EQueryShape::Sphere && Query.Start != Query.End;
+	const bool bEligible = (bRequested || bObserve) && Query.Shape == EQueryShape::Sphere &&
+		Query.Start != Query.End && Selection == EHitSelection::FirstSweepHit &&
+		Query.MinimumReferenceNormalDot <= -1.0 &&
+		InspectCurrentAnalyticNumericContext(EAnalyticNumericContract::Binary64NearestAllowFlush).Status ==
+			EAnalyticNumericStatus::Complete;
+	const bool bDefer = bRequested && bEligible;
+	uint64 EligibleCandidates = 0, ImmediateSmoothed = 0;
+	bool bFinalSmoothed = false;
+#endif
+#if PLATFORM_WINDOWS && defined(_MSC_VER) && defined(_M_X64) && !defined(__clang__) && !defined(_M_ARM64EC)
+    const Private::FTensorCellObliqueIndex* LegacyObliqueIndex=CellObliqueIndex;
+#if !UE_BUILD_SHIPPING
+    const auto* GenericProvider=CellObliqueIndex ? CellObliqueIndex->GenericBinding : nullptr;
+    const auto* GenericContext=CellObliqueIndex ? CellObliqueIndex->GenericQuery : nullptr;
+    if(GenericProvider)LegacyObliqueIndex=CellObliqueIndex->LegacyAlias;
+    if(GenericProvider && (GenericProvider->Cells!=Patch.ApproximationCells->GetData() || GenericProvider->CellCount!=Patch.ApproximationCells->Num()))
+    {GenericProvider=nullptr;GenericContext=nullptr;}
+#endif
+#endif
+#if PLATFORM_WINDOWS && defined(_MSC_VER) && defined(_M_X64) && !defined(__clang__) && !defined(_M_ARM64EC)
+    const double CellObliqueShell=LegacyObliqueIndex ? Query.Radius+1.e-8+(0.001+
+        1.e-9*FMath::Max(Query.Start.GetAbsMax(),Query.End.GetAbsMax())) : 0.;
+#endif
 	Causal.MarkPrepared();
 	const auto SweepCell = [&](const int32 CellIndex)
 	{
@@ -3413,8 +3724,14 @@ FWorldHit FWorldQueryService::SweepTensorBezierApproximation(
 		{
 			return;
 		}
-		static constexpr int32 CornerIndices[2][3] = {
-			{ 0, 2, 3 }, { 0, 3, 1 } };
+#if PLATFORM_WINDOWS && defined(_MSC_VER) && defined(_M_X64) && !defined(__clang__) && !defined(_M_ARM64EC)
+        if (LegacyObliqueIndex && LegacyObliqueIndex->Cells.IsValidIndex(CellIndex) &&
+            Private::IsTensorCellObliqueMiss(LegacyObliqueIndex->Cells[CellIndex],Query,CellObliqueShell)) return;
+#endif
+#if PLATFORM_WINDOWS && defined(_MSC_VER) && defined(_M_X64) && !defined(__clang__) && !defined(_M_ARM64EC) && !UE_BUILD_SHIPPING
+        if(GenericProvider && GenericContext && GenericProvider->Supports.IsValidIndex(CellIndex) &&
+            Private::TensorGenericCellStripBounds::IsMiss(GenericProvider->Supports[CellIndex],*GenericContext))return;
+#endif
 		const FVector2d ParameterCorners[4] = {
 			FVector2d(Cell.MinimumU, Cell.MinimumV),
 			FVector2d(Cell.MinimumU, Cell.MaximumV),
@@ -3551,18 +3868,25 @@ FWorldHit FWorldQueryService::SweepTensorBezierApproximation(
 			}
 			else if (Query.Shape == EQueryShape::Sphere)
 			{
-				const FVector3d TriangleFaceNormal = FVector3d::CrossProduct(
-					TriangleVertices[1] - TriangleVertices[0],
-					TriangleVertices[2] - TriangleVertices[0]);
+				const FVector3d EdgeAB = TriangleVertices[1] - TriangleVertices[0];
+				const FVector3d EdgeAC = TriangleVertices[2] - TriangleVertices[0];
+				const FVector3d TriangleFaceNormal = FVector3d::CrossProduct(EdgeAB, EdgeAC);
 				// The runtime triangle is a bilinear approximation of the
 				// certified Bezier cell.  Its Hausdorff error is carried by the
 				// cell and must enlarge the swept shell during detection; using
 				// only the triangle itself creates false-negative contacts near
 				// tangent/end-point crossings.  Keep this allowance local to the
 				// approximation cell so exact providers are unaffected.
-				if (!SweepSphereTriangleGeometry(
-					Query, TriangleVertices, TriangleFaceNormal, Candidate,
-					CurrentMaximumSearchTime()))
+				const double SearchTime = CurrentMaximumSearchTime();
+#if !UE_BUILD_SHIPPING
+				const bool bHit = bReuseMovingSphereEdges
+					? SweepSphereTriangleGeometry<true>(Query, TriangleVertices, TriangleFaceNormal,
+						Candidate, SearchTime, &EdgeAB, &EdgeAC)
+					: SweepSphereTriangleGeometry(Query, TriangleVertices, TriangleFaceNormal, Candidate, SearchTime);
+#else
+				const bool bHit = SweepSphereTriangleGeometry(Query, TriangleVertices, TriangleFaceNormal, Candidate, SearchTime);
+#endif
+				if (!bHit)
 				{
 					continue;
 				}
@@ -3607,37 +3931,16 @@ FWorldHit FWorldQueryService::SweepTensorBezierApproximation(
 			Candidate.bSurfaceNormalMayVary = true;
 			if (!Candidate.bStartPenetrating)
 			{
-				const FVector3d A = TriangleVertices[0];
-				const FVector3d B = TriangleVertices[1];
-				const FVector3d C = TriangleVertices[2];
-				const FVector3d V0 = B - A;
-				const FVector3d V1 = C - A;
-				const FVector3d V2 = Candidate.Point - A;
-				const double D00 = FVector3d::DotProduct(V0, V0);
-				const double D01 = FVector3d::DotProduct(V0, V1);
-				const double D11 = FVector3d::DotProduct(V1, V1);
-				const double D20 = FVector3d::DotProduct(V2, V0);
-				const double D21 = FVector3d::DotProduct(V2, V1);
-				const double Denominator = D00 * D11 - D01 * D01;
-				if (FMath::Abs(Denominator) > 1.0e-18)
+#if !UE_BUILD_SHIPPING
+				if (bObserve && bEligible) ++EligibleCandidates;
+				if (!bDefer)
 				{
-					const double WeightB = (D11 * D20 - D01 * D21) /
-						Denominator;
-					const double WeightC = (D00 * D21 - D01 * D20) /
-						Denominator;
-					const double WeightA = 1.0 - WeightB - WeightC;
-					const FVector2d UV =
-						WeightA * ParameterCorners[CornerIndices[TriangleIndex][0]] +
-						WeightB * ParameterCorners[CornerIndices[TriangleIndex][1]] +
-						WeightC * ParameterCorners[CornerIndices[TriangleIndex][2]];
-					FVector3d SmoothNormal =
-						Patch.Surface->EvaluateNormal(UV.X, UV.Y);
-					if (FVector3d::DotProduct(SmoothNormal, Candidate.Normal) < 0.0)
-					{
-						SmoothNormal = -SmoothNormal;
-					}
-					if (!SmoothNormal.IsNearlyZero()) Candidate.Normal = SmoothNormal;
+					const bool bSmoothed = Smooth(Candidate, TriangleVertices, ParameterCorners, TriangleIndex);
+					if (bObserve && bSmoothed) ++ImmediateSmoothed;
 				}
+#else
+				Smooth(Candidate, TriangleVertices, ParameterCorners, TriangleIndex);
+#endif
 			}
 			const bool bSameInitialOverlap = Best.bHit &&
 				Candidate.bStartPenetrating && Best.bStartPenetrating &&
@@ -3703,6 +4006,25 @@ FWorldHit FWorldQueryService::SweepTensorBezierApproximation(
 			if (Node.LeftChild != INDEX_NONE) NodeStack.Add(Node.LeftChild);
 		}
 	}
+#if !UE_BUILD_SHIPPING
+	if (bDefer && Best.bHit && !Best.bStartPenetrating)
+	{
+		const auto& Cell = (*Patch.ApproximationCells)[BestApproximationIndex];
+		const FVector3d TriangleVertices[3] = {
+			Cell.Corners[CornerIndices[BestTriangleIndex][0]],
+			Cell.Corners[CornerIndices[BestTriangleIndex][1]],
+			Cell.Corners[CornerIndices[BestTriangleIndex][2]] };
+		const FVector2d ParameterCorners[4] = {
+			FVector2d(Cell.MinimumU, Cell.MinimumV), FVector2d(Cell.MinimumU, Cell.MaximumV),
+			FVector2d(Cell.MaximumU, Cell.MinimumV), FVector2d(Cell.MaximumU, Cell.MaximumV) };
+		bFinalSmoothed = Smooth(Best, TriangleVertices, ParameterCorners, BestTriangleIndex);
+	}
+	if (bObserve && (EligibleCandidates || ImmediateSmoothed || bFinalSmoothed))
+	{
+		UE_LOG(LogTemp, Display, TEXT("[TensorSphereFinalNormal] Provider=%016llx Eligible=%d Deferred=%d EligibleCandidates=%llu ImmediateSmoothed=%llu FinalSmoothed=%d"),
+			Patch.PrimitiveId, int32(bEligible), int32(bDefer), EligibleCandidates, ImmediateSmoothed, int32(bFinalSmoothed));
+	}
+#endif
 	if (Best.bStartPenetrating && Query.Shape == EQueryShape::Box &&
 		BestApproximationIndex != INDEX_NONE &&
 		FMath::Abs(FVector3d::DotProduct(Best.Point-Best.QueryPoint,Best.Normal)-
@@ -3740,8 +4062,10 @@ FWorldHit FWorldQueryService::SweepTensorBezierApproximation(
 FWorldHit FWorldQueryService::SweepPiecewiseTensorBezier(
 	const FWorldQuery& Query, const FBox3d& QueryBounds,
 	const FPiecewiseTensorBezierPatch& Patch,
-	const double MaximumSearchTime, const EHitSelection Selection, const int32 InTensorCellLanes1213)
+	const double MaximumSearchTime, const EHitSelection Selection, const int32 InTensorCellLanes1213,
+    const EAnalyticNumericContract NumericContract)
 {
+    RequireCurrentAnalyticNumericContext(NumericContract);
     FScopedAnalyticCausalObservation1075 Causal(EAnalyticCausalKind1075::PiecewiseProvider);
     Causal.SetItems(0);
 	FWorldHit Best;
@@ -3822,11 +4146,14 @@ FWorldHit FWorldQueryService::SweepPiecewiseTensorBezier(
         {
         FScopedTensorCellEligibilityObservation1213 EligibilityObservation1213;
         const auto EntryNumeric1213=CaptureFrameFloatingPointContext();
+        RequireAnalyticNumericTransfer(NumericContract,EntryNumeric1213.bValid);
         if(EntryNumeric1213.bValid)
         {
             FScopedFrameFloatingPointContext AdmissionNumeric1213(EntryNumeric1213);
+            RequireAnalyticNumericTransfer(NumericContract,AdmissionNumeric1213.IsApplied());
             if(AdmissionNumeric1213.IsApplied())
             {
+                    RequireCurrentAnalyticNumericContext(NumericContract);
                 FBoxBoundsSweepContext AdmissionBox1213;
                 if(Query.Shape==EQueryShape::Box)AdmissionBox1213.Initialize(Query,ProviderBoxContext.Axis);
                 const double Bound1213=CurrentMaximumSearchTime();
@@ -3859,12 +4186,13 @@ FWorldHit FWorldQueryService::SweepPiecewiseTensorBezier(
                 }
             }
             if(!AdmissionNumeric1213.Restore())
-                throw std::runtime_error("IAmSpeed Tensor cell admission numeric restoration failed");
+                ThrowAnalyticNumericTransferFailure(NumericContract,EAnalyticNumericFailure::ContextRestoration,"IAmSpeed Tensor cell admission numeric restoration failed");
         }
         } // Eligibility scope closes before wave construction or any dispatch.
         const auto CaptureCellBound1213=[&](){return CurrentMaximumSearchTime();};
         const auto EvaluateCell1213=[&](int32 CellIndex1213,double Bound1213)
         {
+            RequireCurrentAnalyticNumericContext(NumericContract);
             // A complete Tensor invocation owns its local Best, stack, SAT cache,
             // causal observer and scratch. Shared provider axes are immutable.
 #if !UE_BUILD_SHIPPING
@@ -3875,7 +4203,8 @@ FWorldHit FWorldQueryService::SweepPiecewiseTensorBezier(
                 Query.Shape==EQueryShape::Box?ProviderBoxContext.Axis:nullptr,Selection);
         };
         CellWave1213.Emplace(Query,QueryBounds,CellIdentity1213,
-            Eligible1213,Eligible1213.Num(),InTensorCellLanes1213,CaptureCellBound1213,EvaluateCell1213);
+            Eligible1213,Eligible1213.Num(),InTensorCellLanes1213,CaptureCellBound1213,EvaluateCell1213,
+            ETensorCellWindowReason1534::Legacy,NumericContract);
     };
 	TArray<int32, TInlineAllocator<64>> CellNodeStack;
 	CellNodeStack.Add(0);
@@ -3890,11 +4219,14 @@ FWorldHit FWorldQueryService::SweepPiecewiseTensorBezier(
         {
             FScopedTensorCellEligibilityObservation1213 EligibilityObservation1534;
             const auto EntryNumeric1534=CaptureFrameFloatingPointContext();
+        RequireAnalyticNumericTransfer(NumericContract,EntryNumeric1534.bValid);
             if(EntryNumeric1534.bValid)
             {
                 FScopedFrameFloatingPointContext AdmissionNumeric1534(EntryNumeric1534);
+            RequireAnalyticNumericTransfer(NumericContract,AdmissionNumeric1534.IsApplied());
                 if(AdmissionNumeric1534.IsApplied())
                 {
+                    RequireCurrentAnalyticNumericContext(NumericContract);
                     FBoxBoundsSweepContext AdmissionBox1534;
                     if(Query.Shape==EQueryShape::Box)AdmissionBox1534.Initialize(Query,ProviderBoxContext.Axis);
                     const double Bound1534=CurrentMaximumSearchTime();
@@ -3932,12 +4264,13 @@ FWorldHit FWorldQueryService::SweepPiecewiseTensorBezier(
                     }
                 }
                 if(!AdmissionNumeric1534.Restore())
-                    throw std::runtime_error("IAmSpeed Tensor cell window admission numeric restoration failed");
+                    ThrowAnalyticNumericTransferFailure(NumericContract,EAnalyticNumericFailure::ContextRestoration,"IAmSpeed Tensor cell window admission numeric restoration failed");
             }
         } // Restore the exact owner flags before the existing wave constructor.
         const auto CaptureCellBound1534=[&](){return CurrentMaximumSearchTime();};
         const auto EvaluateCell1534=[&](int32 CellIndex1534,double Bound1534)
         {
+            RequireCurrentAnalyticNumericContext(NumericContract);
 #if !UE_BUILD_SHIPPING
             TGuardValue<bool> Detail1534(GAnalyticQueryDetailedTimingEnabled,false);
 #endif
@@ -3946,7 +4279,7 @@ FWorldHit FWorldQueryService::SweepPiecewiseTensorBezier(
                 Query.Shape==EQueryShape::Box?ProviderBoxContext.Axis:nullptr,Selection);
         };
         CellWave1213.Emplace(Query,QueryBounds,CellIdentity1213,Eligible1534,Eligible1534.Num(),
-            InTensorCellLanes1213,CaptureCellBound1534,EvaluateCell1534,Reason1534);
+            InTensorCellLanes1213,CaptureCellBound1534,EvaluateCell1534,Reason1534,NumericContract);
         // A small tail or any policy/numeric/executor refusal stays serial for
         // the remainder of this invocation; never repeat a suffix probe per cell.
         if(!CellWave1213->IsReady())StopCellWindows1534=true;
@@ -4267,6 +4600,8 @@ bool FWorldQueryService::IsSameQuery(
 
 bool FWorldQueryService::HasAuthorityCoverage(const FWorldQuery& Query) const
 {
+    RequireCurrentAnalyticNumericContext(World.NumericContract);
+
 	FWorldHit AuthorityHit;
 	return TrySweepAuthority(Query, AuthorityHit);
 }
@@ -4274,6 +4609,8 @@ bool FWorldQueryService::HasAuthorityCoverage(const FWorldQuery& Query) const
 bool FWorldQueryService::TrySweepAuthority(
 	const FWorldQuery& Query, FWorldHit& OutAuthorityHit) const
 {
+    RequireCurrentAnalyticNumericContext(World.NumericContract);
+
 	TRACE_CPUPROFILER_EVENT_SCOPE(IAmSpeed_AnalyticTrySweepAuthority);
 	static thread_local bool bLoggedFirstCoverageMismatch = false;
 	// AnalyticHybrid is a migration tool. The certified primitive must produce
@@ -4383,6 +4720,8 @@ FWorldHit FWorldQueryService::Sweep(const FWorldQuery& Query) const
 
 bool FWorldQueryService::TryFindDeepestOverlap(const FWorldQuery& Query, FWorldHit& OutHit) const
 {
+    RequireCurrentAnalyticNumericContext(World.NumericContract);
+
 	OutHit = FWorldHit();
 	if (Query.Start != Query.End || Query.Start.ContainsNaN() ||
 		Query.Rotation.ContainsNaN() || !Query.Rotation.IsNormalized() ||
@@ -4400,6 +4739,18 @@ bool FWorldQueryService::TryFindDeepestOverlap(const FWorldQuery& Query, FWorldH
 
 FWorldHit FWorldQueryService::QueryCached(const FWorldQuery& Query, const EHitSelection Selection) const
 {
+    const auto NumericEvidence = RequireCurrentAnalyticNumericContext(World.NumericContract);
+    if (NumericEvidence.Status == EAnalyticNumericStatus::Complete)
+    {
+        const uint64 Fingerprint = NumericEvidence.ControlFingerprint();
+        if (!bNumericCacheContextInitialized || Fingerprint != NumericCacheControlFingerprint)
+        {
+            for (auto& Cached : SweepCache) Cached.bValid = false;
+            NumericCacheControlFingerprint = Fingerprint;
+            bNumericCacheContextInitialized = true;
+        }
+    }
+
     FScopedAnalyticCausalObservation1075 Causal(EAnalyticCausalKind1075::WorldSweep);
     Causal.SetItems(1);
 	// Impossible filtered queries must not traverse providers or evict useful
@@ -4465,6 +4816,8 @@ FWorldHit FWorldQueryService::QueryCached(const FWorldQuery& Query, const EHitSe
 FWorldHit FWorldQueryService::SweepDetailed(
 	const FWorldQuery& Query, FWorldHit* OutBestTriangle, const EHitSelection Selection) const
 {
+    RequireCurrentAnalyticNumericContext(World.NumericContract);
+
     FScopedAnalyticCausalObservation1075 Causal(EAnalyticCausalKind1075::DetailedWorldQuery);
     Causal.SetItems(1);
 #if !UE_BUILD_SHIPPING
@@ -4602,7 +4955,7 @@ FWorldHit FWorldQueryService::SweepDetailed(
 					Speed::FIndependentQueryBatchStats FacetDispatch;
                     int32 EvaluatedFacets = 0;
                     Candidate = SweepExtrudedQuintic(Query, QueryBounds, Patch, Selection,
-                        SharedBoundsContext435, FacetLanes, MinimumFacetItems, &FacetDispatch, &EvaluatedFacets);
+                        SharedBoundsContext435, FacetLanes, MinimumFacetItems, &FacetDispatch, &EvaluatedFacets, World.NumericContract);
                     FacetParallelTotals.Add(FacetDispatch, EvaluatedFacets);
 				}
 				ConsiderProviderHit(Candidate);
@@ -4624,13 +4977,112 @@ FWorldHit FWorldQueryService::SweepDetailed(
 			? FPlatformTime::Seconds()
 			: 0.0;
 #endif
-		for (const FTensorBezierPatch& Patch : World.TensorBezierPatches)
+#if PLATFORM_WINDOWS && defined(_MSC_VER) && defined(_M_X64) && !defined(__clang__) && !defined(_M_ARM64EC) && !UE_BUILD_SHIPPING
+        TOptional<Private::TensorGenericCellStripBounds::FQueryContext> GenericQuery;
+        bool bGenericQueryKnown=false;
+        const Private::TensorGenericCellStripBounds::FIndex* GenericIndex=nullptr;
+        if(CVarTensorGenericCellStripBounds.GetValueOnAnyThread()==1 && TensorCellObliqueIndex && TensorCellObliqueIndex->GenericIndex &&
+            Selection==EHitSelection::FirstSweepHit && Query.Shape==EQueryShape::Sphere && Query.Start!=Query.End &&
+            Query.bAuthorityOnly && Query.bIncludeCompactPatches &&
+            (Query.Radius==12.510000228881836 || Query.Radius==17.010000228881836))
+            GenericIndex=TensorCellObliqueIndex->GenericIndex.Get();
+#endif
+		const auto SweepTensorProvider = [&](const FTensorBezierPatch& Patch)
 		{
-			if (Query.bAuthorityOnly && !Patch.bAuthorityEligible) continue;
-			if (Query.bExcludeAuthorityEligible && Patch.bAuthorityEligible) continue;
-			const FWorldHit Candidate = SweepTensorBezier(
-				Query, QueryBounds, Patch, CurrentMaximumSearchTime(), Selection);
+			if (Query.bAuthorityOnly && !Patch.bAuthorityEligible) return;
+			if (Query.bExcludeAuthorityEligible && Patch.bAuthorityEligible) return;
+#if PLATFORM_WINDOWS && defined(_MSC_VER) && defined(_M_X64) && !defined(__clang__) && !defined(_M_ARM64EC)
+#if !UE_BUILD_SHIPPING
+            // Cheap ID prefilter is not authority. Authenticated provider binding,
+            // original three guards, numeric/query scope and actual B/H follow.
+            if (Patch.PrimitiveId==0x42f0db19591de3deull &&
+                CVarTensorPanelPrefixBoundsActive.GetValueOnAnyThread()==1 &&
+                TensorCellObliqueIndex && TensorCellObliqueIndex->PrefixEnvelope &&
+                !bCollectAuthorityProviderHits && CVarTensorMovingSphereReuseEdges.GetValueOnAnyThread()!=0 &&
+                Private::IsTensorCellObliqueQuery(Query,Selection==EHitSelection::FirstSweepHit,World.NumericContract) &&
+                PatchPassesFilter(Query,Patch) && Patch.Bounds.Intersect(QueryBounds) && Patch.bApproximationCertified &&
+                Private::TensorPanelPrefixBounds::IsSeparated(*TensorCellObliqueIndex->PrefixEnvelope,Patch,Query,Best,CurrentMaximumSearchTime())) return;
+#endif
+            const Private::FTensorCellObliqueIndex* CellObliqueIndex=nullptr;
+            if (CVarTensorCellObliqueBounds.GetValueOnAnyThread()==1 && TensorCellObliqueIndex && !TensorCellObliqueIndex->Children.IsEmpty() &&
+                !bCollectAuthorityProviderHits &&
+#if !UE_BUILD_SHIPPING
+                CVarTensorMovingSphereReuseEdges.GetValueOnAnyThread()!=0 &&
+#endif
+                Private::IsTensorCellObliqueQuery(Query,Selection==EHitSelection::FirstSweepHit,World.NumericContract))
+                CellObliqueIndex=TensorCellObliqueIndex->Find(World,Patch);
+#endif
+            const FWorldHit Candidate = [&]()
+            {
+#if PLATFORM_WINDOWS && defined(_MSC_VER) && defined(_M_X64) && !defined(__clang__) && !defined(_M_ARM64EC) && !UE_BUILD_SHIPPING
+                if(GenericIndex && !CellObliqueIndex && (!bGenericQueryKnown || GenericQuery.IsSet()) &&
+                    PatchPassesFilter(Query,Patch) && Patch.Bounds.Intersect(QueryBounds) && Patch.bApproximationCertified)
+                {
+                    const auto* Provider=GenericIndex->Find(World,Patch);
+                    if(Provider)
+                    {
+                        if(!bGenericQueryKnown)
+                        {
+                            bGenericQueryKnown=true;
+                            GenericQuery.Emplace();
+                            if(!Private::TensorGenericCellStripBounds::PrepareQuery(Query,Selection==EHitSelection::FirstSweepHit,World.NumericContract,GenericQuery.GetValue()))
+                                GenericQuery.Reset();
+                        }
+                        if(GenericQuery.IsSet())
+                        {
+                            // Local non-owning binding; no shared mutable query cache or public ABI.
+                            Private::FTensorCellObliqueIndex Binding;
+                            Binding.LegacyAlias=CellObliqueIndex;
+                            Binding.GenericBinding=Provider;
+                            Binding.GenericQuery=&GenericQuery.GetValue();
+                            return SweepTensorBezier(Query,QueryBounds,Patch,CurrentMaximumSearchTime(),Selection,&Binding);
+                        }
+                    }
+                }
+#endif
+                return SweepTensorBezier(
+                    Query, QueryBounds, Patch, CurrentMaximumSearchTime(), Selection
+#if PLATFORM_WINDOWS && defined(_MSC_VER) && defined(_M_X64) && !defined(__clang__) && !defined(_M_ARM64EC)
+                    , CellObliqueIndex
+#endif
+                    );
+            }();
 			ConsiderProviderHit(Candidate);
+		};
+#if !UE_BUILD_SHIPPING
+		if (TensorProviderIndex)
+		{
+			Speed::Collision::FOrderedBoundsScratch TensorScratch;
+			const bool bUseSlabs = Query.Shape == EQueryShape::Sphere && !TensorSphereSlabs.IsEmpty() &&
+				FMath::IsFinite(Query.Radius) && !Query.Start.ContainsNaN() && !Query.End.ContainsNaN();
+			const double QueryCoordinateScale = bUseSlabs
+				? FMath::Max(1.0, FMath::Max(Query.Start.GetAbsMax(), Query.End.GetAbsMax())) : 1.0;
+			for (const int32 Index : TensorProviderIndex->FindCandidates(QueryBounds, TensorScratch))
+			{
+				if (bUseSlabs)
+				{
+					const FTensorSphereSlab& Slab = TensorSphereSlabs[Index];
+					if (Slab.Axis != INDEX_NONE)
+					{
+						const double Start = Query.Start[Slab.Axis];
+						const double End = Query.End[Slab.Axis];
+						// Every facet has the same coordinate on this axis. Test the full center segment
+						// against the same radius as SweepSphereTriangleGeometry.
+						const double Radius = FMath::Max(0.0, Query.Radius) + 1.0e-8 +
+							1.0e-9 * FMath::Max(QueryCoordinateScale, Slab.CoordinateScale);
+						const double Gap = FMath::Max(FMath::Min(Start, End) - Slab.Coordinate,
+							Slab.Coordinate - FMath::Max(Start, End));
+						if (FMath::IsFinite(Gap) && Gap > Radius) continue;
+					}
+				}
+				SweepTensorProvider(World.TensorBezierPatches[Index]);
+			}
+		}
+		else
+#endif
+		{
+			for (const FTensorBezierPatch& Patch : World.TensorBezierPatches)
+				SweepTensorProvider(Patch);
 		}
 #if !UE_BUILD_SHIPPING
 		if (bPhaseTimingEnabled)
@@ -4670,11 +5122,14 @@ FWorldHit FWorldQueryService::SweepDetailed(
                     // still executes or consumes at its original owner-loop point.
                     // Extra geometric tests leave no FP status/control behind.
                     const auto Previous1146=CaptureFrameFloatingPointContext();
+                    RequireAnalyticNumericTransfer(World.NumericContract,Previous1146.bValid);
                     if(Previous1146.bValid)
                     {
                         FScopedFrameFloatingPointContext Numeric1146(Previous1146);
+                        RequireAnalyticNumericTransfer(World.NumericContract,Numeric1146.IsApplied());
                         if(Numeric1146.IsApplied())
                         {
+                            RequireCurrentAnalyticNumericContext(World.NumericContract);
                             FBoxBoundsSweepContext AdmissionBox1146;
                             if(Query.Shape==EQueryShape::Box)AdmissionBox1146.Initialize(Query);
                             const double Bound1146=CurrentMaximumSearchTime();
@@ -4689,23 +5144,24 @@ FWorldHit FWorldQueryService::SweepDetailed(
                             }
                         }
                         if(!Numeric1146.Restore())
-                            throw std::runtime_error("IAmSpeed admission1146 numeric restoration failed");
+                            ThrowAnalyticNumericTransferFailure(World.NumericContract,EAnalyticNumericFailure::ContextRestoration,"IAmSpeed admission1146 numeric restoration failed");
                     }
                 }
             }
             const auto Bound1075=[&](){return CurrentMaximumSearchTime();};
             const auto Evaluate1075=[&](int32 Index1075,double Maximum1075)
             {
+                RequireCurrentAnalyticNumericContext(World.NumericContract);
 #if !UE_BUILD_SHIPPING
                 // A previous throwing query may leave this worker-local diagnostic
                 // flag set. Speculation has no canonical query diagnostic identity.
                 TGuardValue<bool> Detail1075(GAnalyticQueryDetailedTimingEnabled,false);
 #endif
                 return SweepPiecewiseTensorBezier(Query,QueryBounds,
-                    World.PiecewiseTensorBezierPatches[Index1075],Maximum1075,Selection,FacetLanes);
+                    World.PiecewiseTensorBezierPatches[Index1075],Maximum1075,Selection,FacetLanes,World.NumericContract);
             };
             ProviderWave1075.Emplace(Query,QueryBounds,ProviderIdentity1075,
-                Eligible1075,ProviderCandidates1075.Num(),FacetLanes,Bound1075,Evaluate1075);
+                Eligible1075,ProviderCandidates1075.Num(),FacetLanes,Bound1075,Evaluate1075,World.NumericContract);
         }
 		for (const int32 ProviderIndex : ProviderCandidates1075)
 		{
@@ -4726,10 +5182,10 @@ FWorldHit FWorldQueryService::SweepDetailed(
                         ProviderIdentity1075,Bound1075,Joined1075))return Joined1075;
                     // A tightened bound or changed context re-executes this exact
                     // provider at the original current bound, never a wider one.
-                    return SweepPiecewiseTensorBezier(Query,QueryBounds,Patch,Bound1075,Selection,FacetLanes);
+                    return SweepPiecewiseTensorBezier(Query,QueryBounds,Patch,Bound1075,Selection,FacetLanes,World.NumericContract);
                 }
                 return SweepPiecewiseTensorBezier(
-                    Query, QueryBounds, Patch, CurrentMaximumSearchTime(), Selection,FacetLanes);
+                    Query, QueryBounds, Patch, CurrentMaximumSearchTime(), Selection,FacetLanes,World.NumericContract);
             }();
 			ConsiderProviderHit(Candidate);
 		}
@@ -4891,7 +5347,13 @@ FWorldHit FWorldQueryService::SweepDetailed(
 void Speed::Analytic::FWorldQueryService::VisitTorusCandidates(const FWorldQuery& Query,
     TFunctionRef<void(const FTorusSurface&)> Visitor) const
 {
+    RequireCurrentAnalyticNumericContext(World.NumericContract);
+
     const FBox3d Bounds=SweptQueryBounds(Query);
     for (const auto& Torus:World.Tori)
-        if (TorusPassesFilter(Query,Torus) && Torus.Bounds.Intersect(Bounds)) Visitor(Torus);
+        if (TorusPassesFilter(Query,Torus) && Torus.Bounds.Intersect(Bounds))
+        {
+            Visitor(Torus);
+            RequireCurrentAnalyticNumericContext(World.NumericContract);
+        }
 }

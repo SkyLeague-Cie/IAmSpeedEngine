@@ -106,10 +106,10 @@ public:
                 if(!Apply(Changes[Cursor++]))return Valid=false;
             return true;
         }
-        bool Transition(FActionId Action,ETransition State,const FInputEdgeIdentity& Identity)
+        bool Transition(FActionId Action,ETransition TransitionState,const FInputEdgeIdentity& Identity)
         {
             if(!Valid||Action>=ActionCount||!Identity.IsValid()||Identity.Action!=Action)return false;
-            if(State==ETransition::Started)
+            if(TransitionState==ETransition::Started)
             {
                 if(Next.Activation==UINT64_MAX)return Valid=false;
                 Next.ActionActivation[Action]=++Next.Activation;Next.Started[Action]=Identity;
