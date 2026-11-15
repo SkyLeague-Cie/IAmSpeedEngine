@@ -534,5 +534,87 @@ class LinuxWorkExportTransport(unittest.TestCase):
             self.assertFalse((export/'export-manifest.json').exists())
 
 
+
+
+class ComplexSourceInventory(unittest.TestCase):
+    LEAVES = ['IAmSpeed.Simulation.ControllerInputLifecycle',
+              'IAmSpeed.Simulation.DeviceV2Lifecycle2443']
+    SOURCE = """#if WITH_DEV_AUTOMATION_TESTS
+IMPLEMENT_COMPLEX_AUTOMATION_TEST(FIAmSpeedControllerInputLifecycleTest,
+    "IAmSpeed.Simulation", EAutomationTestFlags_ApplicationContextMask | EAutomationTestFlags::EngineFilter)
+void FIAmSpeedControllerInputLifecycleTest::GetTests(TArray<FString>& Names, TArray<FString>& Commands) const
+{
+    Names.Add(TEXT("ControllerInputLifecycle")); Commands.Add(TEXT("Legacy"));
+    Names.Add(TEXT("DeviceV2Lifecycle2443")); Commands.Add(TEXT("DeviceV2Lifecycle2443"));
+}
+#endif
+"""
+
+    def source_manifest(self, code=None, other_files=None):
+        with tempfile.TemporaryDirectory(dir=Path(ci.__file__).parent) as temporary:
+            root=Path(temporary)
+            baseline='\n'.join('IMPLEMENT_SIMPLE_AUTOMATION_TEST(FBase%d,"%s",0)' % pair
+                               for pair in enumerate(sorted(ci.REQUIRED)))
+            (root/'Baseline.cpp').write_text(baseline)
+            if code is not None:
+                controller=root/'IAmSpeed/World/Simulation/ControllerInputLifecycleTests.cpp'
+                controller.parent.mkdir(parents=True)
+                controller.write_text(code)
+            for relative, content in (other_files or {}).items():
+                path=root/relative
+                path.parent.mkdir(parents=True,exist_ok=True)
+                path.write_text(content)
+            return ci.source_test_manifest(root)
+
+    def test_exact_two_complex_leaves_are_retained(self):
+        self.assertEqual(self.source_manifest(self.SOURCE),sorted(ci.REQUIRED|set(self.LEAVES)))
+
+    def test_complex_leaf_or_command_drift_is_blocking(self):
+        for code in [self.SOURCE.replace('Names.Add(TEXT("DeviceV2Lifecycle2443"));',''),
+                     self.SOURCE.replace('Commands.Add(TEXT("Legacy"));',''),
+                     self.SOURCE.replace('TEXT("Legacy")','TEXT("Unknown")'),
+                     self.SOURCE.replace('TEXT("Legacy")','TEXT("Legacy ")'),
+                     self.SOURCE.replace('TEXT("DeviceV2Lifecycle2443")','TEXT("DeviceV2 Lifecycle2443")'),
+                     self.SOURCE.replace('"IAmSpeed.Simulation"','"IAmSpeed.Other"'),
+                     self.SOURCE.replace('EAutomationTestFlags::EngineFilter','EAutomationTestFlags::EditorContext'),
+                     self.SOURCE.replace('\n}\n','\nNames.Add(TEXT("Third"));Commands.Add(TEXT("Third"));\n}\n')]:
+            with self.subTest(code=code), self.assertRaises(ValueError):
+                self.source_manifest(code)
+
+    def test_unknown_complex_class_or_path_is_blocking(self):
+        for relative, code in [('Unknown.cpp',self.SOURCE),
+                              ('Unknown.cpp','IMPLEMENT_COMPLEX_AUTOMATION_TEST(FOther,"IAmSpeed.Other",0)')]:
+            with self.subTest(relative=relative),self.assertRaises(ValueError):
+                self.source_manifest(other_files={relative:code})
+
+    def test_inline_tests_and_windows_guards_keep_linux_else(self):
+        files={'Root.cpp':'#include "Nested.inl"',
+               'Nested.inl':'#if PLATFORM_WINDOWS\nIMPLEMENT_SIMPLE_AUTOMATION_TEST(FWin,"IAmSpeed.Windows",0)\n#else\n#include "Leaf.inl"\n#endif',
+               'Leaf.inl':'IMPLEMENT_SIMPLE_AUTOMATION_TEST(FLinux,"IAmSpeed.LinuxInline",0)'}
+        self.assertEqual(self.source_manifest(other_files=files),sorted(ci.REQUIRED|{'IAmSpeed.LinuxInline'}))
+
+    def test_unknown_platform_around_complex_test_is_blocking(self):
+        with self.assertRaisesRegex(ValueError,'Platform test registration'):
+            self.source_manifest('#if PLATFORM_FUTURE\n'+self.SOURCE+'\n#endif')
+
+    def test_orphan_cyclic_duplicate_and_unresolved_inline_are_blocking(self):
+        registration='IMPLEMENT_SIMPLE_AUTOMATION_TEST(FInline,"IAmSpeed.Inline",0)'
+        cases=[{'Orphan.inl':registration},
+               {'Root.cpp':'#include "Loop.inl"','Loop.inl':'#include "Loop.inl"'},
+               {'Root.cpp':'#include "Twice.inl"\n#include "Twice.inl"','Twice.inl':registration},
+               {'Root.cpp':'#include "Missing.inl"'}]
+        for files in cases:
+            with self.subTest(files=files),self.assertRaises(ValueError):
+                self.source_manifest(other_files=files)
+
+    def test_missing_native_registry_leaf_and_extra_leaf_are_blocking(self):
+        raw=dict(succeeded=2,succeededWithWarnings=0,failed=0,notRun=0,inProcess=0,
+                 tests=[dict(fullTestPath=name,state='Success',warnings=0,errors=0) for name in self.LEAVES])
+        log='Automation Test Queue Empty 2 tests performed.'
+        ci.validate_report(0,log,raw,required=set(),expected_paths=self.LEAVES)
+        for names in [self.LEAVES[:1],self.LEAVES+['IAmSpeed.Simulation.Absent']]:
+            with self.subTest(names=names),self.assertRaises(ValueError):
+                ci.validate_report(0,log,raw,required=set(),expected_paths=names)
+
 if __name__ == '__main__':
     unittest.main()

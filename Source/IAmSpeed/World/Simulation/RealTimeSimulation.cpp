@@ -4,6 +4,7 @@
 #include "CanonicalFrameContext.h"
 #if !UE_BUILD_SHIPPING
 #include "IAmSpeed/World/Subsystem/SpeedWorldSubsystem.h"
+#include "IAmSpeed/World/Analytic/ReplayTypedClock918.h"
 #endif
 #if !UE_BUILD_SHIPPING
 #include "IAmSpeed/IAmSpeed.h"
@@ -18,6 +19,8 @@ namespace
 	constexpr double MaximumIntervalRecoveryFraction = 0.25;
 
 #if !UE_BUILD_SHIPPING
+    TAutoConsoleVariable<int32> CVarRealTimeLatePulseTiming(
+        TEXT("p.IAmSpeed.Simulation.RealTimeLatePulseTiming"),0,TEXT("Attribute real-time starts to the preceding owned pulse. 1: >25 ms. 2: >4 ms plus sparse samples."));
 	TAutoConsoleVariable<int32> CVarRealTimeCadenceWarnings(
 		TEXT("p.IAmSpeed.Simulation.RealTimeCadenceWarnings"), 1,
 		TEXT("Reports worker-start and game-thread snapshot cadence anomalies."));
@@ -193,8 +196,26 @@ ESimulationWorkerResult ARealTimeSimulation::DriveOwnedWorkerPulse(
 #if !UE_BUILD_SHIPPING
     ActivePublicationTiming = {PacingEpoch.load(std::memory_order_relaxed), FrameStartSeconds, true};
     ON_SCOPE_EXIT { ActivePublicationTiming = {}; };
+    using namespace Speed::Analytic::Private;
+    const int32 timingMode=CVarRealTimeLatePulseTiming.GetValueOnAnyThread();
+    const bool timing=timingMode==1||timingMode==2;
+    const auto cpuStart=timing?ReadReplayClock918(EReplayClock918::ThreadCycleAccounting):FReplayClockRead918{};
+    struct FPreviousPulse
+    {
+        const ARealTimeSimulation* Owner=nullptr;
+        uint64 Epoch=0,CanonicalAfter=0,Cycles=0;
+        double Elapsed=0.;
+        bool CpuValid=false;
+        FSpeedStepDiagnostics Step;
+    };
+    static thread_local FPreviousPulse previous;
 #endif
 	const ESimulationWorkerResult Result = DriveSimulation(DeltaTime, SimTime);
+#if !UE_BUILD_SHIPPING
+    const double pulseElapsed=timing?FPlatformTime::Seconds()-FrameStartSeconds:0.;
+    const auto cpuEnd=timing?ReadReplayClock918(EReplayClock918::ThreadCycleAccounting):FReplayClockRead918{};
+    if(!timing||Result!=ESimulationWorkerResult::Advanced)previous={};
+#endif
 	if (Result == ESimulationWorkerResult::Advanced)
 	{
 		const double RecoveryWindowSeconds = FMath::Max(0.0,
@@ -203,6 +224,32 @@ ESimulationWorkerResult ARealTimeSimulation::DriveOwnedWorkerPulse(
 #if !UE_BUILD_SHIPPING
 		const FRealTimeFramePacer::FFrameStartSample Sample = FramePacer.BeginFrame(
 			FrameStartSeconds, static_cast<double>(RealDeltaTime), RecoveryWindowSeconds);
+        if(timing)
+        {
+            const uint64 epoch=PacingEpoch.load(std::memory_order_relaxed);
+            const bool report=timingMode==1?Sample.IntervalSeconds>.025:
+                (Sample.IntervalSeconds>.004||(CanonicalNumFrame%64u)==0);
+            if(previous.Owner==this&&previous.Epoch==epoch&&CanonicalNumFrame>0&&
+                previous.CanonicalAfter==CanonicalNumFrame-1u&&Sample.bHasPreviousStart&&report)
+            {
+                const auto& step=previous.Step;
+                UE_LOG(SpeedPhysicsLog,Display,TEXT("[RealTimeLatePulseTiming] FrameAfter=%llu IntervalMs=%.6f PreviousPulseMs=%.6f OutsidePulseMs=%.6f TargetMs=%.6f PulsePastTargetMs=%.6f OutsidePastTargetMs=%.6f PreviousThreadCycles=%llu CpuValid=%d StepKnown=%d StepMs=%.6f SweepMs=%.6f ResolveMs=%.6f IntegrateMs=%.6f ProjectionMs=%.6f PostMs=%.6f StadiumMs=%.6f StaticQueries=%u"),
+                    CanonicalNumFrame,Sample.IntervalSeconds*1000.,previous.Elapsed*1000.,
+                    (Sample.IntervalSeconds-previous.Elapsed)*1000.,Sample.TargetIntervalSeconds*1000.,
+                    FMath::Max(0.,previous.Elapsed-Sample.TargetIntervalSeconds)*1000.,
+                    FMath::Max(0.,Sample.IntervalSeconds-FMath::Max(previous.Elapsed,Sample.TargetIntervalSeconds))*1000.,
+                    previous.Cycles,int32(previous.CpuValid),
+                    int32(step.Serial!=0),step.TotalMilliseconds,step.SweepMilliseconds,step.ResolveMilliseconds,
+                    step.IntegrateMilliseconds,step.ProjectionMilliseconds,step.PostMilliseconds,step.StaticAuthorityMilliseconds,step.StaticQueryCount);
+            }
+            const auto cycles=DifferenceReplayClock918(cpuStart,cpuEnd);
+            previous={this,epoch,CanonicalNumFrame,cycles.Raw,pulseElapsed,cycles.bValid,{}};
+            if(SpeedWorldSubsystem&&CanonicalNumFrame>0&&CanonicalNumFrame-1u<=MAX_uint32)
+            {
+                const auto& step=SpeedWorldSubsystem->GetLastStepDiagnostics();
+                if(step.Serial&&step.Frame==CanonicalNumFrame-1u)previous.Step=step;
+            }
+        }
 		AuditPhysicalFrameStart(Sample);
         if (Speed::CanonicalFrameDriver::IsEnabled())
         {

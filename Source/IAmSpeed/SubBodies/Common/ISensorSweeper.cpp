@@ -1,4 +1,5 @@
 #include "ISensorSweeper.h"
+#include "Engine/World.h"
 #include "IAmSpeed/World/Analytic/AnalyticWorldQuery.h"
 #include "IAmSpeed/World/Analytic/StaticWorldQueryAudit.h"
 

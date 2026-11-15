@@ -57,14 +57,16 @@ namespace
         {ProviderBounds.Append(Bounds.GetData(),Bounds.Num());Order=AllIndices;Nodes.Reserve(Bounds.Num()*2);Build(0,Bounds.Num());}
         TConstArrayView<int32> FindCandidates(const FBox3d& Bounds,FOrderedBoundsScratch& Scratch) const override
         {
+            Scratch.NodesVisited=Scratch.ProviderBoundsTested=0;
             if(!IsFiniteBounds(Bounds))return AllIndices;
             Scratch.Ordered.Reset();TArray<int32,TInlineAllocator<64>> Stack;Stack.Add(0);
             while(!Stack.IsEmpty())
             {
-                const auto& Node=Nodes[Stack.Pop(EAllowShrinking::No)];if(!Node.Bounds.Intersect(Bounds))continue;
+                const auto& Node=Nodes[Stack.Pop(EAllowShrinking::No)];++Scratch.NodesVisited;
+                if(!Node.Bounds.Intersect(Bounds))continue;
                 if(Node.Left!=INDEX_NONE){Stack.Add(Node.Right);Stack.Add(Node.Left);continue;}
                 for(int32 I=Node.Begin;I<Node.Begin+Node.Count;++I)
-                    if(ProviderBounds[Order[I]].Intersect(Bounds))Scratch.Ordered.Add(Order[I]);
+                {++Scratch.ProviderBoundsTested;if(ProviderBounds[Order[I]].Intersect(Bounds))Scratch.Ordered.Add(Order[I]);}
             }
             Scratch.Ordered.Sort();return Scratch.Ordered;
         }
@@ -173,6 +175,13 @@ FOrderedBoundsIndex::FOrderedBoundsIndex(const int32 Count)
 {
 	AllIndices.SetNumUninitialized(Count);
 	for (int32 Index = 0; Index < Count; ++Index) AllIndices[Index] = Index;
+}
+
+TSharedRef<const FOrderedBoundsIndex> FOrderedBoundsIndex::CreateBvh(TConstArrayView<FBox3d> Bounds)
+{
+    if(Bounds.IsEmpty())return MakeShared<FLinearBoundsIndex>(Bounds.Num());
+    for(const auto& Bound:Bounds)if(!IsFiniteBounds(Bound))return MakeShared<FLinearBoundsIndex>(Bounds.Num());
+    return MakeShared<FBvhBoundsIndex>(Bounds);
 }
 
 TSharedRef<const FOrderedBoundsIndex> FOrderedBoundsIndex::Create(TConstArrayView<FBox3d> Bounds)

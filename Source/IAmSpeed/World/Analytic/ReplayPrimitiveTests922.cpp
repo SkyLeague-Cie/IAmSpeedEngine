@@ -1,3 +1,4 @@
+#include "CoreTypes.h"
 #if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
 #include "ExactCrossReplayKernels913.h"
 #include "ReplayTypedClock918.h"

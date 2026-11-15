@@ -8,6 +8,7 @@
 #include <map>
 #include <set>
 
+namespace Speed::PreparationPrefix {class FClosedSourceProducer;}
 namespace Speed::Input::V2
 {
 struct FSessionActor
@@ -71,6 +72,7 @@ struct FRegistryLimits
 class FInputSessionCommands final
 {
     friend class FInputSessionRegistry;
+    friend class Speed::PreparationPrefix::FClosedSourceProducer;
 public:
     explicit FInputSessionCommands(FRegistryLimits InLimits = {}) : Limits(InLimits), Publisher(std::this_thread::get_id()) {}
     ECommandAdmission Submit(const FBoundaryCommandDescriptor& C)
@@ -275,6 +277,172 @@ public:
         for (const auto& P:Sessions) Published->Phases.push_back({P.first,P.second.Description.Epoch,P.second.Phase});
         return Published;
     }
+    struct FFreshExactScenarioSeed
+    {
+        std::shared_ptr<const FInputRegistryView> Registry;
+        FInputFrame Seed;
+        FContractFingerprint BindingFingerprint;
+    };
+    // Initial exact-scenario route only. No producer lifecycle, Poll, token,
+    // publication, boundary service or actor callback is performed here.
+    std::optional<FFreshExactScenarioSeed> InspectFreshExactScenarioSeed(
+        FFrameNumber N, const FInputRegistryView& Expected) const
+    {
+        if (!IsWorker() || FPresentationInputScope::IsActive() || Terminal || Pending || Waiting ||
+            Replaying || Installed || Begun || Latest || InitialReceipt || HistoricalInitial ||
+            Expected.Terminal || Expected.WorkerGeneration != WorkerGeneration ||
+            Expected.Version != View->Version || View->Terminal ||
+            Sessions.size() != 1 || View->Bindings.size() != 1 ||
+            Expected.Bindings.size() != 1 || Expected.Phases.size() != 1)
+            return {};
+        try
+        {
+            std::lock_guard<std::mutex> Lock(Commands->Gate);
+            if (Commands->StopRequested || !Commands->Queue.empty()) return {};
+            for (const auto& H : History) if (H) return {};
+            const auto& S = Sessions.begin()->second;
+            const auto& D = S.Description;
+            const auto& Phase = Expected.Phases.front();
+            if (!S.Owner || S.Token || S.Journal || S.ResumeGeneration || S.AcquisitionFence ||
+                S.Phase != ESessionPhase::Active || Phase.Phase != S.Phase ||
+                Phase.Session != D.Id || Phase.Epoch != D.Epoch || D.First != N ||
+                D.Kind != EProducerContract::ExactScenario || D.Actors.size() != 1 ||
+                D.Scenario.size() != 1 || D.Journal || D.ResumeRearmMask ||
+                !FInputSessionCommands::ExactPolicy(D.Kind, D.Processing)) return {};
+            // Compare complete canonical values, not ReadRegistry's freshly
+            // allocated shared_ptr or its possibly older private phase vector.
+            const auto Encode = [&](const FSessionDescriptor& Binding)
+            {
+                FBoundaryCommandDescriptor C; C.Binding = Binding;
+                return FInputSessionCommands::Canonical(C, Commands->Limits);
+            };
+            const auto Actual = Encode(D);
+            const auto Published = Encode(View->Bindings.front());
+            const auto Requested = Encode(Expected.Bindings.front());
+            if (!Actual || !Published || !Requested || *Actual != *Published || *Actual != *Requested) return {};
+            FOwnerInputBinding Binding{D.Id, {EProducerKind::Device, D.Producer},
+                {D.Epoch}, D.Contract, D.Processing, D.Kind};
+            const auto Seed = S.Owner->InspectFreshExactScenarioSeed(N, Binding);
+            if (!Seed) return {};
+            auto ActualSeed = D; ActualSeed.Scenario = {*Seed};
+            const auto Inspected = Encode(ActualSeed);
+            if (!Inspected || *Inspected != *Actual) return {};
+            auto Observed = std::make_shared<FInputRegistryView>(*View);
+            Observed->Phases = {{D.Id, D.Epoch, S.Phase}};
+            return FFreshExactScenarioSeed{std::move(Observed), *Seed, S.Owner->GetBindingFingerprint()};
+        }
+        catch (...) { return {}; }
+    }
+
+    struct FPreparationSessionReadValues
+    {
+        std::uint64_t MapKey = 0, ResumeGeneration = 0, AcquisitionFence = 0;
+        ESessionPhase Phase = ESessionPhase::CancelPending;
+        bool JournalPresent = false, TokenPresent = false;
+        std::vector<std::uint8_t> DescriptorCanonical;
+        std::optional<FSameFrameInputOwner::FPreparationReadValues> Owner;
+    };
+    struct FPreparationCommandReadValues
+    {
+        std::uint64_t MapKey = 0, Digest = 0;
+        std::vector<std::uint8_t> DescriptorCanonical;
+        FBoundaryReceipt Receipt;
+    };
+    struct FPreparationReadValues
+    {
+        std::shared_ptr<const FInputRegistryView> Registry;
+        std::shared_ptr<const FRegistryFrame> Latest, Initial, HistoricalInitial;
+        std::vector<std::shared_ptr<const FRegistryFrame>> History;
+        // Pending is mutable until InstallAll. Copy its vector of fanout
+        // values while preserving the REAL immutable snapshot handles.
+        // This copy's address is never a registry/frame identity.
+        std::shared_ptr<const FRegistryFrame> PendingFrameCopy;
+        std::vector<FPreparationSessionReadValues> Sessions;
+        std::vector<std::vector<std::uint8_t>> PublishedDescriptorsCanonical;
+        std::vector<FPreparationCommandReadValues> Commands;
+        std::deque<std::uint64_t> Queue;
+        std::map<std::uint64_t, std::uint64_t> LastEpoch;
+        std::uint64_t WorkerGeneration = 0, Constructed = 0, Destroyed = 0;
+        std::uint64_t CommandHighId = 0;
+        std::size_t HistoryCount = 0, JournalsCount = 0;
+        std::size_t ReplayPlanCount = 0, ReplayIndex = 0;
+        std::optional<std::uint64_t> Waiting;
+        bool Terminal = false, Installed = false, Begun = false;
+        bool Replaying = false, StopRequested = false;
+        FRegistryFrameFailure LastFailure;
+    };
+    // Pure inspection BETWEEN transitions, never from inside Commands->Gate.
+    // No Poll/Install/Begin/Abort/getter on a producer, token copy, publication,
+    // GT thread bypass, source authority or successful phase follows.
+    std::optional<FPreparationReadValues> ReadPreparationValuesOnWorker(std::size_t MaxDescriptorBytes) const noexcept
+    {
+        if (!IsWorker() || FPresentationInputScope::IsActive() || !Commands) return {};
+        try
+        {
+            std::unique_lock<std::mutex> Lock(Commands->Gate, std::try_to_lock);
+            if (!Lock.owns_lock() || !View || !MaxDescriptorBytes ||
+                Sessions.size() > 1 || View->Bindings.size() > 1 ||
+                Commands->Records.size() > 1 || Commands->Queue.size() > 1 ||
+                !Journals.empty() || Replaying || !ReplayPlan.empty() ||
+                History.size() > Commands->Limits.Frames) return {};
+            for (const auto& H : History) if (H) return {};
+            std::size_t RemainingDescriptorBytes = MaxDescriptorBytes;
+            for (const auto& P : Commands->Records)
+            {
+                if (P.second.Bytes.size() > RemainingDescriptorBytes) return {};
+                RemainingDescriptorBytes -= P.second.Bytes.size();
+            }
+            FPreparationReadValues R;
+            R.Registry = View;
+            R.Latest = Latest; R.Initial = InitialReceipt; R.HistoricalInitial = HistoricalInitial;
+            R.History = History;
+            for (const auto& H : History) if (H) ++R.HistoryCount;
+            if (Pending) R.PendingFrameCopy = std::make_shared<const FRegistryFrame>(*Pending);
+            R.WorkerGeneration = WorkerGeneration; R.Constructed = Constructed; R.Destroyed = Destroyed;
+            R.Terminal = Terminal; R.Installed = Installed; R.Begun = Begun;
+            R.Replaying = Replaying; R.Waiting = Waiting;
+            R.ReplayPlanCount = ReplayPlan.size(); R.ReplayIndex = ReplayIndex;
+            R.JournalsCount = Journals.size(); R.LastEpoch = LastEpoch; R.LastFailure = LastFrameFailure;
+            R.StopRequested = Commands->StopRequested; R.CommandHighId = Commands->HighId;
+            R.Queue = Commands->Queue;
+            for (const auto& P : Commands->Records)
+                R.Commands.push_back({P.first, P.second.Digest, P.second.Bytes, P.second.Receipt});
+            const auto Encode = [&](const FSessionDescriptor& D)
+            {
+                FBoundaryCommandDescriptor C; C.Binding = D;
+                FRegistryLimits L = Commands->Limits;
+                L.DescriptorBytes = std::min(L.DescriptorBytes, RemainingDescriptorBytes);
+                auto Bytes = FInputSessionCommands::Canonical(C, L);
+                if (!Bytes || Bytes->size() > RemainingDescriptorBytes) return std::optional<std::vector<std::uint8_t>>{};
+                RemainingDescriptorBytes -= Bytes->size();
+                return Bytes;
+            };
+            for (const auto& D : View->Bindings)
+            {
+                auto Bytes = Encode(D); if (!Bytes) return {};
+                R.PublishedDescriptorsCanonical.push_back(std::move(*Bytes));
+            }
+            for (const auto& P : Sessions)
+            {
+                const auto& S = P.second;
+                FPreparationSessionReadValues V;
+                V.MapKey = P.first; V.Phase = S.Phase;
+                V.ResumeGeneration = S.ResumeGeneration; V.AcquisitionFence = S.AcquisitionFence;
+                V.JournalPresent = bool(S.Journal); V.TokenPresent = bool(S.Token);
+                auto Bytes = Encode(S.Description); if (!Bytes) return {};
+                V.DescriptorCanonical = std::move(*Bytes);
+                if (S.Owner)
+                {
+                    V.Owner = S.Owner->ReadPreparationValuesForRegistry(S.Token ? &*S.Token : nullptr);
+                    if (!V.Owner) return {};
+                }
+                R.Sessions.push_back(std::move(V));
+            }
+            return R;
+        }
+        catch (...) { return {}; }
+    }
+
     std::uint64_t ConstructionCount() const noexcept { return IsWorker() ? Constructed : 0; }
     std::uint64_t DestructionCount() const noexcept { return IsWorker() ? Destroyed : 0; }
     bool IsTerminal() const noexcept { return !IsWorker() || Terminal; }

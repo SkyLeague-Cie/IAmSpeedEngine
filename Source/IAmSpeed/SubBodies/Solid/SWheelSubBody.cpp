@@ -2,6 +2,10 @@
 
 
 #include "SWheelSubBody.h"
+#include "IAmSpeed/World/Collision/BackboardNativeTrace.h"
+#include "IAmSpeed/World/Collision/PreparedNativeOwnerPoseMutation.h"
+#include "IAmSpeed/World/Collision/PreparedNativeWheelProbe.h"
+#include "Engine/World.h"
 #include "IAmSpeed/World/Analytic/AnalyticWorldQuery.h"
 #include "CylinderSubBody.h"
 #include "CylinderSweep.h"
@@ -342,8 +346,10 @@ void USWheelSubBody::UpdateKinematicsFromOwner(const SKinematic& ParentKinematic
 {
     Super::UpdateKinematicsFromOwner(ParentKinematic);
 
+    const float ActualSpringDisplacement = SpringDisplacement();
+    Speed::PreparedExecution::FNativePlanarResponseCommitScope::BeforeNativeWheelSpringWrite(*this,ParentKinematic,Kinematics,ActualSpringDisplacement);
     const FVector SuspensionOffset = ParentKinematic.Rotation.RotateVector(
-        SpringDisplacement() * FVector::UpVector);
+        ActualSpringDisplacement * FVector::UpVector);
     Kinematics.Location += SuspensionOffset;
     Kinematics.Velocity = ParentKinematic.Velocity + FVector::CrossProduct(
         ParentKinematic.AngularVelocity,
@@ -445,6 +451,7 @@ void USWheelSubBody::SweepSuspension(const float& delta)
 bool USWheelSubBody::SweepSuspensionAlongNormal(
     const FVector& Normal, const float SearchDistance, const float Delta, SHitResult& OutHit) const
 {
+    Speed::PreparedExecution::FNativeWheelProbeScope PreparedProbe(*this,Delta);
     UWorld* World = GetWorld();
     const FVector SweepNormal = Normal.GetSafeNormal();
     if (!World || !ParentComponent || SweepNormal.IsNearlyZero() || SearchDistance <= 0.0f)
@@ -464,6 +471,8 @@ bool USWheelSubBody::SweepSuspensionAlongNormal(
 	const FVector CurrentPos = WorldPos();
 	const FVector Start = CurrentPos + SearchDistance * SweepNormal;
 	const FVector End = CurrentPos - SearchDistance * SweepNormal;
+    if(PreparedProbe.IsActive())return PreparedProbe.Sweep(Start,End,Kinematics.Rotation,GetCollisionShape(),Params,
+        Speed::Analytic::EStaticQuerySite::WheelEstablishedSupportProbe,OutHit);
 	bool bHit = false;
 	Speed::Analytic::FWorldHit AnalyticHit;
 	const bool bUsedAnalyticAuthority =
@@ -514,7 +523,7 @@ bool USWheelSubBody::SweepSuspensionAlongNormal(
 }
 
 void USWheelSubBody::GetSuspensionSweepSegment(
-    const float Delta, FVector& OutStart, FVector& OutEnd) const
+    const float Delta, FVector& OutStart, FVector& OutEnd, float* ObservedPrediction) const
 {
     const FTransform ChassisTM(
         ParentComponent->GetPhysRotation(), ParentComponent->GetPhysLocation());
@@ -522,6 +531,7 @@ void USWheelSubBody::GetSuspensionSweepSegment(
     const FVector WorldRest = ChassisTM.TransformPosition(GetLocalOffset());
     OutStart = WorldRest + SuspensionMaxRaise() * CarUp;
     const float NewDisplacement = PredictNextDisplacement(Delta);
+    if (ObservedPrediction) *ObservedPrediction = NewDisplacement;
     OutEnd = WorldPos()
         + (NewDisplacement - SpringDisplacement() - CollisionMargin()) * CarUp;
 }
@@ -546,6 +556,7 @@ bool USWheelSubBody::TryCaptureGroundQuery1075(
 bool USWheelSubBody::ProbeSuspensionOnGround(
     SHitResult& OutHit, const float Delta) const
 {
+    Speed::PreparedExecution::FNativeWheelProbeScope PreparedProbe(*this,Delta);
     UWorld* World = GetWorld();
     if (!World || !ParentComponent)
     {
@@ -555,7 +566,34 @@ bool USWheelSubBody::ProbeSuspensionOnGround(
     Speed::Analytic::FScopedAnalyticPrefetchConsumer1075 Consumer(this, Delta);
     FVector Start = FVector::ZeroVector;
     FVector End = FVector::ZeroVector;
+#if !UE_BUILD_SHIPPING
+    const int32 TraceSequence = Speed::BackboardNativeTrace::Take(ParentComponent->GetPhysCOM());
+    float ObservedPrediction = 0.0f;
+    GetSuspensionSweepSegment(Delta, Start, End, TraceSequence ? &ObservedPrediction : nullptr);
+    const float TraceDisplacement = TraceSequence ? GetLastDisplacement() : 0.0f;
+    const auto ObserveActualProbe = [&](bool Result, const TCHAR* Backend)
+    {
+        if (!TraceSequence) return;
+        const SHitResult NoHit;
+        const SHitResult& Hit = Result ? OutHit : NoHit;
+        const auto& Pose = ParentComponent->GetKinematicState();
+        UE_LOG(WheelSubBodyLog, Display,
+            TEXT("[BackboardWheelProbeExact] %s Wheel=%d Backend=%s Dt=%.17g Result=%d Start=%s End=%s Radius=%.17g LastDisp=%.17g PredictedDisp=%.17g Up=%s COM=%s Q=%s V=%s W=%s Source=%016llx Surface=%016llx Feature=%016llx Primitive=%016llx Group=%016llx TOI=%.17g HitLocation=%s HitPoint=%s HitNormal=%s ErrorCm=%.17g"),
+            *Speed::BackboardNativeTrace::Identity(TraceSequence, ParentComponent->NumFrame(), ParentComponent, this,
+                ParentComponent->GetPublishedSimulationStableId(), ParentComponent->GetSubBodies().IndexOfByKey(this), GetWorld()),
+            Idx(), Backend, double(Delta), int(Result),
+            *Speed::BackboardNativeTrace::Vector(Start), *Speed::BackboardNativeTrace::Vector(End),
+            double(GetCollisionShape().GetSphereRadius()), double(TraceDisplacement), double(ObservedPrediction),
+            *Speed::BackboardNativeTrace::Vector(ParentComponent->GetPhysUpVector()),
+            *Speed::BackboardNativeTrace::Vector(Pose.Location), *Speed::BackboardNativeTrace::Quat(Pose.Rotation),
+            *Speed::BackboardNativeTrace::Vector(Pose.Velocity), *Speed::BackboardNativeTrace::Vector(Pose.AngularVelocity),
+            Hit.SourceId, Hit.SurfaceId, Hit.FeatureId, Hit.PrimitiveId, Hit.CanonicalGroupId, double(Hit.TOI),
+            *Speed::BackboardNativeTrace::Vector(Hit.Location), *Speed::BackboardNativeTrace::Vector(Hit.ImpactPoint),
+            *Speed::BackboardNativeTrace::Vector(Hit.ImpactNormal), double(Hit.GeometricErrorBoundCm));
+    };
+#else
     GetSuspensionSweepSegment(Delta, Start, End);
+#endif
 
     FCollisionQueryParams Params(NAME_None, false);
     Params.bReturnFaceIndex = true;
@@ -565,6 +603,15 @@ bool USWheelSubBody::ProbeSuspensionOnGround(
         Params.AddIgnoredActor(VehicleOwner);
     }
 
+    if (PreparedProbe.IsActive())
+    {
+        const bool Result = PreparedProbe.Sweep(Start, End, Kinematics.Rotation, GetCollisionShape(), Params,
+            Speed::Analytic::EStaticQuerySite::WheelSuspensionProbe, OutHit);
+#if !UE_BUILD_SHIPPING
+        ObserveActualProbe(Result, TEXT("prepared"));
+#endif
+        return Result;
+    }
     FHitResult UnrealHit;
 	bool bHit = false;
 	Speed::Analytic::FWorldHit AnalyticHit;
@@ -603,6 +650,9 @@ bool USWheelSubBody::ProbeSuspensionOnGround(
 		static_cast<uint8>(GetCollisionChannel()), GetResponseParams(), bHit, UnrealHit);
 	if (!bHit)
     {
+#if !UE_BUILD_SHIPPING
+        ObserveActualProbe(false, bUsedAnalyticAuthority ? TEXT("analytic") : TEXT("unreal"));
+#endif
 		if (bUsedAnalyticAuthority && CVarSkyLeagueSuspensionForceDebug.GetValueOnAnyThread() != 0)
 		{
 			UE_LOG(WheelSubBodyLog, Warning,
@@ -624,6 +674,9 @@ bool USWheelSubBody::ProbeSuspensionOnGround(
 			AnalyticHit, Delta, UnrealHit.Component.Get())
 		: SHitResult::FromUnrealHit(UnrealHit, Delta);
     OutHit.ImpactNormal = Speed::QuantizeUnitNormal(OutHit.ImpactNormal);
+#if !UE_BUILD_SHIPPING
+    ObserveActualProbe(true, bUsedAnalyticAuthority ? TEXT("analytic") : TEXT("unreal"));
+#endif
     return true;
 }
 
@@ -1750,4 +1803,137 @@ void USWheelSubBody::SetSuspensionSim(Chaos::FSimpleSuspensionSim* InPSuspension
 void USWheelSubBody::SetLocalOffset(const FVector& InLocalOffset)
 {
     SetRelativeLocation(InLocalOffset);
+}
+
+// Same engine state type and the same existing quantization helpers as the
+// actual native air branch. Only this copy's smoothing ring is ever touched.
+#include "IAmSpeed/World/Collision/NativeSuspensionPrepareValues.h"
+bool USWheelSubBody::PredictColdAirSuspensionPreparation(const Speed::FPreparedNativeOwnerBinding& binding,
+    int32 index,float restoredLastDisplacement,float delta,Speed::FNativePrepareGTFields& expected,
+    Speed::Analytic::Certified::FDistanceBudget& budget,FString& reason) const
+{
+    expected={};reason.Reset();
+    if(!binding.NativeObject||!binding.Adapter||
+        !Speed::MatchesNativePrepareGTBinding(*binding.NativeObject,*binding.Adapter,binding)||
+        GetParentComponent()!=binding.Adapter||index!=Idx()||!PSuspension||!PSuspension->SetupPtr||
+        !PWheel||!ChaosWheel||!ParentComponent||!ParentComponent->IsFrozen()||
+        !Speed::IsEmptyNativeInitialHit(CurrentHit)||IsOnGround()||
+        !FMath::IsFinite(restoredLastDisplacement)||!FMath::IsFinite(delta)||delta<=KINDA_SMALL_NUMBER)
+    {reason=TEXT("Cold air copy predictor actual binding/domain unavailable");return false;}
+    int32 matches=0;for(const auto& row:binding.Bodies)if(row.Body==this&&row.Class)++matches;
+    const auto* debug=IConsoleManager::Get().FindConsoleVariable(TEXT("p.SkyLeague.Suspension.ForceDebug"));
+    if(matches!=1||!debug||debug->GetInt()!=0)
+    {reason=TEXT("Cold air copy requires complete child identity and no extra debug smoothing getter");return false;}
+    Speed::PreparationValues::FSuspensionCopy copy(*PSuspension);
+    const auto& setup=copy.Setup();
+    if(setup.SuspensionSmoothing<0||setup.SuspensionSmoothing>NUM_SUS_AVERAGING||
+        (setup.SuspensionSmoothing&&(copy.GetAveragingCount()<0||copy.GetAveragingCount()>=setup.SuspensionSmoothing||
+            copy.GetAveragingNum()<0||copy.GetAveragingNum()>setup.SuspensionSmoothing)))
+    {reason=TEXT("Actual smoothing ring is outside native array domain");return false;}
+    // RecoverWheelState precedes UpdatePhysicsState. Rendering samples one
+    // spring length BEFORE the real air branch sets length and simulates.
+    copy.SetLastDisplacement(restoredLastDisplacement);
+    const float renderOffset=SuspensionRestLength()-copy.GetSpringLength();
+    // Technical conversion bounds, not a physical tolerance. Preserve the
+    // exact native float expressions before calling the existing quantizers.
+    const auto roundable=[](float v)
+    {
+        if(!FMath::IsFinite(v))return false;
+        const double rounded=FMath::FloorToDouble(double(v)+0.5);
+        return rounded>=double(MIN_int32)&&rounded<=double(MAX_int32);
+    };
+    const float maxLength=MaxLength(),maxDrop=SuspensionMaxDrop(),radius=Radius();
+    if(!FMath::IsFinite(renderOffset)||!FMath::IsFinite(maxLength)||!FMath::IsFinite(maxDrop)||
+        !FMath::IsFinite(radius)||radius<=0||!FMath::IsFinite(setup.MaxLength)||
+        !FMath::IsFinite(setup.RaycastSafetyMargin)||!FMath::IsFinite(setup.SpringRate)||
+        !FMath::IsFinite(setup.CompressionDamping)||!FMath::IsFinite(setup.ReboundDamping))
+    {reason=TEXT("Cold air copy contains non-finite consumed configuration");return false;}
+    const float nextAirLength=maxLength+maxDrop+radius;
+    const float rawInput=nextAirLength-setup.RaycastSafetyMargin-radius;
+    const float displacementInput=FMath::Max(0.f,rawInput);
+    const float springDisplacement=setup.MaxLength-displacementInput;
+    const float scaledDisplacement=springDisplacement*SpeedConstants::SuspScale;
+    const float reciprocalDelta=1.f/FMath::Max(delta,SMALL_NUMBER);
+    if(!FMath::IsFinite(nextAirLength)||!FMath::IsFinite(rawInput)||
+        !roundable(scaledDisplacement)||!roundable(reciprocalDelta))
+    {reason=TEXT("Cold air copy quantizer input is outside native int32 conversion domain");return false;}
+    SetQuantizedSuspensionLength(copy,nextAirLength,radius);
+    copy.Simulate(QuantizeSuspensionDelta(delta));
+    if(!FMath::IsFinite(copy.GetSuspensionForce())||
+        !roundable(copy.GetLastDisplacement()*SpeedConstants::SuspScale))
+    {reason=TEXT("Cold air copy simulation output is non-finite or not quantizable");return false;}
+    copy.SetLastDisplacement(QuantizeSuspensionDisplacement(copy.GetLastDisplacement()));
+    const FString k=FString::Printf(TEXT("car.wheel[%d]"),index);
+    bool ok=copy.Append(k+TEXT(".suspension"),expected,budget);
+    ok=expected.Float(k+TEXT(".native.render_spring_offset"),renderOffset,budget)&&ok;
+    ok=expected.Float(k+TEXT(".native.SuspensionForce"),0.f,budget)&&ok;
+    ok=expected.Scalar(k+TEXT(".native.bCrossedIntoCompressionThisFrame"),false,budget)&&ok;
+    ok=expected.Float(k+TEXT(".wheel_sim.ForceIntoSurface"),0.f,budget)&&ok;
+    ok=expected.Scalar(k+TEXT(".wheel_sim.bInContact"),false,budget)&&ok;
+    ok=expected.Scalar(k+TEXT(".in_contact"),false,budget)&&ok;
+    if(!ok){expected={};reason=TEXT("Cold air copy predictor budget exhausted");}return ok;
+}
+
+// This projection reads the same owner getters and preserves the native float
+// assignment order. In particular rendering uses OLD SteeringAngle, while
+// UpdateSuspension computes the NEW angle only afterwards. SetRollAngle's
+// restored render quaternion is overwritten; it does not write RollAngle.
+bool USWheelSubBody::PredictColdAirWheelPreparation(const Speed::FPreparedNativeOwnerBinding& binding,
+    int32 index,float restoredLastDisplacement,uint8 restoredJump,uint8 restoredGroundFrames,float delta,
+    Speed::FNativePrepareGTFields& expected,Speed::Analytic::Certified::FDistanceBudget& budget,FString& reason) const
+{
+    expected={};reason.Reset();
+    if(restoredJump!=0||!PredictColdAirSuspensionPreparation(binding,index,restoredLastDisplacement,delta,expected,budget,reason))
+    {expected={};if(reason.IsEmpty())reason=TEXT("Cold wheel projection excludes contact-lock reset by a jumping wheel");return false;}
+    if(!WheelComponent||!FMath::IsFinite(SteeringAngle)||!FMath::IsFinite(RollAngle))
+    {expected={};reason=TEXT("Cold wheel render/control inputs unavailable");return false;}
+    const FVector carUp=ParentComponent->GetPhysUpVector();
+    const FVector carForward=ParentComponent->GetPhysForwardVector();
+    const FVector carRight=ParentComponent->GetPhysRightVector();
+    const float maxSpeed=ParentComponent->GetPhysMaxSpeed();
+    const float forwardSpeed=ParentComponent->GetPhysForwardSpeed();
+    const float wheelRadius=Radius();
+    if(carUp.ContainsNaN()||carForward.ContainsNaN()||carRight.ContainsNaN()||
+        !FMath::IsFinite(maxSpeed)||maxSpeed<=0||!FMath::IsFinite(forwardSpeed))
+    {expected={};reason=TEXT("Cold wheel owner getters are outside finite projection domain");return false;}
+    const FQuat steerQuat(carUp,SteeringAngle);
+    const FVector forwardAxis=steerQuat.RotateVector(carForward).GetSafeNormal();
+    const FVector rightAxis=FVector::CrossProduct(carUp,forwardAxis).GetSafeNormal();
+    const float omega=forwardSpeed/FMath::Max(wheelRadius,KINDA_SMALL_NUMBER);
+    float roll=RollAngle;
+    roll+=omega*delta;
+    roll=FMath::Fmod(roll,2.f*PI);
+    const FTransform chassis(ParentComponent->GetPhysRotation(),ParentComponent->GetPhysLocation());
+    const FVector position=chassis.TransformPosition(GetLocalOffset()+restoredLastDisplacement*FVector::UpVector);
+    const FQuat renderSteer(carUp,SteeringAngle),renderRoll(rightAxis,roll);
+    float newSteering=0.0f;
+    float steerInput=0.0;
+    steerInput=WheelComponent->GetPhysSteeringInput();
+    if(IsSteeringEnabled())
+    {
+        float speed=ParentComponent->GetPhysCOMVelocity().Size();
+        float normSpeed=FMath::Clamp(speed/ParentComponent->GetPhysMaxSpeed(),0.f,1.f);
+        float steerFactor=1.0f-0.85f*normSpeed;
+        if(speed<300.f)steerFactor*=1.2f;
+        newSteering=FMath::DegreesToRadians(MaxSteeringAngle()*steerInput*steerFactor);
+    }
+    if(!FMath::IsFinite(omega)||!FMath::IsFinite(roll)||!FMath::IsFinite(newSteering)||
+        forwardAxis.ContainsNaN()||rightAxis.ContainsNaN()||position.ContainsNaN()||renderSteer.ContainsNaN()||renderRoll.ContainsNaN())
+    {expected={};reason=TEXT("Cold wheel projection output is not finite");return false;}
+    const FString k=FString::Printf(TEXT("car.wheel[%d].native"),index);
+    bool ok=expected.Scalar(k+TEXT(".bIsJumping"),uint8(0),budget);
+    ok=expected.Scalar(k+TEXT(".ConsecutiveGroundFrames"),FMath::Min<uint8>(restoredGroundFrames,31),budget)&&ok;
+    ok=expected.Float(k+TEXT(".Omega"),omega,budget)&&ok;
+    ok=expected.Float(k+TEXT(".RollAngle"),roll,budget)&&ok;
+    ok=expected.Float(k+TEXT(".SteeringAngle"),newSteering,budget)&&ok;
+    ok=expected.Vector(k+TEXT(".UpAxis"),carUp,budget)&&ok;
+    ok=expected.Vector(k+TEXT(".ForwardAxis"),forwardAxis,budget)&&ok;
+    ok=expected.Vector(k+TEXT(".RightAxis"),rightAxis,budget)&&ok;
+    ok=expected.Vector(k+TEXT(".RenderData.WorldPosition"),position,budget)&&ok;
+    ok=expected.Vector(k+TEXT(".RenderData.UpAxis"),carUp,budget)&&ok;
+    ok=expected.Vector(k+TEXT(".RenderData.ForwardAxis"),forwardAxis,budget)&&ok;
+    ok=expected.Vector(k+TEXT(".RenderData.RightAxis"),rightAxis,budget)&&ok;
+    ok=expected.Quat(k+TEXT(".render_steer"),renderSteer,budget)&&ok;
+    ok=expected.Quat(k+TEXT(".render_roll"),renderRoll,budget)&&ok;
+    if(!ok){expected={};reason=TEXT("Cold wheel projection budget exhausted");}return ok;
 }

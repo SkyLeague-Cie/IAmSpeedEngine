@@ -7,6 +7,16 @@
 #include "Configs/SubBodyConfig.h"
 #include "HAL/IConsoleManager.h"
 
+static TAutoConsoleVariable<int32> CVarIAmSpeedAerialShotContactModel(
+    TEXT("p.IAmSpeed.Collision.AerialShotModel"), 1,
+    TEXT("Use the shared Aerial car/ball contact model. Startup-only: inertia is cached at body initialization."),
+    ECVF_ReadOnly);
+
+bool USolidSubBody::IsAerialShotContactModelEnabled()
+{
+    return CVarIAmSpeedAerialShotContactModel.GetValueOnAnyThread() != 0;
+}
+
 static TAutoConsoleVariable<float> CVarIAmSpeedSphereBoxRestitutionOverride(
     TEXT("p.IAmSpeed.Collision.SphereBoxRestitutionOverride"),
     -1.0f,

@@ -1,4 +1,5 @@
 #include "SpeedController.h"
+#include "Engine/World.h"
 #include "IAmSpeed/Controllers/PrivateInputFailureFile.h"
 #include "IAmSpeed/Actors/SpeedCar.h"
 #include "IAmSpeed/Components/SpeedWheeledComponent.h"

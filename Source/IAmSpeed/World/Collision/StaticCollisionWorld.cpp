@@ -116,6 +116,8 @@ FAnalyticStaticCollisionWorld::FAnalyticStaticCollisionWorld(
       QueryService(InWorld, FMath::Clamp(InIndependentQueryLanes, 1, FFrameParallelPolicy::MaximumLanes),
         FMath::Max(2, InMinimumFacetItems))
 {
+    Analytic::RequireCurrentAnalyticNumericContext(WorldData.NumericContract);
+
     IndependentQueryLanes = FMath::Clamp(InIndependentQueryLanes, 1, FFrameParallelPolicy::MaximumLanes);
     MinimumIndependentQueryItems = FMath::Max(2, InMinimumIndependentQueryItems);
     if (IndependentQueryLanes > 1)
@@ -134,6 +136,8 @@ bool FAnalyticStaticCollisionWorld::SweepIndependentBatch(
 }
 bool FAnalyticStaticCollisionWorld::CanPrefetchIndependentQueries1075() const
 {
+    Analytic::RequireCurrentAnalyticNumericContext(WorldData.NumericContract);
+
     return IndependentQueryLanes > 1 && !IsInsideFrameParallelTask() &&
         AreCurrentFrameFloatingPointExceptionsMasked1213() &&
         !HasThreadOwnedQueryDiagnostics() && !IndependentBatchBusy.load(std::memory_order_relaxed);
@@ -148,6 +152,8 @@ bool FAnalyticStaticCollisionWorld::SweepIndependentBatchImpl1075(
     TConstArrayView<Analytic::FWorldQuery> Queries, TArrayView<Analytic::FWorldHit> OutHits,
     FIndependentQueryBatchStats* OutStats, bool bRejectSerialFallback) const
 {
+    Analytic::RequireCurrentAnalyticNumericContext(WorldData.NumericContract);
+
     FIndependentQueryBatchStats Stats;
     Stats.RequestedLanes = IndependentQueryLanes;
     Analytic::FScopedAnalyticCausalObservation1075 Causal(Analytic::EAnalyticCausalKind1075::IndependentSweepBatch, &Stats);
@@ -169,7 +175,12 @@ bool FAnalyticStaticCollisionWorld::SweepIndependentBatchImpl1075(
         Causal.MarkPrepared();
         {
             Analytic::FScopedAnalyticCycles1075 Numeric(Causal.NumericTarget(0));
-            IStaticCollisionWorld::SweepIndependentBatch(Queries, OutHits, &Stats);
+            // A refused item never exposes preceding partial physical hits.
+            TArray<Analytic::FWorldHit> PrivateSerialHits;
+            PrivateSerialHits.SetNum(Queries.Num());
+            if (!IStaticCollisionWorld::SweepIndependentBatch(Queries, PrivateSerialHits, &Stats)) return false;
+            Analytic::RequireCurrentAnalyticNumericContext(WorldData.NumericContract);
+            for (int32 I=0; I<Queries.Num(); ++I) OutHits[I]=MoveTemp(PrivateSerialHits[I]);
         }
         Stats.RequestedLanes = IndependentQueryLanes;
         Stats.Fallback = Reason;
@@ -196,6 +207,7 @@ bool FAnalyticStaticCollisionWorld::SweepIndependentBatchImpl1075(
     if (!AreCurrentFrameFloatingPointExceptionsMasked1213())
         return Serial(EIndependentQueryFallback::NumericEnvironmentUnavailable);
     const FFrameFloatingPointContext OwnerNumericContext = CaptureFrameFloatingPointContext();
+    Analytic::RequireAnalyticNumericTransfer(WorldData.NumericContract,OwnerNumericContext.bValid);
     if (!OwnerNumericContext.bValid) return Serial(EIndependentQueryFallback::NumericEnvironmentUnavailable);
     bool Expected = false;
     if (!IndependentBatchBusy.compare_exchange_strong(Expected, true, std::memory_order_acquire))
@@ -222,11 +234,14 @@ bool FAnalyticStaticCollisionWorld::SweepIndependentBatchImpl1075(
         Stats.NativeThreadIds[Lane] = FPlatformTLS::GetCurrentThreadId();
         try
         {
+            Analytic::RequireAnalyticNumericTransfer(WorldData.NumericContract,TaskScope.IsNumericContextApplied());
             if (!TaskScope.IsNumericContextApplied())
                 throw std::runtime_error("IAmSpeed query batch numeric context unavailable");
+            Analytic::RequireCurrentAnalyticNumericContext(WorldData.NumericContract);
             const Analytic::FWorldQueryService& Service = *IndependentQueryServices[Lane];
             const auto SweepIndex = [&](int32 Index)
             {
+                Analytic::RequireCurrentAnalyticNumericContext(WorldData.NumericContract);
                 Analytic::FWorldQuery CollisionQuery = Queries[Index];
                 CollisionQuery.bUseFiniteContactDomain = true;
                 PrivateHits[Index] = Service.Sweep(CollisionQuery);
@@ -251,8 +266,7 @@ bool FAnalyticStaticCollisionWorld::SweepIndependentBatchImpl1075(
         }
         catch (...) { Failures[Lane] = std::current_exception(); }
         if (!TaskScope.RestoreNumericContext())
-            Failures[Lane] = std::make_exception_ptr(std::runtime_error(
-                "IAmSpeed query batch numeric restoration failed"));
+            Failures[Lane] = Analytic::AnalyticNumericTransferException(WorldData.NumericContract,Analytic::EAnalyticNumericFailure::ContextRestoration,"IAmSpeed query batch numeric restoration failed");
     };
     Causal.MarkPrepared();
     DispatchFrameParallelLanes(Stats.DispatchedLogicalLanes, ExecuteLane, Causal.DispatchObservation());

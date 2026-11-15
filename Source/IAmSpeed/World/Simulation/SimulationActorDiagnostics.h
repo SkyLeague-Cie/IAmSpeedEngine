@@ -17,6 +17,8 @@ namespace Speed::ActorDiagnostics
 	void BeginRun();
 	/** Emit aggregate per-actor phases once; overflow is explicitly reported. */
 	void EndRun();
+	/** Snapshot acquired TLS only; failed attempt included, no reset/completion. */
+	void DumpFailedPrefix();
 	/** Inclusive canonical-frame phases; SnapshotBodies/Pairs/Hash are children of Snapshot. */
 	class FFrameScope
 	{

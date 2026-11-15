@@ -11,6 +11,9 @@
 #include "SphereSubBody.generated.h"
 
 class UBoxSubBody;
+namespace Speed::PreparationPrefix {struct FPostPrepareInitialPositionSphereValues;}
+namespace Speed::PreparedExecution { class FNativeWheelProbeScope; }
+namespace Speed {struct FWorldStaticSphereGTInspection;struct FPreparedNativeOwnerBinding;struct FNativePrepareGTFields;namespace Analytic::Certified {struct FDistanceBudget;}}
 
 struct FSphereWorldStaticPenetrationDiagnostics
 {
@@ -36,6 +39,7 @@ UCLASS(ClassGroup = "Collision", editinlinenew, hidecategories = (Object, LOD, L
 class IAMSPEED_API USphereSubBody : public USolidSubBody, public ISphereSweeper, public ISolidSweeper
 {
     GENERATED_UCLASS_BODY()
+    friend class Speed::PreparedExecution::FNativeWheelProbeScope;
 	
 public:
     const USolidSubBody* GetSolidSweepBody() const override { return this; }
@@ -47,6 +51,7 @@ public:
         using B=Speed::FEpisodeStateBytesForTesting;
         B::Add(Out,bProductionNonpenetratingBoxContacts);
         B::Add(Out,Radius);
+        B::Add(Out,GetWorldStaticContactOffsetCm());
         B::Add(Out,MinSlopCm);
         B::Add(Out,SphereBoxTangentialContactArmScale);
         B::Add(Out,SphereBoxTangentialContactArmStartSpeed);
@@ -89,6 +94,23 @@ public:
 	static bool IsSphereBoxProjectionEnabled();
 	static bool IsWorldStaticProjectionEnabled();
     float GetRadius() const { return Radius; }
+    // Nonmutating values only. Caller must independently retain its GT pins/lease.
+    bool ReadWorldStaticShapeForGTInspection(const ISpeedComponent& Owner,Speed::FWorldStaticSphereGTInspection& Out,FString& Reason) const;
+    bool ReadCanonicalPreparationSphereValues(const Speed::FPreparedNativeOwnerBinding& Binding,
+        Speed::FNativePrepareGTFields& Out,Speed::Analytic::Certified::FDistanceBudget& Budget,FString& Reason) const;
+    // Typed readback only in the new native position observation/action scope.
+    // Does not relax the old GT reader or authorize either position setter.
+    bool ReadPostPrepareInitialPositionValues(const Speed::FPreparedNativeOwnerBinding& Binding,
+        Speed::PreparationPrefix::FPostPrepareInitialPositionSphereValues& Out,
+        Speed::Analytic::Certified::FDistanceBudget& Budget,FString& Reason) const;
+    // Geometric skin against immutable world surfaces, separate from CCD epsilon.
+    virtual float GetWorldStaticContactOffsetCm() const { return 0.0f; }
+    // Static impact Coulomb cone; dynamic pair mixing remains independent.
+    virtual float GetWorldStaticImpactFriction() const { return GetStaticFriction(); }
+    double GetWorldStaticSupportRadius() const
+    {
+        return double(GetRadius()) + double(GetWorldStaticContactOffsetCm());
+    }
 	void SetRadiusForConfiguration(float NewRadius)
 	{
 		SetRadius(NewRadius);
@@ -130,11 +152,17 @@ public:
 		const SKinematic& SphereState,
 		const SKinematic& BoxState) const;
 protected:
+    // Called before any virtual inspection getter; exact subclasses must close their private owner links.
+    virtual bool HasWorldStaticGTInspectionOwner(const ISpeedComponent& Owner) const;
     bool bProductionNonpenetratingBoxContacts = false;
 	bool IsTangentialContactArmEligible(
 		const SKinematic& SphereState,
 		const SKinematic& BoxState) const;
     virtual FCollisionShape GetCollisionShape(float Inflation = 0.0f) const override;
+    FCollisionShape GetWorldStaticCollisionShape() const override
+    {
+        return FCollisionShape::MakeSphere(GetWorldStaticSupportRadius() + CollisionMargin());
+    }
 
     virtual void ResolveCurrentHitPrv(const float& delta, const float& SimTime) override;
     void ResolveHitVsGround(const float& delta, const float& SimTime);

@@ -24,6 +24,7 @@
 #include "SpeedSimulation.h"
 #include "SpeedPhysicsSimulation.generated.h"
 
+namespace Speed { class FHostedGTStaticWorldLease; namespace PreparationPrefix { class FClosedSourceProducer; } }
 class USpeedWorldSubsystem;
 struct FCanonicalFrameContext;
 class ISpeedComponent;
@@ -49,6 +50,8 @@ UCLASS(Abstract)
 class IAMSPEED_API ASpeedPhysicsSimulation : public ASpeedSimulation
 {
 	GENERATED_BODY()
+    friend class Speed::FHostedGTStaticWorldLease;
+    friend class Speed::PreparationPrefix::FClosedSourceProducer;
 #if WITH_DEV_AUTOMATION_TESTS
 	friend struct FLocalNormalCameraFixtureAccess;
 	friend struct FLocalFastBatchFixtureAccess;
@@ -187,6 +190,9 @@ public:
 	/** Teardown fallback: join the physical owner before releasing any input/actor lifetime. */
 	bool JoinOwnedSimulationForInputTeardown();
 #if !UE_BUILD_SHIPPING
+    /** GT-only completion status for the private Prepared FastBatch harness.
+     * Does not request pause, resume, stop or join. Idle means wait. */
+    ESimulationWorkerResult ReadOwnedFastBatchCompletion() const;
     /** Observational case identity. GT only after an owned-worker join; never a physics gate. */
     bool ConfigureCaseSatDiagnosticsAfterJoin(int32 NativeCaseId, int32 BatchIndex, uint64 WorldGeneration);
 #endif
@@ -210,6 +216,11 @@ public:
     uint64 TryAcquireReplayStartupHoldBeforeBeginPlay();
     bool ReleaseReplayStartupHold(uint64 Token);
     bool IsReplayStartupHeld(uint64 Token) const;
+    // Independent native prepared-world participant: neither borrows nor
+    // releases Replay's pre-frame-zero startup token. Both holds must close.
+    uint64 TryAcquireNativeFrameStartupHoldBeforeBeginPlay();
+    bool ReleaseNativeFrameStartupHold(uint64 Token);
+    bool IsNativeFrameStartupHeld(uint64 Token) const;
 #if !UE_BUILD_SHIPPING
 	/**
 	 * Lets a simulation policy audit how many published frames a presentation
@@ -248,6 +259,9 @@ protected:
 	/** Optional pure camera evaluator hook; false leaves the sample unpublished. */
 	virtual bool BuildCanonicalCameraSample(const FSimulationSnapshot& Snapshot,
 		FCameraCanonicalSample& OutSample) const { return false; }
+	// Native methods only: no new UObject data or virtual slot.
+	bool ValidateAnalyticNumericOwner();
+	ESimulationWorkerResult ExecuteCheckedSimulationPulse(TFunctionRef<ESimulationWorkerResult()> Work);
 	bool EnsureSimulationWorldReady();
 	/** Gates controlled runs until their scenario and Unreal bridge are ready. */
 	ESimulationWorkerResult CheckCanonicalRunReadiness();
@@ -360,6 +374,7 @@ private:
 	// Game-thread lease count. A late worker ACK after timeout is not ownership;
 	// only a successful TrySuspend call increments this count.
 	uint32 OwnedBoundarySuspendDepth = 0;
+    bool bStaticWorldPublicationLease=false; // GT, only the dedicated static-world lease.
 	FCriticalSection RollbackRequestMutex;
 	TOptional<FPendingRollbackRequest> PendingRollbackRequest;
 	TAtomic<uint8> ActiveExecutionModeValue =

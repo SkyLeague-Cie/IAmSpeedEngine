@@ -1,4 +1,5 @@
 #pragma once
+#include "CoreMinimal.h"
 
 #if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
 #include "IAmSpeed/Base/SHitResult.h"

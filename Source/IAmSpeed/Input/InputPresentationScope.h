@@ -3,6 +3,11 @@
 #include "CoreTypes.h"
 #endif
 
+// Unreal API export macros require platform definitions; standalone stays independent.
+#if defined(IAMSPEED_API)
+#include "CoreTypes.h"
+#endif
+
 // One exported TLS definition is needed across Unreal module/DLL boundaries.
 #ifndef IAMSPEED_API
 #define IAMSPEED_INPUT_PORTABLE_API

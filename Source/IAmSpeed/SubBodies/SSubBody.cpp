@@ -2,6 +2,8 @@
 
 
 #include "SSubBody.h"
+#include "Engine/World.h"
+#include "IAmSpeed/World/Collision/PreparedNativeOwnerPoseMutation.h"
 #include "Solid/CylinderSubBody.h"
 #include "IAmSpeed/World/Simulation/JoinedActorKinematics1213.h"
 #include "IAmSpeed/Base/ExactRotatorQuaternionCache.h"
@@ -12,6 +14,7 @@
 #include "Configs/SubBodyConfig.h"
 #include "GameFramework/Actor.h"
 #include "IAmSpeed/World/Analytic/AnalyticWorldQuery.h"
+#include "IAmSpeed/World/Analytic/AnalyticWorldData.h"
 #include "IAmSpeed/World/Analytic/StaticWorldQueryAudit.h"
 
 USSubBody::USSubBody(const FObjectInitializer& ObjectInitializer):
@@ -69,6 +72,15 @@ void USSubBody::Initialize(ISpeedComponent* InParentComponent)
             }
 		}
     }
+    // Initialize-only policy inheritance; no per-sweep mutable getter/refresh.
+    InheritedMotionPolicy91={};
+    if(ParentComponent)
+    {
+        InheritedMotionPolicy91.ParentMaxV=ParentComponent->GetPhysMaxSpeed();
+        InheritedMotionPolicy91.ParentMaxOmega=ParentComponent->GetPhysMaxAngularSpeed();
+        InheritedMotionPolicy91.Captured=true;
+    }
+    Speed::ObserveInheritedMotionInitialization91(InheritedMotionPolicy91.Captured);
 }
 
 void USSubBody::ResetForFrame(const float& Delta)
@@ -152,19 +164,27 @@ void USSubBody::UpdateKinematicsFromOwner(const SKinematic& ParentKinematic)
 	static thread_local Speed::FExactRotatorQuaternionCache LocalRotationCache;
 	auto RelativeLocationVar = GetRelativeLocation();
 	auto RelativeRotationVar = LocalRotationCache.Get(GetRelativeRotation());
+    const bool rotationFirst=Speed::PreparedExecution::FNativePlanarResponseCommitScope::BeforeNativeBaseChildWrite(*this,ParentKinematic,Kinematics,RelativeLocationVar,RelativeRotationVar);
  // Preserve this exact native cache access even when completed base arithmetic
  // can be reused. Failed value/FP validation leaves the original path intact.
- if(Speed::FrameParallel::TryConsumeJoinedActorBase1430(*this,ParentKinematic,
+ if(!rotationFirst&&Speed::FrameParallel::TryConsumeJoinedActorBase1430(*this,ParentKinematic,
      RelativeLocationVar,RelativeRotationVar,Kinematics))return;
 	const FVector WorldOffset = ParentKinematic.Rotation.RotateVector(RelativeLocationVar);
+    if(rotationFirst)
+    {
+        Kinematics.Rotation=ParentKinematic.Rotation*RelativeRotationVar;
+        Speed::PreparedExecution::FNativePlanarResponseCommitScope::ReadbackOrderedBaseChildWrite(*this,Kinematics,false);
+    }
 	Kinematics.Location = ParentKinematic.Location + WorldOffset;
 	Kinematics.Velocity = ParentKinematic.Velocity + FVector::CrossProduct(ParentKinematic.AngularVelocity, WorldOffset);
 	Kinematics.Acceleration = ParentKinematic.Acceleration +
         FVector::CrossProduct(ParentKinematic.AngularAcceleration, WorldOffset) +
         FVector::CrossProduct(ParentKinematic.AngularVelocity, FVector::CrossProduct(ParentKinematic.AngularVelocity, WorldOffset));
-    Kinematics.Rotation = ParentKinematic.Rotation * RelativeRotationVar;
+    if(!rotationFirst)Kinematics.Rotation = ParentKinematic.Rotation * RelativeRotationVar;
 	Kinematics.AngularVelocity = ParentKinematic.AngularVelocity;
 	Kinematics.AngularAcceleration = ParentKinematic.AngularAcceleration;
+    if(rotationFirst)
+        Speed::PreparedExecution::FNativePlanarResponseCommitScope::ReadbackOrderedBaseChildWrite(*this,Kinematics,true);
 }
 
 bool USSubBody::SweepTOI(const float& RemainingDelta, float& OutTOI)
@@ -197,6 +217,8 @@ void USSubBody::AdvanceToTOI(const float& t)
 
 void USSubBody::AcceptHit()
 {
+    if(FutureHit.FirstRsResponseData||CurrentHit.FirstRsResponseData)
+        Speed::PreparedExecution::RequireFirstRsResponseHit(this,FutureHit,Speed::PreparedExecution::EFirstRsResponseCall::Accept);
     CurrentHit = FutureHit;
     FutureHit = SHitResult();
 
@@ -240,6 +262,8 @@ bool USSubBody::ComponentHasBeenIgnored(const UPrimitiveComponent& OtherComp) co
 
 void USSubBody::ResolveCurrentHit(const float& delta, const float& SimTime)
 {
+    if(CurrentHit.FirstRsResponseData)
+        Speed::PreparedExecution::RequireFirstRsResponseHit(this,CurrentHit,Speed::PreparedExecution::EFirstRsResponseCall::Resolve,delta,SimTime);
     if (CurrentHit.bBlockingHit)
         ResolveCurrentHitPrv(delta, SimTime);
 }
@@ -300,6 +324,30 @@ uint64 USSubBody::MakePairKey(const USSubBody* A, const UPrimitiveComponent* Oth
     const uint32 Lo = FMath::Min(IdA, IdB);
     const uint32 Hi = FMath::Max(IdA, IdB);
     return (uint64(Hi) << 32) | uint64(Lo);
+}
+
+uint64 USSubBody::MakeComponentSweepPairKey(const USSubBody* Resolver,const SHitResult& Hit,bool HasStaticWorld)
+{
+    uint64 PairKey=MakePairKey(Resolver,Hit.Component.Get());
+    // One static component may own several adjacent analytical providers.
+    // Suppress repeated event resolution only within the same immutable
+    // provider; a genuine seam transition must remain independently visible.
+    const uint64 ProviderId = Hit.CanonicalGroupId != 0
+        ? Hit.CanonicalGroupId : Hit.SurfaceId;
+    if (ProviderId != 0)
+    {
+        PairKey = Speed::Analytic::CombineStableIds(
+            PairKey, ProviderId);
+    }
+    if (HasStaticWorld && Hit.SurfaceId != 0 && !Hit.bSurfaceNormalMayVary &&
+        Hit.ContactFeatureThis == Speed::EContactFeatureKind::Vertex && Hit.ContactFeatureIndexThis >= 0)
+    {
+        // A newly arriving vertex is a new event on the same plane, not
+        // a repeated resolution of its already-established old contact.
+        PairKey = Speed::Analytic::CombineStableIds(PairKey,
+            0x504c414e00000000ull | static_cast<uint64>(Hit.ContactFeatureIndexThis + 1));
+    }
+    return PairKey;
 }
 
 int32 USSubBody::SubBodyPriority(USSubBody::ESubBodyType T)

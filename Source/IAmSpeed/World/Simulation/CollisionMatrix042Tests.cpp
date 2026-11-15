@@ -1,3 +1,4 @@
+#include "CoreMinimal.h"
 #if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
 #include "FastSimulation.h"
 #include "CanonicalFrameContext.h"

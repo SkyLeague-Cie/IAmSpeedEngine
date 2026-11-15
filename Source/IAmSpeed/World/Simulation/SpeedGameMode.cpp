@@ -2,6 +2,7 @@
 
 
 #include "SpeedGameMode.h"
+#include "Engine/World.h"
 #include "CanonicalFrameDriver.h"
 #include "FastSimulation.h"
 #include "RealTimeSimulation.h"

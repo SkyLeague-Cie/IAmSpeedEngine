@@ -8,6 +8,8 @@ namespace Speed::Replay { class FFieldWriter; }
 #include "ISpeedComponent.h"
 #include "Netcode/SpeedPhysicsComponent.h"
 #include "SpeedMovementComponent.generated.h"
+namespace Speed {struct FPreparedNativeOwnerBinding;struct FNativePrepareGTFields;namespace Analytic::Certified {struct FDistanceBudget;}}
+
 
 
 #if !UE_BUILD_SHIPPING
@@ -38,6 +40,16 @@ class IAMSPEED_API USpeedMovementComponent : public UMovementComponent, public I
 #endif
 	
 public:
+    // Read-only GT diagnostics; caller retains authenticated lease and pins.
+    // Pure expected first-frame AIR acceleration values. Caller separately
+    // authenticates the exact game callbacks, no support reaction and no
+    // intermediate state writer; this result grants no phase/frame capability.
+    bool PredictFirstAirPreparationAcceleration(const Speed::FPreparedNativeOwnerBinding& Binding,
+        uint64 CanonicalFrame,float Delta,float AirDamping,Speed::FNativePrepareGTFields& Expected,
+        Speed::Analytic::Certified::FDistanceBudget& Budget,FString& Reason) const;
+    bool ReadCanonicalPrepareStateForGTInspection(const Speed::FPreparedNativeOwnerBinding& Binding,
+        Speed::FNativePrepareGTFields& Out,Speed::Analytic::Certified::FDistanceBudget& Budget,FString& Reason) const;
+
 	USpeedMovementComponent(const FObjectInitializer& ObjectInitializer);
 #if WITH_DEV_AUTOMATION_TESTS
 	/** Fixture-only control for an owned physical worker; UE keeps the underlying setter protected. */

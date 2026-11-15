@@ -7,6 +7,67 @@
 #include "Engine/World.h"
 #include "IAmSpeed/World/Subsystem/SpeedWorldSubsystem.h"
 #include "IAmSpeed/World/Analytic/AnalyticWorldData.h"
+#include "IAmSpeed/World/Collision/PreparedPhysicalExecution.h"
+#include "IAmSpeed/World/Collision/PreparedNativeOwnerPoseMutation.h"
+#if !UE_BUILD_SHIPPING
+#include "HAL/PlatformTime.h"
+#include <exception>
+namespace RoofPostProfile
+{
+struct FCallbackRecord;
+extern thread_local FCallbackRecord* CallbackCurrent;
+}
+
+namespace
+{
+struct FRoofCorrectionTiming;
+thread_local FRoofCorrectionTiming* ActiveRoofCorrection = nullptr;
+
+struct FRoofCorrectionTiming
+{
+    explicit FRoofCorrectionTiming(uint32 Frame)
+        : Frame(Frame), Previous(ActiveRoofCorrection), LastTick(FPlatformTime::Cycles64())
+    {
+        ActiveRoofCorrection = this;
+    }
+
+    ~FRoofCorrectionTiming()
+    {
+        ActiveRoofCorrection = Previous;
+        UE_LOG(LogTemp, Display, TEXT("[RoofFoxCorrectionTiming] Frame=%u Phases=%u Grouped=%llu Wheel=%llu Canonical=%llu Established=%llu Coupled=%llu Gather=%llu GatherCalls=%u Hits=%u SecondsPerCycle=%.17g"),
+            Frame, Phases, Ticks[0], Ticks[1], Ticks[2], Ticks[3], Ticks[4],
+            GatherTicks, GatherCalls, Hits, FPlatformTime::GetSecondsPerCycle64());
+    }
+
+    void RecordNext()
+    {
+        const uint64 Now = FPlatformTime::Cycles64();
+        Ticks[Phases++] = Now - LastTick;
+        LastTick = Now;
+    }
+
+    uint32 Frame;
+    FRoofCorrectionTiming* Previous;
+    uint64 LastTick;
+    uint64 Ticks[5]{};
+    uint64 GatherTicks = 0;
+    uint32 Phases = 0, GatherCalls = 0, Hits = 0;
+};
+
+void GatherRoofCorrectionHitbox(const UBoxSubBody& Hitbox, TArray<FHitResult>& Hits)
+{
+    auto* Timing = ActiveRoofCorrection;
+    const uint64 Start = Timing ? FPlatformTime::Cycles64() : 0;
+    Hitbox.GatherStaticPenetrationHits(Hits);
+    if (Timing)
+    {
+        Timing->GatherTicks += FPlatformTime::Cycles64() - Start;
+        ++Timing->GatherCalls;
+        Timing->Hits += Hits.Num();
+    }
+}
+}
+#endif
 #if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
 #include "IAmSpeed/World/Simulation/FrameSolveWitness.h"
 namespace
@@ -334,6 +395,16 @@ static TAutoConsoleVariable<int32> CVarIAmSpeedWheelSupportProjectionCoherentSpr
 	0,
 	TEXT("Experimental atomic projection/contact displacement transaction. Requires PreserveProbeHits; disabled until qualification."),
 	ECVF_Default);
+
+static TAutoConsoleVariable<int32> CVarIAmSpeedFrontBumpTrace(
+    TEXT("p.IAmSpeed.WheelSupport.FrontBumpTrace"), 0,
+    TEXT("Trace wheel support projection decisions during a diagnostic run."),
+    ECVF_Default);
+
+static TAutoConsoleVariable<int32> CVarIAmSpeedFrontBumpPivot(
+    TEXT("p.IAmSpeed.WheelSupport.FrontBumpPivot"), 1,
+    TEXT("Use a bounded front bump-stop rotation around grounded rear contacts on four-wheel vehicles."),
+    ECVF_Default);
 
 static TAutoConsoleVariable<int32> CVarIAmSpeedWheelSupportProjectionDebug(
 	TEXT("p.IAmSpeed.WheelSupport.ProjectionDebug"),
@@ -953,11 +1024,24 @@ void ISpeedWheeledComponent::ResolveGroupedWheelGroundContacts(const float& delt
 
 bool ISpeedWheeledComponent::ProjectWheelSupportNonPenetration()
 {
+	const bool bPivotFrontBump = CVarIAmSpeedFrontBumpPivot.GetValueOnAnyThread() != 0;
+    const bool bTracePivot = CVarIAmSpeedFrontBumpTrace.GetValueOnAnyThread() != 0;
+    int32 SupportMask = 0;
+    if (bTracePivot)
+    {
+        for (const USWheelSubBody* Wheel : GetWheelSubBodies())
+            if (Wheel && Wheel->Idx() >= 0 && Wheel->Idx() < 4 && Wheel->IsOnGround())
+                SupportMask |= 1 << Wheel->Idx();
+        UE_LOG(LogTemp, Display, TEXT("[FrontBumpSupport] Frame=%u Enabled=%d Mask=%d COM=%s Velocity=%s Omega=%s"),
+            NumFrame(), bPivotFrontBump, SupportMask, *GetPhysCOM().ToString(),
+            *GetPhysVelocity().ToString(), *GetPhysAngularVelocity().ToString());
+    }
 	bool bProjected = false;
 	for (int32 Pass = 0; Pass < 4; ++Pass)
 	{
 		float LargestPenetration = 0.01f;
 		FVector CorrectionNormal = FVector::ZeroVector;
+		const USWheelSubBody* LeadingWheel = nullptr;
 		for (const USWheelSubBody* Wheel : GetWheelSubBodies())
 		{
 			if (!Wheel || !Wheel->IsOnGround() || !Wheel->IsAtSuspensionBumpStop())
@@ -972,14 +1056,86 @@ bool ISpeedWheeledComponent::ProjectWheelSupportNonPenetration()
 			{
 				LargestPenetration = Penetration;
 				CorrectionNormal = Normal;
+				LeadingWheel = Wheel;
 			}
 		}
 		if (CorrectionNormal.IsNearlyZero())
 		{
 			break;
 		}
-		AddPhysLocation(LargestPenetration * CorrectionNormal);
-		UpdateSubBodiesKinematics();
+
+        const TCHAR* Decision = !bPivotFrontBump ? TEXT("disabled") : TEXT("leading_not_front");
+        double Derivative = 0.0;
+        double Angle = 0.0;
+		// Rotate about the rear contact midpoint before falling back to the existing translation.
+        if (bPivotFrontBump && LeadingWheel && LeadingWheel->Idx() < 2)
+        {
+            Decision = TEXT("rear_support_unavailable");
+            const auto& Wheels = GetWheelSubBodies();
+            if (Wheels.Num() == 4 && Wheels[2] && Wheels[3] && Wheels[2]->IsOnGround() && Wheels[3]->IsOnGround())
+            {
+                const FVector Pivot = (Wheels[2]->GetHitContactPoint() + Wheels[3]->GetHitContactPoint()) * 0.5;
+                const FVector Axis = GetPhysRightVector().GetSafeNormal();
+                const FVector Lever = LeadingWheel->WorldPos() - Pivot;
+                Decision = TEXT("lever_too_short");
+                Derivative = FVector::DotProduct(FVector::CrossProduct(Axis, Lever), CorrectionNormal);
+                if (FMath::Abs(Derivative) > 20.0)
+                {
+                    Decision = TEXT("angle_limit");
+                    Angle = LargestPenetration / Derivative;
+                    if (FMath::Abs(Angle) <= FMath::DegreesToRadians(2.0))
+                    {
+                        if (bTracePivot)
+                            UE_LOG(LogTemp, Display, TEXT("[FrontBumpDecision] Frame=%u Pass=%d Lead=%d Mask=%d Penetration=%.6f Derivative=%.6f AngleDeg=%.6f Action=pivot"),
+                                NumFrame(), Pass, LeadingWheel->Idx(), SupportMask, LargestPenetration, Derivative, FMath::RadiansToDegrees(Angle));
+                        const FQuat Turn(Axis, Angle);
+                        SKinematic Pose = GetKinematicState();
+                        Pose.Location = Pivot + Turn.RotateVector(Pose.Location - Pivot);
+                        Pose.Rotation = (Turn * Pose.Rotation).GetNormalized();
+                        Speed::PreparedExecution::FNativeFinalWheelSupportScope correction(*this, Pass);
+#if !UE_BUILD_SHIPPING
+                        const FVector BeforeCorrectionCOM = GetPhysCOM();
+#endif
+                        SetKinematicState(Pose);
+                        UpdateSubBodiesKinematics();
+#if !UE_BUILD_SHIPPING
+                        if (bTracePivot)
+                        {
+                            UE_LOG(LogTemp, Display,
+                                TEXT("[WheelBumpPoseWrite] Frame=%u Pass=%d Mode=pivot Lead=%d Mask=%d Penetration=%.17g Normal=%s BeforeCOM=%s AfterCOM=%s"),
+                                NumFrame(), Pass, LeadingWheel->Idx(), SupportMask, double(LargestPenetration),
+                                *CoupledPoseDiagnosticVector(CorrectionNormal), *CoupledPoseDiagnosticVector(BeforeCorrectionCOM),
+                                *CoupledPoseDiagnosticVector(GetPhysCOM()));
+                        }
+#endif
+                        bProjected = true;
+                        continue;
+                    }
+                }
+            }
+        }
+        if (bTracePivot)
+            UE_LOG(LogTemp, Display, TEXT("[FrontBumpDecision] Frame=%u Pass=%d Lead=%d Mask=%d Penetration=%.6f Derivative=%.6f AngleDeg=%.6f Action=translate Reason=%s"),
+                NumFrame(), Pass, LeadingWheel ? LeadingWheel->Idx() : -1, SupportMask,
+                LargestPenetration, Derivative, FMath::RadiansToDegrees(Angle), Decision);
+		{
+			Speed::PreparedExecution::FNativeFinalWheelSupportScope correction(*this,Pass);
+#if !UE_BUILD_SHIPPING
+            const FVector BeforeCorrectionCOM = GetPhysCOM();
+#endif
+			AddPhysLocation(LargestPenetration * CorrectionNormal);
+			UpdateSubBodiesKinematics();
+#if !UE_BUILD_SHIPPING
+            if (bTracePivot)
+            {
+                UE_LOG(LogTemp, Display,
+                    TEXT("[WheelBumpPoseWrite] Frame=%u Pass=%d Mode=translate Lead=%d Mask=%d Penetration=%.17g Normal=%s BeforeCOM=%s AfterCOM=%s"),
+                    NumFrame(), Pass, LeadingWheel ? LeadingWheel->Idx() : -1, SupportMask,
+                    double(LargestPenetration), *CoupledPoseDiagnosticVector(CorrectionNormal),
+                    *CoupledPoseDiagnosticVector(BeforeCorrectionCOM), *CoupledPoseDiagnosticVector(GetPhysCOM()));
+            }
+#endif
+		}
 		bProjected = true;
 	}
 	return bProjected;
@@ -1267,6 +1423,21 @@ bool ISpeedWheeledComponent::WheelIdxIsOnGround(const int32& WheelIdx) const
 
 void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 {
+#if !UE_BUILD_SHIPPING
+    static const auto* trace=IConsoleManager::Get().FindTConsoleVariableDataInt(
+        TEXT("p.IAmSpeed.AnalyticWorld.OrdinaryCurvedBoxTrace"));
+    struct FPostFailureTrace
+    {
+        int32 Uncaught;
+        uint32 Frame;
+        const TCHAR* Stage=TEXT("wheel_support_transaction");
+        ~FPostFailureTrace()
+        {
+            if(Uncaught>=0&&std::uncaught_exceptions()>Uncaught)
+                UE_LOG(LogTemp,Display,TEXT("[CurvedBoxPostIntegrationUnwind] ComponentFrame=%u Stage=%s"),Frame,Stage);
+        }
+    } postTrace{trace&&trace->GetValueOnAnyThread()==1?std::uncaught_exceptions():-1,uint32(NumFrame())};
+#endif
 	TArray<TPair<USWheelSubBody*, SHitResult>, TInlineAllocator<4>> EstablishedSupports;
 	bool bDeferredWheelGroundState = false;
 	const bool bTransactionalProjection =
@@ -1544,12 +1715,14 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 				CVarIAmSpeedWheelSupportProjectionDebug.GetValueOnAnyThread() >= 4;
 #endif
 
-			auto ApplyConstraint = [this, RotationLengthSquared](
+			bool bProposedPose = false;
+			bool bPoseAdmitted = true;
+			auto ApplyConstraint = [this, RotationLengthSquared, &bProposedPose, &bPoseAdmitted](
 				const FVector& Direction, const FVector& WorldPoint, const float Violation)
 			{
 				if (Violation <= 0.001f)
 				{
-					return;
+					return true;
 				}
 				const FVector N = Direction.GetSafeNormal();
 				const FVector AngularJacobian = FVector::CrossProduct(
@@ -1557,7 +1730,15 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 				const float Denominator = 1.0f
 					+ AngularJacobian.SizeSquared() / RotationLengthSquared;
 				const float Lambda = Violation / FMath::Max(Denominator, 1.0f);
-				SetPhysCOMLocation(GetPhysCOM() + Lambda * N);
+				const FVector CandidateCOM = GetPhysCOM() + Lambda * N;
+				if (!bProposedPose && Speed::PreparedExecution::FStepScope::
+					TryRejectNativeCurvedBoxWheelSupportTranslation(*this, CandidateCOM))
+				{
+					bPoseAdmitted = false;
+					return false;
+				}
+				bProposedPose = true;
+				SetPhysCOMLocation(CandidateCOM);
 				const FVector DeltaAngular =
 					(Lambda / RotationLengthSquared) * AngularJacobian;
 				const float DeltaAngle = DeltaAngular.Size();
@@ -1567,6 +1748,7 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 					SetPhysRotation((WorldDelta * GetPhysRotation()).GetNormalized());
 				}
 				UpdateSubBodiesKinematics();
+				return true;
 			};
 
 			for (int32 Pass = 0; Pass < Passes; ++Pass)
@@ -1581,7 +1763,7 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 					const float Radius = Probe.Wheel->GetCollisionShape().GetSphereRadius();
 					const float Gap = FVector::DotProduct(
 						SweepEnd - Probe.PreviousHit.ImpactPoint, N) - Radius;
-					ApplyConstraint(-N, SweepEnd, Gap + ReachSkin);
+					if (!ApplyConstraint(-N, SweepEnd, Gap + ReachSkin)) break;
 					if (bCoherentSpringState)
 					{
 						// A newly reacquired wheel participates in the same displacement and
@@ -1597,11 +1779,12 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 							RefreshContactDisplacement(Probe, AcquiredHit);
 							const float Clearance = FVector::DotProduct(
 								Probe.Wheel->WorldPos() - AcquiredHit.ImpactPoint, N) - Radius;
-							ApplyConstraint(N, Probe.Wheel->WorldPos(), -Clearance);
+							if (!ApplyConstraint(N, Probe.Wheel->WorldPos(), -Clearance)) break;
 						}
 					}
 				}
 
+				if (!bPoseAdmitted) break;
 				for (const FGroundProbe& Probe : Probes)
 				{
 					if (!Probe.bHasProbeHit)
@@ -1617,13 +1800,14 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 						SweepEnd - Probe.ProbeHit.ImpactPoint, N) - Radius;
 					// Use the existing inward reach target for each initial real hit too.
 					// A small positive solver residual must not strand an acquired wheel.
-					ApplyConstraint(-N, SweepEnd, ReachGap + (bPreserveProbeHits ? ReachSkin : 0.0f));
+					if (!ApplyConstraint(-N, SweepEnd, ReachGap + (bPreserveProbeHits ? ReachSkin : 0.0f))) break;
 
 					RefreshContactDisplacement(Probe, Probe.ProbeHit);
 					const float Clearance = FVector::DotProduct(
 						Probe.Wheel->WorldPos() - Probe.ProbeHit.ImpactPoint, N) - Radius;
-					ApplyConstraint(N, Probe.Wheel->WorldPos(), -Clearance);
+					if (!ApplyConstraint(N, Probe.Wheel->WorldPos(), -Clearance)) break;
 				}
+				if (!bPoseAdmitted) break;
 #if !(UE_BUILD_SHIPPING)
 				if (bRecordResiduals)
 				{
@@ -1661,7 +1845,7 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 			RotationAngle = FMath::Min(RotationAngle, 2.0f * PI - RotationAngle);
 			const float MaxRotationRadians = FMath::DegreesToRadians(FMath::Max(0.0f,
 				CVarIAmSpeedWheelSupportProjectionMaxRotationDegrees.GetValueOnAnyThread()));
-			const bool bWithinBounds =
+			const bool bWithinBounds = bPoseAdmitted &&
 				(GetPhysCOM() - OriginalCOM).Size() <= MaxGap &&
 				RotationAngle <= MaxRotationRadians;
 			bool bPreservedProbeHits = true;
@@ -1759,11 +1943,57 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 					}
 				}
 			}
-			const bool bAcceptProjectedPose = bWithinBounds && bPreservedProbeHits && bCoherentStateValid;
+			// A wheel-only recovery on one exact floor face cannot establish
+			// support by putting the principal chassis through static geometry.
+			// Curved/mixed manifolds keep their existing coupled-pose path.
+			bool bExactFloorRecovery = bWithinBounds && bPreservedProbeHits &&
+				bCoherentStateValid && !EstablishedMisses.IsEmpty() &&
+				Speed::Analytic::FStaticWorldQueryAudit::IsSurfaceAnalyticBackend();
+			const SHitResult& RecoveryPlane = Probes[EstablishedMisses[0]].PreviousHit;
+			for (int32 ProbeIndex = 0; ProbeIndex < Probes.Num() && bExactFloorRecovery; ++ProbeIndex)
+			{
+				const FGroundProbe& Probe = Probes[ProbeIndex];
+				if (!Probe.bHasProbeHit && !EstablishedMisses.Contains(ProbeIndex)) continue;
+				const SHitResult& Hit = Probe.bHasProbeHit ? Probe.ProbeHit : Probe.PreviousHit;
+				bExactFloorRecovery = Hit.SourceId != 0 && Hit.SurfaceId != 0 &&
+					Hit.SourceId == RecoveryPlane.SourceId && Hit.SurfaceId == RecoveryPlane.SurfaceId &&
+					!Hit.bSurfaceNormalMayVary && Hit.GeometricErrorBoundCm == 0 &&
+					Hit.ContactFeatureOther == Speed::EContactFeatureKind::Face &&
+					Hit.ImpactNormal.Z >= 0.999999;
+			}
+			bool bChassisPoseFeasible = true;
+			if (bExactFloorRecovery)
+			{
+				for (USSubBody* Body : GetSubBodies())
+				{
+					const UBoxSubBody* Box = Cast<UBoxSubBody>(Body);
+					if (!Box || Box->GetSubBodyType() != USSubBody::ESubBodyType::Hitbox) continue;
+					TArray<FHitResult> Penetrations;
+					Box->GatherStaticPenetrationHits(Penetrations);
+					for (const FHitResult& Hit : Penetrations)
+					{
+						if (Hit.PenetrationDepth > 0)
+						{
+							bChassisPoseFeasible = false;
+#if !UE_BUILD_SHIPPING
+							if (CVarIAmSpeedWheelSupportProjectionDebug.GetValueOnAnyThread() != 0)
+								UE_LOG(LogTemp, Log, TEXT("[WheelSupportProjectionChassisRejected] Frame=%u Depth=%.17g"),
+									NumFrame(), double(Hit.PenetrationDepth));
+#endif
+							break;
+						}
+					}
+					break;
+				}
+			}
+			const bool bAcceptProjectedPose = bWithinBounds && bPreservedProbeHits && bCoherentStateValid && bChassisPoseFeasible;
 			if (!bAcceptProjectedPose)
 			{
-				SetPhysCOMLocation(OriginalCOM);
-				SetPhysRotation(OriginalRotation);
+				if (bPoseAdmitted)
+				{
+					SetPhysCOMLocation(OriginalCOM);
+					SetPhysRotation(OriginalRotation);
+				}
 				if (bCoherentSpringState)
 				{
 					for (const FGroundProbe& Probe : Probes)
@@ -1836,6 +2066,9 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 		}
 	}
 
+#if !UE_BUILD_SHIPPING
+    postTrace.Stage=TEXT("wheel_suspension_and_retained_support");
+#endif
     {
         TOptional<Speed::Analytic::FScopedWheelSuspensionPrefetch1075> Prefetch;
         if (Speed::Analytic::IsWheelSuspensionPrefetch1075Enabled())
@@ -1878,7 +2111,13 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 		}
 		EndDeferredWheelGroundStateUpdate();
 	}
+#if !UE_BUILD_SHIPPING
+    postTrace.Stage=TEXT("wheel_support_nonpenetration");
+#endif
 	ProjectWheelSupportNonPenetration();
+#if !UE_BUILD_SHIPPING
+    postTrace.Stage=TEXT("coupled_subbody_pose");
+#endif
 	ProjectCoupledSubBodyPose(delta);
 }
 
@@ -1898,18 +2137,38 @@ FVector ISpeedWheeledComponent::QuantizeUnitNormal(const FVector& n, float q)
 
 void ISpeedWheeledComponent::PostPhysicsUpdatePrv(const float& delta)
 {
+#if !UE_BUILD_SHIPPING
+    TOptional<FRoofCorrectionTiming> Timing;
+    if (RoofPostProfile::CallbackCurrent)
+        Timing.Emplace(NumFrame());
+#endif
 	ResolveGroupedWheelGroundContacts(delta);
+#if !UE_BUILD_SHIPPING
+    if (Timing) Timing->RecordNext();
+#endif
 	// Contact impulses are still resolved first. A changed pose, velocity or
 	// force revokes sleep and takes the full feasibility-projection path.
 	if (IsPhysicsSleeping()) return;
 	ProjectWheelSupportNonPenetration();
+#if !UE_BUILD_SHIPPING
+    if (Timing) Timing->RecordNext();
+#endif
 	TryProjectCanonicalWheelSupportPose();
+#if !UE_BUILD_SHIPPING
+    if (Timing) Timing->RecordNext();
+#endif
 	// Wheel and canonical-support corrections are allowed to move the rigid
 	// pose after integration. Reassert the coupled feasibility hierarchy with
 	// an exact analytical hitbox gate last, so PostPhysics observers cannot
 	// sample a residual overlap without changing substep response tolerances.
 	ProjectEstablishedStaticContacts(delta);
+#if !UE_BUILD_SHIPPING
+    if (Timing) Timing->RecordNext();
+#endif
 	ProjectCoupledSubBodyPose(delta, true);
+#if !UE_BUILD_SHIPPING
+    if (Timing) Timing->RecordNext();
+#endif
 }
 
 bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(
@@ -2039,12 +2298,80 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(
 	};
 	TArray<FHitboxPlaneConstraint, TInlineAllocator<8>> HitboxConstraints;
 	TArray<FHitResult> InitialPenetrationHits;
-	PrincipalHitbox->GatherStaticPenetrationHits(InitialPenetrationHits);
+	#if !UE_BUILD_SHIPPING
+        GatherRoofCorrectionHitbox(*PrincipalHitbox, InitialPenetrationHits);
+#else
+        PrincipalHitbox->GatherStaticPenetrationHits(InitialPenetrationHits);
+#endif
 	float InitialMaximumDepth = 0.0f;
 	for (const FHitResult& Hit : InitialPenetrationHits)
 	{
 		InitialMaximumDepth = FMath::Max(InitialMaximumDepth, Hit.PenetrationDepth);
 	}
+
+#if !UE_BUILD_SHIPPING
+    static const auto* SolverTraceFrame = IConsoleManager::Get().FindTConsoleVariableDataInt(
+        TEXT("p.IAmSpeed.Collision.SolverEventTraceFrame"));
+    const int32 TraceFrame = SolverTraceFrame ? SolverTraceFrame->GetValueOnAnyThread() : -1;
+    uint64 CanonicalFrame = 0, SceneGeneration = 0;
+    const bool bTraceRetainedCorrection = InitialMaximumDepth > Slop &&
+        !Speed::PreparedExecution::Requested() &&
+        Speed::Analytic::FStaticWorldQueryAudit::TryObserveStrictFrame(PrincipalHitbox->GetWorld(), CanonicalFrame, SceneGeneration) &&
+        ((TraceFrame >= 0 && CanonicalFrame == static_cast<uint64>(TraceFrame)) ||
+         Speed::Analytic::FStaticWorldQueryAudit::IsQualificationContactTraceFrame(CanonicalFrame));
+    FVector BeforeBoxPosition = FVector::ZeroVector;
+    FQuat BeforeBoxRotation = FQuat::Identity;
+    FVector HalfExtent = FVector::ZeroVector;
+    if (bTraceRetainedCorrection)
+    {
+        const auto& BeforeBox = PrincipalHitbox->GetKinematicState();
+        BeforeBoxPosition = BeforeBox.Location;
+        BeforeBoxRotation = BeforeBox.Rotation;
+        HalfExtent = FCollisionShape::MakeBox(PrincipalHitbox->GetBoxExtent()).GetBox();
+    }
+    const auto TraceRetainedCorrection = [&](bool bReturnedChanged, const TCHAR* Route)
+    {
+        if (!bTraceRetainedCorrection) return;
+        uint64 ReturnFrame = 0, ReturnSceneGeneration = 0;
+        if (!Speed::Analytic::FStaticWorldQueryAudit::TryObserveStrictFrame(PrincipalHitbox->GetWorld(), ReturnFrame, ReturnSceneGeneration) ||
+            ReturnFrame != CanonicalFrame || ReturnSceneGeneration != SceneGeneration) return;
+        const FVector PostCOM = GetPhysCOM();
+        const FQuat PostRotation = GetPhysRotation();
+        if (PostCOM.X == TransactionCOM.X && PostCOM.Y == TransactionCOM.Y && PostCOM.Z == TransactionCOM.Z &&
+            PostRotation.X == TransactionRotation.X && PostRotation.Y == TransactionRotation.Y &&
+            PostRotation.Z == TransactionRotation.Z && PostRotation.W == TransactionRotation.W) return;
+        const auto& AfterBox = PrincipalHitbox->GetKinematicState();
+        const uint64 OwnerId = GetPublishedSimulationStableId();
+        const int32 BodyIndex = GetSubBodies().IndexOfByKey(PrincipalHitbox);
+        UE_LOG(LogTemp, Display,
+            TEXT("[OrdinaryChassisCorrection] Frame=%llu OwnerFrame=%u Body=%llu SubBody=%d SceneGeneration=%llu Phase=%s Route=%s ReturnChanged=%d InitialHits=%d Depth=%.9g Slop=%.9g "
+                 "PreCOM=(%.17g,%.17g,%.17g) PreQ=(%.17g,%.17g,%.17g,%.17g) PostCOM=(%.17g,%.17g,%.17g) PostQ=(%.17g,%.17g,%.17g,%.17g) "
+                 "PreBox=(%.17g,%.17g,%.17g) PreBoxQ=(%.17g,%.17g,%.17g,%.17g) PostBox=(%.17g,%.17g,%.17g) PostBoxQ=(%.17g,%.17g,%.17g,%.17g) Extent=(%.17g,%.17g,%.17g)"),
+            CanonicalFrame, NumFrame(), OwnerId, BodyIndex, SceneGeneration,
+            bStrictHitboxGate ? TEXT("FinalPost") : TEXT("PostIntegrate"), Route,
+            bReturnedChanged ? 1 : 0, InitialPenetrationHits.Num(), InitialMaximumDepth, Slop,
+            TransactionCOM.X, TransactionCOM.Y, TransactionCOM.Z,
+            TransactionRotation.X, TransactionRotation.Y, TransactionRotation.Z, TransactionRotation.W,
+            PostCOM.X, PostCOM.Y, PostCOM.Z, PostRotation.X, PostRotation.Y, PostRotation.Z, PostRotation.W,
+            BeforeBoxPosition.X, BeforeBoxPosition.Y, BeforeBoxPosition.Z,
+            BeforeBoxRotation.X, BeforeBoxRotation.Y, BeforeBoxRotation.Z, BeforeBoxRotation.W,
+            AfterBox.Location.X, AfterBox.Location.Y, AfterBox.Location.Z,
+            AfterBox.Rotation.X, AfterBox.Rotation.Y, AfterBox.Rotation.Z, AfterBox.Rotation.W,
+            HalfExtent.X, HalfExtent.Y, HalfExtent.Z);
+        for (int32 HitIndex = 0; HitIndex < InitialPenetrationHits.Num(); ++HitIndex)
+        {
+            const FHitResult& Hit = InitialPenetrationHits[HitIndex];
+            const UPrimitiveComponent* Component = Hit.Component.Get();
+            UE_LOG(LogTemp, Display,
+                TEXT("[OrdinaryChassisCorrectionInitialHit] Frame=%llu OwnerFrame=%u Body=%llu SubBody=%d SceneGeneration=%llu Phase=%s Route=%s Index=%d Component=%u Face=%d Depth=%.9g Point=(%.17g,%.17g,%.17g) Normal=(%.17g,%.17g,%.17g)"),
+                CanonicalFrame, NumFrame(), OwnerId, BodyIndex, SceneGeneration,
+                bStrictHitboxGate ? TEXT("FinalPost") : TEXT("PostIntegrate"), Route, HitIndex,
+                Component ? static_cast<uint32>(Component->GetUniqueID()) : 0u, Hit.FaceIndex, Hit.PenetrationDepth,
+                Hit.ImpactPoint.X, Hit.ImpactPoint.Y, Hit.ImpactPoint.Z,
+                Hit.ImpactNormal.X, Hit.ImpactNormal.Y, Hit.ImpactNormal.Z);
+        }
+    };
+#endif
 	if (InitialMaximumDepth <= 0.0f &&
 		Speed::Analytic::FStaticWorldQueryAudit::IsSurfaceAnalyticBackend())
 	{
@@ -2067,7 +2394,11 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(
 		SetPhysRotation(LastCertifiedCoupledPoseRotation);
 		UpdateSubBodiesKinematics();
 		TArray<FHitResult> CertifiedPoseHits;
-		PrincipalHitbox->GatherStaticPenetrationHits(CertifiedPoseHits);
+		#if !UE_BUILD_SHIPPING
+        GatherRoofCorrectionHitbox(*PrincipalHitbox, CertifiedPoseHits);
+#else
+        PrincipalHitbox->GatherStaticPenetrationHits(CertifiedPoseHits);
+#endif
 		if (!CertifiedPoseHits.IsEmpty())
 		{
 			SetPhysCOMLocation(TransactionCOM);
@@ -2189,7 +2520,11 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(
 		TArray<FHitResult> Hits;
 		for (int32 Pass = 0; Pass < PassLimit; ++Pass)
 		{
-			PrincipalHitbox->GatherStaticPenetrationHits(Hits);
+			#if !UE_BUILD_SHIPPING
+        GatherRoofCorrectionHitbox(*PrincipalHitbox, Hits);
+#else
+        PrincipalHitbox->GatherStaticPenetrationHits(Hits);
+#endif
 			float MaximumDepth = 0.0f;
 			for (const FHitResult& Hit : Hits)
 			{
@@ -2243,7 +2578,11 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(
 		}
 
 		TArray<FHitResult> FinalHits;
-		PrincipalHitbox->GatherStaticPenetrationHits(FinalHits);
+		#if !UE_BUILD_SHIPPING
+        GatherRoofCorrectionHitbox(*PrincipalHitbox, FinalHits);
+#else
+        PrincipalHitbox->GatherStaticPenetrationHits(FinalHits);
+#endif
 		for (const FHitResult& Hit : FinalHits)
 		{
 			if (Hit.PenetrationDepth > Slop)
@@ -2307,6 +2646,9 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(
 			UpdateSubBodiesKinematics();
 			if (TryRestoreRecentCertifiedPose())
 			{
+#if !UE_BUILD_SHIPPING
+                TraceRetainedCorrection(true, TEXT("CertifiedPoseRestore"));
+#endif
 				return true;
 			}
 		}
@@ -2363,6 +2705,9 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(
 			}
 			EndDeferredWheelGroundStateUpdate();
 		}
+#if !UE_BUILD_SHIPPING
+        TraceRetainedCorrection(bPoseChanged, TEXT("StrictHitbox"));
+#endif
 		return bPoseChanged;
 	}
 
@@ -2794,5 +3139,8 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(
 		}
 		EndDeferredWheelGroundStateUpdate();
 	}
+#if !UE_BUILD_SHIPPING
+    TraceRetainedCorrection(bPoseChanged, TEXT("Coupled"));
+#endif
 	return bPoseChanged;
 }

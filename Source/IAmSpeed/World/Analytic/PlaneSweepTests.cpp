@@ -1,5 +1,6 @@
 #if WITH_DEV_AUTOMATION_TESTS
 #include "AnalyticWorldQuery.h"
+#include "AnalyticNumericContext.h"
 #include "Misc/AutomationTest.h"
 #include "Math/RandomStream.h"
 #include "HAL/PlatformTime.h"
@@ -181,5 +182,61 @@ bool FIAmSpeedPlaneSweepTest::RunTest(const FString& Parameters)
 		AddInfo(FString::Printf(TEXT("[RoundPlaneMicro] Pair=%d OriginalNs=%.6f OptimizedNs=%.6f"), Pair, OldNs, NewNs));
 	}
 	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FIAmSpeedCanonicalFinitePlaneGeometryTest,
+    "IAmSpeed.AnalyticWorld.CanonicalFinitePlane.GeometryShapesAndRefusals",
+    EAutomationTestFlags::EditorContext|EAutomationTestFlags::EngineFilter)
+bool FIAmSpeedCanonicalFinitePlaneGeometryTest::RunTest(const FString&)
+{
+    using namespace Speed::Analytic;
+    if(!TestTrue(TEXT("existing native RNE contract"),InspectCurrentAnalyticNumericContext(
+        EAnalyticNumericContract::Binary64NearestAllowFlush).Status==EAnalyticNumericStatus::Complete))return false;
+    FBoundedPlane plane;plane.HalfExtents=FVector2d(100,100);
+    plane.SourceId=11;plane.SurfaceId=12;plane.FeatureId=13;plane.PrimitiveId=14;
+    plane.ObjectType=0;plane.BlockingChannels=uint64(1)<<3;
+    FWorldQuery q;q.Start=FVector3d(0,0,10);q.End=FVector3d(0,0,-10);
+    q.bAuthorityOnly=true;q.bApplyCollisionFilter=true;q.TraceChannel=3;q.BlockingObjectTypes=1;
+    FWorldHit hit;
+    const EQueryShape shapes[]={EQueryShape::Ray,EQueryShape::Sphere,EQueryShape::Box};
+    for(auto shape:shapes)
+    {
+        q.Shape=shape;q.Radius=2;q.HalfExtent=FVector3d(2,3,4);
+        if(!TestTrue(TEXT("fixed-shape finite-plane geometry evaluated"),FWorldQueryService::EvaluateFinitePlaneGeometry(q,plane,false,hit)))return false;
+        const double expected=shape==EQueryShape::Ray?.5:shape==EQueryShape::Sphere?.4:.3;
+        TestTrue(TEXT("independent axial TOI and native face identity"),hit.bHit&&FMath::Abs(hit.Time-expected)<1.e-14&&
+            hit.SourceId==11&&hit.SurfaceId==12&&hit.PrimitiveId==14&&hit.Point.Z==0);
+        TestFalse(TEXT("geometry evaluation does not promote the provider"),plane.bAuthorityEligible);
+        TestTrue(TEXT("strict flag is preserved"),q.bAuthorityOnly);
+    }
+    q.Shape=EQueryShape::Sphere;q.RequiredSurfaceId=99;
+    TestTrue(TEXT("valid provider restriction evaluated"),FWorldQueryService::EvaluateFinitePlaneGeometry(q,plane,false,hit));
+    TestFalse(TEXT("another provider cannot supply its face"),hit.bHit);q.RequiredSurfaceId=0;
+    q.TraceChannel=4;
+    TestTrue(TEXT("bilateral trace filter evaluated"),FWorldQueryService::EvaluateFinitePlaneGeometry(q,plane,false,hit));
+    TestFalse(TEXT("nonblocking provider stays absent"),hit.bHit);q.TraceChannel=3;
+    q.ReferenceNormal=FVector3d(0,0,-1);q.MinimumReferenceNormalDot=.9;
+    TestTrue(TEXT("reference-normal policy evaluated"),FWorldQueryService::EvaluateFinitePlaneGeometry(q,plane,false,hit));
+    TestFalse(TEXT("opposite established normal rejects this face"),hit.bHit);q.MinimumReferenceNormalDot=-1;
+    q.Start=q.End=FVector3d(0,0,1);
+    TestTrue(TEXT("pose overlap has its distinct operation"),FWorldQueryService::EvaluateFinitePlaneGeometry(q,plane,true,hit));
+    TestTrue(TEXT("positive exact overlap depth retained"),hit.bHit&&hit.bStartPenetrating&&hit.PenetrationDepth==1);
+    for(auto shape:{EQueryShape::Sphere,EQueryShape::Box})
+    {
+        q.Shape=shape;q.Start=q.End=FVector3d(0,0,shape==EQueryShape::Sphere?2:4);
+        TestTrue(TEXT("exact touching pose evaluated"),FWorldQueryService::EvaluateFinitePlaneGeometry(q,plane,true,hit));
+        TestFalse(TEXT("touching is not a positive overlap constraint"),hit.bHit);
+    }
+    q.Shape=EQueryShape::Sphere;q.Start=q.End=FVector3d(0,0,1);
+    q.End.Z=-1;hit.bHit=true;
+    TestFalse(TEXT("moving query cannot impersonate an overlap pose"),FWorldQueryService::EvaluateFinitePlaneGeometry(q,plane,true,hit));
+    TestFalse(TEXT("unsupported call clears stale hit"),hit.bHit);
+    q.Shape=static_cast<EQueryShape>(255);TestFalse(TEXT("unknown shape refuses"),FWorldQueryService::EvaluateFinitePlaneGeometry(q,plane,false,hit));
+    q.Shape=EQueryShape::Box;q.HalfExtent.X=-1;TestFalse(TEXT("invalid extent refuses"),FWorldQueryService::EvaluateFinitePlaneGeometry(q,plane,false,hit));
+    q.Shape=EQueryShape::Sphere;q.Radius=2;q.Start=FVector3d(99,0,10);q.End=FVector3d(99,0,-10);
+    TestTrue(TEXT("round face kernel evaluated near finite boundary"),FWorldQueryService::EvaluateFinitePlaneGeometry(q,plane,false,hit));
+    TestFalse(TEXT("interior-footprint guard is retained; this is not a whole-union miss"),hit.bHit);
+    q.bAuthorityOnly=false;TestFalse(TEXT("relaxed policy cannot enter strict geometric adapter"),FWorldQueryService::EvaluateFinitePlaneGeometry(q,plane,false,hit));
+    return !HasAnyErrors();
 }
 #endif

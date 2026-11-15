@@ -5,6 +5,7 @@
 #include "IAmSpeed/World/Simulation/FrameParallelSettings.h"
 #include "HAL/IConsoleManager.h"
 #include "HAL/PlatformTLS.h"
+#include "HAL/PlatformTime.h"
 #include <cmath>
 #include <atomic>
 #include <exception>
@@ -185,8 +186,10 @@ FJoinedTensorCellWave1213::FJoinedTensorCellWave1213(
     const FWorldQuery& Query,const FBox3d& Bounds,const FTensorCellWaveIdentity1213& Identity,
     TConstArrayView<int32> ProviderIndices,int32 TotalCandidates,int32 Lanes,
     TFunctionRef<double()> CaptureBound,TFunctionRef<FWorldHit(int32,double)> Evaluate,
-    ETensorCellWindowReason1534 WindowReason1534)
+    ETensorCellWindowReason1534 WindowReason1534, EAnalyticNumericContract InNumericContract)
 {
+    NumericContract=InNumericContract;
+    RequireCurrentAnalyticNumericContext(NumericContract);
     if(!IsTensorCellWave1213Enabled())return;
     bObserve=CVarTensorCellObserve1213.GetValueOnAnyThread()!=0;
     Stats.Attempts=1;Stats.RequestedMax=Lanes;Stats.Candidates=TotalCandidates;Stats.Eligible=ProviderIndices.Num();
@@ -214,19 +217,22 @@ FJoinedTensorCellWave1213::FJoinedTensorCellWave1213(
     }
     const uint64 PreparationStart=bTime?FPlatformTime::Cycles64():0;
     const auto PreviousNumeric=CaptureFrameFloatingPointContext();
+    RequireAnalyticNumericTransfer(NumericContract,PreviousNumeric.bValid);
     if(!PreviousNumeric.bValid){Refuse(ETensorCellWaveFallback1213::Numeric);return;}
     FScopedFrameFloatingPointContext OwnerNumeric(PreviousNumeric);
+    RequireAnalyticNumericTransfer(NumericContract,OwnerNumeric.IsApplied());
     if(!OwnerNumeric.IsApplied()){Refuse(ETensorCellWaveFallback1213::Numeric);
-        if(!OwnerNumeric.Restore())throw std::runtime_error("IAmSpeed Tensor cell owner numeric restoration failed");return;}
+        if(!OwnerNumeric.Restore())ThrowAnalyticNumericTransferFailure(NumericContract,EAnalyticNumericFailure::ContextRestoration,"IAmSpeed Tensor cell owner numeric restoration failed");return;}
     // Bound evaluation is inside the restored owner guard. It is repeated by
     // the original owner loop at its original point before each kernel call.
     MaximumSearchTime=CaptureBound();
     if(!std::isfinite(MaximumSearchTime)||MaximumSearchTime<0||MaximumSearchTime>1)
     {Refuse(ETensorCellWaveFallback1213::InvalidBound);
-        if(!OwnerNumeric.Restore())throw std::runtime_error("IAmSpeed Tensor cell owner numeric restoration failed");return;}
+        if(!OwnerNumeric.Restore())ThrowAnalyticNumericTransferFailure(NumericContract,EAnalyticNumericFailure::ContextRestoration,"IAmSpeed Tensor cell owner numeric restoration failed");return;}
     NumericContext=CaptureFrameFloatingPointContext();
+    RequireAnalyticNumericTransfer(NumericContract,NumericContext.bValid);
     if(!NumericContext.bValid){Refuse(ETensorCellWaveFallback1213::Numeric);
-        if(!OwnerNumeric.Restore())throw std::runtime_error("IAmSpeed Tensor cell owner numeric restoration failed");return;}
+        if(!OwnerNumeric.Restore())ThrowAnalyticNumericTransferFailure(NumericContract,EAnalyticNumericFailure::ContextRestoration,"IAmSpeed Tensor cell owner numeric restoration failed");return;}
     CapturedQuery=Query;CapturedBounds=Bounds;CapturedIdentity=Identity;
     Records.SetNum(ProviderIndices.Num());
     for(int32 I=0;I<ProviderIndices.Num();++I)Records[I].Index=ProviderIndices[I];
@@ -237,7 +243,7 @@ FJoinedTensorCellWave1213::FJoinedTensorCellWave1213(
     {
         if(RecordLookup1213[I-1].Index!=RecordLookup1213[I].Index)continue;
         Refuse(ETensorCellWaveFallback1213::Capacity);
-        if(!OwnerNumeric.Restore())throw std::runtime_error("IAmSpeed Tensor cell owner numeric restoration failed");
+        if(!OwnerNumeric.Restore())ThrowAnalyticNumericTransferFailure(NumericContract,EAnalyticNumericFailure::ContextRestoration,"IAmSpeed Tensor cell owner numeric restoration failed");
         return; // Duplicate cell keys cannot publish an ambiguous result.
     }
     const int32 UsedLanes=FMath::Clamp(Lanes,2,FMath::Min(12,ProviderIndices.Num()));
@@ -253,6 +259,7 @@ FJoinedTensorCellWave1213::FJoinedTensorCellWave1213(
         FScopedFrameParallelTask Task(NumericContext);
         try
         {
+            RequireAnalyticNumericTransfer(NumericContract,Task.IsNumericContextApplied());
             if(!Task.IsNumericContextApplied())throw std::runtime_error("IAmSpeed Tensor cell wave numeric context unavailable");
             if(bObserve)ThreadIds[Lane]=FPlatformTLS::GetCurrentThreadId();
             const uint64 Start=bTime?FPlatformTime::Cycles64():0;
@@ -262,15 +269,18 @@ FJoinedTensorCellWave1213::FJoinedTensorCellWave1213(
             {
                 // Every provider starts with the exact captured environment,
                 // replacing flags left by a previous provider on the same lane.
-                if(!ApplyFrameFloatingPointContext(NumericContext))
+                const bool bNumericApplied=ApplyFrameFloatingPointContext(NumericContext);
+                RequireAnalyticNumericTransfer(NumericContract,bNumericApplied);
+                if(!bNumericApplied)
                     throw std::runtime_error("IAmSpeed Tensor cell entry numeric context unavailable");
                 Records[I].Lane1213=Lane;
                 if(bObserve)Records[I].Native1213=ThreadIds[Lane];
                 const uint64 CellKernelStart1213=bTime?FPlatformTime::Cycles64():0;
-                try {Records[I].Hit=Evaluate(Records[I].Index,MaximumSearchTime);}
+                try {const FWorldHit Hit=Evaluate(Records[I].Index,MaximumSearchTime); RequireCurrentAnalyticNumericContext(NumericContract); Records[I].Hit=Hit;}
                 catch(...){Records[I].Failure=std::current_exception();}
                 if(bTime)Records[I].KernelCycles1213=FPlatformTime::Cycles64()-CellKernelStart1213; // Deferred until canonical consumption.
                 Records[I].NumericAfter=CaptureFrameFloatingPointContext();
+                RequireAnalyticNumericTransfer(NumericContract,Records[I].NumericAfter.bValid);
                 if(!Records[I].NumericAfter.bValid)
                     throw std::runtime_error("IAmSpeed Tensor cell output numeric context unavailable");
                 ++Completed[Lane];
@@ -293,7 +303,7 @@ FJoinedTensorCellWave1213::FJoinedTensorCellWave1213(
             if(bTime)NumericCycles[Lane]=FPlatformTime::Cycles64()-Start;
         }
         catch(...){Failures[Lane]=std::current_exception();}
-        if(!Task.RestoreNumericContext())Failures[Lane]=std::make_exception_ptr(std::runtime_error("IAmSpeed Tensor cell wave numeric restoration failed"));
+        if(!Task.RestoreNumericContext())Failures[Lane]=AnalyticNumericTransferException(NumericContract,EAnalyticNumericFailure::ContextRestoration,"IAmSpeed Tensor cell wave numeric restoration failed");
     };
     if(bTime){Stats.PreparationCycles=FPlatformTime::Cycles64()-PreparationStart;Stats.PreparationMeasuredAttempts1213=1;}
     Stats.DispatchAttempts1213=1;
@@ -305,7 +315,7 @@ FJoinedTensorCellWave1213::FJoinedTensorCellWave1213(
         Stats.CallerCycles=Dispatch.CallerExecutionCycles;Stats.JoinWaitCycles=Dispatch.JoinWaitCycles;
     }
     if(!Admitted){Refuse(ETensorCellWaveFallback1213::ExecutorAdmission);
-        if(!OwnerNumeric.Restore())throw std::runtime_error("IAmSpeed Tensor cell owner numeric restoration failed");return;}
+        if(!OwnerNumeric.Restore())ThrowAnalyticNumericTransferFailure(NumericContract,EAnalyticNumericFailure::ContextRestoration,"IAmSpeed Tensor cell owner numeric restoration failed");return;}
     // No result is consumable until every lane restored and joined.
     std::exception_ptr FirstFailure;
     for(int32 Lane=0;Lane<UsedLanes;++Lane)
@@ -324,7 +334,7 @@ FJoinedTensorCellWave1213::FJoinedTensorCellWave1213(
             if(Completed[Lane]>0&&ThreadIds[Lane]!=0&&!SeenUseful)++Stats.UsefulNativeMax;
         }
     }
-    if(!OwnerNumeric.Restore())throw std::runtime_error("IAmSpeed Tensor cell owner numeric restoration failed");
+    if(!OwnerNumeric.Restore())ThrowAnalyticNumericTransferFailure(NumericContract,EAnalyticNumericFailure::ContextRestoration,"IAmSpeed Tensor cell owner numeric restoration failed");
     if(FirstFailure)std::rethrow_exception(FirstFailure); // Numeric infrastructure takes precedence.
     if(Stats.Computed!=uint64(Records.Num()))throw std::runtime_error("IAmSpeed Tensor cell wave incomplete joined results");
     Stats.Waves=1;Stats.LogicalMax=UsedLanes;
@@ -370,15 +380,22 @@ FJoinedTensorCellWave1213::~FJoinedTensorCellWave1213()
 }
 bool FJoinedTensorCellWave1213::HasSameBound1534(TFunctionRef<double()> CaptureBound) const
 {
+    RequireCurrentAnalyticNumericContext(NumericContract);
     if(!bReady)return false;
     const auto Entry1534=CaptureFrameFloatingPointContext();
+    RequireAnalyticNumericTransfer(NumericContract,Entry1534.bValid);
     if(!Entry1534.bValid)return false;
     FScopedFrameFloatingPointContext BoundNumeric1534(Entry1534);
+    RequireAnalyticNumericTransfer(NumericContract,BoundNumeric1534.IsApplied());
     bool Same1534=false;
     if(BoundNumeric1534.IsApplied())
-        Same1534=SameBitsTensorCellWave1213(CaptureBound(),MaximumSearchTime);
+    {
+        const double Bound=CaptureBound();
+        RequireCurrentAnalyticNumericContext(NumericContract);
+        Same1534=SameBitsTensorCellWave1213(Bound,MaximumSearchTime);
+    }
     if(!BoundNumeric1534.Restore())
-        throw std::runtime_error("IAmSpeed Tensor cell window bound numeric restoration failed");
+        ThrowAnalyticNumericTransferFailure(NumericContract,EAnalyticNumericFailure::ContextRestoration,"IAmSpeed Tensor cell window bound numeric restoration failed");
     return Same1534;
 }
 bool FJoinedTensorCellWave1213::ContainsProvider1534(int32 ProviderIndex) const
@@ -427,6 +444,7 @@ bool FJoinedTensorCellWave1213::TryConsume(int32 ProviderIndex,const FWorldQuery
         // Speculative worker state is replayed only for a validated consumption.
         if(bObserve)++Stats.PublicationCalls1442;
         const uint64 PublicationStart1442=bTime?FPlatformTime::Cycles64():0;
+        if(NumericContract!=EAnalyticNumericContract::Unspecified && R.Failure) std::rethrow_exception(R.Failure);
         const bool Published1442=ApplyFrameFloatingPointContext(R.NumericAfter);
         if(bTime)
         {
@@ -436,7 +454,7 @@ bool FJoinedTensorCellWave1213::TryConsume(int32 ProviderIndex,const FWorldQuery
         if(!Published1442)
         {
             if(bObserve)++Stats.PublicationFailedCalls1442;
-            throw std::runtime_error("IAmSpeed Tensor cell output numeric publication failed");
+            ThrowAnalyticNumericTransferFailure(NumericContract,EAnalyticNumericFailure::ContextRestoration,"IAmSpeed Tensor cell output numeric publication failed");
         }
         ++Stats.Reused;R.Reused1213=true;
         // A speculative exception is authoritative only at this original

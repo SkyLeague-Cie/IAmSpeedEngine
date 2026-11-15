@@ -2,6 +2,8 @@
 
 
 #include "SpeedCar.h"
+#include "Components/SkeletalMeshComponent.h"
+#include "TimerManager.h"
 #include "IAmSpeed/Components/SpeedWheeledComponent.h"
 #include "IAmSpeed/Driving/StockRoadCar.h"
 #include "IAmSpeed/Controllers/SpeedController.h"
