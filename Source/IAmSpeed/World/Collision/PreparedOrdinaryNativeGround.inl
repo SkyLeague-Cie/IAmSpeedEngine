@@ -993,6 +993,7 @@ bool FComponentSweepScope::EvaluateOrdinaryNativeBoxGround(const UWorld* world,c
                     }
                     catch(const std::runtime_error& error)
                     {
+                        (void)error;
                         UE_LOG(LogTemp,Display,TEXT("[Case202Serial3AtlasWitnessRefinerFailure] Frame=%u Serial=%llu Error=%s"),
                             v.FrameClock.OwnerLocalFrame,requestStep.QuerySerial,UTF8_TO_TCHAR(error.what()));
                         return TEXT("refiner_exception");

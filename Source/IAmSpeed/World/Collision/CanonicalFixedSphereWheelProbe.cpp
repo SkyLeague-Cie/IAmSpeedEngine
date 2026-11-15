@@ -699,11 +699,14 @@ inline ELocalSample InspectFixedProductSample(const C::AffineReferenceDetail::FP
 }
 
 #endif
-#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
 namespace Speed::PreparedExecution
 {
 namespace NativeSolidDetail
 {bool SameQueryBits(const Analytic::FWorldQuery&,const Analytic::FWorldQuery&) noexcept;}
+}
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+namespace Speed::PreparedExecution
+{
 namespace BoundedLegacyWheelProfile
 {
 TAutoConsoleVariable<int32> Enabled(TEXT("p.SkyLeague.Stadium.BoundedLegacyWheelProbe"),0,
