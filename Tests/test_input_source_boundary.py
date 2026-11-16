@@ -64,7 +64,7 @@ class InputSourceBoundary(unittest.TestCase):
         self.assertNotIn("SpeedCar", handler)
 
     def test_publication_follows_successful_physical_snapshot(self):
-        source = body("World/Simulation/SpeedSimulation.cpp", "bool ASpeedSimulation::StepCanonicalFrame(")
+        source = body("World/Simulation/SpeedPhysicsSimulation.cpp", "bool ASpeedPhysicsSimulation::StepCanonicalFrame(")
         transaction = source.index("SpeedWorldSubsystem->PublishCanonicalFrame(Context.NumFrame")
         publish = source.index("SnapshotBuffer.Publish(Snapshot)")
         completed = source.index("if (Publication != ECanonicalPublicationResult::Completed)")

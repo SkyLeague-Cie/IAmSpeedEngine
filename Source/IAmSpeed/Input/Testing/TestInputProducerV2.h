@@ -12,6 +12,7 @@ namespace Speed::Input::V2
 // hidden raw-device evaluation. The same stream consumes player and test frames.
 class FTestInputProducer final : public IInputProducer, public IInputProducerPollFence
 {
+    #include "../../PreparedScenarioResume.inc"
 public:
 	IInputProducerPollFence* PollFence() noexcept override { return this; }
 	bool SupportsPollFence() const noexcept override { return true; }
@@ -28,7 +29,7 @@ public:
 		std::lock_guard<std::mutex> Lock(Gate);
 		const auto& D = Frame.GetData();
 		const auto Total = RetainedFirst + Frames.size();
-		if (FrozenFrame || Frames.empty() || Total > UINT64_MAX - First
+		if (ResumeReserved || FrozenFrame || Frames.empty() || Total > UINT64_MAX - First
 			|| D.ConsumptionFrame != First + Total || !Frame.IsValidFor(*Contract)
 			|| !ValidSuccessor(Frames.back().GetData(), D)) return false;
 		// Keep bounded consumed history and bounded look-ahead. Never discard an
@@ -59,7 +60,7 @@ public:
 	{
 		if (FPresentationInputScope::IsActive()) return {};
 		std::lock_guard<std::mutex> Lock(Gate);
-		if (FrozenFrame || Frame < First || Frame - First != Next || Next >= RetainedFirst + Frames.size()) return {};
+		if (ResumeReserved || FrozenFrame || Frame < First || Frame - First != Next || Next >= RetainedFirst + Frames.size()) return {};
 		FrozenFrame = Frame; FrozenDelivered = false;
 		const auto& D = Frames[Next - RetainedFirst].GetData();
 		return FInputPollCutoff{D.SourceSequence, D.DeviceGeneration.Value, 1};
@@ -84,6 +85,7 @@ public:
 		if (FPresentationInputScope::IsActive()) return {};
 		std::lock_guard<std::mutex> Lock(Gate);
 		if (Frame < First || Frame - First < RetainedFirst || Frame - First >= RetainedFirst + Frames.size()) return {};
+		if (ResumeReserved) return {};
 		if (FrozenFrame)
 		{
 			if (*FrozenFrame != Frame || FrozenDelivered) return {};
@@ -125,5 +127,6 @@ private:
 	std::size_t Next = 0;
 	std::optional<FFrameNumber> FrozenFrame;
 	bool FrozenDelivered = false;
+	bool ResumeReserved = false;
 };
 }

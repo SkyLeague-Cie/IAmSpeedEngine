@@ -1,12 +1,14 @@
 #include "SpeedPhysicsSimulation.h"
 #include "Misc/ScopeLock.h"
+#include "IAmSpeed/Netcode/remote-input/ExactRemoteDedicatedHost.h"
 #include "IAmSpeed/World/Subsystem/SpeedWorldSubsystem.h"
 
 Speed::Input::V2::ECommandAdmission ASpeedPhysicsSimulation::SubmitInputSessionCommand(
     const Speed::Input::V2::FBoundaryCommandDescriptor& Command,
     std::shared_ptr<Speed::Input::V2::FRawAcquisitionJournal> Journal,
     std::shared_ptr<Speed::Input::V2::FInputObservationChannel> Observation,
-    std::shared_ptr<Speed::Input::V2::FAIInputCommands> AI)
+    std::shared_ptr<Speed::Input::V2::FAIInputCommands> AI,
+    std::shared_ptr<Speed::Netcode::FExactRemoteInputIngress> Remote)
 {
     check(IsInGameThread());
     using namespace Speed::Input::V2;
@@ -19,13 +21,16 @@ Speed::Input::V2::ECommandAdmission ASpeedPhysicsSimulation::SubmitInputSessionC
         bOwnedSimulationPaused.Store(true);
         if (SimulationWorker) SimulationWorker->RequestPause();
     }
-    if (Journal || AI)
+    if (Command.Operation == EBoundaryOperation::Bind && Command.Binding.Kind == EProducerContract::ExactRemote
+        && (!RequiredExactRemoteInputSessions || !Remote)) return ECommandAdmission::Rejected;
+    if (Journal || AI || Remote)
     {
-        if (Command.Operation != EBoundaryOperation::Bind || (Journal && AI)
+        if (Command.Operation != EBoundaryOperation::Bind || unsigned(bool(Journal)) + unsigned(bool(AI)) + unsigned(bool(Remote)) != 1
             || (Journal && Command.Binding.Kind != EProducerContract::Device)
             || (AI && Command.Binding.Kind != EProducerContract::AI)
+            || (Remote && (!RequiredExactRemoteInputSessions || Command.Binding.Kind != EProducerContract::ExactRemote))
             || !Command.Binding.Journal || PendingInputJournals.size() >= 16) return ECommandAdmission::Rejected;
-        try { PendingInputJournals.push_back({Command.Binding.Journal, Journal, AI}); }
+        try { PendingInputJournals.push_back({Command.Binding.Journal, Journal, AI, Remote}); }
         catch (...) { return ECommandAdmission::Rejected; }
     }
     if (Observation)
@@ -34,15 +39,33 @@ Speed::Input::V2::ECommandAdmission ASpeedPhysicsSimulation::SubmitInputSessionC
             || !Observation->GetContract() || !Command.Binding.Contract
             || Observation->GetContract()->GetFingerprint() != Command.Binding.Contract->GetFingerprint()
             || PendingInputObservations.size() >= 16)
-        { if (Journal || AI) PendingInputJournals.pop_back(); return ECommandAdmission::Rejected; }
+        { if (Journal || AI || Remote) PendingInputJournals.pop_back(); return ECommandAdmission::Rejected; }
         try { PendingInputObservations.emplace_back(Command.Binding.Id, Observation); }
-        catch (...) { if (Journal || AI) PendingInputJournals.pop_back(); return ECommandAdmission::Rejected; }
+        catch (...) { if (Journal || AI || Remote) PendingInputJournals.pop_back(); return ECommandAdmission::Rejected; }
     }
     const auto Result = InputSessionCommands->Submit(Command);
     if (Observation && Result != ECommandAdmission::Enqueued) PendingInputObservations.pop_back();
-    if ((Journal || AI) && Result != ECommandAdmission::Enqueued) PendingInputJournals.pop_back();
-    if (Result == ECommandAdmission::Enqueued) bInputSessionAdmissionRequested.Store(true);
+    if ((Journal || AI || Remote) && Result != ECommandAdmission::Enqueued) PendingInputJournals.pop_back();
+    if (Result == ECommandAdmission::Enqueued) { bInputCommandBoundaryDirty = true; bInputSessionAdmissionRequested.Store(true); }
     return Result;
+}
+
+bool ASpeedPhysicsSimulation::ConfigureExactRemoteInputHost(uint32 RequiredSessions)
+{
+    return ConfigureOriginalDeviceRemoteInputHost(RequiredSessions, Speed::Input::V2::EExactRemoteAdmission::OriginalDeviceExact);
+}
+
+bool ASpeedPhysicsSimulation::ConfigureOriginalDeviceRemoteInputHost(uint32 RequiredSessions, Speed::Input::V2::EExactRemoteAdmission Admission)
+{
+    check(IsInGameThread());
+    if (!Speed::Input::V2::AdmitsOriginalDeviceRemote(Admission)) return false;
+    if (Speed::Netcode::QueryExactRemoteHostPolicy(GetWorld()) != Speed::Netcode::EExactRemoteHostPolicy::IsolatedDedicated
+        || GetNetMode() != NM_DedicatedServer || !RequiredSessions || RequiredSessions > 16
+        || RequiredExactRemoteInputSessions || SimulationWorker || InputSessionRegistry
+        || bInputSessionAdmissionRequested.Load() || bInputOwnerRetired.Load() || bOwnedWorkerTerminal.Load()) return false;
+    ConfiguredRemoteInputAdmission = Admission;
+    RequiredExactRemoteInputSessions = RequiredSessions;
+    return true;
 }
 
 std::optional<Speed::Input::V2::FBoundaryReceipt> ASpeedPhysicsSimulation::ReadInputSessionReceipt(uint64 Id) const
@@ -54,21 +77,50 @@ std::shared_ptr<const Speed::Input::V2::FInputRegistryView> ASpeedPhysicsSimulat
 std::shared_ptr<const Speed::Input::V2::FRegistryFrame> ASpeedPhysicsSimulation::ReadCompletedInputFrame() const
 { return PublishedInputFrame.load(std::memory_order_seq_cst); }
 
+std::shared_ptr<const Speed::FCompletedSimulationPublication> ASpeedPhysicsSimulation::ReadCompletedWorldAndInputFrame() const
+{
+    if (!bPublishCompletedWorldInput || bCanonicalPublicationTerminal.Load() || bOwnedWorkerTerminal.Load()
+        || bOwnedSimulationPaused.Load() || bInputOwnerRetired.Load()) return {};
+    const auto Frame = PublishedCompletedWorldInput.load(std::memory_order_seq_cst);
+    // A pause request may race an already-running frame. Never return a freshly
+    // republished pointer while pause/retirement/terminal is already visible.
+    if (bOwnedSimulationPaused.Load() || bInputOwnerRetired.Load()
+        || bCanonicalPublicationTerminal.Load() || bOwnedWorkerTerminal.Load()) return {};
+    return Frame;
+}
+
 ESimulationBoundaryResult ASpeedPhysicsSimulation::ServiceInputSessionBoundary(bool bPauseRequested)
 {
     if (!ValidateAnalyticNumericOwner()) return ESimulationBoundaryResult::Failed;
+    if (CompleteOwnedWorkerAtBoundary())
+    {
+        bOwnedWorkerTerminal.Store(true);
+        PublishedCompletedWorldInput.store({}, std::memory_order_seq_cst);
+        return ESimulationBoundaryResult::Complete;
+    }
     if (SpeedWorldSubsystem && !SpeedWorldSubsystem->ServiceInputRetirementsAtBoundary())
         return ESimulationBoundaryResult::Failed;
     using namespace Speed::Input::V2;
-    if (!bInputSessionAdmissionRequested.Load()) return ESimulationBoundaryResult::Ready;
+    if (bPauseRequested) PublishedCompletedWorldInput.store({}, std::memory_order_seq_cst);
+    if (!bInputSessionAdmissionRequested.Load() && !RequiredExactRemoteInputSessions) return ESimulationBoundaryResult::Ready;
+    // Any registry/lifecycle change invalidates a current common endpoint.
+    if (!RequiredExactRemoteInputSessions) PublishedCompletedWorldInput.store({}, std::memory_order_seq_cst);
     try
     {
         if (!InputSessionRegistry)
-            InputSessionRegistry = std::make_unique<FInputSessionRegistry>(InputSessionCommands, InputWorkerGeneration);
+            InputSessionRegistry = std::make_unique<FInputSessionRegistry>(InputSessionCommands, InputWorkerGeneration,
+                std::vector<FInputSessionRegistry::FJournalService>{}, RequiredExactRemoteInputSessions
+                    ? ConfiguredRemoteInputAdmission : EExactRemoteAdmission::Closed);
         bool Ready = false;
         {
             FScopeLock Lock(&InputSessionAdmissionMutex);
             bPauseRequested = bPauseRequested || bOwnedSimulationPaused.Load();
+            // Retain the last immutable completed packet while only waiting for
+            // future remote input. Actual command/registry changes invalidate it
+            // under the same lock which excludes concurrent GT submissions.
+            if (bInputCommandBoundaryDirty || bPauseRequested)
+                PublishedCompletedWorldInput.store({}, std::memory_order_seq_cst);
+            bInputCommandBoundaryDirty = false;
             const auto Before = InputSessionRegistry->ReadRegistry();
             // Detach must not erase the actor address before its last held values
             // and pending input effects have been neutralized on this lane.
@@ -109,6 +161,14 @@ ESimulationBoundaryResult ASpeedPhysicsSimulation::ServiceInputSessionBoundary(b
             else { if (bPauseRequested) I->second->Pause(); ++I; }
         }
         if (bPauseRequested) PublishedInputFrame.store(std::shared_ptr<const FRegistryFrame>{}, std::memory_order_seq_cst);
+        if (Ready && RequiredExactRemoteInputSessions && !bPauseRequested)
+        {
+            const auto Admission = InputSessionRegistry->QueryFrameReadiness(CanonicalNumFrame, RequiredExactRemoteInputSessions);
+            if (Admission == EInputFrameReadiness::Rejected) throw std::runtime_error("exact remote cohort rejected");
+            if (Admission == EInputFrameReadiness::Waiting)
+            { bExactRemoteInputWaiting = true; return ESimulationBoundaryResult::Waiting; }
+            if (bExactRemoteInputWaiting) { OnOwnedInputWaitEnded(); bExactRemoteInputWaiting = false; }
+        }
         return Ready ? ESimulationBoundaryResult::Ready : ESimulationBoundaryResult::Waiting;
     }
     catch (...)
@@ -121,6 +181,7 @@ ESimulationBoundaryResult ASpeedPhysicsSimulation::ServiceInputSessionBoundary(b
 
 void ASpeedPhysicsSimulation::CloseInputSessionsOnWorker()
 {
+    PublishedCompletedWorldInput.store({}, std::memory_order_seq_cst);
     const bool AdaptersRetired = !SpeedWorldSubsystem || SpeedWorldSubsystem->RetireInputProcessingOnWorker();
     if (!AdaptersRetired) bCanonicalPublicationTerminal.Store(true);
     using namespace Speed::Input::V2;
