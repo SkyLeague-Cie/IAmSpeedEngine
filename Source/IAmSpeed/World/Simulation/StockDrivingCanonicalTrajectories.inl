@@ -76,7 +76,9 @@ for(int32 Surface=0;Surface<3;++Surface)
   SKinematic Initial;Initial.Location=Surface?Normal*45:FVector(0,0,1000);Initial.Velocity=Forward*500;Initial.Rotation=Rotation;Initial.AngularVelocity=FVector::ZeroVector;C->SetKinematicState(Initial);
   if(!TestTrue(TEXT("stock coefficients and air controls unchanged"),C->ThrottleAccel==750&&C->BrakeAccel==1100&&C->PhysDamping==0&&C->AirForwardThrottle==0&&C->AirBackwardThrottle==0&&C->CanonicalCameraYawAction==5&&C->CanonicalCameraPitchAction==6))return false;
   if(!TestTrue(TEXT("real driver admits physical world"),Driver->EnsureSimulationWorldReady()))return false;
-  Driver->TransitionExecutionMode(ESimulationExecutionMode::IAmSpeedThread);Driver->bPublishCompletedWorldInput=true;Driver->InitializeCanonicalFrame(0);
+  Driver->TransitionExecutionMode(ESimulationExecutionMode::IAmSpeedThread);Driver->bPublishCompletedWorldInput=true;
+  if(!TestTrue(TEXT("stock completed publication generation prepared"),Driver->PrepareControlledInputRun()))return false;
+  Driver->InitializeCanonicalFrame(0);
   FSessionDescriptor Binding;Binding.Id=Binding.Controller=Binding.Producer=9101;Binding.Epoch=1;Binding.First=0;Binding.Contract=Contract;Binding.Kind=EProducerContract::ExactScenario;
   const uint64 Actor=Bridge->GetSimulationStableId(*C);Binding.Actors={{Actor,Actor}};
   for(uint32 N=0;N<FrameCount;++N)

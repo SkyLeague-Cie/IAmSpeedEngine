@@ -35,6 +35,14 @@ bool FIAmSpeedCompletedSimulationPublicationTest::RunTest(const FString&)
     auto EqualEndpoint = std::make_shared<FRegistryFrame>(*Installed);
     auto WrongFrame = std::make_shared<FRegistryFrame>(*Installed); ++WrongFrame->Frame;
     TestFalse(TEXT("Different physical frame rejected"), FPublication::CanPrepare(World, Source, View, WrongFrame));
+    auto TerminalView = std::make_shared<FInputRegistryView>(*View); TerminalView->Terminal = true;
+    TestFalse(TEXT("Terminal registry rejected"), FPublication::CanPrepare(World, Source, TerminalView, Installed));
+    FSimulationSnapshot Empty; Empty.NumFrame = World.NumFrame;
+    TestFalse(TEXT("Missing physical bytes rejected"), FPublication::CanPrepare(Empty, Source, View, Installed));
+    FSimulationSnapshot AlreadyStamped = World; AlreadyStamped.PublicationSerial = 12;
+    TestFalse(TEXT("Old publication cannot become a fresh draft"), FPublication::CanPrepare(AlreadyStamped, Source, View, Installed));
+    std::shared_ptr<const FSource> ZeroSource(new FSource(0));
+    TestFalse(TEXT("Zero owner generation rejected"), FPublication::CanPrepare(World, ZeroSource, View, Installed));
     auto Draft = std::shared_ptr<FPublication>(new FPublication(World, Source, View, Installed));
     TestTrue(TEXT("Exact original endpoint completes the draft"), Draft->MatchesCompleted(Installed));
     TestFalse(TEXT("Equal-looking endpoint does not authenticate completion"), Draft->MatchesCompleted(EqualEndpoint));

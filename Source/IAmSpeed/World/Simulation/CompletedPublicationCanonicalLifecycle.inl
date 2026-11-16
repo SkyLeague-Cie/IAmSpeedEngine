@@ -56,6 +56,8 @@ Driver->TransitionExecutionMode(ESimulationExecutionMode::IAmSpeedThread);
 // BeginPlay's command-line parse. BeginPlay/bootstrap coverage is separate.
 if (!TestFalse(TEXT("common publication remains default off"),Driver->bPublishCompletedWorldInput)) return false;
 Driver->bPublishCompletedWorldInput=true;
+// Use the real joined-generation preparation to create the retained source.
+if (!TestTrue(TEXT("completed publication generation prepared"),Driver->PrepareControlledInputRun())) return false;
 Driver->InitializeCanonicalFrame(0);
 
 std::atomic<uint32> Steps{0},Budget{0},BoundaryCalls{0},PhysicalThread{0};
