@@ -1237,7 +1237,7 @@ private:
                 {
                     S.RequestedOwner=FRequestedInputOwner::Create(std::move(Bound.Source),{D.Network->SourceGeneration,D.Contract,D.Processing,D.Network->DigitalPolicy},D.First);
                     if(!S.RequestedOwner)throw std::runtime_error("native V2 owner creation failed");
-                    S.NativeV2Binding=std::shared_ptr<const FNativeRequestedBindingV2>(new FNativeRequestedBindingV2(Admission->NativeV2,Bound.Identity,D.Id,D.Epoch));
+                    S.NativeV2Binding=std::shared_ptr<const FNativeRequestedBindingV2>(new FNativeRequestedBindingV2(Admission->NativeV2,Bound.Identity,D.Id,D.Epoch,S.RequestedOwner->GetBindingFingerprint()));
                     S.NetworkAdmission=std::move(Admission);S.Phase=ESessionPhase::CancelPending;
                     // No adapter callback under Commands->Gate and no View
                     // publication before the real owner-side claim succeeds.

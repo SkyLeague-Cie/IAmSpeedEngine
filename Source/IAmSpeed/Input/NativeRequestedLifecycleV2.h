@@ -68,15 +68,20 @@ public:
     const FRequestedNetworkSessionDescriptor& Mapping()const noexcept{return AgreementSeal->Mapping();}
     std::uint64_t Session()const noexcept{return LocalSession;}
     std::uint64_t Epoch()const noexcept{return LocalEpoch;}
+    // Immutable structural owner descriptor, copied after owner creation.
+    // Historical reads grant no current source/cutoff/restore permission.
+    const FContractFingerprint& GetBindingFingerprint()const noexcept{return OwnerBindingFingerprint;}
     bool OnOwner()const noexcept{return BoundSource->Owner()==std::this_thread::get_id();}
 private:
     friend class FInputSessionRegistry;
     FNativeRequestedBindingV2(std::shared_ptr<const FNativeRequestedAgreementSealV2> A,
-        std::shared_ptr<const Netcode::FRequestedSourceIdentity> S,std::uint64_t Id,std::uint64_t E)
-        :AgreementSeal(std::move(A)),BoundSource(std::move(S)),LocalSession(Id),LocalEpoch(E){}
+        std::shared_ptr<const Netcode::FRequestedSourceIdentity> S,std::uint64_t Id,std::uint64_t E,
+        FContractFingerprint Fingerprint)
+        :AgreementSeal(std::move(A)),BoundSource(std::move(S)),LocalSession(Id),LocalEpoch(E),OwnerBindingFingerprint(std::move(Fingerprint)){}
     const std::shared_ptr<const FNativeRequestedAgreementSealV2> AgreementSeal;
     const std::shared_ptr<const Netcode::FRequestedSourceIdentity> BoundSource;
     const std::uint64_t LocalSession,LocalEpoch;
+    const FContractFingerprint OwnerBindingFingerprint;
 };
 struct FRequestedFrameBindingV2
 {
