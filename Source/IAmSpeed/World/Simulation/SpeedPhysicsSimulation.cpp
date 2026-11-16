@@ -271,6 +271,8 @@ ASpeedPhysicsSimulation::ASpeedPhysicsSimulation()
 	InputWorkerGeneration = NextInputWorkerGeneration.fetch_add(1);
 	check(InputWorkerGeneration && InputWorkerGeneration != MAX_uint64);
 	InputSessionCommands = std::make_shared<Speed::Input::V2::FInputSessionCommands>();
+    RequestedPresentationCommands.store(std::shared_ptr<Speed::FRequestedPresentationCommands>(new Speed::FRequestedPresentationCommands(InputWorkerGeneration)),std::memory_order_seq_cst);
+    NativeInputAdmissionOwner=std::make_shared<const std::uint8_t>(std::uint8_t{0});
 }
 
 void ASpeedPhysicsSimulation::BeginPlay()
@@ -774,6 +776,7 @@ void ASpeedPhysicsSimulation::StopOwnedWorker()
 		SimulationWorker->StopAndJoin();
 		SimulationWorker.Reset();
 	}
+    if(RequestedPreparationV2)RequestedPreparationV2->CloseUnprocessedAfterNativeOwnerJoined();
     RetireLiveBoundaryRequest();
 	// After join, no in-flight frame can republish an endpoint.
 	PublishedCompletedWorldInput.store({}, std::memory_order_seq_cst);
@@ -792,17 +795,24 @@ bool ASpeedPhysicsSimulation::PrepareControlledInputRun()
 	FScopeLock Lock(&InputSessionAdmissionMutex);
 	if (InputSessionRegistry
 		|| (bInputSessionAdmissionRequested.Load() && !bInputOwnersClosedOnWorker.Load())
-		|| !PendingInputJournals.empty() || !PendingInputObservations.empty()
+		|| !PendingInputJournals.empty() || !PendingInputObservations.empty() || !PendingRequestedNetworkSessions.empty() || !PendingNativeV2Binds.empty()
+		|| (RequestedPreparationV2 && !RequestedPreparationV2->CanResetAfterJoin())
 		|| !InputObservations.empty() || bCanonicalPublicationTerminal.Load()) return false;
 	try
 	{
 		auto NextCommands = std::make_shared<Speed::Input::V2::FInputSessionCommands>();
+        auto NextNativeAdmission=std::make_shared<const std::uint8_t>(std::uint8_t{0});
 		const auto Generation = NextInputWorkerGeneration.fetch_add(1);
 		if (!Generation || Generation == MAX_uint64) return false;
 		std::shared_ptr<const Speed::FCompletedSimulationSource> NextSource;
+        std::shared_ptr<Speed::FRequestedPresentationCommands> NextPresentation(new Speed::FRequestedPresentationCommands(Generation));
 		if (bPublishCompletedWorldInput) NextSource.reset(new Speed::FCompletedSimulationSource(Generation));
 		InputSessionCommands = std::move(NextCommands);
+        RequestedPreparationV2.reset();
+        NativeInputAdmissionOwner=std::move(NextNativeAdmission);
 		CompletedPublicationSource = std::move(NextSource);
+        RequestedPresentationCommands.store(std::move(NextPresentation),std::memory_order_seq_cst);
+        PublishedRequestedInputObservation.store({},std::memory_order_seq_cst);
 		InputWorkerGeneration = Generation; NextInputCommandId = 1;
 	}
 	catch (...) { return false; }
@@ -1405,8 +1415,11 @@ FCanonicalFrameContext ASpeedPhysicsSimulation::MakeCanonicalFrameContext(const 
     if (CollisionMatrixTestHz != 0)
     {
         check(Frame >= CollisionMatrixTestFirstFrame);
-        Context.PhysicalDeltaTime = 1.0f / float(CollisionMatrixTestHz);
-        Context.SimTime = float(Frame - CollisionMatrixTestFirstFrame) * Context.PhysicalDeltaTime;
+        Context.LogicalRateNumerator = CollisionMatrixTestHz;
+        Context.LogicalRateDenominator = 1;
+        Context.FrameOrigin = CollisionMatrixTestFirstFrame;
+        Context.PhysicalDeltaTime = float(Context.LogicalRateDenominator) / float(Context.LogicalRateNumerator);
+        Context.SimTime = float(Frame - Context.FrameOrigin) * Context.PhysicalDeltaTime;
     }
 #endif
     return Context;
@@ -1414,31 +1427,97 @@ FCanonicalFrameContext ASpeedPhysicsSimulation::MakeCanonicalFrameContext(const 
 
 bool ASpeedPhysicsSimulation::RunCanonicalFrames(const uint32 FrameCount)
 {
+    // Legacy V1 entry has no control result. Never collapse a live V2 control
+    // request into false; V2 drivers call the explicit API below instead.
+    const auto View=ReadInputRegistryView();
+    if(View&&std::any_of(View->Bindings.begin(),View->Bindings.end(),[](const auto& D){return D.Network&&D.Network->Version==2;}))return false;
+    return RunCanonicalFramesWithControl(FrameCount).Control==ECanonicalFrameRunControl::Complete;
+}
+
+ASpeedPhysicsSimulation::FCanonicalFrameRunResult ASpeedPhysicsSimulation::RunCanonicalFramesWithControl(const uint32 FrameCount)
+{
+    uint32 AdvancedFrames=0;
     if(Speed::OnePausedWork::IsActive())
     {
         bool noRollback=false;
         {FScopeLock lock(&RollbackRequestMutex);noRollback=!PendingRollbackRequest.IsSet();}
         if(!Speed::OnePausedWork::BeginRun(this,SpeedWorldSubsystem,SimulationWorker.Get(),
-            InputWorkerGeneration,CanonicalNumFrame,FrameCount,noRollback))return false;
+            InputWorkerGeneration,CanonicalNumFrame,FrameCount,noRollback))return {ECanonicalFrameRunControl::Terminal,AdvancedFrames};
     }
-    if (IsInGameThread() && bStaticWorldPublicationLease) return false;
-    if (!ValidateAnalyticNumericOwner()) return false;
+    if (IsInGameThread() && bStaticWorldPublicationLease) return {ECanonicalFrameRunControl::Terminal,AdvancedFrames};
+    if (!ValidateAnalyticNumericOwner()) return {ECanonicalFrameRunControl::Terminal,AdvancedFrames};
 
+    // Requested sources are drained once at frame start, BEFORE examining
+    // any correction. The immutable registry view remains the binding for this
+    // batch; a later ingress cannot change the current frame's selection.
+    const auto CutoffRegistry=ReadInputRegistryView();
+    const bool HasRequested=CutoffRegistry&&std::any_of(CutoffRegistry->Bindings.begin(),CutoffRegistry->Bindings.end(),
+        [](const auto& B){return B.Network.has_value();});
+    if(HasRequested&&(!FrameCount||!SimulationWorker||!SimulationWorker->OwnsCurrentCanonicalWork()
+        ||Speed::OnePausedWork::IsActive()||!SpeedWorldSubsystem||!InputSessionRegistry))return {ECanonicalFrameRunControl::Terminal,AdvancedFrames};
+    bool RequestedRunCompleted=!HasRequested;
+    ON_SCOPE_EXIT
+    {
+        // A failed decision/admission cannot strand a frozen owner and retry N.
+        if(!RequestedRunCompleted)
+        {
+            InputSessionRegistry->AbortFrame();
+            PublishedCompletedWorldInput.store({},std::memory_order_seq_cst);
+            PublishedInputFrame.store({},std::memory_order_seq_cst);
+            bCanonicalPublicationTerminal.Store(true);bOwnedWorkerTerminal.Store(true);
+        }
+    };
+    const auto FreezeRequestedFrame=[&]()
+    {
+        const auto Current=InputSessionRegistry->ReadRegistry();
+        return Current&&!Current->Terminal&&Current->Version==CutoffRegistry->Version
+            &&Current->WorkerGeneration==CutoffRegistry->WorkerGeneration
+            &&ValidateRequestedBindingsForFrozenFrame(CanonicalNumFrame)
+            &&InputSessionRegistry->FreezeRequestedSources(CanonicalNumFrame);
+    };
+    const auto CaptureControl=[&]()
+    {
+        if(!HasRequested)return Speed::Input::V2::ERequestedFrameControlV2::Ready;
+        return InputSessionRegistry->CaptureNativeV2BeforeFreeze(CanonicalNumFrame,[this](const auto& D,const auto& B,uint64 N){return ValidateRequestedV2AtCutoff(D,B,N);});
+    };
+    const auto FirstControl=CaptureControl();
+    if(FirstControl==Speed::Input::V2::ERequestedFrameControlV2::NeedsOwnerBoundary)
+    {
+        // No Freeze, source poll, filter, frame advance or publication reset.
+        // Avoid the terminal-only scope guard; current history remains intact.
+        RequestedRunCompleted=true;bInputSessionAdmissionRequested.Store(true);
+        return {ECanonicalFrameRunControl::NeedsOwnerBoundary,AdvancedFrames};
+    }
+    if(FirstControl==Speed::Input::V2::ERequestedFrameControlV2::Terminal)return {ECanonicalFrameRunControl::Terminal,AdvancedFrames};
 #if !UE_BUILD_SHIPPING
     Speed::Diagnostics::CaseCoverage276::FScopedPreloop CallerPreloop276(IndependentFastCoverage276);
 #endif
+    if(HasRequested&&!FreezeRequestedFrame())
+    {
+#if !UE_BUILD_SHIPPING
+        CallerPreloop276.Finish(false);
+#endif
+        return {ECanonicalFrameRunControl::Terminal,AdvancedFrames};
+    }
 	if (!Speed::OnePausedWork::IsActive() && !ProcessPendingRollbackRequest())
 	{
 #if !UE_BUILD_SHIPPING
         CallerPreloop276.Finish(false);
 #endif
-		return false;
+		return {ECanonicalFrameRunControl::Terminal,AdvancedFrames};
 	}
 #if !UE_BUILD_SHIPPING
     CallerPreloop276.Finish(true);
 #endif
 	for (uint32 FrameIndex = 0; FrameIndex < FrameCount; ++FrameIndex)
 	{
+        if(HasRequested&&FrameIndex)
+        {
+            const auto Control=CaptureControl();
+            if(Control==Speed::Input::V2::ERequestedFrameControlV2::NeedsOwnerBoundary)
+            {RequestedRunCompleted=true;bInputSessionAdmissionRequested.Store(true);return {ECanonicalFrameRunControl::NeedsOwnerBoundary,AdvancedFrames};}
+            if(Control==Speed::Input::V2::ERequestedFrameControlV2::Terminal||!FreezeRequestedFrame()||!ProcessPendingRollbackRequest())return {ECanonicalFrameRunControl::Terminal,AdvancedFrames};
+        }
 #if !UE_BUILD_SHIPPING
         Speed::Diagnostics::CaseCoverage276::FScopedForward CallerForward276(IndependentFastCoverage276,CanonicalNumFrame);
         Speed::Analytic::CaseSatDiagnostics::FScopedFrame DiagnosticFrame(CaseSatDiagnosticIdentity,CanonicalNumFrame);
@@ -1457,7 +1536,7 @@ bool ASpeedPhysicsSimulation::RunCanonicalFrames(const uint32 FrameCount)
             DiagnosticFrame.Finish(false);
             CallerForward276.Finish(false);
 #endif
-			return false;
+			return {ECanonicalFrameRunControl::Terminal,AdvancedFrames};
 		}
 #if !UE_BUILD_SHIPPING
         DiagnosticFrame.Finish(true);
@@ -1465,9 +1544,10 @@ bool ASpeedPhysicsSimulation::RunCanonicalFrames(const uint32 FrameCount)
 #endif
 		RecordStepPerformance(
 			(FPlatformTime::Seconds() - PhysicalFrameStartSeconds) * 1000.0);
-		++CanonicalNumFrame;
+		++CanonicalNumFrame;++AdvancedFrames;
 	}
-	return true;
+    RequestedRunCompleted=true;
+	return {ECanonicalFrameRunControl::Complete,AdvancedFrames};
 }
 
 void ASpeedPhysicsSimulation::Simulate(const float& DeltaTime, const float& SimTime)
@@ -1662,6 +1742,11 @@ bool ASpeedPhysicsSimulation::StepCanonicalFrame(const FCanonicalFrameContext& C
 		const bool bHasInputSessions = InputView && !InputView->Bindings.empty();
 		if (bHasInputSessions)
 		{
+            // RunCanonicalFrames already froze this exact frame before the
+            // correction decision. A direct Step cannot poll a requested source.
+            if(!ValidateRequestedBindingsForFrozenFrame(Context.NumFrame)
+                ||!InputSessionRegistry->RequestedSourcesFrozenFor(Context.NumFrame))
+                throw std::runtime_error("requested input boundary rejected");
 			ExceptionStage = TEXT("ScenarioInputs");
 			if (!SpeedWorldSubsystem->StageCanonicalScenarioInputs(Context, *InputSessionRegistry))
 				throw std::runtime_error("canonical scenario authoring rejected");
@@ -1710,7 +1795,7 @@ bool ASpeedPhysicsSimulation::StepCanonicalFrame(const FCanonicalFrameContext& C
 #endif
 			ExceptionStage = TEXT("InputSnapshotInstall");
 			const auto Installed = InputSessionRegistry->ReadInstalled();
-            if (!Installed || !SpeedWorldSubsystem->InstallCanonicalInputs(*Installed))
+            if (!Installed || !InputSessionRegistry->ValidFrozenNativeV2(Context.NumFrame,Installed->NativeV2) || !SpeedWorldSubsystem->InstallCanonicalInputs(*Installed))
                 throw std::runtime_error("canonical input installation rejected");
             {
                 Speed::PreparationPrefix::FEffectScope effect(Speed::PreparationPrefix::EEffect::BeginInputRegistry);
@@ -1877,7 +1962,7 @@ bool ASpeedPhysicsSimulation::StepCanonicalFrame(const FCanonicalFrameContext& C
 		ExceptionStage = TEXT("SnapshotCapture");
         PreparedPreflight->RequireClosedForSnapshot();
 		FSimulationSnapshot Snapshot = SpeedWorldSubsystem->CaptureSimulationSnapshot(
-			Context.NumFrame, InputJournal.StableHash(), bPublishPresentation);
+			Context.NumFrame, InputJournal.StableHash(), bPublishPresentation||!ManagedRequestedPresentations.empty());
 #if WITH_DEV_AUTOMATION_TESTS
     OwnedPhases.Mark(Speed::OwnedFrameAudit::ECanonicalEdge::Snapshot);
 #endif
@@ -2217,6 +2302,9 @@ bool ASpeedPhysicsSimulation::RequestRollbackAndResimulation(
 
 bool ASpeedPhysicsSimulation::ProcessPendingRollbackRequest()
 {
+#if WITH_DEV_AUTOMATION_TESTS
+    if(BeforeRollbackDecisionForTesting&&!BeforeRollbackDecisionForTesting(CanonicalNumFrame))return false;
+#endif
 	TOptional<FPendingRollbackRequest> Request;
 	{
 		FScopeLock Lock(&RollbackRequestMutex);

@@ -17,6 +17,11 @@ bool USpeedWheeledComponent::PrepareWheeledNetworkInput(uint64 Frame) const
 	const FActionValues* Values = nullptr;
 	std::shared_ptr<const FLegacyWheeledOwner::FSnapshot> Remote;
 	if (CanonicalInputSnapshot) Values = &CanonicalInputSnapshot->Requested;
+    else if(CanonicalRequestedInput&&CanonicalRequestedInput->Request)
+    {
+        if(CanonicalRequestedInput->Request->GetState().Frame!=Frame)return false;
+        Values=&CanonicalRequestedInput->Request->GetState().Values;
+    }
 	else if (LegacyWheeledOwner)
 	{
 		Remote = LegacyWheeledOwner->ReadPending();

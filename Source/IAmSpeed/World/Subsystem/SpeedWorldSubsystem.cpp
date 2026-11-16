@@ -2341,28 +2341,126 @@ bool USpeedWorldSubsystem::NeutralizeCanonicalInputs(const Speed::Input::V2::FIn
 	return true;
 }
 
+bool USpeedWorldSubsystem::PrepareRequestedNetworkAdmissionBoundary()
+{
+    if(bCanonicalFrameActive)return false;
+    ApplyPendingOps();RebuildSortedIfNeeded();return true;
+}
+
+bool USpeedWorldSubsystem::ValidateRequestedNetworkBinding(const Speed::Input::V2::FSessionDescriptor& Binding) const
+{
+    if(!Binding.Network||Binding.Network->Version!=1||!Binding.Network->IsValid()||!Binding.Contract||Binding.Actors.size()!=1)return false;
+    const auto& N=*Binding.Network;const auto& Actor=Binding.Actors[0];
+    if(Actor.Id!=N.LocalComponent||Actor.Generation!=N.LocalComponentGeneration)return false;
+    const auto* Component=SimulationWorld.FindAdapterByStableId(N.LocalComponent);
+    return Component&&Component->GetPublishedSimulationStableId()==N.LocalComponent
+        &&N.LocalComponentGeneration==N.LocalComponent
+        &&Component->GetCanonicalRequestedBodyGeneration()==N.LocalBodyGeneration
+        &&Component->CanAdmitCanonicalRequestedInput()
+        &&Component->SupportsCanonicalRequestedInputs(*Binding.Contract,Binding.Processing,N.DigitalPolicy);
+}
+
+const ISpeedComponent* USpeedWorldSubsystem::ResolveRequestedPreparationMappingV2(const Speed::Input::V2::FSessionDescriptor& Binding) const
+{
+    if(bCanonicalFrameActive||!Binding.Network||Binding.Network->Version!=2||!Binding.Network->IsValid()
+        ||!Binding.Contract||Binding.Actors.size()!=1)return nullptr;
+    const auto& N=*Binding.Network;const auto& Actor=Binding.Actors[0];
+    if(Actor.Id!=N.LocalComponent||Actor.Generation!=N.LocalComponentGeneration)return nullptr;
+    const auto* Component=SimulationWorld.FindAdapterByStableId(N.LocalComponent);
+    if(!Component||Component->GetPublishedSimulationStableId()!=N.LocalComponent
+        ||N.LocalComponentGeneration!=N.LocalComponent
+        ||Component->GetCanonicalRequestedBodyGeneration()!=N.LocalBodyGeneration
+        ||!Component->CanAdmitCanonicalRequestedInput())return nullptr;
+    // The separate complete-context game comparison happens after IAS has
+    // resolved the actual host, configuration, clock and this native mapping.
+    return Component;
+}
+
+bool USpeedWorldSubsystem::ValidateRequestedNetworkBindings(const Speed::Input::V2::FInputRegistryView& View) const
+{
+    if(View.Terminal)return false;
+    for(const auto& Binding:View.Bindings)if(Binding.Network&&!ValidateRequestedNetworkBinding(Binding))return false;
+    return true;
+}
+
+bool USpeedWorldSubsystem::ClaimRequestedNetworkBindingV2(const Speed::Input::V2::FSessionDescriptor& D,const std::shared_ptr<const Speed::Input::V2::FNativeRequestedBindingV2>& B)
+{
+    if(bCanonicalFrameActive||!B||!B->OnOwner()||!D.Network||!(*D.Network==B->Mapping())
+        ||!ResolveRequestedPreparationMappingV2(D))return false;
+    auto* Component=SimulationWorld.FindAdapterByStableId(D.Network->LocalComponent);
+    return Component&&Component->ClaimCanonicalRequestedInputV2(B);
+}
+bool USpeedWorldSubsystem::RetireRequestedNetworkBindingV2(const Speed::Input::V2::FSessionDescriptor& D,const std::shared_ptr<const Speed::Input::V2::FNativeRequestedBindingV2>& B)
+{
+    if(bCanonicalFrameActive||!B||!B->OnOwner()||!D.Network||!(*D.Network==B->Mapping()))return false;
+    auto* Component=SimulationWorld.FindAdapterByStableId(D.Network->LocalComponent);
+    // A removed body has no remaining adapter input to cancel. Never remove,
+    // freeze, replace or acquire the physical body as part of stream retirement.
+    return !Component||Component->RetireCanonicalRequestedInputV2(B);
+}
+bool USpeedWorldSubsystem::ValidateRequestedNetworkBindingForFrameV2(const Speed::Input::V2::FSessionDescriptor& D,const std::shared_ptr<const Speed::Input::V2::FNativeRequestedBindingV2>& B)const
+{
+    if(!B||!B->OnOwner()||!D.Network||!(*D.Network==B->Mapping())||!B->Source()->IsOpen())return false;
+    const auto* Component=SimulationWorld.FindAdapterByStableId(D.Network->LocalComponent);
+    return Component&&Component->GetPublishedSimulationStableId()==D.Network->LocalComponent
+        &&D.Network->LocalComponentGeneration==D.Network->LocalComponent
+        &&Component->GetCanonicalRequestedBodyGeneration()==D.Network->LocalBodyGeneration
+        &&Component->OwnsCanonicalRequestedInputV2(B);
+}
+
 bool USpeedWorldSubsystem::InstallCanonicalInputs(const Speed::Input::V2::FRegistryFrame& Frame)
 {
 	if (!bCanonicalFrameActive || !Frame.Registry || Frame.Registry->Terminal) return false;
 	// Resolve every identity before the first install. Stable ids are monotonic
 	// for this world lifetime; generation equals that non-reused registration id.
-	TArray<TPair<ISpeedComponent*, std::shared_ptr<const Speed::Input::V2::FOwnerInputSnapshot>>, TInlineAllocator<16>> Installs;
+    struct FInstall
+    {
+        ISpeedComponent* Component=nullptr;
+        std::shared_ptr<const Speed::Input::V2::FOwnerInputSnapshot> Original;
+        std::shared_ptr<const Speed::Input::V2::FRequestedInputConsumption> Requested;
+        std::shared_ptr<const Speed::Input::V2::FNativeRequestedBindingV2> NativeV2;
+    };
+    TArray<FInstall,TInlineAllocator<16>> Installs;TSet<uint64> Targets;
 	for (const auto& Session : Frame.Inputs)
 	{
-		if (!Session.Snapshot || Session.Snapshot->Input.GetData().ConsumptionFrame != Frame.Frame) return false;
+        if(bool(Session.Snapshot)==bool(Session.Requested))return false;
+        if(Session.Requested)
+        {
+            const auto D=std::find_if(Frame.Registry->Bindings.begin(),Frame.Registry->Bindings.end(),[&](const auto& B)
+                {return B.Id==Session.Session&&B.Epoch==Session.Epoch;});
+            const auto& R=*Session.Requested;
+            if(D==Frame.Registry->Bindings.end()||!Session.RequestedMapping||!D->Network||!R.Request
+                ||R.Request->GetState().Frame!=Frame.Frame||R.Cutoff.SourceGeneration!=D->Network->SourceGeneration
+                ||!R.Request->GetContract()||R.Request->GetContract()->GetFingerprint()!=D->Contract->GetFingerprint()
+                ||Session.Actors!=D->Actors||Session.AlreadyAppliedAtInitialBoundary||!Session.FilterBefore
+                ||*Session.FilterBefore!=R.BeforeProcessing)return false;
+            if(D->Network->Version==2)
+            {
+                if(!Frame.NativeV2||!Frame.NativeV2->OnOwner()||Frame.NativeV2->Frame()!=Frame.Frame||!Session.NativeV2
+                    ||Frame.NativeV2->Find(Session.Session,Session.Epoch)!=Session.NativeV2
+                    ||!ValidateRequestedNetworkBindingForFrameV2(*D,Session.NativeV2))return false;
+            }
+            else if(Session.NativeV2||!ValidateRequestedNetworkBinding(*D))return false;
+            // Canonical identity and local locator must match the captured
+            // installed mapping, not a newer registry or network packet.
+            if(!(*D->Network==*Session.RequestedMapping))return false;
+        }
+        else if(Session.RequestedMapping||Session.Snapshot->Input.GetData().ConsumptionFrame!=Frame.Frame)return false;
 		for (const auto& Actor : Session.Actors)
 		{
 			ISpeedComponent* Match = nullptr;
 			for (ISpeedComponent* Component : SimulationWorld.GetOrderedAdapters())
 				if (Component && Component->GetPublishedSimulationStableId() == Actor.Id) { Match = Component; break; }
-			if (!Match || Actor.Generation != Actor.Id) return false;
-			Installs.Emplace(Match, Session.Snapshot);
+			if (!Match || Actor.Generation != Actor.Id || Targets.Contains(Actor.Id)) return false;
+            Targets.Add(Actor.Id);Installs.Add({Match,Session.Snapshot,Session.Requested,Session.NativeV2});
 		}
 	}
 	for (const auto& Install : Installs)
     {
-        Speed::PreparationPrefix::FEffectScope effect(Speed::PreparationPrefix::EEffect::InstallOwnerInput,Install.Key);
-        const bool installed=Install.Key->InstallCanonicalInput(Frame.Frame,Install.Value);
+        Speed::PreparationPrefix::FEffectScope effect(Speed::PreparationPrefix::EEffect::InstallOwnerInput,Install.Component);
+        const bool installed=Install.NativeV2?Install.Component->InstallCanonicalRequestedInputV2(Frame.Frame,Install.Requested,Install.NativeV2)
+            :Install.Requested?Install.Component->InstallCanonicalRequestedInput(Frame.Frame,Install.Requested)
+            :Install.Component->InstallCanonicalInput(Frame.Frame,Install.Original);
         effect.Returned(installed,installed);if(!installed)return false;
     }
 	return true;

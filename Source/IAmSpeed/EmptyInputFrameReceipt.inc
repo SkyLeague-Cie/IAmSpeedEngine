@@ -6,7 +6,7 @@ public:
     bool PrepareEmptyFrameReceipt(FFrameNumber N)
     {
         if (!IsWorker() || FPresentationInputScope::IsActive() || BoundaryMutationBlocked()
-            || Terminal || Pending || Waiting || Replaying || GroupExecutionReplay || ResumeGroup || ReplayGroup
+            || Terminal || Pending || FrozenRequestedFrame || Waiting || Replaying || GroupExecutionReplay || ResumeGroup || ReplayGroup
             || Installed || Begun || !Sessions.empty() || !View || View->Terminal
             || View->WorkerGeneration != WorkerGeneration || !View->Bindings.empty() || !View->Phases.empty()
             || N == std::numeric_limits<FFrameNumber>::max()

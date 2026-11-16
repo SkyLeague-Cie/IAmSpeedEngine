@@ -81,7 +81,7 @@ private:
     bool CompletedBoundaryWorkerStateAvailable(FFrameNumber N) const noexcept
     {
         return IsWorker() && !FPresentationInputScope::IsActive() && !BoundaryReservationCalling && !BoundaryReservation && !Terminal && !Pending && !Waiting
-            && !Replaying && !GroupExecutionReplay && !ResumeGroup && !ReplayGroup
+            && !FrozenRequestedFrame && !Replaying && !GroupExecutionReplay && !ResumeGroup && !ReplayGroup
             && LastCompletedForCapture && LastCompletedForCapture->Registry && LastCompletedForCapture->Frame==N
             && N!=std::numeric_limits<FFrameNumber>::max();
     }

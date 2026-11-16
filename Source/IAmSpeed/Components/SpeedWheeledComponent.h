@@ -14,6 +14,7 @@ namespace Speed::Replay { class FFieldWriter; }
 #include "IAmSpeed/Input/InputStream.h"
 #include "IAmSpeed/Input/InputStreamV2.h"
 #include "IAmSpeed/Input/SameFrameInputOwner.h"
+#include "IAmSpeed/Input/RequestedInputOwner.h"
 #include "IAmSpeed/Input/LegacyRemotePreSlew.h"
 
 #include "SpeedWheeledComponent.generated.h"
@@ -304,6 +305,17 @@ public:
 	bool InstallCanonicalInput(uint64 Frame,
 		std::shared_ptr<const Speed::Input::V2::FOwnerInputSnapshot> Snapshot) override;
 	const std::shared_ptr<const Speed::Input::V2::FOwnerInputSnapshot>& GetCanonicalInputSnapshot() const { return CanonicalInputSnapshot; }
+    bool SupportsCanonicalRequestedInputs(const Speed::Input::V2::FInputActionContract& Contract,
+        const Speed::Input::V2::FInputProcessingPolicy& Processing,Speed::Input::V2::ERequestedDigitalPolicy Digital) const override;
+    uint64 GetCanonicalRequestedBodyGeneration() const override final {return SubBodies.IsEmpty()?0:RequestedInputBodyGeneration;}
+    bool CanAdmitCanonicalRequestedInput() const override final;
+    bool InstallCanonicalRequestedInput(uint64 Frame,
+        std::shared_ptr<const Speed::Input::V2::FRequestedInputConsumption> Input) override final;
+    const std::shared_ptr<const Speed::Input::V2::FRequestedInputConsumption>& GetCanonicalRequestedInput() const {return CanonicalRequestedInput;}
+    bool ClaimCanonicalRequestedInputV2(std::shared_ptr<const Speed::Input::V2::FNativeRequestedBindingV2> Binding)override final;
+    bool OwnsCanonicalRequestedInputV2(const std::shared_ptr<const Speed::Input::V2::FNativeRequestedBindingV2>& Binding)const override final;
+    bool RetireCanonicalRequestedInputV2(const std::shared_ptr<const Speed::Input::V2::FNativeRequestedBindingV2>& Binding)override final;
+    bool InstallCanonicalRequestedInputV2(uint64 Frame,std::shared_ptr<const Speed::Input::V2::FRequestedInputConsumption> Input,const std::shared_ptr<const Speed::Input::V2::FNativeRequestedBindingV2>& Binding)override final;
 	bool PrepareCanonicalInputs(const FCanonicalFrameContext& Context) override;
 	void PrepareCanonicalFrame(const FCanonicalFrameContext& Context) override;
 	// Set whether the movement is currently frozen (e.g. due to the game being paused)
@@ -357,6 +369,14 @@ protected:
 	virtual bool ApplyProducedInputFrame(const Speed::Input::FInputFrame&) { return true; }
 	virtual bool ValidateProducedInputFrameV2(const Speed::Input::V2::FInputFrame&) const { return true; }
 	virtual bool ApplyProducedInputFrameV2(const Speed::Input::V2::FInputFrame& Frame);
+    /** Game adapters explicitly handle held values, optional original edges
+     * and CancelDigitalMask. Never convert forecasts into original frames. */
+    virtual bool ValidateCanonicalRequestedInput(const Speed::Input::V2::FRequestedInputConsumption& Input) const;
+    virtual bool ApplyCanonicalRequestedInput(const Speed::Input::V2::FRequestedInputConsumption& Input);
+    virtual bool ValidateCanonicalRequestedInputV2(const Speed::Input::V2::FRequestedInputConsumption&,const Speed::Input::V2::FNativeRequestedBindingV2&)const{return false;}
+    virtual bool ApplyCanonicalRequestedInputV2(const Speed::Input::V2::FRequestedInputConsumption&,const Speed::Input::V2::FNativeRequestedBindingV2&){return false;}
+    bool ApplyProducedCameraValuesV2(const Speed::Input::V2::FInputActionContract& Contract,
+        const Speed::Input::FActionValues& Values);
 	// Simulation-lane cancellation, never a synthetic gameplay release event.
 	virtual void ResetProducedInputState() {}
 	virtual bool PublishInputCancellationAtBoundary() { return true; }
@@ -871,6 +891,11 @@ private:
 	bool PrepareLegacyWheeledInput(uint64 Frame);
 	TOptional<uint64> PreparedCanonicalInputFrame;
 	std::shared_ptr<const Speed::Input::V2::FOwnerInputSnapshot> CanonicalInputSnapshot;
+    std::shared_ptr<const Speed::Input::V2::FRequestedInputConsumption> CanonicalRequestedInput;
+    std::shared_ptr<const Speed::Input::V2::FNativeRequestedBindingV2> CanonicalRequestedBindingV2;
+    bool bCanonicalRequestedV2Retired=false; // Owner-only neutral input; body remains simulated.
+    std::atomic<bool> bCanonicalRequestedAuthority{false};
+    uint64 RequestedInputBodyGeneration=1;
 	bool bCanonicalInputPending = false;
 	struct FCompletedWheeledInput
 	{
@@ -958,6 +983,8 @@ private:
 	friend class FIAmSpeedProducedWheeledInputBoundaryTest;
 	friend class FIAmSpeedProducedInputWorkerOrderTest;
 	friend class FIAmSpeedNativeCarsCamera1217;
+    friend class FIAmSpeedNativeRequestedRegistry;
+    friend class FIAmSpeedNativeRequestedPreparationV2Test;
  friend class FIAmSpeedNativeAnalyticContacts1221;
  friend class FIAmSpeedNativeAnalyticGrounded1368;
  friend class FIAmSpeedNativeAnalyticEightCars1534;

@@ -42,6 +42,7 @@ void ObserveCallbackStage(uint32 stage,uint64 start);
 #include "UObject/UnrealType.h"
 #include "Misc/ScopeLock.h"
 #include "IAmSpeed/Netcode/remote-input/ExactRemoteDedicatedHost.h"
+#include "Misc/ScopeTryLock.h"
 #include "EngineUtils.h"
 #include "IAmSpeed/World/Simulation/SpeedPhysicsSimulation.h"
 #include "IAmSpeed/Camera/SpeedCarCameraPresentation.h"
@@ -1191,6 +1192,8 @@ USWheelSubBody* USpeedWheeledComponent::CreateWheelSubBody(const int& WheelIndex
 
 void USpeedWheeledComponent::SetSubBodies(const TArray<USSubBody*>& NewSubBodies)
 {
+    if(RequestedInputBodyGeneration==MAX_uint64)RequestedInputBodyGeneration=0;
+    else if(RequestedInputBodyGeneration)++RequestedInputBodyGeneration;
 	SubBodies = NewSubBodies;
 }
 
@@ -1588,7 +1591,7 @@ void USpeedWheeledComponent::PhysicsTick(const float& DeltaTime, const float& Si
 bool USpeedWheeledComponent::NeutralizeCanonicalInputAtBoundary()
 {
 	if (bCanonicalInputPending || InputReservationV2 || !CanNeutralizeProducedInputStateAtBoundary()) return false;
-	CanonicalInputSnapshot.reset(); PreparedCanonicalInputFrame.Reset();
+	CanonicalInputSnapshot.reset(); CanonicalRequestedInput.reset(); PreparedCanonicalInputFrame.Reset();
 	PublishedWheeledNetworkInput.store(std::shared_ptr<const FCompletedWheeledInput>{}, std::memory_order_seq_cst);
 	WheeledPhysicalInput.Throttle = 0; WheeledPhysicalInput.Brake = 0; WheeledPhysicalInput.Steer = 0;
 	SyncWheeledPhysicalInputToState(); ResetProducedInputState();
@@ -1598,13 +1601,64 @@ bool USpeedWheeledComponent::NeutralizeCanonicalInputAtBoundary()
 bool USpeedWheeledComponent::InstallCanonicalInput(uint64 Frame,
 	std::shared_ptr<const Speed::Input::V2::FOwnerInputSnapshot> Snapshot)
 {
-	if (!Snapshot || bCanonicalInputPending || InputReservationV2 || FrameInputStream || FrameInputStreamV2
+	if (!Snapshot || bCanonicalRequestedAuthority.load(std::memory_order_acquire) || bCanonicalInputPending || InputReservationV2 || FrameInputStream || FrameInputStreamV2
 		|| !HasProducedInputAuthority() || IsTestInputOverrideEnabled()
 		|| Snapshot->Input.GetData().ConsumptionFrame != Frame) return false;
 	CanonicalInputSnapshot = std::move(Snapshot);
 	bCanonicalInputPending = true;
 	bInputFrameRejectedV2 = false;
 	return true;
+}
+
+bool USpeedWheeledComponent::CanAdmitCanonicalRequestedInput() const
+{
+    const auto Clear=[this]()
+    {return !CanonicalInputSnapshot&&!InputReservationV2&&!FrameInputStream&&!FrameInputStreamV2
+        &&!HasLegacyRemoteInputAuthority()&&!IsTestInputOverrideEnabled();};
+    if(bCanonicalRequestedAuthority.load(std::memory_order_acquire))return Clear();
+    FScopeTryLock Lock(&FrameInputProducerMutex);return Lock.IsLocked()&&Clear();
+}
+
+bool USpeedWheeledComponent::SupportsCanonicalRequestedInputs(const Speed::Input::V2::FInputActionContract& Contract,
+    const Speed::Input::V2::FInputProcessingPolicy&,Speed::Input::V2::ERequestedDigitalPolicy Digital) const
+{
+    using namespace Speed::Input::V2;
+    if(Digital!=ERequestedDigitalPolicy::HeldStateAndCancelInactive)return false;
+    // Generic wheeled input has no digital gameplay dispatcher. A game with
+    // Boolean actions must explicitly implement and opt in its own adapter.
+    for(const auto& A:Contract.GetDescription().Actions)
+        if(A.Wiring==EActionWiring::Wired&&A.Type==EActionType::Bool)return false;
+    return true;
+}
+
+bool USpeedWheeledComponent::InstallCanonicalRequestedInput(uint64 Frame,
+    std::shared_ptr<const Speed::Input::V2::FRequestedInputConsumption> Input)
+{
+    if(CanonicalRequestedBindingV2||bCanonicalRequestedV2Retired)return false;
+    if(!Input||!Input->Request||Input->Request->GetState().Frame!=Frame||bCanonicalInputPending||CanonicalInputSnapshot)return false;
+    if(!bCanonicalRequestedAuthority.load(std::memory_order_acquire))
+    {
+        FScopeTryLock Lock(&FrameInputProducerMutex);
+        if(!Lock.IsLocked()||InputReservationV2||FrameInputStream||FrameInputStreamV2
+            ||HasLegacyRemoteInputAuthority()||IsTestInputOverrideEnabled())return false;
+        bCanonicalRequestedAuthority.store(true,std::memory_order_release);
+        bProducedInputAuthority.store(true,std::memory_order_release);
+    }
+    if(!CanAdmitCanonicalRequestedInput())return false;
+    CanonicalRequestedInput=std::move(Input);bCanonicalInputPending=true;bInputFrameRejectedV2=false;return true;
+}
+
+bool USpeedWheeledComponent::ValidateCanonicalRequestedInput(const Speed::Input::V2::FRequestedInputConsumption& Input) const
+{
+    if(!Input.Request||!Input.Request->GetContract())return false;
+    return SupportsCanonicalRequestedInputs(*Input.Request->GetContract(),{},
+        Speed::Input::V2::ERequestedDigitalPolicy::HeldStateAndCancelInactive)&&!Input.CancelDigitalMask;
+}
+
+bool USpeedWheeledComponent::ApplyCanonicalRequestedInput(const Speed::Input::V2::FRequestedInputConsumption& Input)
+{
+    return Input.Request&&Input.Request->GetContract()&&!Input.CancelDigitalMask
+        &&ApplyProducedCameraValuesV2(*Input.Request->GetContract(),Input.Applied);
 }
 
 bool USpeedWheeledComponent::PrepareCanonicalInputs(const FCanonicalFrameContext& Context)
@@ -1800,6 +1854,28 @@ void USpeedWheeledComponent::UpdateNumFrame(const float& SimTime)
 void USpeedWheeledComponent::UpdateInputs()
 {
 	const int32 CurrentFrame = NumFrame();
+    if(bCanonicalRequestedV2Retired)
+    {
+        // Retirement already published the game's cancellation once. Keep
+        // its neutral held values while physics/timers/contacts continue.
+        // No legacy poll, synthetic frame or repeated digital reset follows.
+        bProducedInputFrameOwned=true;
+        WheeledPhysicalInput.bCanMove=CanMove();SyncWheeledPhysicalInputToState();return;
+    }
+    if(CanonicalRequestedInput)
+    {
+        using namespace Speed::Input;
+        bProducedInputFrameOwned=true;const auto N=FromLegacyLocalFrame(NumFrame());
+        const auto& Input=*CanonicalRequestedInput;
+        if(!bCanonicalInputPending||!N||!Input.Request||Input.Request->GetState().Frame!=*N
+            ||!(CanonicalRequestedBindingV2?ValidateCanonicalRequestedInputV2(Input,*CanonicalRequestedBindingV2):ValidateCanonicalRequestedInput(Input))){bInputFrameRejectedV2=true;return;}
+        if(Input.Request->GetState().Reset)ResetProducedInputState();
+        WheeledPhysicalInput.Throttle=uint8(Input.Applied[Throttle]);WheeledPhysicalInput.Brake=uint8(Input.Applied[Brake]);
+        WheeledPhysicalInput.Steer=int8(Input.Applied[Steering]);WheeledPhysicalInput.bCanMove=CanMove();
+        SyncWheeledPhysicalInputToState();bInputFrameRejectedV2=!(CanonicalRequestedBindingV2?ApplyCanonicalRequestedInputV2(Input,*CanonicalRequestedBindingV2):ApplyCanonicalRequestedInput(Input));
+        if(!bInputFrameRejectedV2&&bGenericCameraInputEnabled.load(std::memory_order_acquire))ConsumeQueuedCameraInputsForFrame(CurrentFrame);
+        return;
+    }
 	if (CanonicalInputSnapshot)
 	{
 		using namespace Speed::Input;
@@ -1856,6 +1932,7 @@ void USpeedWheeledComponent::SetFrameInputStream(std::shared_ptr<Speed::Input::F
 	// Null is mandatory lifecycle teardown, including UnPossess during dispatch.
 	if (Stream && Speed::Input::FPresentationInputScope::IsActive()) return;
 	FScopeLock Lock(&FrameInputProducerMutex);
+	if(bCanonicalRequestedAuthority.load(std::memory_order_acquire))return;
 	if (Stream && (FrameInputStreamV2 || HasLegacyRemoteInputAuthority())) return; // Never install a second authority.
 	if (FrameInputStream && FrameInputStream != Stream) FrameInputStream->Deactivate();
 	FrameInputStream = MoveTemp(Stream);
@@ -1931,6 +2008,7 @@ bool USpeedWheeledComponent::SetFrameInputStreamV2(std::shared_ptr<Speed::Input:
 	check(IsInGameThread());
 	if (Stream && Speed::Input::FPresentationInputScope::IsActive()) return false;
 	FScopeLock Lock(&FrameInputProducerMutex);
+    if(bCanonicalRequestedAuthority.load(std::memory_order_acquire))return false;
 	if (HasLegacyRemoteInputAuthority() || InputReservationV2 || (Stream && (FrameInputStream || IsTestInputOverrideEnabled()))) return false;
 	if (FrameInputStreamV2 && FrameInputStreamV2 != Stream) FrameInputStreamV2->RequestStop();
 	FrameInputStreamV2 = MoveTemp(Stream);
@@ -2004,6 +2082,7 @@ bool USpeedWheeledComponent::ValidateCanonicalFrameCommit(uint64 Frame) const
 	if (bInputFrameRejectedV2 || (LegacyWheeledOwner && !LegacyWheeledOwner->CanComplete(Frame))
 		|| !PrepareWheeledNetworkInput(Frame)) return false;
 	if (CanonicalInputSnapshot) return bCanonicalInputPending && CanonicalInputSnapshot->Input.GetData().ConsumptionFrame == Frame;
+    if(CanonicalRequestedInput)return bCanonicalInputPending&&CanonicalRequestedInput->Request->GetState().Frame==Frame;
 	if (!InputReservationV2) return !ConsumedFrameInputStreamV2;
 	return ReservedInputFrameV2 && *ReservedInputFrameV2 == Frame && ConsumedFrameInputStreamV2
 		&& ConsumedFrameInputStreamV2->PrepareFinalization(*InputReservationV2);
@@ -2014,6 +2093,11 @@ bool USpeedWheeledComponent::CommitCanonicalFrame(uint64 Frame) noexcept
 	if (LegacyWheeledOwner && !LegacyWheeledOwner->Complete(Frame)) return false;
 	PublishedWheeledNetworkInput.store(PreparedWheeledNetworkInput, std::memory_order_seq_cst);
 	PreparedWheeledNetworkInput.reset();
+    if(CanonicalRequestedInput)
+    {
+        if(bInputFrameRejectedV2||!bCanonicalInputPending||CanonicalRequestedInput->Request->GetState().Frame!=Frame)return false;
+        bCanonicalInputPending=false;return true;
+    }
 	if (CanonicalInputSnapshot)
 	{
 		if (bInputFrameRejectedV2 || !bCanonicalInputPending || CanonicalInputSnapshot->Input.GetData().ConsumptionFrame != Frame) return false;
@@ -2033,6 +2117,7 @@ void USpeedWheeledComponent::AbortCanonicalFrame(uint64, ECanonicalFrameAbortRea
 	if (LegacyWheeledOwner) LegacyWheeledOwner->Abort();
 	PreparedWheeledNetworkInput.reset();
 	PublishedWheeledNetworkInput.store(std::shared_ptr<const FCompletedWheeledInput>{}, std::memory_order_seq_cst);
+    if(CanonicalRequestedInput){CanonicalRequestedInput.reset();bCanonicalInputPending=false;bInputFrameRejectedV2=true;}
 	if (CanonicalInputSnapshot)
 	{
 		CanonicalInputSnapshot.reset(); bCanonicalInputPending = false; bInputFrameRejectedV2 = true;
@@ -2182,18 +2267,23 @@ void USpeedWheeledComponent::ConsumeQueuedCameraInputsForFrame(int32 CurrentFram
 }
 bool USpeedWheeledComponent::ApplyProducedInputFrameV2(const Speed::Input::V2::FInputFrame& Frame)
 {
+    const auto Contract=Frame.GetContract();return Contract&&ApplyProducedCameraValuesV2(*Contract,Frame.GetData().Values);
+}
+
+bool USpeedWheeledComponent::ApplyProducedCameraValuesV2(const Speed::Input::V2::FInputActionContract& Contract,
+    const Speed::Input::FActionValues& Values)
+{
     // Disabled by default: existing game adapters and the old explicit queue
     // retain their exact behavior. Enabled slots are immutable car setup.
     if(CanonicalCameraYawAction<0 && CanonicalCameraPitchAction<0)return true;
     FSpeedCarCameraPhysicalInput Camera;
-    const auto Contract=Frame.GetContract();if(!Contract)return false;
     const auto ReadAxis=[&](int32 Slot,int8& Value)
     {
         if(Slot==-1){Value=0;return true;}
         if(Slot<0 || Slot>=int32(Speed::Input::ActionCount))return false;
-        const auto* A=Contract->Find(Speed::Input::FActionId(Slot));
+        const auto* A=Contract.Find(Speed::Input::FActionId(Slot));
         if(!A || A->Type!=Speed::Input::V2::EActionType::Axis1D || A->Wiring!=Speed::Input::V2::EActionWiring::Wired || !A->Signed || A->Quantization!=127)return false;
-        const auto V=Frame.GetData().Values[Slot];if(V < -127 || V>127)return false;
+        const auto V=Values[Slot];if(V < -127 || V>127)return false;
         Value=int8(V);return true;
     };
     if(!ReadAxis(CanonicalCameraYawAction,Camera.Yaw) || !ReadAxis(CanonicalCameraPitchAction,Camera.Pitch))return false;
@@ -3799,6 +3889,10 @@ float USpeedWheeledComponent::GetSuspensionOffset(int WheelIndex)
 
 bool USpeedWheeledComponent::CanMove() const
 {
+    // Native requested-network F0/F1 physical agreement is not implemented
+    // by source admission or a Reset input. Keep this new route closed until
+    // that actual agreement is admitted; the timer cannot grant it implicitly.
+    if(bCanonicalRequestedAuthority.load(std::memory_order_acquire))return false;
 	return WheeledPhysicsState.nbFramesbeforeCanMove == 0;
 }
 
