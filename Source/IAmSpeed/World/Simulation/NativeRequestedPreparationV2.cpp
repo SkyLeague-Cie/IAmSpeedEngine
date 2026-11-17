@@ -33,8 +33,15 @@ void ASpeedPhysicsSimulation::ServiceRequestedNetworkPreparationV2AtBoundary()
 {
     using namespace Speed;using namespace Speed::Input::V2;using namespace Speed::Netcode;using namespace Speed::Netcode::Agreement;
     if(!RequestedPreparationV2)return;
-    if(!SimulationWorker||!SimulationWorker->OwnsCurrentInputBoundary()||!InputSessionRegistry
-        ||!SpeedWorldSubsystem||SpeedWorldSubsystem->GetWorld()!=GetWorld())throw std::runtime_error("V2 preparation outside native boundary");
+    {
+        std::lock_guard<std::mutex> Lock(RequestedPreparationV2->Gate);
+        // A configured but empty comparison queue is also a no-op. Keep the
+        // owner checks BEFORE capture whenever a real request is pending, so
+        // rejection cannot consume its ordinal, cutoff or receipt.
+        if(!RequestedPreparationV2->Queued)return;
+        if(!SimulationWorker||!SimulationWorker->OwnsCurrentInputBoundary()||!InputSessionRegistry
+            ||!SpeedWorldSubsystem||SpeedWorldSubsystem->GetWorld()!=GetWorld())throw std::runtime_error("V2 preparation outside native boundary");
+    }
     auto Batch=RequestedPreparationV2->CaptureOnNativeOwner();
     if(Batch.Requests.empty())return;
     for(const auto& P:Batch.Requests)

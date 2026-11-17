@@ -37,10 +37,15 @@ Speed::Input::V2::ECommandAdmission ASpeedPhysicsSimulation::SubmitRequestedNetw
 void ASpeedPhysicsSimulation::ServiceRequestedNetworkBindsV2AtBoundary(uint64 Cutoff)
 {
     using namespace Speed;using namespace Speed::Input::V2;
-    if(!SimulationWorker||!SimulationWorker->OwnsCurrentInputBoundary()||!InputSessionRegistry)throw std::runtime_error("V2 bind outside owner boundary");
     std::vector<FPendingNativeV2Bind> Batch;
     {
-        FScopeLock Lock(&InputSessionAdmissionMutex);std::lock_guard<std::mutex> Records(InputSessionCommands->Gate);
+        FScopeLock Lock(&InputSessionAdmissionMutex);
+        // An ordinary input boundary can have no native V2 work at all.
+        // Observe emptiness under the same lock used by GT submissions; do not
+        // require or fabricate a native V2 owner for that no-op.
+        if(PendingNativeV2Binds.empty())return;
+        if(!SimulationWorker||!SimulationWorker->OwnsCurrentInputBoundary()||!InputSessionRegistry)throw std::runtime_error("V2 bind outside owner boundary");
+        std::lock_guard<std::mutex> Records(InputSessionCommands->Gate);
         auto I=PendingNativeV2Binds.begin();
         while(I!=PendingNativeV2Binds.end())
         {

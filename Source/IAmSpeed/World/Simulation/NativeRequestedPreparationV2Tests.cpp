@@ -113,6 +113,44 @@ bool FIAmSpeedNativeRequestedPreparationV2Test::RunTest(const FString&)
     FRequestedNetworkAgreementLocator L;L.HostGeneration=Host->Identity()->Generation();L.Slot=H->Agreement->SlotId();L.Connection=Config.AuthenticatedPeer;
     L.OfferSequence=1;L.StreamEpoch=19;L.GameCodec=Offer.GameCodec;L.GameCodecVersion=1;L.ProfileRoute=1;L.LeaseMilliseconds=5000;N.Agreement=L;D.Network=N;
     if(!TestTrue(TEXT("complete inert V2 locator"),N.IsValid()))return false;
+    // Genuine external worker boundary, as used by controlled physics tests.
+    // It is intentionally NOT installed as Driver->SimulationWorker. Empty
+    // native-V2 services must not terminate unrelated input execution.
+    const auto OnExternalBoundary=[&](TFunction<void()> Check)
+    {
+        std::atomic<bool> Entered{false},Returned{false},Threw{false};
+        FSimulationWorker External([](){return ESimulationWorkerResult::Complete;},
+            [](FSimulationWorkerWaitContext&){},[&](bool)
+            {
+                Entered.store(true,std::memory_order_release);
+                try{Check();Returned.store(true,std::memory_order_release);}catch(...){Threw.store(true,std::memory_order_release);}
+                return ESimulationBoundaryResult::Complete;
+            });
+        if(!External.Start(false))return false;
+        const double Deadline=FPlatformTime::Seconds()+2;
+        while(External.IsRunning()&&FPlatformTime::Seconds()<Deadline)FPlatformProcess::SleepNoStats(.001f);
+        const bool Finished=!External.IsRunning();External.StopAndJoin();
+        return Finished&&Entered.load(std::memory_order_acquire)
+            &&Returned.load(std::memory_order_acquire)&&!Threw.load(std::memory_order_acquire);
+    };
+    if(!TestTrue(TEXT("empty V2 queues tolerate genuine external boundary without a driver worker"),OnExternalBoundary([&]
+    {
+        Driver->ServiceRequestedNetworkBindsV2AtBoundary(0);
+        Driver->ServiceRequestedNetworkPreparationV2AtBoundary();
+    })))return false;
+    auto PendingRequest=Request;PendingRequest.Command.Id=Driver->AllocateInputCommandId();
+    const auto PendingId=PendingRequest.Command.Id;
+    if(!TestTrue(TEXT("real agreement comparison request enqueued"),Driver->SubmitRequestedNetworkPreparationV2(std::move(PendingRequest))==ERequestedPreparationAdmissionV2::Enqueued))return false;
+    std::atomic<bool> PendingRefused{false};
+    if(!TestTrue(TEXT("external worker observes pending guard without inventing native V2 ownership"),OnExternalBoundary([&]
+    {
+        try{Driver->ServiceRequestedNetworkPreparationV2AtBoundary();}
+        catch(const std::runtime_error&){PendingRefused.store(true,std::memory_order_release);}
+    })))return false;
+    const auto BeforeOwned=Driver->ReadRequestedNetworkPreparationReceiptV2(Cmd.WorkerGeneration,PendingId);
+    TestTrue(TEXT("nonempty V2 queue still refuses absent native owner before capture"),PendingRefused.load(std::memory_order_acquire)
+        &&BeforeOwned&&BeforeOwned->Status==ERequestedPreparationStatusV2::Pending
+        &&BeforeOwned->EnqueueOrdinal>0&&BeforeOwned->BoundaryCutoff==0&&!BeforeOwned->Context);
     std::atomic<uint64> ObserveRequestId{0}, ObservedRequestId{0};
     std::atomic<uint32> RegistryObservationThread{0};
     std::atomic<bool> NoRequestedBinding{false};
@@ -149,10 +187,23 @@ bool FIAmSpeedNativeRequestedPreparationV2Test::RunTest(const FString&)
         }while(Worker->IsRunning()&&FPlatformTime::Seconds()<Deadline);
         return std::optional<FRequestedPreparationReceiptV2>{};
     };
+    // The same queued request now completes on the actual installed owner.
+    const double PendingDeadline=FPlatformTime::Seconds()+3;
+    std::optional<FRequestedPreparationReceiptV2> AfterOwned;
+    do
+    {
+        AfterOwned=Driver->ReadRequestedNetworkPreparationReceiptV2(Cmd.WorkerGeneration,PendingId);
+        if(AfterOwned&&AfterOwned->Status!=ERequestedPreparationStatusV2::Pending)break;
+        FPlatformProcess::SleepNoStats(.001f);
+    }while(Worker->IsRunning()&&FPlatformTime::Seconds()<PendingDeadline);
+    TestTrue(TEXT("same pending ordinal completes only on actual installed owner"),BeforeOwned&&AfterOwned
+        &&AfterOwned->Id==BeforeOwned->Id&&AfterOwned->EnqueueOrdinal==BeforeOwned->EnqueueOrdinal
+        &&AfterOwned->BoundaryCutoff>=AfterOwned->EnqueueOrdinal
+        &&AfterOwned->Status==ERequestedPreparationStatusV2::ComparedOnly&&AfterOwned->Context);
     auto Compared=SubmitAndWait(Request);
     if(!TestTrue(TEXT("actual native context compared only"),Compared&&Compared->Status==ERequestedPreparationStatusV2::ComparedOnly
         &&Compared->Reason==ERequestedPreparationReasonV2::None&&Compared->Context))return false;
-    TestTrue(TEXT("actual native callback independent of GT and socket thread"),Component->ComparisonCalls==1
+    TestTrue(TEXT("actual native callback independent of GT and socket thread"),Component->ComparisonCalls==2
         &&Component->ComparisonThread!=FPlatformTLS::GetCurrentThreadId()&&Compared->Context->PreparationThread()!=std::this_thread::get_id()
         &&Compared->Context->PreparationThread()!=H->Agreement->Received()->ReceivingThread());
     TestTrue(TEXT("game support remains explicitly absent"),!Component->SupportsCanonicalRequestedInputsV2(*Compared->Context));
@@ -178,6 +229,7 @@ bool FIAmSpeedNativeRequestedPreparationV2Test::RunTest(const FString&)
     TestTrue(TEXT("no frame or completed physical pair from comparison"),Driver->CanonicalNumFrame==0&&!Driver->ReadCompletedWorldAndInputFrame());
     TestFalse(TEXT("qualification barrier remains hard closed"),NativeRequestedV2RuntimeQualified());
     TestFalse(TEXT("CanMove remains closed"),Component->CanMove());
+    AddInfo(TEXT("[EmptyV2BoundaryScope] actual external worker: empty bind/preparation no-op; nonempty real preparation refused without consumption; same ordinal completed on actual installed owner; runtime V2 remains hard false"));
     AddInfo(TEXT("[RequestedPreparationNativeScope] genuine host/client accept, real native owner/mapping/context and game comparison; reject/exception/stale-body/closed-host paths; all network/native owners joined; ComparedOnly is not V2 admission, F0F1, CanMove, restore or physics replay; opaque fixture profile is not a complete game policy"));
     return true;
 }
