@@ -30,6 +30,9 @@
 namespace
 {
 #if PLATFORM_WINDOWS && defined(_MSC_VER) && defined(_M_X64) && !defined(__clang__) && !defined(_M_ARM64EC)
+TAutoConsoleVariable<int32> CVarTensorCollarNodeActive(
+    TEXT("p.IAmSpeed.AnalyticWorld.TensorCollarNodeActive"),1,
+    TEXT("Experimental four-collar moving wheel-Sphere node filter; supported Win64/MSVC Development/Shipping. Startup1 prepares; runtime0 retains native. Default1 on supported Win64/MSVC, computed CP theorem UNKNOWN."));
 #if !UE_BUILD_SHIPPING
 TAutoConsoleVariable<int32> CVarTensorGenericCellStripBounds(
     TEXT("p.IAmSpeed.AnalyticWorld.TensorGenericCellStripBounds"),1,
@@ -424,11 +427,15 @@ FWorldQueryService::FWorldQueryService(const FAnalyticWorldData& InWorld,
 #if PLATFORM_WINDOWS && defined(_MSC_VER) && defined(_M_X64) && !defined(__clang__) && !defined(_M_ARM64EC)
     // Always prepare once for this immutable world; enabling the CVar later is supported.
     bool bPreparePrefix=false,bPrepareGeneric=false;
+    const bool bPrepareCollarSphere=CVarTensorCollarNodeActive.GetValueOnAnyThread()==1;
 #if !UE_BUILD_SHIPPING
     bPreparePrefix=CVarTensorPanelPrefixBoundsActive.GetValueOnAnyThread()==1;
     bPrepareGeneric=CVarTensorGenericCellStripBounds.GetValueOnAnyThread()==1;
 #endif
-    TensorCellObliqueIndex=Private::BuildTensorCellObliqueIndex(World,bPreparePrefix,bPrepareGeneric);
+    TensorCellObliqueIndex=Private::BuildTensorCellObliqueIndex(World,bPreparePrefix,bPrepareGeneric,bPrepareCollarSphere);
+    if(bPrepareCollarSphere)
+        UE_LOG(LogTemp,Display,TEXT("[TensorCollarSphereNodeStartup] NodeRequested=1 NodeProviders=%d WorldHash=%016llx CPTheorem=UNKNOWN"),
+            TensorCellObliqueIndex?TensorCellObliqueIndex->CollarSphereNodes.Num():0,uint64(World.SourceHash));
 #if !UE_BUILD_SHIPPING
     if(bPrepareGeneric)
     {
@@ -3699,6 +3706,14 @@ FWorldHit FWorldQueryService::SweepTensorBezierApproximation(
     const double CellObliqueShell=LegacyObliqueIndex ? Query.Radius+1.e-8+(0.001+
         1.e-9*FMath::Max(Query.Start.GetAbsMax(),Query.End.GetAbsMax())) : 0.;
 #endif
+#if PLATFORM_WINDOWS && defined(_MSC_VER) && defined(_M_X64) && !defined(__clang__) && !defined(_M_ARM64EC)
+    const auto* CollarSphere=Private::TensorCollarSphereNodeBounds::GBinding;
+    if(CollarSphere&&(!CollarSphere->World||!CollarSphere->Patch||CollarSphere->NativeQuery!=&Query||
+        CollarSphere->Patch->PrimitiveId!=Patch.PrimitiveId||&CollarSphere->Patch->Surface!=Patch.Surface||
+        &CollarSphere->Patch->ApproximationCells!=Patch.ApproximationCells||
+        &CollarSphere->Patch->ApproximationCellBvhNodes!=Patch.ApproximationCellBvhNodes||
+        &CollarSphere->Patch->ApproximationCellBvhIndices!=Patch.ApproximationCellBvhIndices))CollarSphere=nullptr;
+#endif
 	Causal.MarkPrepared();
 	const auto SweepCell = [&](const int32 CellIndex)
 	{
@@ -3986,6 +4001,14 @@ FWorldHit FWorldQueryService::SweepTensorBezierApproximation(
 		{
 			continue;
 		}
+#if PLATFORM_WINDOWS && defined(_MSC_VER) && defined(_M_X64) && !defined(__clang__) && !defined(_M_ARM64EC)
+        if(CollarSphere&&CollarSphere->Node&&CollarSphere->NodeQuery)
+        {
+            const auto O=Private::TensorCollarSphereNodeBounds::ObserveNode(*CollarSphere->Node,*CollarSphere->World,
+                *CollarSphere->Patch,NodeIndex,*CollarSphere->NodeQuery);
+            if(O.Known&&O.WouldMiss)continue;
+        }
+#endif
 		if (Node.IsLeaf())
 		{
 			for (int32 Offset = 0; Offset < Node.IndexCount; ++Offset)
@@ -4987,6 +5010,12 @@ FWorldHit FWorldQueryService::SweepDetailed(
             (Query.Radius==12.510000228881836 || Query.Radius==17.010000228881836))
             GenericIndex=TensorCellObliqueIndex->GenericIndex.Get();
 #endif
+#if PLATFORM_WINDOWS && defined(_MSC_VER) && defined(_M_X64) && !defined(__clang__) && !defined(_M_ARM64EC)
+        const bool UseCollarSphere=CVarTensorCollarNodeActive.GetValueOnAnyThread()==1&&
+            TensorCellObliqueIndex&&!TensorCellObliqueIndex->CollarSphereNodes.IsEmpty();
+        bool CollarSphereQueryKnown=false;
+        TOptional<Private::TensorCollarSphereNodeBounds::FQueryContext> CollarSphereQuery;
+#endif
 		const auto SweepTensorProvider = [&](const FTensorBezierPatch& Patch)
 		{
 			if (Query.bAuthorityOnly && !Patch.bAuthorityEligible) return;
@@ -5011,6 +5040,22 @@ FWorldHit FWorldQueryService::SweepDetailed(
 #endif
                 Private::IsTensorCellObliqueQuery(Query,Selection==EHitSelection::FirstSweepHit,World.NumericContract))
                 CellObliqueIndex=TensorCellObliqueIndex->Find(World,Patch);
+#endif
+#if PLATFORM_WINDOWS && defined(_MSC_VER) && defined(_M_X64) && !defined(__clang__) && !defined(_M_ARM64EC)
+            TOptional<Private::TensorCollarSphereNodeBounds::FScopedBinding> CollarSphereScope;
+            if(UseCollarSphere&&Private::TensorCollarSphereNodeBounds::Selected(Patch))
+                for(const auto& P:TensorCellObliqueIndex->CollarSphereNodes)
+                    if(P->Layout.Matches(World,Patch))
+                    {
+                        if(!CollarSphereQueryKnown)
+                        {
+                            CollarSphereQueryKnown=true;CollarSphereQuery.Emplace();
+                            if(!Private::TensorCollarSphereNodeBounds::PrepareQuery(Query,Selection==EHitSelection::FirstSweepHit,
+                                World.NumericContract,CollarSphereQuery.GetValue()))CollarSphereQuery.Reset();
+                        }
+                        if(CollarSphereQuery.IsSet())CollarSphereScope.Emplace(World,Patch,Query,P.Get(),&CollarSphereQuery.GetValue());
+                        break;
+                    }
 #endif
             const FWorldHit Candidate = [&]()
             {

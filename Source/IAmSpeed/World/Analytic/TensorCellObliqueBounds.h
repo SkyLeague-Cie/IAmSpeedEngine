@@ -5,8 +5,9 @@
 #include "Hash/Blake3.h"
 #if !UE_BUILD_SHIPPING
 #include "TensorPanelPrefixBounds.h"
-#include "TensorGenericCellStripBounds.h"
 #endif
+#include "TensorGenericCellStripBounds.h"
+#include "TensorCollarSphereNodeBounds.h"
 
 namespace Speed::Analytic::Private
 {
@@ -108,6 +109,7 @@ struct FTensorCellObliqueIndex
     int32 ProviderIndex=INDEX_NONE;
     TArray<FSupport> Cells;
     TArray<TSharedPtr<const FTensorCellObliqueIndex>> Children;
+    TArray<TSharedPtr<const TensorCollarSphereNodeBounds::FProvider>> CollarSphereNodes;
 #if !UE_BUILD_SHIPPING
     TSharedPtr<const TensorPanelPrefixBounds::FEnvelope> PrefixEnvelope;
     TSharedPtr<const TensorGenericCellStripBounds::FIndex> GenericIndex;
@@ -159,7 +161,7 @@ inline bool PrepareTensorCellObliqueProvider(const FTensorBezierPatch& Patch,
     return true;
 }
 
-inline TSharedPtr<const FTensorCellObliqueIndex> BuildTensorCellObliqueIndex(const FAnalyticWorldData& World,bool bPreparePrefix=false,bool bPrepareGeneric=false)
+inline TSharedPtr<const FTensorCellObliqueIndex> BuildTensorCellObliqueIndex(const FAnalyticWorldData& World,bool bPreparePrefix=false,bool bPrepareGeneric=false,bool bPrepareCollarSphere=false)
 {
     const auto Numeric=InspectCurrentAnalyticNumericContext(World.NumericContract);
     if (Numeric.Status!=EAnalyticNumericStatus::Complete ||
@@ -223,11 +225,25 @@ inline TSharedPtr<const FTensorCellObliqueIndex> BuildTensorCellObliqueIndex(con
             RequireAnalyticNumericTransfer(World.NumericContract,Restore.Restore(),EAnalyticNumericFailure::ContextRestoration);
         }
     }
-    if(Index->Children.IsEmpty() && !Index->GenericIndex)return {};
-#else
-    if(Index->Children.IsEmpty())return {};
 #endif
-    (void)bPreparePrefix;(void)bPrepareGeneric;
+    if(bPrepareCollarSphere)
+    {
+        for(const uint64 ID:{0x03b461d6a0c10a62ull,0x28047cc9d8d7d704ull,0x521cf485f41280c0ull,0xff609f7fbf7a4fa6ull})
+        {
+            const FTensorBezierPatch* Target=nullptr;bool Ambiguous=false;
+            for(const auto& P:World.TensorBezierPatches)
+                if(P.PrimitiveId==ID&&TensorCollarSphereNodeBounds::Selected(P))
+                {if(Target)Ambiguous=true;else Target=&P;}
+            if(!Target||Ambiguous)continue;
+            auto P=TensorCollarSphereNodeBounds::BuildProvider(World,*Target);if(P)Index->CollarSphereNodes.Add(P);
+        }
+    }
+#if !UE_BUILD_SHIPPING
+    if(Index->Children.IsEmpty() && !Index->GenericIndex && Index->CollarSphereNodes.IsEmpty())return {};
+#else
+    if(Index->Children.IsEmpty() && Index->CollarSphereNodes.IsEmpty())return {};
+#endif
+    (void)bPreparePrefix;(void)bPrepareGeneric;(void)bPrepareCollarSphere;
     return Index;
 }
 
