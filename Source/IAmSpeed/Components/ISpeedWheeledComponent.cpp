@@ -1421,6 +1421,14 @@ bool ISpeedWheeledComponent::WheelIdxIsOnGround(const int32& WheelIdx) const
 	return WheelSubBodies[WheelIdx] && WheelSubBodies[WheelIdx]->IsOnGround();
 }
 
+void ISpeedWheeledComponent::ClearWheelPrimarySuspensionMisses() noexcept
+{
+	for (USWheelSubBody* Wheel : GetWheelSubBodies())
+	{
+		if (Wheel) Wheel->ClearPrimarySuspensionMiss();
+	}
+}
+
 void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 {
 #if !UE_BUILD_SHIPPING
@@ -2077,7 +2085,7 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 	{
 		if (Wheel)
 		{
-			Wheel->SweepSuspension(delta);
+			Wheel->SweepSuspensionWithPrimaryObservation(delta);
 		}
 	}
     } // Restore the prefetch TLS before retained-support/projection queries.

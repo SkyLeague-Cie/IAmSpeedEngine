@@ -42,6 +42,8 @@ class IAMSPEED_API ISpeedWheeledComponent : public ISpeedComponent
 	// overload this function to update the on-ground states of the wheel sub-bodies
 	virtual void UpdateWheelOnGroundStates() = 0;
 	void NotifyWheelOnGroundStateChanged();
+	// Owner-frame lifecycle for presentation-only wheel observations.
+	void ClearWheelPrimarySuspensionMisses() noexcept;
 
 	// overload this function to return a value between -1 and 1 representing the throttle input for the current frame
 	virtual float GetPhysThrottleInput() const = 0;

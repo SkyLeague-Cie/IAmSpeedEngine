@@ -148,6 +148,8 @@ public:
     virtual void UpdateSuspension(const float& delta);
     // sweep for suspension
     virtual void SweepSuspension(const float& delta);
+    // Same physical owner after final support processing, before publication.
+    bool HasResolvedPrimarySuspensionMiss(uint32 LocalFrame) const;
     // Unknown exact types must explicitly certify that the inherited query
     // construction remains pure; certification never executes on a worker.
     virtual bool IsGroundQueryCaptureCertified1075() const
@@ -229,6 +231,29 @@ public:
 	void SetLocalOffset(const FVector& InLocalOffset);
 
     void HandleTimers();
+private:
+    friend class ISpeedWheeledComponent;
+
+    struct FPrimarySuspensionMiss
+    {
+        const UWorld* World = nullptr;
+        const ISpeedComponent* Owner = nullptr;
+        uint32 LocalFrame = 0;
+        float Delta = 0.0f;
+        float Radius = 0.0f;
+        FVector Start = FVector::ZeroVector;
+        FVector End = FVector::ZeroVector;
+        FQuat Rotation = FQuat::Identity;
+    };
+    void SweepSuspensionWithPrimaryObservation(const float& Delta);
+    void ClearPrimarySuspensionMiss() noexcept { PrimarySuspensionMiss.Reset(); }
+    bool ProbeSuspensionOnGroundObserved(SHitResult& OutHit, float Delta,
+        TOptional<FPrimarySuspensionMiss>* Observation) const;
+
+    // Presentation evidence only; outside canonical state, response and query caches.
+    TOptional<FPrimarySuspensionMiss> PrimarySuspensionMiss;
+    bool bObservePrimarySuspension = false;
+
 protected:
     virtual bool SweepSuspensionOnGround(SHitResult& OutHit, const float& delta);
     virtual bool SweepSuspensionOnSpheres(SHitResult& OutHit, const float& delta);

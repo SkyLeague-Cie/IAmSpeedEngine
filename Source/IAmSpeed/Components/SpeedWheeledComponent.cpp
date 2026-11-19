@@ -1565,6 +1565,7 @@ bool USpeedWheeledComponent::InstallCanonicalInput(uint64 Frame,
 
 bool USpeedWheeledComponent::PrepareCanonicalInputs(const FCanonicalFrameContext& Context)
 {
+	ClearWheelPrimarySuspensionMisses();
 	PreparedCanonicalInputFrame.Reset();
 	if (Context.NumFrame >= TNumericLimits<uint32>::Max()) return false;
 	BaseGameState.NumFrame = static_cast<uint32>(Context.NumFrame) + 1u;
@@ -1967,6 +1968,7 @@ bool USpeedWheeledComponent::ValidateCanonicalFrameCommit(uint64 Frame) const
 
 bool USpeedWheeledComponent::CommitCanonicalFrame(uint64 Frame) noexcept
 {
+	ClearWheelPrimarySuspensionMisses();
 	if (LegacyWheeledOwner && !LegacyWheeledOwner->Complete(Frame)) return false;
 	PublishedWheeledNetworkInput.store(PreparedWheeledNetworkInput, std::memory_order_seq_cst);
 	PreparedWheeledNetworkInput.reset();
@@ -1985,6 +1987,7 @@ bool USpeedWheeledComponent::CommitCanonicalFrame(uint64 Frame) noexcept
 
 void USpeedWheeledComponent::AbortCanonicalFrame(uint64, ECanonicalFrameAbortReason) noexcept
 {
+	ClearWheelPrimarySuspensionMisses();
 	PreparedCanonicalInputFrame.Reset();
 	if (LegacyWheeledOwner) LegacyWheeledOwner->Abort();
 	PreparedWheeledNetworkInput.reset();

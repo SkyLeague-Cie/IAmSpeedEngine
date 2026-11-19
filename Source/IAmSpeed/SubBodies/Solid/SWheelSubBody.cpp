@@ -18,6 +18,7 @@
 #include "ChaosVehicleWheel.h"
 #include "IAmSpeed/SubBodies/Solid/BoxSubBody.h"
 #include "HAL/IConsoleManager.h"
+#include "Templates/UnrealTemplate.h"
 
 DEFINE_LOG_CATEGORY(WheelSubBodyLog);
 
@@ -335,6 +336,7 @@ void USWheelSubBody::Initialize(ISpeedComponent* InParentComponent)
 
 void USWheelSubBody::ResetForFrame(const float& Delta)
 {
+    ClearPrimarySuspensionMiss();
     // CurrentHit = SHitResult(); // do not reset current hit, because netcode needs it to know if wheel is transitionning on wall/ground
     FutureHit = SHitResult();
     ResetIgnoredComponents();
@@ -422,6 +424,31 @@ bool USWheelSubBody::SweepTOI(const float& RemainingDelta, float& OutTOI)
 // ==================================================
 // =========== Sweep suspension methods =============
 // ==================================================
+
+void USWheelSubBody::SweepSuspensionWithPrimaryObservation(const float& Delta)
+{
+    ClearPrimarySuspensionMiss();
+    const TGuardValue<bool> Observe(bObservePrimarySuspension,
+        FMath::IsFinite(Delta) && Delta > KINDA_SMALL_NUMBER && PWheel && PSuspension);
+    SweepSuspension(Delta);
+}
+
+bool USWheelSubBody::HasResolvedPrimarySuspensionMiss(uint32 LocalFrame) const
+{
+    if (!PrimarySuspensionMiss.IsSet() || !PWheel || !PSuspension || !ParentComponent ||
+        IsOnGround() || ParentComponent->NumFrame() != LocalFrame)
+        return false;
+
+    const auto& Evidence = PrimarySuspensionMiss.GetValue();
+    if (Evidence.LocalFrame != LocalFrame || Evidence.Owner != ParentComponent ||
+        Evidence.World != GetWorld() || Evidence.Rotation != Kinematics.Rotation)
+        return false;
+    FVector Start, End;
+    GetSuspensionSweepSegment(Evidence.Delta, Start, End);
+    const FCollisionShape Shape = GetCollisionShape();
+    return Shape.IsSphere() && Shape.GetSphereRadius() == Evidence.Radius &&
+        Start == Evidence.Start && End == Evidence.End;
+}
 
 void USWheelSubBody::SweepSuspension(const float& delta)
 {
@@ -556,6 +583,12 @@ bool USWheelSubBody::TryCaptureGroundQuery1075(
 bool USWheelSubBody::ProbeSuspensionOnGround(
     SHitResult& OutHit, const float Delta) const
 {
+    return ProbeSuspensionOnGroundObserved(OutHit, Delta, nullptr);
+}
+
+bool USWheelSubBody::ProbeSuspensionOnGroundObserved(
+    SHitResult& OutHit, const float Delta, TOptional<FPrimarySuspensionMiss>* Observation) const
+{
     Speed::PreparedExecution::FNativeWheelProbeScope PreparedProbe(*this,Delta);
     UWorld* World = GetWorld();
     if (!World || !ParentComponent)
@@ -603,10 +636,24 @@ bool USWheelSubBody::ProbeSuspensionOnGround(
         Params.AddIgnoredActor(VehicleOwner);
     }
 
+    const FCollisionShape PrimaryShape = GetCollisionShape();
+    const FQuat PrimaryRotation = Kinematics.Rotation;
+    const auto ObserveDefinitiveMiss = [&](bool bAccepted)
+    {
+        if (Observation && bAccepted && PrimaryShape.IsSphere() &&
+            FMath::IsFinite(PrimaryShape.GetSphereRadius()) && PrimaryShape.GetSphereRadius() > 0.0f &&
+            !Start.ContainsNaN() && !End.ContainsNaN() && PrimaryRotation.IsNormalized())
+        {
+            Observation->Emplace(FPrimarySuspensionMiss{
+                World, ParentComponent, ParentComponent->NumFrame(), Delta,
+                PrimaryShape.GetSphereRadius(), Start, End, PrimaryRotation});
+        }
+    };
     if (PreparedProbe.IsActive())
     {
-        const bool Result = PreparedProbe.Sweep(Start, End, Kinematics.Rotation, GetCollisionShape(), Params,
+        const bool Result = PreparedProbe.Sweep(Start, End, PrimaryRotation, PrimaryShape, Params,
             Speed::Analytic::EStaticQuerySite::WheelSuspensionProbe, OutHit);
+        ObserveDefinitiveMiss(!Result);
 #if !UE_BUILD_SHIPPING
         ObserveActualProbe(Result, TEXT("prepared"));
 #endif
@@ -618,9 +665,10 @@ bool USWheelSubBody::ProbeSuspensionOnGround(
 	const bool bUsedAnalyticAuthority =
 		Speed::Analytic::FStaticWorldQueryAudit::TryCompactAuthoritySingle(
 		World,
-		Start, End, Kinematics.Rotation, GetCollisionShape(),
+		Start, End, PrimaryRotation, PrimaryShape,
 		static_cast<uint8>(GetCollisionChannel()), GetResponseParams(), UnrealHit, bHit,
 		&AnalyticHit);
+	bool bDefinitiveAnalytic = bUsedAnalyticAuthority;
 	if (bUsedAnalyticAuthority && !bHit && IsOnGround())
 	{
 		const SHitResult& PreviousHit = GetHit();
@@ -630,11 +678,15 @@ bool USWheelSubBody::ProbeSuspensionOnGround(
 		if (!PreviousNormal.IsNearlyZero() && InwardSpeed < 0.0f &&
 			PreviousHit.SourceId != 0)
 		{
-			Speed::Analytic::FStaticWorldQueryAudit::TryCompactAuthoritySingle(
-				World, Start, End, Kinematics.Rotation, GetCollisionShape(),
+			const FCollisionShape RetryShape = GetCollisionShape();
+			const FQuat RetryRotation = Kinematics.Rotation;
+			const bool bRetryCovered = Speed::Analytic::FStaticWorldQueryAudit::TryCompactAuthoritySingle(
+				World, Start, End, RetryRotation, RetryShape,
 				static_cast<uint8>(GetCollisionChannel()), GetResponseParams(),
 				UnrealHit, bHit, &AnalyticHit, PreviousHit.SourceId, 0, 0,
 				PreviousNormal, 0.9f, true);
+			bDefinitiveAnalytic = bRetryCovered && RetryShape.IsSphere() && PrimaryShape.IsSphere() &&
+				RetryShape.GetSphereRadius() == PrimaryShape.GetSphereRadius() && RetryRotation == PrimaryRotation;
 		}
 	}
 	if (!bUsedAnalyticAuthority)
@@ -650,6 +702,8 @@ bool USWheelSubBody::ProbeSuspensionOnGround(
 		static_cast<uint8>(GetCollisionChannel()), GetResponseParams(), bHit, UnrealHit);
 	if (!bHit)
     {
+        // Legacy sweep false is not an authority/coverage certificate.
+        ObserveDefinitiveMiss(bDefinitiveAnalytic);
 #if !UE_BUILD_SHIPPING
         ObserveActualProbe(false, bUsedAnalyticAuthority ? TEXT("analytic") : TEXT("unreal"));
 #endif
@@ -701,7 +755,8 @@ bool USWheelSubBody::SweepSuspensionOnGround(SHitResult& OutHit, const float& de
 
     bool ret = false;
     SHitResult ProbeHit;
-    const bool bHasGroundHit = ProbeSuspensionOnGround(ProbeHit, delta);
+    const bool bHasGroundHit = ProbeSuspensionOnGroundObserved(ProbeHit, delta,
+        bObservePrimarySuspension ? &PrimarySuspensionMiss : nullptr);
     if (bHasGroundHit)
     {
         OutHit = ProbeHit;
@@ -1630,6 +1685,7 @@ bool USWheelSubBody::IsOnDynamicObject() const
 
 void USWheelSubBody::SetOnGround(const bool& on_ground)
 {
+    if (on_ground) ClearPrimarySuspensionMiss();
     bool bWasOnGround = IsOnGround();
 
     if (!bWasOnGround && on_ground)

@@ -59,6 +59,7 @@ bool USpeedWheeledComponent::CanRestoreSimulationSnapshot(TConstArrayView<uint8>
 }
 void USpeedWheeledComponent::RestoreSimulationSnapshotPayload(TConstArrayView<uint8> Payload)
 {
+    ClearWheelPrimarySuspensionMisses();
     uint16 Frames=0;uint64 Id=0;
     const bool bRead=ReadBumpPayload(Payload,Frames,Id);
     check(bRead);
