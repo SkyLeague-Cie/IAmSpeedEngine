@@ -119,7 +119,7 @@ std::optional<FSimulationWorld::FPreparedRestoreToken> FSimulationWorld::Prepare
         PreparedRestore->Storage = std::make_unique<FContactStorage>();
         auto& Storage = *PreparedRestore->Storage;
         const auto StagePairs = [this](const std::vector<PreparedWorld::FPair>& Source,
-            const std::vector<uint64>& Keys, TArray<FDynamicContactPair>& Target)
+            const std::vector<PreparedWorld::U64>& Keys, TArray<FDynamicContactPair>& Target)
         {
             Target.Reserve(static_cast<int32>(Source.size()));
             for (std::size_t I = 0; I < Source.size(); ++I)
