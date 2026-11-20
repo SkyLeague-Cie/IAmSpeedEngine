@@ -158,7 +158,7 @@ public:
     {
         if (Width > 8 || Width > Remaining()) return false;
         Out = 0;
-        for (std::size_t I = 0; I < Width; ++I) Out |= U64(Data[At++]) << (I * 8);
+        for (std::size_t I = 0; I < Width; ++I) Out |= static_cast<U64>(Data[At++]) << (I * 8);
         return true;
     }
     template<class T> bool Float(T& Out) noexcept
@@ -280,7 +280,7 @@ inline std::optional<FContactIndexes> BuildContactIndexes(const FParsedWorld& Wo
             if (!A || !B || A == B || A->NativeObjectId == B->NativeObjectId) return {};
             const auto Low = A->NativeObjectId < B->NativeObjectId ? A->NativeObjectId : B->NativeObjectId;
             const auto High = A->NativeObjectId < B->NativeObjectId ? B->NativeObjectId : A->NativeObjectId;
-            const U64 Key = (U64(Low) << 32) | High;
+            const U64 Key = (static_cast<U64>(Low) << 32) | High;
             if (!Seen.insert(Key).second) return {};
             Index.emplace(Key, Keys.size()); Keys.push_back(Key);
             if (Item.second) { Out.DynamicByBody[Low].insert(Key); Out.DynamicByBody[High].insert(Key); }

@@ -106,7 +106,7 @@ struct FReader
     {
         if (At > Size || Count > Size - At) { Good = false; return 0; }
         U64 V = 0;
-        for (unsigned N = 0; N < Count; ++N) V |= U64(Data[At++]) << (N * 8);
+        for (unsigned N = 0; N < Count; ++N) V |= static_cast<U64>(Data[At++]) << (N * 8);
         return V;
     }
 };

@@ -162,7 +162,7 @@ inline std::optional<FComponentValues> Decode(const std::vector<Byte>& B, const 
     return R.Remaining() == 0 && Valid(O) ? std::optional<FComponentValues>(std::move(O)) : std::nullopt;
 }
 inline U64 ConstraintPairKey(U32 SourceObjectId, U32 OtherObjectId) noexcept
-{ return (U64(std::max(SourceObjectId, OtherObjectId)) << 32) | std::min(SourceObjectId, OtherObjectId); }
+{ return (static_cast<U64>(std::max(SourceObjectId, OtherObjectId)) << 32) | std::min(SourceObjectId, OtherObjectId); }
 
 // Process-local memory access declaration. No pointer is serialized. Every
 // participant must supply its WHOLE write footprints and typed read-only config
