@@ -55,7 +55,7 @@ public:
     // and causal FastSimulation remain refused until joined by a real coordinator.
     std::optional<FGroupReplayToken> PrepareGroupRetainedReplayStart(const FGroupReplayRequest& R)
     {
-        if (!GroupReplayLane() || ReplayGroup || ResumeGroup || Terminal || Pending || Waiting || Replaying
+        if (!GroupReplayLane() || ReplayGroup || ResumeGroup || Terminal || Pending || FrozenRequestedFrame || Waiting || Replaying
             || Sessions.empty() || R.WorkerGeneration != WorkerGeneration || R.RegistryVersion != View->Version
             || R.Sessions.size() != Sessions.size() || R.First > R.Last || R.Last >= R.LiveNext
             || R.Last - R.First >= History.size()) return {};

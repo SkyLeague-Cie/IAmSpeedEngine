@@ -61,7 +61,7 @@ private:
 public:
     std::optional<FGroupResumeToken> PrepareGroupResumeAtBoundary(const FGroupResumeRequest& R)
     {
-        if (!GroupResumeLane() || ResumeGroup || ReplayGroup || Terminal || Pending || Waiting || Replaying || Sessions.empty()
+        if (!GroupResumeLane() || ResumeGroup || ReplayGroup || Terminal || Pending || FrozenRequestedFrame || Waiting || Replaying || Sessions.empty()
             || R.WorkerGeneration != WorkerGeneration || R.RegistryVersion != View->Version
             || !R.ResumeGeneration || R.Sessions.size() != Sessions.size()) return {};
         try

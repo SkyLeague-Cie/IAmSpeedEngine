@@ -12,6 +12,10 @@ public class IAmSpeed : ModuleRules
 			// returning to UE. Module-wide unwind/codegen policy, validated separately
 			// on each supported target; not an input-only compiler switch.
 			bEnableExceptions = true;
+        if (Target.Platform == UnrealTargetPlatform.Win64)
+        {
+            PublicSystemLibraries.AddRange(new string[] { "ws2_32.lib", "bcrypt.lib" });
+        }
 		// Link the OS acquisition API directly; no Unreal input dispatch module
 		// or render-frame polling participates in this producer.
 		if (Target.Platform == UnrealTargetPlatform.Win64 && Target.Type != TargetType.Server)

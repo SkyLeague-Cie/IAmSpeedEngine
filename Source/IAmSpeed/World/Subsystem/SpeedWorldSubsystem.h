@@ -1,7 +1,7 @@
 // Fill out your copyright notice in the Description page of Project Settings.
 
 #pragma once
-
+#include <memory>
 #include "CoreMinimal.h"
 #include "Subsystems/WorldSubsystem.h"
 #include "IAmSpeed/SubBodies/SSubBody.h"
@@ -21,7 +21,7 @@ namespace Speed { class FFramePointerRegistry; }
 #endif
 class USolidSubBody;
 struct FCanonicalFrameContext;
-namespace Speed::Input::V2 { struct FRegistryFrame; struct FInputRegistryView; class FInputSessionRegistry; }
+namespace Speed::Input::V2 { struct FRegistryFrame; struct FInputRegistryView; struct FSessionDescriptor; class FInputSessionRegistry; class FNativeRequestedBindingV2; }
 
 enum class ECanonicalRunControlState : uint8
 {
@@ -82,6 +82,8 @@ class IAMSPEED_API USpeedWorldSubsystem : public UWorldSubsystem
 	friend class FSkyReplayLiveFreeplayHelpers01621Test;
 	friend class FIAmSpeedProducedInputWorkerOrderTest;
 	friend class FIAmSpeedNativeCarsCamera1217;
+    friend class FIAmSpeedNativeRequestedRegistry;
+    friend class FIAmSpeedNativeRequestedPreparationV2Test;
  friend class FIAmSpeedNativeAnalyticContacts1221;
 	friend class FIAmSpeedNativeAnalyticGrounded1368;
  friend class FIAmSpeedNativeAnalyticEightCars1534;
@@ -128,6 +130,13 @@ public:
 	bool RetireInputProcessingOnWorker();
 	bool ServiceInputRetirementsAtBoundary();
 	bool InstallCanonicalInputs(const Speed::Input::V2::FRegistryFrame& Frame);
+    /** Owner-lane validation only. Native admission is issued by the driver. */
+    bool ValidateRequestedNetworkBinding(const Speed::Input::V2::FSessionDescriptor& Binding) const;
+    const ISpeedComponent* ResolveRequestedPreparationMappingV2(const Speed::Input::V2::FSessionDescriptor& Binding) const;
+    bool ClaimRequestedNetworkBindingV2(const Speed::Input::V2::FSessionDescriptor&,const std::shared_ptr<const Speed::Input::V2::FNativeRequestedBindingV2>&);
+    bool RetireRequestedNetworkBindingV2(const Speed::Input::V2::FSessionDescriptor&,const std::shared_ptr<const Speed::Input::V2::FNativeRequestedBindingV2>&);
+    bool ValidateRequestedNetworkBindingForFrameV2(const Speed::Input::V2::FSessionDescriptor&,const std::shared_ptr<const Speed::Input::V2::FNativeRequestedBindingV2>&)const;
+    bool ValidateRequestedNetworkBindings(const Speed::Input::V2::FInputRegistryView& View) const;
 	bool StageCanonicalScenarioInputs(const FCanonicalFrameContext& Context,
 		Speed::Input::V2::FInputSessionRegistry& Registry);
 	bool PrepareCanonicalInputs(const FCanonicalFrameContext& Context);
@@ -197,6 +206,8 @@ public:
 		uint64 SourceId) const;
     void Step(const float& Dt, const float& SimTime, const unsigned int& Frame);
 private:
+    friend class ASpeedPhysicsSimulation;
+    bool PrepareRequestedNetworkAdmissionBoundary();
 #if !UE_BUILD_SHIPPING
     uint64 TestingPreparingFrame=MAX_uint64;
 #endif

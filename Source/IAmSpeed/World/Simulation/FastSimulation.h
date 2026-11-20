@@ -8,6 +8,9 @@ UCLASS()
 class IAMSPEED_API AFastSimulation final : public ASpeedPhysicsSimulation
 {
 	GENERATED_BODY()
+protected:
+    bool SupportsRequestedV2FrameControl()const override{return true;}
+public:
 
 public:
 	bool AllowsCameraPresentation() const override { return false; }

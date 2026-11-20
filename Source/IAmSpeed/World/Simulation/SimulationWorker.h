@@ -52,7 +52,9 @@ enum class ESimulationWorkerResult : uint8
     TerminalRsResponseStopped, // One proved first Rs response only; no full frame or rolling admission.
     TerminalRsResponseSyncStopped, // One actual response plus body synchronization; no next sweep/fullframe.
     TerminalPostSyncRsCaptureStopped, // Actual second sphere query captured after response1/sync; no advance2/full frame.
+    NeedsOwnerBoundary, // Control only: no terminal result or network wait.
 };
+static_assert(uint8(ESimulationWorkerResult::NeedsOwnerBoundary)==13,"Native boundary control appends value13");
 static_assert(uint8(ESimulationWorkerResult::TerminalPostSyncRsCaptureStopped)==12,"Post-sync Rs capture result wire value must stay12");
 static_assert(uint8(ESimulationWorkerResult::TerminalRsResponseSyncStopped)==11,"Rs response-sync result wire value must stay11");
 static_assert(uint8(ESimulationWorkerResult::TerminalRsResponseStopped)==10,"Rs response result wire value must stay10");
@@ -148,6 +150,11 @@ public:
 #endif
 private:
     friend class ASpeedPhysicsSimulation;
+    // True only inside this worker's actual Run->ServiceBoundary invocation;
+    // a thread id or a paused flag does not establish this native boundary.
+    bool OwnsCurrentInputBoundary() const;
+    // Only the actual Run->Work invocation may freeze native requested inputs.
+    bool OwnsCurrentCanonicalWork() const;
     friend class FIAmSpeedLiveBoundary01621Test;
     bool RequestLiveBoundaryControl(const std::shared_ptr<Speed::SimulationBoundary::Detail::FLiveBoundaryControl>& Control);
     bool OwnsAcknowledgedLiveBoundary(const std::shared_ptr<Speed::SimulationBoundary::Detail::FLiveBoundaryControl>& Control) const;

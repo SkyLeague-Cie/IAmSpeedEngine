@@ -1,7 +1,19 @@
 #include "SpeedPhysicsSimulation.h"
+#include "CanonicalFrameContext.h"
 #include "Misc/ScopeLock.h"
 #include "IAmSpeed/Netcode/remote-input/ExactRemoteDedicatedHost.h"
 #include "IAmSpeed/World/Subsystem/SpeedWorldSubsystem.h"
+
+namespace
+{
+bool NeutralizeLegacyBindings(USpeedWorldSubsystem* World,const Speed::Input::V2::FInputRegistryView& View)
+{
+    auto Legacy=View;
+    Legacy.Bindings.erase(std::remove_if(Legacy.Bindings.begin(),Legacy.Bindings.end(),
+        [](const auto& B){return B.Network&&B.Network->Version==2;}),Legacy.Bindings.end());
+    return World&&World->NeutralizeCanonicalInputs(Legacy);
+}
+}
 
 Speed::Input::V2::ECommandAdmission ASpeedPhysicsSimulation::SubmitInputSessionCommand(
     const Speed::Input::V2::FBoundaryCommandDescriptor& Command,
@@ -12,10 +24,24 @@ Speed::Input::V2::ECommandAdmission ASpeedPhysicsSimulation::SubmitInputSessionC
 {
     check(IsInGameThread());
     using namespace Speed::Input::V2;
+    if(Command.Binding.Network||Command.NativeV2Control)return ECommandAdmission::Rejected;
     if (GetActiveExecutionMode() != ESimulationExecutionMode::IAmSpeedThread
         || bInputOwnerRetired.Load() || bOwnedWorkerTerminal.Load()
         || Command.WorkerGeneration != InputWorkerGeneration) return ECommandAdmission::Rejected;
     FScopeLock Lock(&InputSessionAdmissionMutex);
+    if(Command.Operation==EBoundaryOperation::Detach)
+    {
+        // Reject before the legacy pause request, including a V2 Bind still
+        // queued or awaiting its native claim. A stale generic control must
+        // never pause an independent requested stream.
+        std::lock_guard<std::mutex> Records(InputSessionCommands->Gate);
+        for(const auto& P:InputSessionCommands->Records)
+        {
+            const auto& B=P.second.Command;
+            if(B.Operation==EBoundaryOperation::Bind&&B.Binding.Id==Command.Session
+                &&B.Binding.Network&&B.Binding.Network->Version==2)return ECommandAdmission::Rejected;
+        }
+    }
     if (Command.Operation == EBoundaryOperation::PauseAll || Command.Operation == EBoundaryOperation::Detach)
     {
         bOwnedSimulationPaused.Store(true);
@@ -68,6 +94,27 @@ bool ASpeedPhysicsSimulation::ConfigureOriginalDeviceRemoteInputHost(uint32 Requ
     return true;
 }
 
+Speed::Input::V2::ECommandAdmission ASpeedPhysicsSimulation::SubmitRequestedNetworkInputSession(
+    const Speed::Input::V2::FBoundaryCommandDescriptor& Command,
+    std::shared_ptr<Speed::Netcode::FNetworkRequestedInputService> Service)
+{
+    check(IsInGameThread());
+    using namespace Speed::Input::V2;
+    if(!Service||!Command.Binding.Network||Command.Binding.Network->Version!=1||Command.Operation!=EBoundaryOperation::Bind
+        ||GetActiveExecutionMode()!=ESimulationExecutionMode::IAmSpeedThread
+        ||!bPublishCompletedWorldInput||!CompletedPublicationSource||!NativeInputAdmissionOwner
+        ||bInputOwnerRetired.Load()||bOwnedWorkerTerminal.Load()||bCanonicalPublicationTerminal.Load()
+        ||Command.WorkerGeneration!=InputWorkerGeneration)return ECommandAdmission::Rejected;
+    FScopeLock Lock(&InputSessionAdmissionMutex);
+    if(PendingRequestedNetworkSessions.size()>=16)return ECommandAdmission::Rejected;
+    try{PendingRequestedNetworkSessions.push_back({Command,std::move(Service)});}
+    catch(...){return ECommandAdmission::Rejected;}
+    const auto Result=InputSessionCommands->Submit(Command);
+    if(Result!=ECommandAdmission::Enqueued)PendingRequestedNetworkSessions.pop_back();
+    else bInputSessionAdmissionRequested.Store(true);
+    return Result;
+}
+
 std::optional<Speed::Input::V2::FBoundaryReceipt> ASpeedPhysicsSimulation::ReadInputSessionReceipt(uint64 Id) const
 { return InputSessionCommands->Read(Id); }
 
@@ -87,6 +134,12 @@ std::shared_ptr<const Speed::FCompletedSimulationPublication> ASpeedPhysicsSimul
     if (bOwnedSimulationPaused.Load() || bInputOwnerRetired.Load()
         || bCanonicalPublicationTerminal.Load() || bOwnedWorkerTerminal.Load()) return {};
     return Frame;
+}
+
+std::shared_ptr<const Speed::FNativeRequestedInputObservation> ASpeedPhysicsSimulation::ReadNativeRequestedInputObservation() const
+{
+    if(bInputOwnerRetired.Load()||bOwnedWorkerTerminal.Load()||bCanonicalPublicationTerminal.Load())return {};
+    return PublishedRequestedInputObservation.load(std::memory_order_seq_cst);
 }
 
 ESimulationBoundaryResult ASpeedPhysicsSimulation::ServiceInputSessionBoundary(bool bPauseRequested)
@@ -110,8 +163,29 @@ ESimulationBoundaryResult ASpeedPhysicsSimulation::ServiceInputSessionBoundary(b
         if (!InputSessionRegistry)
             InputSessionRegistry = std::make_unique<FInputSessionRegistry>(InputSessionCommands, InputWorkerGeneration,
                 std::vector<FInputSessionRegistry::FJournalService>{}, RequiredExactRemoteInputSessions
-                    ? ConfiguredRemoteInputAdmission : EExactRemoteAdmission::Closed);
+                    ? ConfiguredRemoteInputAdmission : EExactRemoteAdmission::Closed,NativeInputAdmissionOwner);
+        // Complete-context comparison is independent of the V1 bind queue.
+        // It cannot issue FNativeNetworkAdmission or construct a source.
+        uint64 NativeCutoff=0;
+        {
+            FScopeLock Lock(&InputSessionAdmissionMutex);std::lock_guard<std::mutex> Records(InputSessionCommands->Gate);
+            const auto& Queue=InputSessionCommands->Queue;
+            const bool Native=InputSessionRegistry->HasNativeV2Sessions()||std::any_of(Queue.begin(),Queue.end(),[&](auto Id)
+            {const auto& C=InputSessionCommands->Records.at(Id).Command;return C.NativeV2Control||(C.Binding.Network&&C.Binding.Network->Version==2);});
+            NativeCutoff=Native&&Queue.size()>32?InputSessionCommands->Records.at(Queue[31]).EnqueueOrdinal:InputSessionCommands->EnqueueOrdinal;
+        }
+        const auto NeutralizeV2=[this](const auto& D,const auto& B){return SpeedWorldSubsystem->RetireRequestedNetworkBindingV2(D,B);};
+        if(!InputSessionRegistry->ServiceNativeV2Retirements(NeutralizeV2))throw std::runtime_error("native V2 retirement failed");
+        ServiceRequestedNetworkPreparationV2AtBoundary();
+        ServiceRequestedNetworkBindsV2AtBoundary(NativeCutoff);
         bool Ready = false;
+        {FScopeLock Lock(&InputSessionAdmissionMutex);bPauseRequested=bPauseRequested||bOwnedSimulationPaused.Load();}
+        const auto Before=InputSessionRegistry->ReadRegistry();
+        if(bPauseRequested&&(!bInputNeutralizedDuringPause||NeutralizedInputRegistryVersion!=Before->Version))
+        {
+            if(!NeutralizeLegacyBindings(SpeedWorldSubsystem,*Before))throw std::runtime_error("input boundary neutralization rejected");
+            bInputNeutralizedDuringPause=true;NeutralizedInputRegistryVersion=Before->Version;
+        }
         {
             FScopeLock Lock(&InputSessionAdmissionMutex);
             bPauseRequested = bPauseRequested || bOwnedSimulationPaused.Load();
@@ -121,19 +195,35 @@ ESimulationBoundaryResult ASpeedPhysicsSimulation::ServiceInputSessionBoundary(b
             if (bInputCommandBoundaryDirty || bPauseRequested)
                 PublishedCompletedWorldInput.store({}, std::memory_order_seq_cst);
             bInputCommandBoundaryDirty = false;
-            const auto Before = InputSessionRegistry->ReadRegistry();
-            // Detach must not erase the actor address before its last held values
-            // and pending input effects have been neutralized on this lane.
-            if (bPauseRequested && (!bInputNeutralizedDuringPause || NeutralizedInputRegistryVersion != Before->Version))
-            {
-                if (!SpeedWorldSubsystem || !SpeedWorldSubsystem->NeutralizeCanonicalInputs(*Before))
-                    throw std::runtime_error("input boundary neutralization rejected");
-                bInputNeutralizedDuringPause = true; NeutralizedInputRegistryVersion = Before->Version;
-            }
 
             for (const auto& Journal : PendingInputJournals)
                 if (!InputSessionRegistry->RegisterJournalAtBoundary(Journal)) throw std::runtime_error("input journal rejected");
             PendingInputJournals.clear();
+            if(!PendingRequestedNetworkSessions.empty())
+            {
+                // This capability is issued only in Run->ServiceBoundary of
+                // the actual owned worker, after native world/body validation.
+                if(!SimulationWorker||!SimulationWorker->OwnsCurrentInputBoundary()
+                    ||!NativeInputAdmissionOwner||!SpeedWorldSubsystem||SpeedWorldSubsystem->GetWorld()!=GetWorld())
+                    throw std::runtime_error("native requested input boundary absent");
+                if(!SpeedWorldSubsystem->PrepareRequestedNetworkAdmissionBoundary())
+                    throw std::runtime_error("native requested input registry unavailable");
+                std::vector<FPendingRequestedNetworkSession> Later;
+                for(const auto& P:PendingRequestedNetworkSessions)
+                {
+                    {std::lock_guard<std::mutex> Records(InputSessionCommands->Gate);const auto I=InputSessionCommands->Records.find(P.Command.Id);
+                        if(I!=InputSessionCommands->Records.end()&&I->second.EnqueueOrdinal>NativeCutoff){Later.push_back(P);continue;}}
+                    if(P.Command.WorkerGeneration!=InputWorkerGeneration||!P.Command.Binding.Network
+                        ||P.Command.Binding.Network->WorldGeneration!=InputWorkerGeneration
+                        ||!SpeedWorldSubsystem->ValidateRequestedNetworkBinding(P.Command.Binding))continue;
+                    std::shared_ptr<const FInputSessionRegistry::FNativeNetworkAdmission> Admission(
+                        new FInputSessionRegistry::FNativeNetworkAdmission(NativeInputAdmissionOwner,P.Command,P.Service));
+                    // Failure leaves no mutable source. The command is rejected
+                    // by Bind when its required native admission is absent.
+                    InputSessionRegistry->RegisterNetworkAdmissionAtBoundary(std::move(Admission));
+                }
+                PendingRequestedNetworkSessions=std::move(Later);
+            }
             for (const auto& Observation : PendingInputObservations)
             {
                 const auto Old = InputObservations.find(Observation.first);
@@ -141,13 +231,15 @@ ESimulationBoundaryResult ASpeedPhysicsSimulation::ServiceInputSessionBoundary(b
                 InputObservations[Observation.first] = Observation.second;
             }
             PendingInputObservations.clear();
-            Ready = InputSessionRegistry->ServiceBoundary(CanonicalNumFrame);
+            Ready = InputSessionRegistry->ServiceBoundary(CanonicalNumFrame,NativeCutoff);
         }
+        if(!InputSessionRegistry->ServiceNativeV2Claims([this](const auto& D,const auto& B){return SpeedWorldSubsystem->ClaimRequestedNetworkBindingV2(D,B);},NeutralizeV2))
+            throw std::runtime_error("native V2 claim/retirement failed");
         const auto View = InputSessionRegistry->ReadRegistry();
         PublishedInputRegistry.store(View, std::memory_order_seq_cst);
         if (bPauseRequested && (!bInputNeutralizedDuringPause || NeutralizedInputRegistryVersion != View->Version))
         {
-            if (!SpeedWorldSubsystem || !SpeedWorldSubsystem->NeutralizeCanonicalInputs(*View))
+            if (!NeutralizeLegacyBindings(SpeedWorldSubsystem,*View))
                 throw std::runtime_error("input boundary neutralization rejected");
             bInputNeutralizedDuringPause = true; NeutralizedInputRegistryVersion = View->Version;
         }
@@ -169,10 +261,38 @@ ESimulationBoundaryResult ASpeedPhysicsSimulation::ServiceInputSessionBoundary(b
             { bExactRemoteInputWaiting = true; return ESimulationBoundaryResult::Waiting; }
             if (bExactRemoteInputWaiting) { OnOwnedInputWaitEnded(); bExactRemoteInputWaiting = false; }
         }
+        // This observation is made only after the actual owned boundary has
+        // admitted the service and native mapping. It never polls/chooses input.
+        if(Ready&&InputSessionRegistry->CanObserveRequestedBindingsAtBoundary())
+        {
+            if(!SimulationWorker||!SimulationWorker->OwnsCurrentInputBoundary()
+                ||!CompletedPublicationSource||CompletedPublicationSource->WorkerGeneration()!=InputWorkerGeneration
+                ||!SpeedWorldSubsystem||!ValidateRequestedBindingsAtBoundary())
+                PublishedRequestedInputObservation.store({},std::memory_order_seq_cst);
+            else
+            {
+                // ReadRegistry is a phase projection. Retain the exact immutable
+                // internal view that future completed FRegistryFrames will use.
+                const auto ExactRegistry=InputSessionRegistry->View;
+                const auto Old=PublishedRequestedInputObservation.load(std::memory_order_seq_cst);
+                if(!Old||Old->Source()!=CompletedPublicationSource||Old->RegistryAtBoundary()!=ExactRegistry)
+                {
+                    const auto Context=MakeCanonicalFrameContext(CanonicalNumFrame);
+                    std::shared_ptr<const Speed::FNativeRequestedInputObservation> Captured(
+                        new Speed::FNativeRequestedInputObservation(CompletedPublicationSource,ExactRegistry,
+                            InputSessionRegistry->CaptureRequestedBindingsAtBoundary(),CanonicalNumFrame,Context.PhysicalDeltaTime));
+                    PublishedRequestedInputObservation.store(std::move(Captured),std::memory_order_seq_cst);
+                }
+            }
+        }
+        else PublishedRequestedInputObservation.store({},std::memory_order_seq_cst);
+        ServiceRequestedInputPresentationsAtBoundary();
         return Ready ? ESimulationBoundaryResult::Ready : ESimulationBoundaryResult::Waiting;
     }
     catch (...)
     {
+        PublishedRequestedInputObservation.store({},std::memory_order_seq_cst);
+        PublishedCompletedWorldInput.store({}, std::memory_order_seq_cst);
         bOwnedWorkerTerminal.Store(true);
         bCanonicalPublicationTerminal.Store(true);
         return ESimulationBoundaryResult::Failed;
@@ -181,7 +301,19 @@ ESimulationBoundaryResult ASpeedPhysicsSimulation::ServiceInputSessionBoundary(b
 
 void ASpeedPhysicsSimulation::CloseInputSessionsOnWorker()
 {
+    if(RequestedPreparationV2)RequestedPreparationV2->CloseOnNativeOwner();
+    CloseRequestedInputPresentationsOnWorker();
+    PublishedRequestedInputObservation.store({},std::memory_order_seq_cst);
     PublishedCompletedWorldInput.store({}, std::memory_order_seq_cst);
+    bool NativeRetired=true;
+    if(InputSessionRegistry)
+    {
+        InputSessionRegistry->AbortFrame();
+        InputSessionRegistry->MarkNativeV2Retirements(Speed::Input::V2::ERequestedRetirementReasonV2::WorkerClose);
+        NativeRetired=InputSessionRegistry->ServiceNativeV2Retirements([this](const auto& D,const auto& B)
+            {return SpeedWorldSubsystem&&SpeedWorldSubsystem->RetireRequestedNetworkBindingV2(D,B);});
+    }
+    if(!NativeRetired)bCanonicalPublicationTerminal.Store(true);
     const bool AdaptersRetired = !SpeedWorldSubsystem || SpeedWorldSubsystem->RetireInputProcessingOnWorker();
     if (!AdaptersRetired) bCanonicalPublicationTerminal.Store(true);
     using namespace Speed::Input::V2;
@@ -192,7 +324,7 @@ void ASpeedPhysicsSimulation::CloseInputSessionsOnWorker()
         const bool InputsNeutralized = !View || !SpeedWorldSubsystem || SpeedWorldSubsystem->NeutralizeCanonicalInputs(*View);
         if (!InputsNeutralized) bCanonicalPublicationTerminal.Store(true);
         const bool LedgerRetired = InputSessionRegistry->CloseWorkerLedger();
-        const bool Retired = LedgerRetired && AdaptersRetired && InputsNeutralized;
+        const bool Retired = NativeRetired && LedgerRetired && AdaptersRetired && InputsNeutralized;
         PublishedInputRegistry.store(InputSessionRegistry->ReadRegistry(), std::memory_order_seq_cst);
         InputSessionRegistry.reset();
         for (const auto& Observation : InputObservations) Observation.second->Deactivate();
@@ -202,7 +334,7 @@ void ASpeedPhysicsSimulation::CloseInputSessionsOnWorker()
         {
             FScopeLock Lock(&InputSessionAdmissionMutex);
             for (const auto& Observation : PendingInputObservations) Observation.second->Deactivate();
-            PendingInputObservations.clear(); PendingInputJournals.clear();
+            PendingInputObservations.clear(); PendingInputJournals.clear(); PendingRequestedNetworkSessions.clear();PendingNativeV2Binds.clear();
         }
     }
 }

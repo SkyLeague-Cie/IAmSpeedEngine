@@ -3,12 +3,17 @@
 #include "../Netcode/remote-input/ExactRemoteInputIngress.h"
 
 #include "SameFrameInputOwner.h"
+#include "RequestedNetworkSessionDescriptor.h"
+#include "NativeRequestedLifecycleV2.h"
+#include "IAmSpeed/Netcode/transport/NetworkRequestedInputSource.h"
 #include "RawAcquisitionJournal.h"
 #include "Testing/TestInputProducerV2.h"
 #include <deque>
 #include <map>
 #include <set>
+#include <functional>
 
+class ASpeedPhysicsSimulation;
 namespace Speed::PreparationPrefix {class FClosedSourceProducer;}
 namespace Speed::Input::V2
 {
@@ -31,6 +36,7 @@ struct FSessionDescriptor
     std::vector<FInputFrame> Scenario;
     bool EnableDesktop=false;
     bool AllowScenarioAppend = false; // Test owner only, never a GT producer callback.
+    std::optional<FRequestedNetworkSessionDescriptor> Network;
 };
 enum class EBoundaryOperation : std::uint8_t { Bind, PauseAll, Resume, Detach, RetireAll };
 struct FBoundaryCommandDescriptor
@@ -38,8 +44,9 @@ struct FBoundaryCommandDescriptor
     std::uint64_t Id = 0, WorkerGeneration = 0, RegistryVersion = 0, Session = 0, Epoch = 0, ResumeGeneration = 0;
     EBoundaryOperation Operation = EBoundaryOperation::Bind;
     FSessionDescriptor Binding;
+    std::optional<FRequestedControlTargetV2> NativeV2Control;
 };
-enum class EBoundaryStatus : std::uint8_t { Pending, WaitingForBaseline, Applied, Rejected, TerminalFailure };
+enum class EBoundaryStatus : std::uint8_t { Pending, WaitingForBaseline, Applied, Rejected, TerminalFailure,ConstructedPendingClaim,ConstructedThenRetired,Retired };
 // Only an explicit optimistic-version conflict is eligible for controller retry.
 enum class EBoundaryRejectionReason : std::uint8_t { Unspecified, RegistryVersionMismatch };
 enum class ESessionPhase : std::uint8_t { Active, Paused, WaitingBaseline, CancelPending, Retired };
@@ -61,6 +68,7 @@ struct FBoundaryReceipt
     std::vector<FSessionOutcome> Sessions;
     EBoundaryRejectionReason RejectionReason = EBoundaryRejectionReason::Unspecified;
     FBoundaryBatchObservation Boundary;
+    std::optional<FRequestedLifecycleReceiptV2> NativeV2;
 };
 enum class ECommandAdmission : std::uint8_t { Enqueued, Duplicate, Rejected };
 struct FRegistryLimits
@@ -73,6 +81,7 @@ struct FRegistryLimits
 class FInputSessionCommands final
 {
     friend class FInputSessionRegistry;
+    friend class ::ASpeedPhysicsSimulation;
     friend class Speed::PreparationPrefix::FClosedSourceProducer;
 public:
     explicit FInputSessionCommands(FRegistryLimits InLimits = {}) : Limits(InLimits), Publisher(std::this_thread::get_id()) {}
@@ -87,15 +96,18 @@ public:
             std::lock_guard<std::mutex> Lock(Gate);
             const auto Old = Records.find(C.Id);
             if (Old != Records.end()) return Old->second.Digest == Digest(*Bytes) && Old->second.Bytes == *Bytes ? ECommandAdmission::Duplicate : ECommandAdmission::Rejected;
-            if (C.Id <= HighId || Queue.size() >= Limits.Commands || Records.size() >= Limits.Receipts || StopRequested)
+            const bool NativeV2=C.NativeV2Control||(C.Binding.Network&&C.Binding.Network->Version==2);
+            if(NativeV2&&Queue.size()>=32)return ECommandAdmission::Rejected;
+            if (C.Id <= HighId || Queue.size() >= Limits.Commands || Records.size() >= Limits.Receipts || StopRequested||EnqueueOrdinal==UINT64_MAX)
                 return ECommandAdmission::Rejected;
             FRecord R{C, std::move(*Bytes), {C.Id, C.WorkerGeneration, C.RegistryVersion, C.ResumeGeneration, EBoundaryStatus::Pending, {}}};
             R.Digest = Digest(R.Bytes);
+            R.EnqueueOrdinal=EnqueueOrdinal+1;
             R.Receipt.Sessions.reserve(Limits.Sessions);
             Queue.push_back(C.Id);
             try { Records.emplace(C.Id, std::move(R)); }
             catch (...) { Queue.pop_back(); throw; }
-            HighId = C.Id; return ECommandAdmission::Enqueued;
+            HighId = C.Id;++EnqueueOrdinal; return ECommandAdmission::Enqueued;
         }
         catch (...) { return ECommandAdmission::Rejected; }
     }
@@ -111,6 +123,7 @@ public:
         if (std::this_thread::get_id()!=Publisher) return false;
         std::lock_guard<std::mutex> Lock(Gate);
         const auto I=Records.find(Id);
+        if(I!=Records.end()&&(I->second.Command.NativeV2Control||(I->second.Command.Binding.Network&&I->second.Command.Binding.Network->Version==2)))return false;
         if (I==Records.end() || I->second.Receipt.Status==EBoundaryStatus::Pending
             || I->second.Receipt.Status==EBoundaryStatus::WaitingForBaseline) return false;
         Records.erase(I); return true;
@@ -135,7 +148,7 @@ public:
 private:
     static std::uint64_t Digest(const std::vector<std::uint8_t>& Bytes) noexcept
     { std::uint64_t H = 14695981039346656037ull; for (const auto B : Bytes) { H ^= B; H *= 1099511628211ull; } return H; }
-    struct FRecord { FBoundaryCommandDescriptor Command; std::vector<std::uint8_t> Bytes; FBoundaryReceipt Receipt; std::uint64_t Digest = 0; };
+    struct FRecord { FBoundaryCommandDescriptor Command; std::vector<std::uint8_t> Bytes; FBoundaryReceipt Receipt; std::uint64_t Digest = 0,EnqueueOrdinal=0; };
     static std::optional<std::vector<std::uint8_t>> Canonical(const FBoundaryCommandDescriptor& C, const FRegistryLimits& L)
     {
         if (!L.Sessions || !L.Actors || !L.Commands || !L.Receipts || !L.Frames || !L.DescriptorBytes) return {};
@@ -143,7 +156,17 @@ private:
         std::vector<std::uint8_t> B;
         const auto Add = [&](std::uint64_t V) { if (B.size() > L.DescriptorBytes || L.DescriptorBytes - B.size() < 8) throw std::length_error("descriptor"); for (unsigned I = 0; I < 8; ++I) B.push_back(std::uint8_t(V >> (I * 8))); };
         Add(3); Add(C.Id); Add(C.WorkerGeneration); Add(C.RegistryVersion); Add(C.Session); Add(C.Epoch); Add(C.ResumeGeneration); Add(std::uint64_t(C.Operation));
+        if(C.NativeV2Control)
+        {
+            const auto& T=*C.NativeV2Control;
+            if(!T.IsValid()||C.Operation!=EBoundaryOperation::Detach||C.Binding.Network||C.Session!=T.Session||C.Epoch!=T.Epoch)return {};
+            Add(0x4e455443544c32ULL);Add(2);Add(T.Session);Add(T.Epoch);Add(T.Service);Add(T.SourceGeneration);Add(T.SourceInstance);
+        }
         const auto& D = C.Binding;
+        if(D.Network&&(!D.Network->IsValid()||D.Kind!=EProducerContract::ExactRemote||!D.Contract
+            ||D.Producer||D.Controller||D.Journal||D.EnableDesktop||D.AllowScenarioAppend||D.ResumeRearmMask
+            ||!D.Scenario.empty()||D.Actors.size()!=1||D.Actors[0].Id!=D.Network->LocalComponent
+            ||D.Actors[0].Generation!=D.Network->LocalComponentGeneration))return {};
         Add(D.Id); Add(D.Epoch); Add(D.Controller); Add(D.Producer); Add(D.Journal); Add(D.First); Add(std::uint64_t(D.Kind));
         Add(D.Contract ? D.Contract->GetFingerprint().size() : 0);
         if (D.Contract) for (const auto V : D.Contract->GetFingerprint()) Add(V);
@@ -152,6 +175,9 @@ private:
         // Preserve legacy identities. Explicit Desktop adds its versioned
         // contract marker before the bounded actor count (never this value).
         if(D.EnableDesktop){Add(0x44534b544f505631ULL);Add(FDesktopPublication::ContractFingerprint);}
+        // No presence byte for legacy descriptors: their canonical bytes stay
+        // identical. The optional network extension has a distinct schema tag.
+        if(D.Network)D.Network->AppendCanonical(Add);
         Add(D.Actors.size()); for (const auto& A : D.Actors) { Add(A.Id); Add(A.Generation); }
         Add(D.AllowScenarioAppend); Add(D.Scenario.size());
         for (const auto& F : D.Scenario)
@@ -171,6 +197,7 @@ private:
     std::map<std::uint64_t, FRecord> Records;
     std::deque<std::uint64_t> Queue;
     std::uint64_t HighId = 0;
+    std::uint64_t EnqueueOrdinal=0;
     bool StopRequested = false;
 };
 
@@ -181,6 +208,14 @@ struct FInputRegistryView
     std::vector<FSessionDescriptor> Bindings;
     std::vector<FSessionOutcome> Phases; // Immutable boundary phase publication for independent AI controllers.
 };
+// Values copied from the actually bound immutable service on its native
+// registry owner. Public values alone do not authenticate a native admission.
+struct FRequestedNetworkBindingValues
+{
+    FSessionDescriptor Descriptor;
+    Netcode::FNetworkInputWorkerConfiguration Configuration;
+    FContractFingerprint OwnerBindingFingerprint;
+};
 struct FInstalledSessionInput
 {
     std::uint64_t Session = 0, Epoch = 0;
@@ -188,12 +223,16 @@ struct FInstalledSessionInput
     std::vector<FSessionActor> Actors;
     bool AlreadyAppliedAtInitialBoundary = false;
     std::optional<FActionValues> FilterBefore;
+    std::shared_ptr<const FRequestedInputConsumption> Requested;
+    std::optional<FRequestedNetworkSessionDescriptor> RequestedMapping;
+    std::shared_ptr<const FNativeRequestedBindingV2> NativeV2;
 };
 struct FRegistryFrame
 {
     FFrameNumber Frame = 0;
     std::shared_ptr<const FInputRegistryView> Registry;
     std::vector<FInstalledSessionInput> Inputs;
+    std::shared_ptr<const FNativeRequestedFrameAdmissionV2> NativeV2;
 };
 enum class ERegistryFrameFailure : std::uint8_t
 { None, PrepareAdmission, SessionInactive, OwnerPoll, PrepareException, InstallAdmission, TokenInstall, SnapshotRead, InputUnavailable };
@@ -213,10 +252,28 @@ struct FRegistryFrameFailure
 class FInputSessionRegistry final
 {
 public:
+    // Only the actual native simulation driver can issue this local admission.
+    // Commands carry inert IDs, never this object, a factory, or a UObject.
+    // Its identity is not a network identity or any permission to restore.
+    class FNativeNetworkAdmission final
+    {
+        friend class FInputSessionRegistry;
+        friend class ::ASpeedPhysicsSimulation;
+        FNativeNetworkAdmission(std::shared_ptr<const std::uint8_t> Key,FBoundaryCommandDescriptor C,
+            std::shared_ptr<Netcode::FNetworkRequestedInputService> S)
+            :OwnerKey(std::move(Key)),Command(std::move(C)),Service(std::move(S)){}
+        FNativeNetworkAdmission(std::shared_ptr<const std::uint8_t> Key,FBoundaryCommandDescriptor C,
+            std::shared_ptr<Netcode::FNetworkRequestedInputService> S,std::shared_ptr<const FNativeRequestedAgreementSealV2> Seal)
+            :OwnerKey(std::move(Key)),Command(std::move(C)),Service(std::move(S)),NativeV2(std::move(Seal)){}
+        const std::shared_ptr<const std::uint8_t> OwnerKey;
+        const FBoundaryCommandDescriptor Command;
+        const std::shared_ptr<Netcode::FNetworkRequestedInputService> Service;
+        const std::shared_ptr<const FNativeRequestedAgreementSealV2> NativeV2;
+    };
     struct FJournalService { std::uint64_t Id = 0; std::shared_ptr<FRawAcquisitionJournal> Journal; std::shared_ptr<FAIInputCommands> AI; std::shared_ptr<Netcode::FExactRemoteInputIngress> Remote; };
     FInputSessionRegistry(std::shared_ptr<FInputSessionCommands> InCommands, std::uint64_t Generation,
-        std::vector<FJournalService> InJournals = {}, EExactRemoteAdmission InRemoteAdmission = EExactRemoteAdmission::Closed)
-        : Commands(std::move(InCommands)), Worker(std::this_thread::get_id()), WorkerGeneration(Generation), RemoteAdmission(InRemoteAdmission), Journals(std::move(InJournals))
+        std::vector<FJournalService> InJournals = {}, EExactRemoteAdmission InRemoteAdmission = EExactRemoteAdmission::Closed,std::shared_ptr<const std::uint8_t> NativeOwnerKey={})
+        : Commands(std::move(InCommands)), Worker(std::this_thread::get_id()), WorkerGeneration(Generation), RemoteAdmission(InRemoteAdmission), Journals(std::move(InJournals)), NativeAdmissionOwner(std::move(NativeOwnerKey))
     {
         if (!Commands || !Generation) throw std::invalid_argument("registry");
         PublishView(std::make_shared<FInputRegistryView>(FInputRegistryView{0, Generation, false, {}}));
@@ -248,6 +305,9 @@ public:
         if (ResumeGroup && ResumeGroup->Finalized) return false;
         ResumeGroup.reset();
         AbortFrame();
+        // Native/game cancellation must have completed on the actual owner,
+        // outside Commands->Gate, before this data-only final ledger drain.
+        if(HasNativeV2Sessions())return false;
         std::lock_guard<std::mutex> Lock(Commands->Gate);
         Commands->StopRequested = true;
         const bool Retired = RetireAll();
@@ -261,12 +321,28 @@ public:
     // native device handles. Called only at a worker boundary before Bind.
     bool RegisterJournalAtBoundary(FJournalService Service)
     {
-        if (!IsWorker() || BoundaryMutationBlocked() || ResumeGroup || ReplayGroup || Pending || Terminal || !Service.Id || (unsigned(bool(Service.Journal))+unsigned(bool(Service.AI))+unsigned(bool(Service.Remote)) != 1 || (Service.Remote && !AdmitsOriginalDeviceRemote(RemoteAdmission)))) return false;
+        if (!IsWorker() || BoundaryMutationBlocked() || ResumeGroup || ReplayGroup || FrozenRequestedFrame || Pending || Terminal || !Service.Id || (unsigned(bool(Service.Journal))+unsigned(bool(Service.AI))+unsigned(bool(Service.Remote)) != 1 || (Service.Remote && !AdmitsOriginalDeviceRemote(RemoteAdmission)))) return false;
         for (const auto& J : Journals)
             if (J.Id == Service.Id || (J.Journal && J.Journal == Service.Journal) || (J.AI && J.AI == Service.AI) || (J.Remote && J.Remote == Service.Remote))
                 return J.Id == Service.Id && J.Journal == Service.Journal && J.AI == Service.AI && J.Remote == Service.Remote;
         if (Journals.size() >= Commands->Limits.Sessions) return false;
         Journals.push_back(std::move(Service)); return true;
+    }
+    bool RegisterNetworkAdmissionAtBoundary(std::shared_ptr<const FNativeNetworkAdmission> Admission)
+    {
+        if(!IsWorker()||FPresentationInputScope::IsActive()||Pending||FrozenRequestedFrame||Terminal||Replaying
+            ||!Admission||!NativeAdmissionOwner||Admission->OwnerKey!=NativeAdmissionOwner
+            ||!Admission->Service||!ValidNetworkAdmission(*Admission))return false;
+        const auto Id=Admission->Command.Id;const auto Old=NetworkAdmissions.find(Id);
+        if(Old!=NetworkAdmissions.end())return Old->second==Admission;
+        if(NetworkAdmissions.size()>=Commands->Limits.Sessions)return false;
+        for(const auto& P:NetworkAdmissions)
+            if(P.second->Service==Admission->Service
+                ||P.second->Command.Binding.Network->Service==Admission->Command.Binding.Network->Service)return false;
+        for(const auto& P:Sessions)
+            if(P.second.NetworkAdmission&&(P.second.NetworkAdmission->Service==Admission->Service
+                ||P.second.Description.Network->Service==Admission->Command.Binding.Network->Service))return false;
+        NetworkAdmissions.emplace(Id,std::move(Admission));return true;
     }
     bool AppendExactScenarioFrame(std::uint64_t Session, std::uint64_t Epoch,
         std::uint64_t Controller, const FInputFrame& Frame)
@@ -396,7 +472,7 @@ public:
             if (!Lock.owns_lock() || !View || !MaxDescriptorBytes ||
                 Sessions.size() > 1 || View->Bindings.size() > 1 ||
                 Commands->Records.size() > 1 || Commands->Queue.size() > 1 ||
-                !Journals.empty() || Replaying || !ReplayPlan.empty() ||
+                !Journals.empty() || !NetworkAdmissions.empty() || Replaying || !ReplayPlan.empty() ||
                 History.size() > Commands->Limits.Frames) return {};
             for (const auto& H : History) if (H) return {};
             std::size_t RemainingDescriptorBytes = MaxDescriptorBytes;
@@ -438,6 +514,7 @@ public:
             for (const auto& P : Sessions)
             {
                 const auto& S = P.second;
+                if(S.RequestedOwner||S.NetworkAdmission)return {};
                 FPreparationSessionReadValues V;
                 V.MapKey = P.first; V.Phase = S.Phase;
                 V.ResumeGeneration = S.ResumeGeneration; V.AcquisitionFence = S.AcquisitionFence;
@@ -465,9 +542,9 @@ private:
 public:
 
     // Called between transactions, including while the simulation is paused.
-    bool ServiceBoundary(std::optional<FFrameNumber> ActualWorkerFrame = std::nullopt)
+    bool ServiceBoundary(std::optional<FFrameNumber> ActualWorkerFrame = std::nullopt,std::optional<std::uint64_t> CapturedCutoff=std::nullopt)
     {
-        if (!IsWorker() || BoundaryMutationBlocked() || ResumeGroup || ReplayGroup || Pending) return false;
+        if (!IsWorker() || BoundaryMutationBlocked() || ResumeGroup || ReplayGroup || FrozenRequestedFrame || Pending) return false;
         std::lock_guard<std::mutex> Lock(Commands->Gate);
         if (Commands->StopRequested)
         {
@@ -480,7 +557,9 @@ public:
             Commands->Queue.clear(); Waiting.reset(); return Retired;
         }
         if (Replaying) return false;
-        const auto Count = Commands->Queue.size();
+        const auto Cutoff=CapturedCutoff.value_or(Commands->EnqueueOrdinal);
+        std::size_t Count=0;
+        for(const auto Id:Commands->Queue){if(Commands->Records.at(Id).EnqueueOrdinal>Cutoff)break;++Count;}
         const auto InitialVersion = View->Version;
         const bool Pristine = InitialVersion == 0 && Sessions.empty() && LastEpoch.empty()
             && !Latest && !InitialReceipt && !HistoricalInitial && !Waiting && !Terminal;
@@ -561,6 +640,7 @@ public:
         for (auto& P : Sessions)
         {
             auto& S = P.second;
+            if (S.RequestedOwner) return EInputFrameReadiness::Rejected;
             if (S.Description.Kind == EProducerContract::ExactRemote) ++RemoteCount;
             if (S.Phase != ESessionPhase::Active || !S.Owner) return EInputFrameReadiness::Rejected;
             const auto Ready = S.Owner->QueryFrameReadiness(N);
@@ -568,6 +648,38 @@ public:
             Missing = Missing || Ready == EInputFrameReadiness::Waiting;
         }
         return Missing || RemoteCount < MinimumRemoteSessions ? EInputFrameReadiness::Waiting : EInputFrameReadiness::Ready;
+    }
+
+    // Explicit pre-decision cutoff. Source selection/processing still occurs
+    // in PrepareFrame after the native correction decision. No socket wait.
+    bool FreezeRequestedSources(FFrameNumber N)
+    {
+        if(!IsWorker()||FPresentationInputScope::IsActive()||BoundaryMutationBlocked()||ResumeGroup||ReplayGroup||Terminal||Pending||Waiting||Replaying||FrozenRequestedFrame)return false;
+        bool Any=false;
+        for(const auto& P:Sessions)
+            if(P.second.Phase!=ESessionPhase::Active||(!P.second.Owner&&!P.second.RequestedOwner))return false;
+        for(auto& P:Sessions)if(auto& O=P.second.RequestedOwner)
+        {
+            Any=true;auto T=O->FreezeFrame(N,bool(P.second.NativeV2Binding));
+            if(!T){AbortFrame();return false;}
+            P.second.RequestedToken=std::move(T);
+        }
+        if(Any)FrozenRequestedFrame=N;return true;
+    }
+    // Read-only check: selection cannot create, reuse or repair a cutoff.
+    bool RequestedSourcesFrozenFor(FFrameNumber N) const noexcept
+    {
+        if(!IsWorker()||FPresentationInputScope::IsActive()||BoundaryMutationBlocked()||ResumeGroup||ReplayGroup||Terminal||Pending||Waiting||Replaying)return false;
+        bool Any=false;
+        for(const auto& P:Sessions)
+            if(P.second.Phase!=ESessionPhase::Active||(!P.second.Owner&&!P.second.RequestedOwner))return false;
+        for(const auto& P:Sessions)if(const auto& O=P.second.RequestedOwner)
+        {
+            Any=true;
+            if(P.second.Phase!=ESessionPhase::Active||!P.second.RequestedToken
+                ||O->GetPhase()!=ERequestedOwnerPhase::Frozen||O->GetNextFrame()!=N)return false;
+        }
+        return Any?FrozenRequestedFrame==N:!FrozenRequestedFrame;
     }
     bool PrepareFrame(FFrameNumber N)
     {
@@ -579,17 +691,25 @@ public:
         { RecordFrameFailure(ERegistryFrameFailure::InputUnavailable, N); return false; }
         // Readiness is checked for ALL sessions before any source is touched.
         for (const auto& P : Sessions)
-            if (P.second.Phase != ESessionPhase::Active || !P.second.Owner)
+            if (P.second.Phase != ESessionPhase::Active || (!P.second.Owner&&!P.second.RequestedOwner))
             { RecordFrameFailure(ERegistryFrameFailure::SessionInactive, N, &P.second); return false; }
         try
         {
             auto Frame = std::make_shared<FRegistryFrame>(); Frame->Frame = N; Frame->Registry = View;
+            Frame->NativeV2=FrozenNativeV2;
             Frame->Inputs.reserve(Sessions.size());
             for (auto& Pair : Sessions)
             {
                 auto& S = Pair.second;
-                if (S.Phase != ESessionPhase::Active || !S.Owner)
+                if (S.Phase != ESessionPhase::Active || (!S.Owner&&!S.RequestedOwner))
                 { RecordFrameFailure(ERegistryFrameFailure::SessionInactive, N, &S); AbortFrame(); return false; }
+                if(S.RequestedOwner)
+                {
+                    if(FrozenRequestedFrame!=N||!S.RequestedToken||!S.RequestedOwner->PrepareFrozen(*S.RequestedToken))
+                    {RecordFrameFailure(ERegistryFrameFailure::OwnerPoll,N,&S);AbortFrame();return false;}
+                    Frame->Inputs.push_back({S.Description.Id,S.Description.Epoch,{},S.Description.Actors,false,{}, {},S.Description.Network,S.NativeV2Binding});
+                    continue;
+                }
                 const bool Initial = S.Owner->HasInitialReceipt();
                 auto P = S.Owner->Poll(N);
                 if (!P.Token || P.Status != EOwnerInputStatus::Ready)
@@ -612,6 +732,14 @@ public:
         for (auto& Pair : Sessions)
         {
             auto& S = Pair.second;
+            if(S.RequestedOwner)
+            {
+                if(!S.RequestedToken||!S.RequestedOwner->Install(*S.RequestedToken))
+                {RecordFrameFailure(ERegistryFrameFailure::TokenInstall,N,&S);AbortFrame();return false;}
+                auto& Input=Pending->Inputs[I++];Input.Requested=S.RequestedOwner->ReadInstalled(*S.RequestedToken);
+                if(!Input.Requested){RecordFrameFailure(ERegistryFrameFailure::SnapshotRead,N,&S);AbortFrame();return false;}
+                Input.FilterBefore=Input.Requested->BeforeProcessing;continue;
+            }
             if (!S.Token || !S.Owner->Install(*S.Token))
             { RecordFrameFailure(ERegistryFrameFailure::TokenInstall, N, &S); AbortFrame(); return false; }
             Pending->Inputs[I++].Snapshot = S.Owner->ReadInstalled(*S.Token);
@@ -627,9 +755,17 @@ public:
     {
         if (!IsWorker() || BoundaryMutationBlocked() || !Pending || !Installed || Begun || Terminal || !EmptyReceiptStateValid()) return false;
         for (const auto& Pair : Sessions)
-            if (!Pair.second.Token || Pair.second.Owner->GetPhase() != EOwnerInputPhase::Installed) { AbortFrame(); return false; }
+        {
+            const auto& S=Pair.second;
+            if(S.RequestedOwner?(!S.RequestedToken||S.RequestedOwner->GetPhase()!=ERequestedOwnerPhase::Installed)
+                :(!S.Token||!S.Owner||S.Owner->GetPhase()!=EOwnerInputPhase::Installed)){AbortFrame();return false;}
+        }
         for (auto& Pair : Sessions)
-            if (!Pair.second.Owner->BeginStep(*Pair.second.Token, Pending->Frame)) { AbortFrame(); return false; }
+        {
+            auto& S=Pair.second;
+            if(!(S.RequestedOwner?S.RequestedOwner->BeginStep(*S.RequestedToken,Pending->Frame)
+                :S.Owner->BeginStep(*S.Token,Pending->Frame))){AbortFrame();return false;}
+        }
         Begun = true; return true;
     }
     bool CloseInitialBoundary()
@@ -640,6 +776,9 @@ public:
         for (const auto& Pair : Sessions)
         {
             const auto& S = Pair.second;
+            // A requested-network baseline must reach a real physics commit;
+            // never relabel this special legacy initial-apply boundary.
+            if(S.RequestedOwner)return false;
             const auto V = S.Owner->ReadInstalled(*S.Token);
             if (!V || !V->Input.GetData().Reset || S.Owner->HasInitialReceipt()) { AbortFrame(); return false; }
         }
@@ -655,7 +794,11 @@ public:
     {
         if (!IsWorker() || BoundaryMutationBlocked() || !Pending || !Begun || Terminal || !EmptyReceiptStateValid()) return false;
         for (const auto& Pair : Sessions)
-            if (!Pair.second.Token || !Pair.second.Owner->CanComplete(*Pair.second.Token, Pending->Frame)) return false;
+        {
+            const auto& S=Pair.second;
+            if(S.RequestedOwner?(!S.RequestedToken||!S.RequestedOwner->CanComplete(*S.RequestedToken,Pending->Frame))
+                :(!S.Token||!S.Owner||!S.Owner->CanComplete(*S.Token,Pending->Frame)))return false;
+        }
         return true;
     }
     bool CompleteAll() noexcept
@@ -664,18 +807,30 @@ public:
         for (auto& Pair : Sessions)
         {
             auto& S = Pair.second;
+            if(S.RequestedOwner)
+            {
+                if(!S.RequestedOwner->CompleteStep(*S.RequestedToken,Pending->Frame)){MakeTerminal();return false;}
+                S.RequestedToken.reset();
+                if(S.NativeV2Binding)NativeV2Completed(S,Pending->Frame);
+                continue;
+            }
             if (!S.Owner->CompleteStep(*S.Token, Pending->Frame)) { MakeTerminal(); return false; }
             S.Token.reset();
         }
         if (GroupExecutionReplay) { GroupReplayReceipt = Pending; ++ReplayIndex; Pending.reset(); Installed = Begun = PendingEmptyReceipt = false; return true; }
         History[Pending->Frame % History.size()] = Pending;
-        Latest = Pending; LastCompletedForCapture = Pending; InitialReceipt.reset(); Pending.reset(); Installed = Begun = PendingEmptyReceipt = false; return true;
+        Latest = Pending; LastCompletedForCapture = Pending; InitialReceipt.reset(); Pending.reset(); FrozenRequestedFrame.reset(); FrozenNativeV2.reset(); Installed = Begun = PendingEmptyReceipt = false; return true;
     }
     void AbortFrame() noexcept
     {
         if (!IsWorker() || BoundaryMutationBlocked() || ResumeGroup || ReplayGroup) return;
-        for (auto& Pair : Sessions) { auto& S = Pair.second; if (S.Token) S.Owner->Abort(*S.Token); S.Token.reset(); }
-        Pending.reset(); Installed = Begun = PendingEmptyReceipt = false; MakeTerminal();
+        FrozenNativeV2.reset();
+        for (auto& Pair : Sessions)
+        {
+            auto& S=Pair.second;if(S.Token)S.Owner->Abort(*S.Token);S.Token.reset();
+            if(S.RequestedToken)S.RequestedOwner->Abort(*S.RequestedToken);S.RequestedToken.reset();
+        }
+        Pending.reset(); FrozenRequestedFrame.reset(); Installed = Begun = PendingEmptyReceipt = false; MakeTerminal();
     }
 #include "../RegistryBoundaryCapture.inc"
 #include "../RegistryBoundaryReservation.inc"
@@ -693,6 +848,13 @@ public:
         if (!IsWorker()) return false;
         const auto I = Sessions.find(Id); return I != Sessions.end() && I->second.Owner && I->second.Owner->HasFilterState();
     }
+    std::optional<FRequestedInputFrame> ReadConfirmedRequestedInput(std::uint64_t Session,std::uint64_t Epoch,FFrameNumber N)
+    {
+        if(!IsWorker()||Terminal||Pending||Replaying)return {};
+        const auto I=Sessions.find(Session);
+        return I!=Sessions.end()&&I->second.Description.Epoch==Epoch&&I->second.RequestedOwner
+            ?I->second.RequestedOwner->ReadConfirmedForReplay(N):std::nullopt;
+    }
     // Historical registry and immutable input fanout only. A future world adapter
     // must restore/validate actor checkpoints before using these for real replay.
     std::shared_ptr<const FRegistryFrame> ReadHistorical(FFrameNumber N) const
@@ -704,7 +866,7 @@ public:
     // receive the historical registry/actor set to restore before engine replay.
     bool BeginRetainedReplay(FFrameNumber First, FFrameNumber Last, const std::vector<FSessionActor>& AvailableActors)
     {
-        if (!IsWorker() || BoundaryMutationBlocked() || ResumeGroup || ReplayGroup || Terminal || Pending || Waiting || Replaying || First > Last || Last - First >= History.size()) return false;
+        if (!IsWorker() || BoundaryMutationBlocked() || ResumeGroup || ReplayGroup || Terminal || Pending || FrozenRequestedFrame || Waiting || Replaying || First > Last || Last - First >= History.size()) return false;
         try
         {
             std::vector<std::shared_ptr<const FRegistryFrame>> Plan;
@@ -716,7 +878,10 @@ public:
                     for (const auto& A : Input.Actors)
                         if (std::find(AvailableActors.begin(), AvailableActors.end(), A) == AvailableActors.end()) return false;
                     const auto B = std::find_if(F->Registry->Bindings.begin(), F->Registry->Bindings.end(), [&](const auto& D) { return D.Id == Input.Session && D.Epoch == Input.Epoch; });
-                    if (B == F->Registry->Bindings.end() || !Input.Snapshot) return false;
+                    // This legacy replay cursor only certifies original-input
+                    // history. Corrected requested replay needs a confirmed
+                    // plan plus native processing-state restoration.
+                    if (B == F->Registry->Bindings.end() || !Input.Snapshot || Input.Requested) return false;
                     auto Expected = Input.Snapshot->Requested;
                     if (UsesAuthoritativeDeviceProcessing(B->Kind, RemoteAdmission))
                     {
@@ -740,16 +905,50 @@ public:
         Replaying = false; ReplayPlan.clear(); return true;
     }
 private:
+    friend class ::ASpeedPhysicsSimulation;
     struct FSession
     {
         FSessionDescriptor Description;
         std::unique_ptr<FSameFrameInputOwner> Owner;
+        std::unique_ptr<FRequestedInputOwner> RequestedOwner;
+        std::optional<FRequestedInputOwner::FToken> RequestedToken;
+        std::shared_ptr<const FNativeNetworkAdmission> NetworkAdmission;
+        std::shared_ptr<const FNativeRequestedBindingV2> NativeV2Binding;
+        const void* NativeV2SourceAddress=nullptr;
+        std::uint64_t NativeV2Command=0,NativeV2CompletedFrames=0;
+        std::uint64_t NativeV2DetachCommand=0;
+        ERequestedRetirementReasonV2 NativeV2Retire=ERequestedRetirementReasonV2::None;
+        bool NativeV2Claimed=false;
         std::shared_ptr<FRawAcquisitionJournal> Journal;
         std::optional<FSameFrameInputOwner::FToken> Token;
         ESessionPhase Phase = ESessionPhase::Active;
         std::uint64_t ResumeGeneration = 0;
         std::uint64_t AcquisitionFence = 0;
     };
+    bool CanObserveRequestedBindingsAtBoundary() const noexcept
+    {
+        if(!IsWorker()||FPresentationInputScope::IsActive()||Terminal||Pending||FrozenRequestedFrame||Waiting||Replaying)return false;
+        bool Any=false;
+        for(const auto& Pair:Sessions)if(Pair.second.Description.Network)
+        {
+            const auto& S=Pair.second;Any=true;
+            if(S.Phase!=ESessionPhase::Active||!S.RequestedOwner||!S.NetworkAdmission
+                ||S.RequestedOwner->GetPhase()!=ERequestedOwnerPhase::Idle||S.RequestedToken
+                ||S.NetworkAdmission->OwnerKey!=NativeAdmissionOwner||!S.NetworkAdmission->Service)return false;
+        }
+        return Any;
+    }
+    std::vector<FRequestedNetworkBindingValues> CaptureRequestedBindingsAtBoundary() const
+    {
+        if(!CanObserveRequestedBindingsAtBoundary())throw std::runtime_error("requested binding observation outside stable boundary");
+        std::vector<FRequestedNetworkBindingValues> Records;Records.reserve(Sessions.size());
+        for(const auto& Pair:Sessions)if(Pair.second.Description.Network)
+        {
+            const auto& S=Pair.second;
+            Records.push_back({S.Description,S.NetworkAdmission->Service->GetConfiguration(),S.RequestedOwner->GetBindingFingerprint()});
+        }
+        return Records;
+    }
     void RecordFrameFailure(ERegistryFrameFailure Reason, FFrameNumber Frame,
         const FSession* Session = nullptr, EOwnerInputStatus Status = EOwnerInputStatus::InvalidBinding) noexcept
     {
@@ -761,6 +960,40 @@ private:
             Owner != nullptr, Owner != nullptr && Reason == ERegistryFrameFailure::OwnerPoll};
     }
     bool IsWorker() const noexcept { return std::this_thread::get_id() == Worker; }
+    bool ValidNetworkAdmission(const FNativeNetworkAdmission& A) const
+    {
+        const auto& C=A.Command;const auto& D=C.Binding;
+        if(!A.OwnerKey||A.OwnerKey!=NativeAdmissionOwner||!A.Service||!C.Id||C.Operation!=EBoundaryOperation::Bind
+            ||C.WorkerGeneration!=WorkerGeneration||C.RegistryVersion!=View->Version||!D.Network
+            ||!D.Network->IsValid()||D.Network->WorldGeneration!=WorkerGeneration||!D.Contract
+            ||!D.Id||!D.Epoch||D.First==UINT64_MAX||!FInputSessionCommands::Canonical(C,Commands->Limits))return false;
+        const auto& N=*D.Network;const auto& Config=A.Service->GetConfiguration();
+        if(N.Version==2)
+        {
+            if(!NativeRequestedV2RuntimeQualified()||!A.NativeV2||A.NativeV2->Owner()!=std::this_thread::get_id()
+                ||!(A.NativeV2->Mapping()==N)||A.NativeV2->ServiceIdentity()!=A.Service->ReadServiceIdentity()
+                ||A.NativeV2->Expired(std::chrono::steady_clock::now()))return false;
+            const auto Closed=A.NativeV2->ReadClosure();if(Closed.Host||Closed.Slot||Closed.Socket)return false;
+        }
+        else if(N.Version!=1||A.NativeV2)return false;
+        return Config.AllowLocalFallback&&Config.FirstFrame==D.First&&Config.Binding.Session==N.Session
+            &&Config.Binding.Epoch==N.Epoch&&Config.Binding.Actor==N.Actor&&Config.Binding.Incarnation==N.Incarnation
+            &&Config.Binding.ContractId==N.WireContract&&A.Service->GetContract()
+            &&A.Service->GetContract()->GetFingerprint()==D.Contract->GetFingerprint();
+    }
+    bool RetireSession(FSession& S)
+    {
+        if(S.RequestedOwner)
+        {
+            if(S.RequestedToken){S.RequestedOwner->Abort(*S.RequestedToken);S.RequestedToken.reset();}
+            if(S.RequestedOwner->GetPhase()!=ERequestedOwnerPhase::Closed&&!S.RequestedOwner->RetireAtBoundary())return false;
+            S.RequestedOwner.reset();S.NetworkAdmission.reset();++Destroyed;return true;
+        }
+        if(!S.Owner)return true;
+        if(S.Token){S.Owner->Abort(*S.Token);S.Token.reset();}
+        if(!S.Owner->RetireAtBoundary())return false;
+        S.Owner.reset();++Destroyed;return true;
+    }
     void PublishView(std::shared_ptr<FInputRegistryView> Next)
     {
         auto Failed = std::make_shared<FInputRegistryView>(*Next); Failed->Terminal = true;
@@ -779,12 +1012,12 @@ private:
         for (auto& P : Sessions)
         {
             auto& S = P.second;
-            if (!S.Owner) continue;
-            if (S.Token) { S.Owner->Abort(*S.Token); S.Token.reset(); }
             S.Phase = ESessionPhase::CancelPending;
-            if (!S.Owner->RetireAtBoundary()) { Done = false; continue; }
-            S.Owner.reset(); ++Destroyed; S.Phase = ESessionPhase::Retired;
+            if(S.NativeV2Binding){S.NativeV2Retire=ERequestedRetirementReasonV2::WorkerClose;continue;}
+            if (!RetireSession(S)) { Done = false; continue; }
+            S.Phase = ESessionPhase::Retired;
         }
+        NetworkAdmissions.clear();
         return Done;
     }
     bool TryResume(FInputSessionCommands::FRecord& R)
@@ -803,6 +1036,8 @@ private:
     // reuse this journal, so retain it until that command has been processed.
     void ReleaseRejectedBindJournal(const FInputSessionCommands::FRecord& R)
     {
+        if(R.Command.Operation==EBoundaryOperation::Bind&&R.Receipt.Status!=EBoundaryStatus::Pending
+            &&R.Receipt.Status!=EBoundaryStatus::WaitingForBaseline)NetworkAdmissions.erase(R.Command.Id);
         if (R.Command.Operation != EBoundaryOperation::Bind
             || (R.Receipt.Status != EBoundaryStatus::Rejected && R.Receipt.Status != EBoundaryStatus::TerminalFailure)) return;
         const auto Id = R.Command.Binding.Journal;
@@ -820,23 +1055,51 @@ private:
         const auto& C = R.Command;
         if (C.Operation == EBoundaryOperation::Bind) { Bind(R); return; }
         if (C.Operation == EBoundaryOperation::RetireAll)
-        { MakeTerminal(); R.Receipt.Status = RetireAll() ? EBoundaryStatus::Applied : EBoundaryStatus::TerminalFailure; Outcomes(R); return; }
+        {
+            const bool Native=HasNativeV2Sessions();
+            if(Native)NativeV2GlobalControls.emplace(C.Id,C.Operation);
+            MakeTerminal();const bool Legacy=RetireAll();
+            if(Native)MarkNativeV2Retirements(ERequestedRetirementReasonV2::GlobalRetire);
+            R.Receipt.Status=Native?EBoundaryStatus::Pending:(Legacy?EBoundaryStatus::Applied:EBoundaryStatus::TerminalFailure);Outcomes(R);return;
+        }
         if (C.Operation == EBoundaryOperation::PauseAll)
         {
+            const bool Native=HasNativeV2Sessions();
+            if(Native)NativeV2GlobalControls.emplace(C.Id,C.Operation);
             for (auto& P : Sessions)
             {
                 auto& S = P.second;
+                if(S.NativeV2Binding){S.NativeV2Retire=ERequestedRetirementReasonV2::GlobalPause;S.Phase=ESessionPhase::CancelPending;continue;}
                 if (S.Phase == ESessionPhase::Paused) continue;
+                if(S.RequestedOwner)
+                {
+                    // A paused network stream is closed. Resume must use a
+                    // fresh admitted epoch/source; never recycle its cursor.
+                    if(!S.RequestedOwner->RetireAtBoundary()){MakeTerminal();R.Receipt.Status=EBoundaryStatus::TerminalFailure;Outcomes(R);return;}
+                    S.Phase=ESessionPhase::Paused;continue;
+                }
                 if (!S.Owner->PauseAtBoundary()) { S.Phase = ESessionPhase::CancelPending; MakeTerminal(); R.Receipt.Status = EBoundaryStatus::TerminalFailure; Outcomes(R); return; }
                 S.Phase = ESessionPhase::Paused;
             }
-            Latest.reset(); InitialReceipt.reset(); R.Receipt.Status = EBoundaryStatus::Applied; Outcomes(R); return;
+            Latest.reset(); InitialReceipt.reset(); R.Receipt.Status = Native?EBoundaryStatus::Pending:EBoundaryStatus::Applied; Outcomes(R); return;
         }
         auto It = Sessions.find(C.Session);
         if (It == Sessions.end() || It->second.Description.Epoch != C.Epoch) { R.Receipt.Status = EBoundaryStatus::Rejected; return; }
         auto& S = It->second;
+        if(S.NativeV2Binding)
+        {
+            if(C.Operation!=EBoundaryOperation::Detach||!C.NativeV2Control
+                ||!C.NativeV2Control->Matches(S.Description.Id,S.Description.Epoch,S.Description.Network->Service,
+                    S.NativeV2Binding->Source()->Generation(),S.NativeV2Binding->Source()->Instance())
+                ||S.NativeV2DetachCommand){R.Receipt.Status=EBoundaryStatus::Rejected;return;}
+            S.NativeV2DetachCommand=C.Id;S.NativeV2Retire=ERequestedRetirementReasonV2::ExplicitDetach;
+            S.Phase=ESessionPhase::CancelPending;R.Receipt.NativeV2=FRequestedLifecycleReceiptV2{};
+            R.Receipt.Status=EBoundaryStatus::Pending;return;
+        }
+        if(C.NativeV2Control){R.Receipt.Status=EBoundaryStatus::Rejected;return;}
         if (C.Operation == EBoundaryOperation::Resume)
         {
+            if(S.RequestedOwner||S.NetworkAdmission){R.Receipt.Status=EBoundaryStatus::Rejected;return;}
             if (S.Phase != ESessionPhase::Paused || C.ResumeGeneration <= S.ResumeGeneration)
             { R.Receipt.Status = EBoundaryStatus::Rejected; return; }
             S.ResumeGeneration = C.ResumeGeneration; S.Phase = ESessionPhase::WaitingBaseline;
@@ -854,8 +1117,8 @@ private:
             Next->Bindings.erase(std::remove_if(Next->Bindings.begin(), Next->Bindings.end(), [&](const auto& D) { return D.Id == C.Session; }), Next->Bindings.end());
             auto Failed = std::make_shared<FInputRegistryView>(*Next); Failed->Terminal = true;
             S.Phase = ESessionPhase::CancelPending;
-            if (!S.Owner->RetireAtBoundary()) { MakeTerminal(); R.Receipt.Status = EBoundaryStatus::TerminalFailure; Outcomes(R); return; }
-            S.Owner.reset(); ++Destroyed; S.Phase = ESessionPhase::Retired;
+            if (!RetireSession(S)) { MakeTerminal(); R.Receipt.Status = EBoundaryStatus::TerminalFailure; Outcomes(R); return; }
+            S.Phase = ESessionPhase::Retired;
             R.Receipt.Status = EBoundaryStatus::Applied; Outcomes(R);
             const auto JournalId = S.Description.Journal;
             Sessions.erase(It);
@@ -867,24 +1130,45 @@ private:
     void Bind(FInputSessionCommands::FRecord& R)
     {
         auto D = R.Command.Binding;
-        if (!D.Id || !D.Epoch || !D.Controller || !D.Producer || !D.Contract || D.Actors.empty()
+        const bool Requested=D.Network.has_value();
+        std::shared_ptr<const FNativeNetworkAdmission> Admission;
+        if(Requested)
+        {
+            const auto Found=NetworkAdmissions.find(R.Command.Id);
+            if(Found==NetworkAdmissions.end()||!ValidNetworkAdmission(*Found->second)
+                ||!R.Receipt.Boundary.HasWorkerFrame||D.First!=R.Receipt.Boundary.WorkerFrame)
+            {R.Receipt.Status=EBoundaryStatus::Rejected;return;}
+            auto Bytes=FInputSessionCommands::Canonical(Found->second->Command,Commands->Limits);
+            if(!Bytes||*Bytes!=R.Bytes){R.Receipt.Status=EBoundaryStatus::Rejected;return;}
+            Admission=Found->second;
+        }
+        if (!D.Id || !D.Epoch || (!Requested&&(!D.Controller||!D.Producer)) || !D.Contract || D.Actors.empty()
             || Sessions.size() >= Commands->Limits.Sessions || Sessions.count(D.Id)
             || (LastEpoch.count(D.Id) && D.Epoch <= LastEpoch.at(D.Id))
-            || (D.Kind != EProducerContract::Device && D.Kind != EProducerContract::ExactScenario && D.Kind != EProducerContract::AI
+            || (!Requested && D.Kind != EProducerContract::Device && D.Kind != EProducerContract::ExactScenario && D.Kind != EProducerContract::AI
                 && !(D.Kind == EProducerContract::ExactRemote && AdmitsOriginalDeviceRemote(RemoteAdmission)))
             || (D.Kind == EProducerContract::ExactRemote && !D.Scenario.empty())
             || (D.AllowScenarioAppend && D.Kind != EProducerContract::ExactScenario)
             || (D.ResumeRearmMask && D.Kind != EProducerContract::Device)
             || (D.EnableDesktop && D.Kind != EProducerContract::Device)
-            || !ValidInputProcessingPolicy(D.Kind, D.Processing, *D.Contract, RemoteAdmission))
+            || (!Requested && !ValidInputProcessingPolicy(D.Kind, D.Processing, *D.Contract, RemoteAdmission)))
         { R.Receipt.Status = EBoundaryStatus::Rejected; return; }
         std::sort(D.Actors.begin(), D.Actors.end());
         std::set<std::uint64_t> ActorIds;
         std::size_t ActorCount = D.Actors.size();
         for (const auto& P : Sessions)
         {
-            if (P.second.Description.Producer == D.Producer || P.second.Description.Controller == D.Controller)
+            if ((D.Producer&&P.second.Description.Producer == D.Producer) || (D.Controller&&P.second.Description.Controller == D.Controller))
             { R.Receipt.Status = EBoundaryStatus::Rejected; return; }
+            if(Requested&&P.second.NetworkAdmission)
+            {
+                const auto& Existing=*P.second.Description.Network;
+                if(P.second.NetworkAdmission->Service==Admission->Service
+                    ||(Existing.Session==D.Network->Session&&Existing.Epoch==D.Network->Epoch
+                        &&Existing.Actor==D.Network->Actor&&Existing.Incarnation==D.Network->Incarnation
+                        &&Existing.Component==D.Network->Component))
+                {R.Receipt.Status=EBoundaryStatus::Rejected;return;}
+            }
             for (const auto& A : P.second.Description.Actors) ActorIds.insert(A.Id);
             ActorCount += P.second.Description.Actors.size();
         }
@@ -912,7 +1196,7 @@ private:
                 if (P.second.Description.Journal == D.Journal) { R.Receipt.Status = EBoundaryStatus::Rejected; return; }
         }
         std::shared_ptr<Netcode::FExactRemoteInputIngress> Remote;
-        if (D.Kind == EProducerContract::ExactRemote)
+        if (!Requested && D.Kind == EProducerContract::ExactRemote)
         {
             for (const auto& J : Journals) if (J.Id == D.Journal) Remote = J.Remote;
             if (!Remote || Remote->GetState() != Netcode::ERemoteIngressState::Unbound
@@ -927,6 +1211,54 @@ private:
         auto Slot = Sessions.try_emplace(D.Id).first;
         auto& S = Slot->second;
         S.Description = D; S.Journal = Journal; S.Phase = ESessionPhase::CancelPending;
+        if(Requested)
+        {
+            if(D.Network->Version==2)
+            {
+                R.Receipt.NativeV2=FRequestedLifecycleReceiptV2{};auto& Trace=*R.Receipt.NativeV2;
+                Trace.Service=D.Network->Service;Trace.SourceGeneration=D.Network->SourceGeneration;
+                auto Bound=Admission->Service->BindSourceWithIdentityOnCurrentThread(D.Network->SourceGeneration,true);
+                Trace.WorkerSelectionBound=Bound.WorkerSelectionBound;
+                Trace.BindFailure=Bound.Failure;
+                if(Bound.WorkerSelectionBound)EpochSlot->second=D.Epoch;
+                if(Bound.SourceConstructed){++Constructed;Trace.Construction=ERequestedConstructionV2::Constructed;}
+                if(!Bound.Source||!Bound.Identity||!Bound.Identity->MatchesSource(Bound.Source.get())
+                    ||!Bound.Identity->MatchesService(Admission->Service->ReadServiceIdentity())
+                    ||Bound.Identity->Generation()!=D.Network->SourceGeneration||!Bound.Identity->Instance()
+                    ||Bound.Identity->Owner()!=Worker||!Bound.Identity->IsOpen())
+                {
+                    if(Bound.Source){Bound.Source->Cancel();Bound.Source.reset();Bound.SourceRetired=true;}
+                    if(Bound.SourceConstructed){++Destroyed;Trace.SourceDestroyed=true;Trace.Construction=ERequestedConstructionV2::ConstructedThenRetired;}
+                    Trace.Retirement=ERequestedRetirementReasonV2::ConstructionFailed;
+                    R.Receipt.Status=Bound.SourceConstructed?EBoundaryStatus::ConstructedThenRetired:EBoundaryStatus::Rejected;Sessions.erase(Slot);return;
+                }
+                Trace.SourceInstance=Bound.Identity->Instance();S.NativeV2SourceAddress=Bound.Source.get();S.NativeV2Command=R.Command.Id;
+                try
+                {
+                    S.RequestedOwner=FRequestedInputOwner::Create(std::move(Bound.Source),{D.Network->SourceGeneration,D.Contract,D.Processing,D.Network->DigitalPolicy},D.First);
+                    if(!S.RequestedOwner)throw std::runtime_error("native V2 owner creation failed");
+                    S.NativeV2Binding=std::shared_ptr<const FNativeRequestedBindingV2>(new FNativeRequestedBindingV2(Admission->NativeV2,Bound.Identity,D.Id,D.Epoch,S.RequestedOwner->GetBindingFingerprint()));
+                    S.NetworkAdmission=std::move(Admission);S.Phase=ESessionPhase::CancelPending;
+                    // No adapter callback under Commands->Gate and no View
+                    // publication before the real owner-side claim succeeds.
+                    R.Receipt.Status=EBoundaryStatus::ConstructedPendingClaim;return;
+                }
+                catch(...)
+                {
+                    if(S.RequestedOwner){S.RequestedOwner->RetireAtBoundary();S.RequestedOwner.reset();}
+                    ++Destroyed;Trace.SourceDestroyed=true;Trace.Construction=ERequestedConstructionV2::ConstructedThenRetired;
+                    Trace.Retirement=ERequestedRetirementReasonV2::ConstructionFailed;R.Receipt.Status=EBoundaryStatus::ConstructedThenRetired;Sessions.erase(Slot);return;
+                }
+            }
+            auto Source=Admission->Service->BindSourceOnCurrentThread(D.Network->SourceGeneration);
+            if(!Source){Sessions.erase(Slot);R.Receipt.Status=EBoundaryStatus::Rejected;return;}
+            ++Constructed;
+            S.RequestedOwner=FRequestedInputOwner::Create(std::move(Source),{D.Network->SourceGeneration,D.Contract,D.Processing,D.Network->DigitalPolicy},D.First);
+            if(!S.RequestedOwner){++Destroyed;Sessions.erase(Slot);R.Receipt.Status=EBoundaryStatus::Rejected;return;}
+            S.NetworkAdmission=std::move(Admission);S.Phase=ESessionPhase::Active;
+            EpochSlot->second=D.Epoch;TerminalView=std::move(Failed);View=std::move(Next);
+            R.Receipt.Status=EBoundaryStatus::Applied;Outcomes(R);return;
+        }
         std::unique_ptr<IInputProducer> Source;
         if (D.Kind == EProducerContract::ExactScenario)
             Source = FTestInputProducer::Create(D.Contract, {D.Epoch}, {EProducerKind::Device,D.Producer}, D.First, D.Scenario);
@@ -956,6 +1288,10 @@ private:
     const EExactRemoteAdmission RemoteAdmission;
     bool InspectingFrameReadiness = false;
     std::vector<FJournalService> Journals;
+    const std::shared_ptr<const std::uint8_t> NativeAdmissionOwner;
+    std::map<std::uint64_t,std::shared_ptr<const FNativeNetworkAdmission>> NetworkAdmissions;
+    #include "NativeRequestedLifecycleRegistryV2.inl"
+    std::optional<FFrameNumber> FrozenRequestedFrame;
     std::map<std::uint64_t, FSession> Sessions;
     std::map<std::uint64_t, std::uint64_t> LastEpoch;
     std::shared_ptr<const FInputRegistryView> View, TerminalView;

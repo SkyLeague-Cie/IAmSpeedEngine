@@ -4,13 +4,21 @@ namespace Speed { struct FCommonComponentValueAccess; }
 
 #include "CoreMinimal.h"
 #include <memory>
-namespace Speed::Input::V2 { struct FOwnerInputSnapshot; class FInputSessionRegistry; }
+#include <cstdint>
+namespace Speed::Input::V2
+{
+struct FOwnerInputSnapshot;class FInputSessionRegistry;class FInputActionContract;
+struct FInputProcessingPolicy;struct FRequestedInputConsumption;
+enum class ERequestedDigitalPolicy:std::uint8_t;
+}
 #include "IAmSpeed/Base/PhysicalContactConstraint.h"
 #include "IAmSpeed/Base/SHitResult.h"
 #include "IAmSpeed/Base/Kinematic.h"
 #include "IAmSpeed/Base/KinematicQuantizationCache.h"
 #include "IAmSpeed/World/Simulation/SimulationSleepState.h"
 class USpeedWheeledComponent;
+namespace Speed {class FNativeRequestedPreparationContextV2;}
+namespace Speed::Input::V2 {class FNativeRequestedBindingV2;}
 struct FSimulationWheelVisual;
 
 #if !UE_BUILD_SHIPPING
@@ -150,6 +158,21 @@ public:
 	/** Retains immutable input for this actor; no gameplay or force application. */
 	virtual bool InstallCanonicalInput(uint64 Frame,
 		std::shared_ptr<const Speed::Input::V2::FOwnerInputSnapshot> Snapshot) { return false; }
+    /** Explicit game opt-in. Original-only adapters cannot accept forecasts. */
+    virtual bool SupportsCanonicalRequestedInputs(const Speed::Input::V2::FInputActionContract&,
+        const Speed::Input::V2::FInputProcessingPolicy&,Speed::Input::V2::ERequestedDigitalPolicy) const {return false;}
+    /** Pure complete-profile comparison on the real native boundary. True is
+     * ComparedOnly: it grants no source, baseline, CanMove or restore. */
+    virtual bool CompareCanonicalRequestedPreparationV2(const Speed::FNativeRequestedPreparationContextV2&) const {return false;}
+    virtual bool SupportsCanonicalRequestedInputsV2(const Speed::FNativeRequestedPreparationContextV2&)const{return false;}
+    virtual bool ClaimCanonicalRequestedInputV2(std::shared_ptr<const Speed::Input::V2::FNativeRequestedBindingV2>){return false;}
+    virtual bool OwnsCanonicalRequestedInputV2(const std::shared_ptr<const Speed::Input::V2::FNativeRequestedBindingV2>&)const{return false;}
+    virtual bool RetireCanonicalRequestedInputV2(const std::shared_ptr<const Speed::Input::V2::FNativeRequestedBindingV2>&){return false;}
+    virtual bool InstallCanonicalRequestedInputV2(uint64,std::shared_ptr<const Speed::Input::V2::FRequestedInputConsumption>,const std::shared_ptr<const Speed::Input::V2::FNativeRequestedBindingV2>&){return false;}
+    virtual uint64 GetCanonicalRequestedBodyGeneration() const {return 0;}
+    virtual bool CanAdmitCanonicalRequestedInput() const {return false;}
+    virtual bool InstallCanonicalRequestedInput(uint64 Frame,
+        std::shared_ptr<const Speed::Input::V2::FRequestedInputConsumption> Input) {return false;}
 	// Runs component-owned preparation/gameplay for one integer-addressed frame.
 	// This virtual dispatch also covers derived components declared by game modules.
 	virtual void PrepareCanonicalFrame(const FCanonicalFrameContext& Context) = 0;
