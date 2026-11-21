@@ -157,8 +157,8 @@ namespace Speed::Analytic::Private
 namespace
 {
 	TAutoConsoleVariable<int32> CVarTensorProviderBoundsIndexNative(
-		TEXT("p.IAmSpeed.AnalyticWorld.TensorProviderBoundsIndexNative"), 0,
-		TEXT("Opt in to the ordered direct Tensor provider BVH when the query service is constructed. Default OFF."));
+		TEXT("p.IAmSpeed.AnalyticWorld.TensorProviderBoundsIndexNative"), 1,
+		TEXT("Build the ordered direct Tensor provider BVH when the query service is constructed. Set to 0 for comparison."));
 #if !UE_BUILD_SHIPPING
 	TAutoConsoleVariable<int32> CVarIAmSpeedAnalyticWorldTensorProviderBoundsIndex(
 		TEXT("p.IAmSpeed.AnalyticWorld.TensorProviderBoundsIndex"), 0,
