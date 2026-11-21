@@ -168,7 +168,42 @@ bool FIAmSpeedOrderedBoundsIndexTest::RunTest(const FString& Parameters)
 	Degenerate.Init(FBox3d(FVector3d(0.0), FVector3d(1.0, 0.0, 0.0)), 64);
 	const auto DegenerateIndex = FOrderedBoundsIndex::Create(Degenerate);
 	TestEqual(TEXT("one-dimensional world uses original sequence"), DegenerateIndex->FindCandidates(Degenerate[0], Scratch).Num(), 64);
-	return true;
+
+	{
+		auto Bounds = MakeBounds(40, 0, 1.0);
+		for (int32 I = 0; I < Bounds.Num() / 2; ++I) Bounds.Swap(I, Bounds.Num() - 1 - I);
+		Bounds[17] = Bounds[3];
+		Bounds[31] = Bounds[3];
+		const auto Index = FOrderedBoundsIndex::CreateBvh(Bounds);
+		const auto VerifyExact = [&](const TCHAR* Name, const FOrderedBoundsIndex& CandidateIndex,
+			const FBox3d& Query, bool bExpectAll)
+		{
+			TArray<int32> Expected;
+			for (int32 I = 0; I < Bounds.Num(); ++I)
+			{
+				if (bExpectAll || Bounds[I].Intersect(Query)) Expected.Add(I);
+			}
+			const auto Actual = CandidateIndex.FindCandidates(Query, Scratch);
+			bool bEqual = Actual.Num() == Expected.Num();
+			for (int32 I = 0; bEqual && I < Actual.Num(); ++I) bEqual = Actual[I] == Expected[I];
+			TestTrue(Name, bEqual);
+		};
+		const FVector3d Tangent = Bounds[3].Max;
+		const FBox3d Touch(Tangent, Tangent);
+		VerifyExact(TEXT("Inclusive tangency preserves exact original ordinals"), *Index, Touch, false);
+		FVector3d Outside = Tangent;
+		Outside.X = std::nextafter(Tangent.X, std::numeric_limits<double>::infinity());
+		VerifyExact(TEXT("One ULP outside does not add a candidate"), *Index, FBox3d(Outside, Outside), false);
+		VerifyExact(TEXT("Dense candidates are returned in native order"), *Index,
+			FBox3d(FVector3d(-1.0e6), FVector3d(1.0e6)), false);
+		VerifyExact(TEXT("Invalid query returns the entire original order"), *Index, FBox3d(ForceInit), true);
+
+		auto Invalid = Bounds;
+		Invalid[3] = FBox3d(FVector3d(1.0), FVector3d(-1.0));
+		const auto Fallback = FOrderedBoundsIndex::CreateBvh(Invalid);
+		VerifyExact(TEXT("Invalid direct provider selects the original order"), *Fallback, Touch, true);
+	}
+	return !HasAnyErrors();
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FIAmSpeedOrderedBoundsIndexCostTest,
@@ -201,47 +236,5 @@ bool FIAmSpeedOrderedBoundsIndexCostTest::RunTest(const FString& Parameters)
 		}
 	}
 	return true;
-}
-
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FIAmSpeedTensorProviderBoundsIndexNativeTest,
-	"IAmSpeed.AnalyticWorld.TensorProviderBoundsIndexNative",
-	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
-
-bool FIAmSpeedTensorProviderBoundsIndexNativeTest::RunTest(const FString& Parameters)
-{
-	auto Bounds = MakeBounds(40, 0, 1.0);
-	for (int32 I = 0; I < Bounds.Num() / 2; ++I) Bounds.Swap(I, Bounds.Num() - 1 - I);
-	Bounds[17] = Bounds[3];
-	Bounds[31] = Bounds[3];
-	const auto Index = FOrderedBoundsIndex::CreateBvh(Bounds);
-	FOrderedBoundsScratch Scratch;
-	const auto VerifyExact = [&](const TCHAR* Name, const FOrderedBoundsIndex& CandidateIndex,
-		const FBox3d& Query, bool bExpectAll)
-	{
-		TArray<int32> Expected;
-		for (int32 I = 0; I < Bounds.Num(); ++I)
-		{
-			if (bExpectAll || Bounds[I].Intersect(Query)) Expected.Add(I);
-		}
-		const auto Actual = CandidateIndex.FindCandidates(Query, Scratch);
-		bool bEqual = Actual.Num() == Expected.Num();
-		for (int32 I = 0; bEqual && I < Actual.Num(); ++I) bEqual = Actual[I] == Expected[I];
-		TestTrue(Name, bEqual);
-	};
-	const FVector3d Tangent = Bounds[3].Max;
-	const FBox3d Touch(Tangent, Tangent);
-	VerifyExact(TEXT("Inclusive tangency preserves exact original ordinals"), *Index, Touch, false);
-	FVector3d Outside = Tangent;
-	Outside.X = std::nextafter(Tangent.X, std::numeric_limits<double>::infinity());
-	VerifyExact(TEXT("One ULP outside does not add a candidate"), *Index, FBox3d(Outside, Outside), false);
-	VerifyExact(TEXT("Dense candidates are returned in native order"), *Index,
-		FBox3d(FVector3d(-1.0e6), FVector3d(1.0e6)), false);
-	VerifyExact(TEXT("Invalid query returns the entire original order"), *Index, FBox3d(ForceInit), true);
-
-	auto Invalid = Bounds;
-	Invalid[3] = FBox3d(FVector3d(1.0), FVector3d(-1.0));
-	const auto Fallback = FOrderedBoundsIndex::CreateBvh(Invalid);
-	VerifyExact(TEXT("Invalid direct provider selects the original order"), *Fallback, Touch, true);
-	return !HasAnyErrors();
 }
 #endif
