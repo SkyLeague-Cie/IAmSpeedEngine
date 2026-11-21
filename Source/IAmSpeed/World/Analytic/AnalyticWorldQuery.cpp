@@ -156,6 +156,9 @@ namespace Speed::Analytic::Private
 
 namespace
 {
+	TAutoConsoleVariable<int32> CVarTensorProviderBoundsIndexNative(
+		TEXT("p.IAmSpeed.AnalyticWorld.TensorProviderBoundsIndexNative"), 0,
+		TEXT("Opt in to the ordered direct Tensor provider BVH when the query service is constructed. Default OFF."));
 #if !UE_BUILD_SHIPPING
 	TAutoConsoleVariable<int32> CVarIAmSpeedAnalyticWorldTensorProviderBoundsIndex(
 		TEXT("p.IAmSpeed.AnalyticWorld.TensorProviderBoundsIndex"), 0,
@@ -474,16 +477,25 @@ FWorldQueryService::FWorldQueryService(const FAnalyticWorldData& InWorld,
 	for (const FPiecewiseTensorBezierPatch& Patch : World.PiecewiseTensorBezierPatches)
 		PiecewiseBounds.Add(Patch.Bounds);
 	PiecewiseProviderIndex = Speed::Collision::FOrderedBoundsIndex::Create(PiecewiseBounds);
+	const bool bPrepareNativeTensorIndex = CVarTensorProviderBoundsIndexNative.GetValueOnAnyThread() == 1;
 #if !UE_BUILD_SHIPPING
-	if (CVarIAmSpeedAnalyticWorldTensorProviderBoundsIndex.GetValueOnAnyThread() != 0 &&
-		!World.TensorBezierPatches.IsEmpty())
+	const bool bPrepareLegacyTensorIndex = CVarIAmSpeedAnalyticWorldTensorProviderBoundsIndex.GetValueOnAnyThread() != 0;
+#else
+	constexpr bool bPrepareLegacyTensorIndex = false;
+#endif
+	if ((bPrepareNativeTensorIndex || bPrepareLegacyTensorIndex) && !World.TensorBezierPatches.IsEmpty())
 	{
+#if !UE_BUILD_SHIPPING
+		const double IndexStart = FPlatformTime::Seconds();
+#endif
 		TArray<FBox3d> TensorBounds;
 		TensorBounds.Reserve(World.TensorBezierPatches.Num());
 		for (const FTensorBezierPatch& Patch : World.TensorBezierPatches)
 			TensorBounds.Add(Patch.Bounds);
 		TensorProviderIndex = Speed::Collision::FOrderedBoundsIndex::CreateBvh(TensorBounds);
-		if (CVarIAmSpeedAnalyticWorldTensorSphereSlab.GetValueOnAnyThread() != 0)
+#if !UE_BUILD_SHIPPING
+		const double IndexBuildMs = (FPlatformTime::Seconds() - IndexStart) * 1000.0;
+		if (bPrepareLegacyTensorIndex && CVarIAmSpeedAnalyticWorldTensorSphereSlab.GetValueOnAnyThread() != 0)
 		{
 			const double SlabStart = FPlatformTime::Seconds();
 			TensorSphereSlabs.SetNum(World.TensorBezierPatches.Num());
@@ -529,9 +541,20 @@ FWorldQueryService::FWorldQueryService(const FAnalyticWorldData& InWorld,
 			UE_LOG(LogTemp, Display, TEXT("[AnalyticTensorSphereSlab] Providers=%d Bytes=%llu BuildMs=%.3f"),
 				SlabCount, uint64(TensorSphereSlabs.GetAllocatedSize()), (FPlatformTime::Seconds() - SlabStart) * 1000.0);
 		}
-		UE_LOG(LogTemp, Display, TEXT("[AnalyticTensorProviderBoundsIndex] Providers=%d Bytes=%llu"),
-			TensorBounds.Num(), uint64(TensorProviderIndex->GetAllocatedSize()));
+		if (bPrepareLegacyTensorIndex)
+		{
+			UE_LOG(LogTemp, Display, TEXT("[AnalyticTensorProviderBoundsIndex] Providers=%d Bytes=%llu BuildMs=%.3f"),
+				TensorBounds.Num(), uint64(TensorProviderIndex->GetAllocatedSize()), IndexBuildMs);
+		}
+#endif
 	}
+	if (bPrepareNativeTensorIndex)
+	{
+		UE_LOG(LogTemp, Display, TEXT("[AnalyticTensorProviderBoundsIndexNative] Requested=1 Prepared=%d Providers=%d Bytes=%llu WorldHash=%016llx Policy=OrderedWithLinearFallback"),
+			int32(TensorProviderIndex.IsValid()), World.TensorBezierPatches.Num(),
+			uint64(TensorProviderIndex ? TensorProviderIndex->GetAllocatedSize() : 0), uint64(World.SourceHash));
+	}
+#if !UE_BUILD_SHIPPING
 	if (CVarIAmSpeedAnalyticWorldPhaseTiming.GetValueOnAnyThread() != 0)
 		UE_LOG(LogTemp, Display, TEXT("[AnalyticQueryStorage] PiecewiseProviders=%d ProviderIndexBytes=%llu"),
 			PiecewiseBounds.Num(), uint64(PiecewiseProviderIndex->GetAllocatedSize()));
@@ -5094,16 +5117,18 @@ FWorldHit FWorldQueryService::SweepDetailed(
             }();
 			ConsiderProviderHit(Candidate);
 		};
-#if !UE_BUILD_SHIPPING
 		if (TensorProviderIndex)
 		{
 			Speed::Collision::FOrderedBoundsScratch TensorScratch;
+#if !UE_BUILD_SHIPPING
 			const bool bUseSlabs = Query.Shape == EQueryShape::Sphere && !TensorSphereSlabs.IsEmpty() &&
 				FMath::IsFinite(Query.Radius) && !Query.Start.ContainsNaN() && !Query.End.ContainsNaN();
 			const double QueryCoordinateScale = bUseSlabs
 				? FMath::Max(1.0, FMath::Max(Query.Start.GetAbsMax(), Query.End.GetAbsMax())) : 1.0;
+#endif
 			for (const int32 Index : TensorProviderIndex->FindCandidates(QueryBounds, TensorScratch))
 			{
+#if !UE_BUILD_SHIPPING
 				if (bUseSlabs)
 				{
 					const FTensorSphereSlab& Slab = TensorSphereSlabs[Index];
@@ -5120,11 +5145,11 @@ FWorldHit FWorldQueryService::SweepDetailed(
 						if (FMath::IsFinite(Gap) && Gap > Radius) continue;
 					}
 				}
+#endif
 				SweepTensorProvider(World.TensorBezierPatches[Index]);
 			}
 		}
 		else
-#endif
 		{
 			for (const FTensorBezierPatch& Patch : World.TensorBezierPatches)
 				SweepTensorProvider(Patch);

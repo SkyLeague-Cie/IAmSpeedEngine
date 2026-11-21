@@ -243,8 +243,8 @@ private:
     mutable FFacetParallelTotals FacetParallelTotals;
 	// Constructed from this service's immutable world; no spatial order reaches the solver.
 	TSharedPtr<const Speed::Collision::FOrderedBoundsIndex> PiecewiseProviderIndex;
-#if !UE_BUILD_SHIPPING
 	TSharedPtr<const Speed::Collision::FOrderedBoundsIndex> TensorProviderIndex;
+#if !UE_BUILD_SHIPPING
 	struct FTensorSphereSlab
 	{
 		int32 Axis = INDEX_NONE;
