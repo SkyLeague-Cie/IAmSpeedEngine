@@ -324,12 +324,18 @@ public:
             if(RequireConfirmed)return Failed(ENetworkInputWorkerStatus::MissingAuthority);
             const FNetworkInputEnvelope* Earlier=nullptr;
             for(std::uint64_t Offset=1;Offset<=C.PredictionFrames&&Offset<=Frame;++Offset)
-                if((Earlier=Find(Frame-Offset)))break;
+            {
+                Earlier=Find(Frame-Offset);
+                if(Earlier)break;
+            }
             if(Earlier)
             {
                 const FNetworkInputEnvelope* Later=nullptr;
                 for(std::uint64_t Offset=1;Offset<C.ReceiveAheadFrames&&Offset<UINT64_MAX-Frame;++Offset)
-                    if((Later=Find(Frame+Offset)))break;
+                {
+                    Later=Find(Frame+Offset);
+                    if(Later)break;
+                }
                 FNetworkInputSelection Out;Out.Origin=ENetworkInputSelectionOrigin::Predicted;
                 Out.EarlierFrame=Earlier->Requested.Frame;if(Later)Out.LaterFrame=Later->Requested.Frame;
                 Out.Requested=C.Prediction.Evaluate({Frame,Earlier->Requested,Later?&Later->Requested:nullptr,R.Axes});
