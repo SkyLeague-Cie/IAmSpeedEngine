@@ -27,7 +27,13 @@
 #include "SpeedSimulation.h"
 #include "SpeedPhysicsSimulation.generated.h"
 
-namespace Speed { class FHostedGTStaticWorldLease; namespace PreparationPrefix { class FClosedSourceProducer; } }
+namespace Speed
+{
+class FHostedGTStaticWorldLease;
+class IExactRemoteRoundProvider;
+struct FExactRemoteRoundCommit;
+namespace PreparationPrefix { class FClosedSourceProducer; }
+}
 class USpeedWorldSubsystem;
 struct FCanonicalFrameContext;
 class ISpeedComponent;
@@ -176,6 +182,10 @@ public:
     bool ConfigureExactRemoteInputHost(uint32 RequiredSessions);
     /** Explicit policy mode for original Device frames; no default activation or client-selected policy. */
     bool ConfigureOriginalDeviceRemoteInputHost(uint32 RequiredSessions, Speed::Input::V2::EExactRemoteAdmission Admission);
+    /** Dedicated ExactRemote only. Install after remote host configuration and before its worker starts. */
+    bool ConfigureExactRemoteRoundReset(std::shared_ptr<Speed::IExactRemoteRoundProvider>);
+    std::shared_ptr<const Speed::FExactRemoteRoundCommit> ReadExactRemoteRoundCommit() const;
+    std::shared_ptr<const Speed::FCompletedSimulationPublication> ReadExactRemoteRoundNeutralStep() const;
     Speed::Input::V2::ECommandAdmission SubmitRequestedNetworkInputSession(
         const Speed::Input::V2::FBoundaryCommandDescriptor& Command,
         std::shared_ptr<Speed::Netcode::FNetworkRequestedInputService> Service);
@@ -414,6 +424,11 @@ private:
 #endif
 
 	ESimulationBoundaryResult ServiceInputSessionBoundary(bool bPauseRequested);
+	std::optional<ESimulationBoundaryResult> ServiceExactRemoteRoundBoundary(bool bPauseRequested);
+	std::shared_ptr<Speed::IExactRemoteRoundProvider> ExactRemoteRoundProvider;
+	std::shared_ptr<const Speed::FExactRemoteRoundCommit> PublishedExactRemoteRound;
+	std::shared_ptr<const Speed::FCompletedSimulationPublication> PublishedRoundNeutralStep;
+	std::shared_ptr<const Speed::FExactRemoteRoundCommit> ActiveExactRemoteRound; // original worker only
 	void CloseInputSessionsOnWorker();
 	std::shared_ptr<Speed::Input::V2::FInputSessionCommands> InputSessionCommands;
 	std::unique_ptr<Speed::Input::V2::FInputSessionRegistry> InputSessionRegistry;

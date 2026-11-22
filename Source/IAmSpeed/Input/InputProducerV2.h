@@ -27,6 +27,7 @@ public:
 	virtual EInputFrameReadiness QueryFrameReadiness(FFrameNumber) const { return EInputFrameReadiness::Ready; }
 	virtual std::optional<FInputFrame> InspectBaseline(FFrameNumber) const { return {}; }
 	virtual std::unique_ptr<IPreparedInputResume> PrepareResumeAtBoundary(FFrameNumber) { return {}; }
+	virtual std::unique_ptr<IPreparedInputResume> PrepareRoundResumeAtBoundary(FFrameNumber, const FRoundInputResume&) { return {}; }
 	virtual std::optional<FInputFrame> Produce(FFrameNumber Frame) = 0;
 	// Exact test authoring only: seal a future frame on the owner before poll.
 	// Device/network producers deliberately keep the rejecting default.

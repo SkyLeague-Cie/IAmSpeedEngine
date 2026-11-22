@@ -145,6 +145,8 @@ std::shared_ptr<const Speed::FNativeRequestedInputObservation> ASpeedPhysicsSimu
 ESimulationBoundaryResult ASpeedPhysicsSimulation::ServiceInputSessionBoundary(bool bPauseRequested)
 {
     if (!ValidateAnalyticNumericOwner()) return ESimulationBoundaryResult::Failed;
+    if (ExactRemoteRoundProvider)
+        if (const auto Round = ServiceExactRemoteRoundBoundary(bPauseRequested)) return *Round;
     if (CompleteOwnedWorkerAtBoundary())
     {
         bOwnedWorkerTerminal.Store(true);
@@ -301,6 +303,7 @@ ESimulationBoundaryResult ASpeedPhysicsSimulation::ServiceInputSessionBoundary(b
 
 void ASpeedPhysicsSimulation::CloseInputSessionsOnWorker()
 {
+    ActiveExactRemoteRound.reset();
     if(RequestedPreparationV2)RequestedPreparationV2->CloseOnNativeOwner();
     CloseRequestedInputPresentationsOnWorker();
     PublishedRequestedInputObservation.store({},std::memory_order_seq_cst);

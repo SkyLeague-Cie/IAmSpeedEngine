@@ -10,6 +10,13 @@ bool USpeedWheeledComponent::PrepareWheeledNetworkInput(uint64 Frame) const
 {
 	using namespace Speed::Input;
 	if (Frame >= MAX_uint32) return false;
+	if (CanonicalInputSnapshot && CanonicalInputSnapshot->RoundNeutralGeneration)
+	{
+		// The legacy projection has no representation for an authority-only
+		// neutral control derived from a retained physical capture.
+		PreparedWheeledNetworkInput.reset();
+		return true;
+	}
 	if (PreparedWheeledNetworkInput && PreparedWheeledNetworkInput->LocalFrame == Frame + 1) return true;
 	auto Result = std::make_shared<FCompletedWheeledInput>();
 	Result->Requested = WheeledPhysicalInput;

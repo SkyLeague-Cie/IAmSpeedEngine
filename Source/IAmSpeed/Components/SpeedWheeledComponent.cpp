@@ -1886,12 +1886,13 @@ void USpeedWheeledComponent::UpdateInputs()
 		if (!bCanonicalInputPending || !N || S.Input.GetData().ConsumptionFrame != *N
 			|| !ValidateProducedInputFrameV2(S.Input))
 		{ bInputFrameRejectedV2 = true; return; }
-		if (S.Input.GetData().Reset) ResetProducedInputState();
+		const auto& ControlInput = S.ControlInput();
+		if (ControlInput.GetData().Reset) ResetProducedInputState();
 		WheeledPhysicalInput.Throttle = static_cast<uint8>(S.Applied[Throttle]);
 		WheeledPhysicalInput.Brake = static_cast<uint8>(S.Applied[Brake]);
 		WheeledPhysicalInput.Steer = static_cast<int8>(S.Applied[Steering]);
 		SyncWheeledPhysicalInputToState();
-		bInputFrameRejectedV2 = !ApplyProducedInputFrameV2(S.Input);
+		bInputFrameRejectedV2 = !ApplyProducedInputFrameV2(ControlInput);
 		// Camera has its own already-stamped IAmSpeed queue. Consume it at this
 		// same owner input point, without polling the GT mailbox or redoing slew.
 		// Disabled generic camera keeps the old no-lock default path.

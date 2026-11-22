@@ -1,6 +1,7 @@
 #include "ExactRemoteInputProducer.h"
 #include "ExactRemoteInputIngress.h"
 #include <atomic>
+#include <future>
 #include "IAmSpeed/Input/SameFrameInputOwner.h"
 #include "IAmSpeed/Input/InputSessionRegistry.h"
 #include "../transport/TransportFixture.h"
@@ -382,6 +383,125 @@ static void RegistryRemoteDefaultsAndMismatchStayClosed()
         CHECK(Ingress->GetState() == ERemoteIngressState::Unbound && !Registry.IsTerminal());
     }
 }
+static void RegistryRoundCutoverKeepsOwnersAndRejectsLateCommands()
+{
+    using RegistryType = V2::FInputSessionRegistry;
+    auto A = RemoteDescriptor(1), B = RemoteDescriptor(2);
+    B.Epoch = 11;
+    B.Producer = 211;
+    constexpr std::uint64_t InitialRound = 20;
+    const auto MakeIngress = [InitialRound](const V2::FSessionDescriptor& D)
+    { return FExactRemoteInputIngress::Create(D.Contract, {D.Epoch}, {Speed::Input::EProducerKind::Device,D.Producer}, D.First, InitialRound); };
+    auto InA = MakeIngress(A), InB = MakeIngress(B);
+    const auto MakeFrame = [](const V2::FSessionDescriptor& D, std::uint64_t N, bool Holding = false)
+    {
+        auto Data = Frame(N).GetData();
+        Data.SourceSequence = N + 1;
+        Data.StreamEpoch = {D.Epoch};
+        Data.Producer.Id = D.Producer;
+        Data.Reset = true;
+        Data.Values = {};
+        Data.ActiveMask = 0;
+        if (Holding) { Data.Values[0] = 170; Data.Values[3] = 1; Data.ActiveMask = 9; }
+        Data.Transitions.clear();
+        return V2::FInputFrame(D.Contract, std::move(Data));
+    };
+    auto Commands = std::make_shared<V2::FInputSessionCommands>();
+    RegistryType Registry(Commands, 7, {{A.Journal,{},{},InA}, {B.Journal,{},{},InB}}, V2::EExactRemoteAdmission::OriginalDeviceExact);
+    CHECK(Commands->Submit(RemoteBind(A, 1, 0)) == V2::ECommandAdmission::Enqueued);
+    CHECK(Registry.ServiceBoundary(0) && Commands->Read(1)->Status == V2::EBoundaryStatus::Applied);
+    CHECK(Commands->Submit(RemoteBind(B, 2, 1)) == V2::ECommandAdmission::Enqueued);
+    CHECK(Registry.ServiceBoundary(0) && Commands->Read(2)->Status == V2::EBoundaryStatus::Applied);
+    const auto Complete = [&](std::uint64_t N, std::uint64_t Round = 0)
+    {
+        CHECK(Registry.PrepareFrame(N) && Registry.InstallAll() && Registry.BeginAll());
+        CHECK(Registry.ValidateComplete() && Registry.CompleteAll());
+        const auto Latest = Registry.ReadLatest();
+        CHECK(Latest && Latest->Frame == N && Latest->Inputs.size() == 2);
+        for (const auto& Input : Latest->Inputs)
+        {
+            const auto& Data = Input.Snapshot->Input.GetData();
+            CHECK(Data.Reset && Input.Snapshot->RoundNeutralGeneration == Round);
+            CHECK(Input.Snapshot->Applied == Speed::Input::FActionValues{});
+            CHECK(bool(Input.Snapshot->RoundNeutralControl) == bool(Round));
+            const auto& Control = Input.Snapshot->ControlInput().GetData();
+            CHECK(Control.Reset && Control.Values == Speed::Input::FActionValues{} && !Control.ActiveMask && Control.Transitions.empty());
+            if (Round)
+                CHECK(Data.Values[0] == 170 && Data.Values[3] == 1 && Data.ActiveMask == 9
+                    && Control.SourceSequence == Data.SourceSequence && Input.Snapshot->Requested == Data.Values);
+            CHECK(Data.StreamEpoch.Value == Input.Epoch);
+            CHECK(Data.Producer.Id == (Input.Session == A.Id ? A.Producer : B.Producer));
+        }
+    };
+    const auto Request = [&](std::uint64_t N, std::uint64_t Old)
+    {
+        RegistryType::FGroupResumeRequest R;
+        R.WorkerGeneration = 7; R.RegistryVersion = Registry.ReadRegistry()->Version;
+        R.ResumeGeneration = Old + 1; R.Next = N;
+        for (const auto* D : {&A, &B})
+        {
+            R.Sessions.push_back({D->Id,D->Epoch,V2::ESessionPhase::Active});
+            R.RoundBaselines.push_back({D->Id,D->Epoch,D->Producer,D->Actors,
+                {Old,Old+1,std::make_shared<const V2::FInputFrame>(MakeFrame(*D, N, true))}});
+        }
+        return R;
+    };
+    CHECK(InA->SubmitFrame(MakeFrame(A, 0)) == ERemoteSubmission::WrongRound);
+    CHECK(InA->SubmitFrame(InitialRound, MakeFrame(A, 0)) == ERemoteSubmission::Accepted);
+    CHECK(InB->SubmitFrame(InitialRound, MakeFrame(B, 0)) == ERemoteSubmission::Accepted);
+    Complete(0);
+    CHECK(InA->SubmitFrame(InitialRound, MakeFrame(A, 1)) == ERemoteSubmission::Accepted);
+    CHECK(InB->SubmitFrame(InitialRound, MakeFrame(B, 1)) == ERemoteSubmission::Accepted);
+    const auto Prior = Registry.ReadLatest();
+    auto Bad = Request(1, InitialRound);
+    ++Bad.RoundBaselines.back().Actors.front().Generation;
+    CHECK(!Registry.PrepareGroupResumeAtBoundary(Bad) && Registry.ReadLatest() == Prior);
+    auto Abort = Registry.PrepareGroupResumeAtBoundary(Request(1, InitialRound));
+    CHECK(Abort && Registry.PrepareGroupResumeFinalization(*Abort));
+    CHECK(Registry.AbortGroupResume(*Abort) && Registry.ReadLatest() == Prior);
+    CHECK(InB->SubmitFrame(InitialRound, MakeFrame(B, 1)) == ERemoteSubmission::Duplicate);
+    Complete(1);
+    for (std::uint64_t N = 2; N <= 3; ++N)
+    {
+        const auto Old = InitialRound + N - 2;
+        // The old route accepts before the cutoff, and its future frame is
+        // discarded at the cutoff even when its address also fits the new round.
+        CHECK(InA->SubmitFrame(Old, MakeFrame(A, N + 1)) == ERemoteSubmission::Accepted);
+        CHECK(InB->SubmitFrame(Old, MakeFrame(B, N + 1)) == ERemoteSubmission::Accepted);
+        auto Token = Registry.PrepareGroupResumeAtBoundary(Request(N, Old));
+        CHECK(Token);
+        const auto Held = Registry.ReadPreparedGroupResume(*Token);
+        CHECK(Held && Held->RoundGeneration == Old + 1 && Held->Baselines.size() == 2);
+        CHECK(Registry.PrepareGroupResumeFinalization(*Token));
+        ERemoteSubmission Late = ERemoteSubmission::Invalid;
+        const auto LateFrame = MakeFrame(B, N + 1);
+        std::promise<void> Entered;
+        auto Started = Entered.get_future();
+        std::thread Rpc([&]{ Entered.set_value(); Late = InB->SubmitFrame(Old, LateFrame); });
+        const auto StartedBeforeCommit = Started.wait_for(std::chrono::seconds(2));
+        Registry.FinalizePreparedGroupResume(*Token);
+        Registry.PublishPreparedGroupResume(*Token);
+        Registry.ReleasePreparedGroupResume(*Token);
+        Rpc.join();
+        CHECK(StartedBeforeCommit == std::future_status::ready);
+        CHECK(Late == ERemoteSubmission::WrongRound);
+        CHECK(InA->SubmitFrame(Old, MakeFrame(A, N)) == ERemoteSubmission::WrongRound);
+        CHECK(!Registry.ReadHistorical(N - 1));
+        Complete(N, Old + 1);
+        auto Reused = MakeFrame(A, N + 1).GetData();
+        Reused.SourceSequence = N + 1;
+        CHECK(InA->SubmitFrame(Old + 1, V2::FInputFrame(A.Contract, Reused)) == ERemoteSubmission::Invalid);
+        Reused.SourceSequence = N + 2;
+        Reused.Reset = false;
+        CHECK(InA->SubmitFrame(Old + 1, V2::FInputFrame(A.Contract, Reused)) == ERemoteSubmission::Invalid);
+        CHECK(Registry.QueryFrameReadiness(N + 1, 2) == V2::EInputFrameReadiness::Waiting);
+    }
+    CHECK(InA->SubmitFrame(InitialRound + 2, MakeFrame(A, 4)) == ERemoteSubmission::Accepted);
+    CHECK(InB->SubmitFrame(InitialRound + 2, MakeFrame(B, 4)) == ERemoteSubmission::Accepted);
+    Complete(4);
+    CHECK(Registry.ConstructionCount() == 2 && Registry.DestructionCount() == 0);
+    CHECK(Registry.CloseWorkerLedger());
+}
 #include "AuthoritativeRemoteProcessingTests.inc"
 int main()
 {
@@ -392,7 +512,8 @@ int main()
             IngressSubmissionSerializesWithOwnerRetirement, ExactFramesAndImmutableCutoff, ForeignCallsCannotReleaseLease,
             FailedCloseQuarantinesAndPauseDoesNotForge, SourceContinuityAndAddress, CurrentOwnerAdmissionStillRefuses,
             FullEdgesAndStaleLeaseSerial, GenerationChangeRequiresFreshReset,
-            ExplicitLaterBaselinePreservesSameEpochAndHistory, BaselineInspectionRejectsStaleResetWithoutMutation}) Test();
+            ExplicitLaterBaselinePreservesSameEpochAndHistory, BaselineInspectionRejectsStaleResetWithoutMutation,
+            RegistryRoundCutoverKeepsOwnersAndRejectsLateCommands}) Test();
         std::cout << "PASS checks=" << Checks << " scope=portable_optin_remote_registry_default_closed_no_UE_no_physics\n"; return 0;
     }
     catch (const std::exception& E) { std::cerr << "FAIL " << E.what() << '\n'; return 1; }

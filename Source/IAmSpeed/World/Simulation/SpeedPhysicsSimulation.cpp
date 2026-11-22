@@ -1437,6 +1437,12 @@ bool ASpeedPhysicsSimulation::RunCanonicalFrames(const uint32 FrameCount)
 ASpeedPhysicsSimulation::FCanonicalFrameRunResult ASpeedPhysicsSimulation::RunCanonicalFramesWithControl(const uint32 FrameCount)
 {
     uint32 AdvancedFrames=0;
+    if (ExactRemoteRoundProvider)
+    {
+        if (!SimulationWorker || !SimulationWorker->OwnsCurrentCanonicalWork()
+            || (ActiveExactRemoteRound && (FrameCount != 1 || Speed::OnePausedWork::IsActive())))
+            return {ECanonicalFrameRunControl::Terminal, AdvancedFrames};
+    }
     if(Speed::OnePausedWork::IsActive())
     {
         bool noRollback=false;
@@ -1622,6 +1628,8 @@ float ASpeedPhysicsSimulation::GetWarningFrameFraction() const
 
 bool ASpeedPhysicsSimulation::StepCanonicalFrame(const FCanonicalFrameContext& Context)
 {
+    if (ExactRemoteRoundProvider && (!SimulationWorker || !SimulationWorker->OwnsCurrentCanonicalWork()))
+        return false;
     bool resimulation=false;
 #if !UE_BUILD_SHIPPING
     resimulation=Context.bResimulationForTesting;
@@ -2090,6 +2098,7 @@ bool ASpeedPhysicsSimulation::StepCanonicalFrame(const FCanonicalFrameContext& C
 			PublishedInputFrame.store(Completed, std::memory_order_seq_cst);
 			for (const auto& Input : Completed->Inputs)
 			{
+				if (Input.Snapshot && Input.Snapshot->RoundNeutralGeneration) continue;
 				const auto Observation = InputObservations.find(Input.Session);
 				if (Observation != InputObservations.end())
 				{
