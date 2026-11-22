@@ -4083,7 +4083,20 @@ void USpeedWheeledComponent::UpdateWheelFrameHandbrakeValue(const float& Delta)
 
 	LastWheelFrameHandbrakeUpdateFrame = NumFrame();
 	const float Target = IsHandbrakingForWheelFriction() ? 1.0f : 0.0f;
-	const float Rate = Target > WheelFrameHandbrakeValue ? WheelFrameHandbrakeRiseRate : WheelFrameHandbrakeFallRate;
+	const bool bRising = Target > WheelFrameHandbrakeValue;
+	float Rate = bRising ? WheelFrameHandbrakeRiseRate : WheelFrameHandbrakeFallRate;
+	if (bRising && RocketSimGroundHandlingVersion == 1)
+	{
+		const FVector CenterVelocity = GetPhysVelocityAtPoint(GetPhysCOM());
+		const double LateralSpeed = FMath::Abs(FVector::DotProduct(CenterVelocity, GetPhysRightVector()));
+		const double LongitudinalSpeed = FMath::Abs(GetPhysForwardSpeed());
+		// Use the RS1 tire slip dead zone when observing the direction at low speed.
+		if (LateralSpeed > FMath::Max(LongitudinalSpeed, 5.0))
+		{
+			constexpr float LateralHandbrakeRiseRate = 12.0f;
+			Rate = LateralHandbrakeRiseRate;
+		}
+	}
 	if (Target > KINDA_SMALL_NUMBER)
 	{
 		WheelFrameHandbrakeActiveTime += Delta;
