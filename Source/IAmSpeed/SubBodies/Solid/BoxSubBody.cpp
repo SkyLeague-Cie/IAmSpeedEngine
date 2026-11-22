@@ -2504,6 +2504,184 @@ void UBoxSubBody::ResolveHitVsSphere(USphereSubBody& Sphere, const float& delta)
         }
     }
 
+    if (bAerialContact && ParentComponent && Sphere.GetParentComponent())
+    {
+        const FVector N = CurrentHit.ImpactNormal.GetSafeNormal();
+        const FVector Up = ImpulseBoxKS.Rotation.GetUpVector();
+        const FVector Horizontal = FVector::CrossProduct(Up, N);
+        const FVector Vertical = FVector::CrossProduct(N, Horizontal);
+        const FVector BoxArm = CurrentHit.ImpactPoint - ImpulseBoxKS.Location;
+        const FVector SphereArm = CurrentHit.ImpactPoint - ImpulseSphereKS.Location;
+        const FVector Relative = ImpulseBoxKS.Velocity +
+            FVector::CrossProduct(ImpulseBoxKS.AngularVelocity, BoxArm) -
+            ImpulseSphereKS.Velocity - FVector::CrossProduct(ImpulseSphereKS.AngularVelocity, SphereArm);
+        const FMatrix BoxInvInertia = ComputeWorldInvInertiaTensor();
+        const FMatrix SphereInvInertia = Sphere.ComputeWorldInvInertiaTensor();
+        const double InvMass = 1.0 / GetMass() + 1.0 / Sphere.GetMass();
+        const auto ApplyEffectiveMass = [&](const FVector& Impulse)
+        {
+            const FVector BoxAngular = BoxInvInertia.TransformVector(FVector::CrossProduct(BoxArm, Impulse));
+            const FVector SphereAngular = SphereInvInertia.TransformVector(FVector::CrossProduct(SphereArm, Impulse));
+            return InvMass * Impulse + FVector::CrossProduct(BoxAngular, BoxArm) +
+                FVector::CrossProduct(SphereAngular, SphereArm);
+        };
+        const FVector Stock = ImpThis;
+        const FVector StockResponse = ApplyEffectiveMass(Stock);
+        const double NativeNormalChange = FVector::DotProduct(N, StockResponse);
+        const double IncomingNormal = FVector::DotProduct(N, Relative);
+        const FVector StockRelativeAfter = Relative + StockResponse;
+        const FVector StockResidual = StockRelativeAfter -
+            N * FVector::DotProduct(N, StockRelativeAfter);
+        const double NumericalSlip = FMath::Max(1.0, Relative.Size()) * 5.e-5;
+        const double Mu = FMath::Max(0.0f, MixedFriction);
+        const auto IsAdmissible = [&](const FVector& Impulse)
+        {
+            if (Impulse.ContainsNaN())
+                return false;
+            const double Jn = FVector::DotProduct(N, Impulse);
+            const double Jt = (Impulse - N * Jn).Size();
+            if (Jn <= 0.0 || Jt > Mu * Jn)
+                return false;
+            return FVector::DotProduct(Relative + 0.5 * ApplyEffectiveMass(Impulse), Impulse) <= 0.0;
+        };
+        const double TiltWeight = Horizontal.SizeSquared();
+        constexpr double MinNormalApproachCmS = 200.0;
+        if (IncomingNormal < -MinNormalApproachCmS && StockResidual.SizeSquared() <= FMath::Square(NumericalSlip) &&
+            TiltWeight > 0.0 && IsAdmissible(Stock))
+        {
+            const FVector Kn = ApplyEffectiveMass(N);
+            const double Knn = FVector::DotProduct(N, Kn);
+            const FVector Removed = Horizontal * FVector::DotProduct(Horizontal, Kn);
+            const auto Column = [&](const FVector& Axis)
+            {
+                return ApplyEffectiveMass(Axis) - Removed * FVector::DotProduct(N, Axis);
+            };
+            const FVector ColX = Column(FVector::ForwardVector);
+            const FVector ColY = Column(FVector::RightVector);
+            const FVector ColZ = Column(FVector::UpVector);
+            const FVector YZ = FVector::CrossProduct(ColY, ColZ);
+            const double Det = FVector::DotProduct(ColX, YZ);
+            const double Scale = ColX.Size() * ColY.Size() * ColZ.Size();
+            if (Knn > 0.0 && FMath::Abs(Det) > 1.e-10 * Scale)
+            {
+                const FVector Target = -Relative + N * (NativeNormalChange + IncomingNormal);
+                const FVector HorizontalResponse(
+                    FVector::DotProduct(Target, YZ) / Det,
+                    FVector::DotProduct(Target, FVector::CrossProduct(ColZ, ColX)) / Det,
+                    FVector::DotProduct(Target, FVector::CrossProduct(ColX, ColY)) / Det);
+                const FVector Incoming = Relative - N * IncomingNormal;
+                const double SlipSquared = Incoming.SizeSquared();
+                const FVector Generated = (Kn - N * Knn) * (NativeNormalChange / Knn);
+                double Weight = 0.0;
+                FVector Trial = HorizontalResponse;
+                if (SlipSquared > 1.e-24)
+                {
+                    const double Speed = FMath::Sqrt(SlipSquared);
+                    const FVector T = Incoming / Speed;
+                    const FVector Kt = ApplyEffectiveMass(T);
+                    const double Knt = FVector::DotProduct(N, Kt);
+                    const double Ktt = FVector::DotProduct(T, Kt);
+                    const double DetNT = Knn * Ktt - FMath::Square(Knt);
+                    if (DetNT > 1.e-10 * Knn * Ktt)
+                    {
+                        const FVector Fixed = (N * (Ktt * NativeNormalChange + Knt * Speed) -
+                            T * (Knn * Speed + Knt * NativeNormalChange)) / DetNT;
+                        Weight = SlipSquared / (SlipSquared + Generated.SizeSquared());
+                        Trial = FMath::Lerp(HorizontalResponse, Fixed, Weight);
+                    }
+                }
+                FVector Change = (Trial - Stock) * TiltWeight;
+                const FVector InertiaUp = BoxInvInertia.TransformVector(Up);
+                const FVector Yaw = FVector::CrossProduct(InertiaUp, BoxArm);
+                const FVector PreserveNormalAndVertical = FVector::CrossProduct(Kn.GetSafeNormal(), Vertical);
+                const double YawScaleSquared = (BoxArm.SizeSquared() +
+                    FMath::Square(SphereArm.Size()) * 1.e-12) * InertiaUp.SizeSquared();
+                if (YawScaleSquared > 0.0)
+                {
+                    const double Amount = Weight * FVector::DotProduct(Yaw, Change) *
+                        FVector::DotProduct(Yaw, PreserveNormalAndVertical) / YawScaleSquared;
+                    Change -= PreserveNormalAndVertical * Amount;
+                }
+
+                FVector Qualified = Stock + Change;
+                if (!IsAdmissible(Qualified))
+                {
+                    double Lower = 0.0;
+                    double Upper = 1.0;
+                    for (int32 Step = 0; Step < 24; ++Step)
+                    {
+                        const double Middle = (Lower + Upper) * 0.5;
+                        if (IsAdmissible(Stock + Change * Middle))
+                            Lower = Middle;
+                        else
+                            Upper = Middle;
+                    }
+                    Qualified = Lower > 0.0 ? Stock + Change * Lower : Stock;
+                }
+                const FVector Kx = ApplyEffectiveMass(FVector::ForwardVector);
+                const FVector Ky = ApplyEffectiveMass(FVector::RightVector);
+                const FVector Kz = ApplyEffectiveMass(FVector::UpVector);
+                const FVector CofactorX = FVector::CrossProduct(Ky, Kz);
+                const FVector CofactorY = FVector::CrossProduct(Kz, Kx);
+                const FVector CofactorZ = FVector::CrossProduct(Kx, Ky);
+                const double KDet = FVector::DotProduct(Kx, CofactorX);
+                const double KScale = Kx.Size() * Ky.Size() * Kz.Size();
+                const auto TangentEnergyNumerator = [&](const FVector& Velocity)
+                {
+                    const FVector Tangent = Velocity - N * FVector::DotProduct(N, Velocity);
+                    // For tangent velocities the full inverse uses the inverse
+                    // Schur complement at fixed normal response. The common
+                    // determinant cancels when comparing the two energies.
+                    return Tangent.X * FVector::DotProduct(CofactorX, Tangent) +
+                        Tangent.Y * FVector::DotProduct(CofactorY, Tangent) +
+                        Tangent.Z * FVector::DotProduct(CofactorZ, Tangent);
+                };
+                const double NormalOnlyEnergy = TangentEnergyNumerator(Relative + Kn * (NativeNormalChange / Knn));
+                const double CandidateEnergy = TangentEnergyNumerator(Relative + ApplyEffectiveMass(Qualified));
+                const bool bValidEnergy = KDet > 1.e-10 * KScale &&
+                    FMath::IsFinite(NormalOnlyEnergy) && NormalOnlyEnergy > 0.0 &&
+                    FMath::IsFinite(CandidateEnergy) && CandidateEnergy >= 0.0;
+                const double EnergyFraction = bValidEnergy
+                    ? FMath::Min(1.0, CandidateEnergy / NormalOnlyEnergy) : 1.0;
+                const double Attenuation = 1.0 - FMath::Square(EnergyFraction);
+                Qualified = Stock + (Qualified - Stock) * Attenuation;
+                if (bValidEnergy)
+                {
+                    const FVector SpinVelocity = FVector::CrossProduct(ImpulseBoxKS.AngularVelocity, BoxArm);
+                    const FVector SpinTangent = SpinVelocity - N * FVector::DotProduct(N, SpinVelocity);
+                    const FVector EnergyChange = Qualified - Stock;
+                    const double SpinSpeedSquared = SpinTangent.SizeSquared();
+                    if (SpinSpeedSquared > 1.e-16 && EnergyChange.SizeSquared() > 1.e-16)
+                    {
+                        const double SmoothingSpeedCmS = 10.0;
+                        const double AlongSpin = FVector::DotProduct(EnergyChange, SpinTangent) /
+                            (SpinSpeedSquared + FMath::Square(SmoothingSpeedCmS));
+                        const FVector TangentChange = EnergyChange -
+                            N * FVector::DotProduct(N, EnergyChange) - SpinTangent * AlongSpin;
+                        const FVector NormalCompensation = N *
+                            (FVector::DotProduct(N, ApplyEffectiveMass(TangentChange)) / Knn);
+                        const FVector Projected = Stock + TangentChange - NormalCompensation;
+                        const double ProjectedEnergy = TangentEnergyNumerator(Relative + ApplyEffectiveMass(Projected));
+                        const double NormalError = FVector::DotProduct(N, ApplyEffectiveMass(Projected - Stock));
+                        const bool bAccepted = FMath::IsFinite(ProjectedEnergy) && ProjectedEnergy >= 0.0 &&
+                            ProjectedEnergy <= NormalOnlyEnergy && FMath::Abs(NormalError) <= NumericalSlip &&
+                            IsAdmissible(Projected);
+                        if (bAccepted)
+                            Qualified = Projected;
+                    }
+                }
+                const FVector Difference = Qualified - Stock;
+                const double NormalError = FVector::DotProduct(N, ApplyEffectiveMass(Difference));
+                if (!Difference.ContainsNaN() && FMath::Abs(NormalError) <= NumericalSlip &&
+                    Difference.SizeSquared() > 1.e-12)
+                {
+                    ImpThis = Qualified;
+                    ImpOther = -Qualified;
+                }
+            }
+        }
+    }
+
 #if !UE_BUILD_SHIPPING
     if (CVarIAmSpeedCollisionDebugSphereBoxImpulse.GetValueOnAnyThread() != 0)
     {
