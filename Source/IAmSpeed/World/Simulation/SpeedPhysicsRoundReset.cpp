@@ -1,6 +1,8 @@
 #include "SpeedPhysicsSimulation.h"
 #include "ExactRemoteRoundReset.h"
 #include "IAmSpeed/World/Subsystem/SpeedWorldSubsystem.h"
+#include "Misc/ScopeExit.h"
+#include "Misc/ScopeTryLock.h"
 
 namespace
 {
@@ -105,10 +107,28 @@ std::optional<ESimulationBoundaryResult> ASpeedPhysicsSimulation::ServiceExactRe
 
     const auto Current = ReadCompletedWorldAndInputFrame();
     if (!Current || !Current->Source() || Current->Source()->WorkerGeneration() != InputWorkerGeneration
-        || Current->World().NumFrame + 1 != CanonicalNumFrame) return {};
+        || Current->World().NumFrame + 1 != CanonicalNumFrame || !ExactRemoteRoundProvider->WantsRoundBuild(*Current)) return {};
+
+    using ERefusal = Speed::IExactRemoteRoundProvider::EBoundaryRefusal;
+    std::optional<ERefusal> Refusal;
+    ON_SCOPE_EXIT { if (Refusal) ExactRemoteRoundProvider->OnBoundaryRefused(*Refusal); };
     try
     {
         auto& World = SpeedWorldSubsystem->SimulationWorld;
+        const Speed::FWorldBorrowGate::FReservation StorageReservation(World.StorageAccess);
+        if (!StorageReservation.Holds(World.StorageAccess))
+        {
+            Refusal = World.StorageAccess.HasUntrackedReference()
+                ? ERefusal::UntrackedWorldReference : ERefusal::ActiveWorldBorrow;
+            return {};
+        }
+        FScopeTryLock RegistryLock(&SpeedWorldSubsystem->PendingCS);
+        if (!RegistryLock.IsLocked() || !SpeedWorldSubsystem->PendingOps.IsEmpty()
+            || SpeedWorldSubsystem->bCanonicalFrameActive || World.bOrderDirty || World.IsRestoreBoundaryReserved())
+        {
+            Refusal = ERefusal::RegistryOrFrameBusy;
+            return {};
+        }
         auto Plan = ExactRemoteRoundProvider->Build(World, Current);
         if (!Plan) return {};
         if (Plan->Envelope && Plan->Lease && Plan->Boundary == Current && Plan->Inputs.Next == CanonicalNumFrame
@@ -116,9 +136,12 @@ std::optional<ESimulationBoundaryResult> ASpeedPhysicsSimulation::ServiceExactRe
             && ReadCompletedWorldAndInputFrame() == Current)
         {
             Plan->Lease = std::make_unique<FOriginalRoundRestoreLease>(World, Plan->Envelope->Address,
-                std::move(Plan->Lease), [this, Current]()
+                std::move(Plan->Lease), [this, Current, &World, &StorageReservation, &RegistryLock]()
                 {
-                    return SimulationWorker && SimulationWorker->OwnsCurrentInputBoundary()
+                    return StorageReservation.Holds(World.StorageAccess) && RegistryLock.IsLocked()
+                        && SpeedWorldSubsystem->PendingOps.IsEmpty() && !SpeedWorldSubsystem->bCanonicalFrameActive
+                        && !World.bOrderDirty
+                        && SimulationWorker && SimulationWorker->OwnsCurrentInputBoundary()
                         && Current->Source()->WorkerGeneration() == InputWorkerGeneration
                         && Current->World().NumFrame + 1 == CanonicalNumFrame;
                 });

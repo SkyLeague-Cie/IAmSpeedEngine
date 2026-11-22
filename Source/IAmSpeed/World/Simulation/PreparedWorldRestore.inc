@@ -57,7 +57,8 @@ std::optional<FSimulationWorld::FPreparedRestoreToken> FSimulationWorld::Prepare
 {
     // Plans/leases must have idempotent aborting RAII destruction before commit;
     // even rejecting the arguments below must not leak a reservation or fence.
-    if (IsRestoreBoundaryReserved()) return {};
+    const auto Access = BorrowStorage();
+    if ((!Access && !StorageAccess.IsReservationOwner()) || IsRestoreBoundaryReserved()) return {};
     FPreparedRestoreEntryScope Entry(PreparedRestoreEntryActive);
     // Function parameters outlive ordinary locals: explicitly close their
     // incoming ownership while the entry gate is still active, even on reject.

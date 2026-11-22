@@ -51,6 +51,7 @@ public:
 
 private:
     enum class EPhase : uint8 { Prepared, Ready, Finalized, Released, Aborted };
+    static bool MatchesActor(const FSimulationWorld&, const FSimulationComponentRestoreRequest&, const ISpeedComponent&);
     FPreparedNativeKinematicFields(const FSimulationWorld&, const FSimulationComponentRestoreRequest&,
         SKinematic& Live, bool* Frozen, const SKinematic& State);
 

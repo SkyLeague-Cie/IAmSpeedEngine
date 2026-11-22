@@ -36,15 +36,20 @@ struct FExactRemoteRoundCommit
 };
 
 // Coordinator/provider installed before worker creation. Build runs on the
-// same worker which will commit and step. Return null if no operation is due.
-// Implementations are bounded and non-blocking on the game thread. They obtain
-// real leases and read immutable request data only.
+// same worker which will commit and step, with the native storage reserved.
+// Build consumes the completed publication and lease-bound native values.
+// Implementations must be bounded and must not wait on the game thread.
 class IAMSPEED_API IExactRemoteRoundProvider
 {
 public:
     virtual ~IExactRemoteRoundProvider() = default;
+    // Called with an immutable completed publication, before the world is
+    // reserved. Return true only if this exact boundary is needed.
+    virtual bool WantsRoundBuild(const FCompletedSimulationPublication&) const noexcept = 0;
     virtual std::unique_ptr<FExactRemoteRoundPlan> Build(
         const FSimulationWorld&, const std::shared_ptr<const FCompletedSimulationPublication>&) = 0;
+    enum class EBoundaryRefusal : uint8 { ActiveWorldBorrow, UntrackedWorldReference, RegistryOrFrameBusy };
+    virtual void OnBoundaryRefused(EBoundaryRefusal) noexcept { OnRejected(); }
     virtual void OnRejected() noexcept = 0;
     // Called after the real step and immutable publication of the neutral F.
     // The host may authorize F+1 after the presentation ACKs are satisfied.

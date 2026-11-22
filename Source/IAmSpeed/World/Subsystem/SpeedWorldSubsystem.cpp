@@ -379,6 +379,8 @@ void UnregisterOrdinaryC2SceneFactory(FOrdinaryC2SceneFactory Factory)
 #endif
 void USpeedWorldSubsystem::BuildAnalyticWorldFromLoadedSources()
 {
+    const auto StorageBorrow = SimulationWorld.BorrowStorage();
+    if (!StorageBorrow) return;
     if(bPreparedIntervalRouteRequested||PreparedIntervalScene)return; // A queued legacy build must never replace the dedicated snapshot.
 	UWorld* World = GetWorld();
 	if (!World)
@@ -1311,6 +1313,8 @@ void USpeedWorldSubsystem::RegisterSpeedComponent(ISpeedComponent* Comp)
 {
     if (Speed::Netcode::PresentationClient::SuppressesLocalPhysics(GetWorld())) return;
     if (!Comp) return;
+    if (SimulationWorld.StorageAccess.IsReservationOwner())
+        throw std::logic_error("Cannot register an adapter from round preparation");
     FScopeLock Lock(&PendingCS);
     PendingOps.Add({ true, Comp });
 }
@@ -1318,6 +1322,8 @@ void USpeedWorldSubsystem::RegisterSpeedComponent(ISpeedComponent* Comp)
 void USpeedWorldSubsystem::UnregisterSpeedComponent(ISpeedComponent* Comp)
 {
     if (!Comp) return;
+    if (SimulationWorld.StorageAccess.IsReservationOwner())
+        throw std::logic_error("Cannot unregister an adapter from round preparation");
     FScopeLock Lock(&PendingCS);
     PendingOps.Add({ false, Comp });
 }
@@ -1325,6 +1331,8 @@ void USpeedWorldSubsystem::UnregisterSpeedComponent(ISpeedComponent* Comp)
 bool USpeedWorldSubsystem::HasPhysicalRegistrationsForPresentationAdmission()
 {
     check(IsInGameThread());
+    const auto Access = SimulationWorld.BorrowStorage();
+    if (!Access) return true;
     FScopeLock Lock(&PendingCS);
     return PendingOps.Num()!=0 || !SimulationWorld.GetAdapters().IsEmpty();
 }
@@ -1332,6 +1340,8 @@ bool USpeedWorldSubsystem::HasPhysicalRegistrationsForPresentationAdmission()
 void USpeedWorldSubsystem::ApplyPendingOps()
 {
     if (Speed::Netcode::PresentationClient::SuppressesLocalPhysics(GetWorld())) return;
+    const auto StorageBorrow = SimulationWorld.BorrowStorage();
+    if (!StorageBorrow) return;
 	FScopedGameThreadAdapterAccess Access(GetWorld());
 	if (!Access.IsValid())
 	{
@@ -1412,6 +1422,8 @@ void USpeedWorldSubsystem::RegisterDynamicContactPair(
 	const FVector& NormalBToA,
 	const float ImpactRelativeNormalSpeed)
 {
+	const auto Access = SimulationWorld.BorrowStorage();
+	if (!Access) return;
 	unsigned int& CurrentStepFrame = SimulationWorld.GetCurrentStepFrame();
 	if (CVarIAmSpeedPersistentDynamicPairs.GetValueOnAnyThread() == 0)
 	{
@@ -1472,6 +1484,8 @@ void USpeedWorldSubsystem::ActivatePendingRollingContactPairAtTOI(
 	const USolidSubBody& BodyB,
 	const float RemainingDt)
 {
+	const auto Access = SimulationWorld.BorrowStorage();
+	if (!Access) return;
     Speed::PreparedExecution::FStepScope::RequireNativeContactPairTargets(SimulationWorld,&BodyA,&BodyB);
 	if (!AreUnilateralRollingPairsEnabled())
 	{
@@ -1498,6 +1512,8 @@ bool USpeedWorldSubsystem::IsDynamicContactPairOwnedByRollingManifold(
 	const USolidSubBody& BodyA,
 	const USolidSubBody& BodyB) const
 {
+	const auto Access = SimulationWorld.BorrowStorage();
+	if (!Access) return false;
 	const auto& DynamicContactPairs = SimulationWorld.GetDynamicContactPairs();
 	const unsigned int CurrentStepFrame = SimulationWorld.GetCurrentStepFrame();
 	if (!bLoggedRollingOwnershipState && AreUnilateralRollingPairsEnabled())
@@ -1529,6 +1545,8 @@ bool USpeedWorldSubsystem::IsDynamicContactPairOwnedByRollingManifold(
 ERollingManifoldContactState USpeedWorldSubsystem::GetRollingManifoldContactState(
 	const USolidSubBody& Body) const
 {
+	const auto Access = SimulationWorld.BorrowStorage();
+	if (!Access) return ERollingManifoldContactState::Absent;
 	if (!AreUnilateralRollingPairsEnabled())
 	{
 		return ERollingManifoldContactState::Absent;
@@ -2276,6 +2294,8 @@ void USpeedWorldSubsystem::ProjectDynamicContactPairs()
 
 bool USpeedWorldSubsystem::BeginCanonicalFrame(FString& OutReason)
 {
+    const auto Access = SimulationWorld.BorrowStorage();
+    if (!Access) { OutReason = TEXT("world reserved for round preparation"); return false; }
     if(StaticWorldPublicationDepth){OutReason=TEXT("HostedGT static World publication active");return false;}
 	if (bCanonicalFrameActive)
 	{
@@ -2297,6 +2317,8 @@ bool USpeedWorldSubsystem::BeginCanonicalFrame(FString& OutReason)
 
 bool USpeedWorldSubsystem::ValidateSimulationBindings(FString& OutReason)
 {
+    const auto Access = SimulationWorld.BorrowStorage();
+    if (!Access) { OutReason = TEXT("world reserved for round preparation"); return false; }
     Speed::PreparationPrefix::FEffectScope::VerifyStructuralBoundary();
 	ApplyPendingOps();
 	RebuildSortedIfNeeded();
@@ -2314,6 +2336,8 @@ bool USpeedWorldSubsystem::ValidateSimulationBindings(FString& OutReason)
 
 bool USpeedWorldSubsystem::ServiceInputRetirementsAtBoundary()
 {
+	const auto Access = SimulationWorld.BorrowStorage();
+	if (!Access) return false;
 	for (ISpeedComponent* Component : SimulationWorld.GetAdapters())
 		if (Component && !Component->ServiceInputRetirementAtBoundary()) return false;
 	return true;
@@ -2321,6 +2345,8 @@ bool USpeedWorldSubsystem::ServiceInputRetirementsAtBoundary()
 
 bool USpeedWorldSubsystem::RetireInputProcessingOnWorker()
 {
+	const auto Access = SimulationWorld.BorrowStorage();
+	if (!Access) return false;
 	bool Retired = true;
 	for (ISpeedComponent* Component : SimulationWorld.GetAdapters())
 		if (Component && !Component->RetireInputProcessingOnWorker()) Retired = false;
@@ -2329,7 +2355,8 @@ bool USpeedWorldSubsystem::RetireInputProcessingOnWorker()
 
 bool USpeedWorldSubsystem::NeutralizeCanonicalInputs(const Speed::Input::V2::FInputRegistryView& View)
 {
-	if (bCanonicalFrameActive) return false;
+	const auto Access = SimulationWorld.BorrowStorage();
+	if (!Access || bCanonicalFrameActive) return false;
 	for (const auto& Session : View.Bindings)
 		for (const auto& Actor : Session.Actors)
 		{
@@ -2349,6 +2376,8 @@ bool USpeedWorldSubsystem::PrepareRequestedNetworkAdmissionBoundary()
 
 bool USpeedWorldSubsystem::ValidateRequestedNetworkBinding(const Speed::Input::V2::FSessionDescriptor& Binding) const
 {
+    const auto Access = SimulationWorld.BorrowStorage();
+    if (!Access) return false;
     if(!Binding.Network||Binding.Network->Version!=1||!Binding.Network->IsValid()||!Binding.Contract||Binding.Actors.size()!=1)return false;
     const auto& N=*Binding.Network;const auto& Actor=Binding.Actors[0];
     if(Actor.Id!=N.LocalComponent||Actor.Generation!=N.LocalComponentGeneration)return false;
@@ -2509,6 +2538,8 @@ bool USpeedWorldSubsystem::InspectBodyContactPairsForTesting(
 void USpeedWorldSubsystem::PrepareCanonicalFrame(
 	const FCanonicalFrameContext& Context)
 {
+    const auto Access = SimulationWorld.BorrowStorage();
+    if (!Access) throw std::logic_error("Canonical preparation during round preparation");
     Speed::PreparationPrefix::FEffectScope::VerifyStructuralBoundary();
 #if !UE_BUILD_SHIPPING
     const uint64 PreviousTestingFrame=TestingPreparingFrame;
@@ -2551,6 +2582,8 @@ void USpeedWorldSubsystem::PrepareCanonicalFrame(
 
 ECanonicalRunControlState USpeedWorldSubsystem::GetCanonicalRunControlState()
 {
+	const auto Access = SimulationWorld.BorrowStorage();
+	if (!Access) return ECanonicalRunControlState::WaitingForScenario;
 	ApplyPendingOps();
 	RebuildSortedIfNeeded();
 
@@ -2802,6 +2835,8 @@ static void ObserveCcdPose(const USpeedWorldSubsystem* World, uint32 Frame, ECcd
 
 void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const unsigned int& Frame)
 {
+    const auto Access = SimulationWorld.BorrowStorage();
+    if (!Access) throw std::logic_error("Step requested during round preparation");
     if(StaticWorldPublicationDepth)throw std::runtime_error("HostedGT static World publication active");
     Speed::OnePausedWork::FCanonicalFrameWindowPtr window;
     const auto* currentProvider=SimulationWorld.GetStaticCollisionWorld();

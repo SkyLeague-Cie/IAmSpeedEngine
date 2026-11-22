@@ -17,19 +17,19 @@ bool ValidKinematics(const SKinematic& State)
         && !State.AngularVelocity.ContainsNaN() && !State.AngularAcceleration.ContainsNaN();
 }
 
-bool MatchesActor(const FSimulationWorld& World, const FSimulationComponentRestoreRequest& Request,
-    const ISpeedComponent& Target)
-{
-    const auto& Binding = Request.Supplement.Binding;
-    return Request.OwnerLease.HoldsExactBoundary(World, Request.Address) && Binding.Valid()
-        && World.FindAdapterByStableId(Binding.StableId) == &Target
-        && Target.GetPublishedSimulationStableId() == Binding.StableId;
-}
-
 PreparedAccess::FSpan KinematicFieldSpan(const void* Address, std::size_t Size)
 {
     return {reinterpret_cast<std::uintptr_t>(Address), Size};
 }
+}
+
+bool FPreparedNativeKinematicFields::MatchesActor(const FSimulationWorld& World,
+    const FSimulationComponentRestoreRequest& Request, const ISpeedComponent& Target)
+{
+    const auto& Binding = Request.Supplement.Binding;
+    return Request.OwnerLease.HoldsExactBoundary(World, Request.Address) && Binding.Valid()
+        && World.AdaptersByStableId.FindRef(Binding.StableId) == &Target
+        && Target.GetPublishedSimulationStableId() == Binding.StableId;
 }
 
 std::optional<FPreparedNativeKinematicFields::FRoster> FPreparedNativeKinematicFields::CaptureRoster(
@@ -39,12 +39,12 @@ std::optional<FPreparedNativeKinematicFields::FRoster> FPreparedNativeKinematicF
         || World.bOrderDirty || World.IsRestoreBoundaryReserved()) return {};
 
     FRoster Result;
-    Result.HasStaticGeometryAuthority = World.GetStaticCollisionWorld() != nullptr;
+    Result.HasStaticGeometryAuthority = World.StaticCollisionWorld.Get() != nullptr;
     Result.Actors.reserve(World.Bodies.Num());
     Result.SubBodies.reserve(World.StableSubBodyIds.Num());
     for (const auto& Record : World.Bodies)
     {
-        if (!Record.StableId || !Record.Adapter || World.FindAdapterByStableId(Record.StableId) != Record.Adapter
+        if (!Record.StableId || !Record.Adapter || World.AdaptersByStableId.FindRef(Record.StableId) != Record.Adapter
             || Record.Adapter->GetPublishedSimulationStableId() != Record.StableId) return {};
         Result.Actors.push_back(Record.StableId);
     }
@@ -52,9 +52,9 @@ std::optional<FPreparedNativeKinematicFields::FRoster> FPreparedNativeKinematicF
     for (const auto& Entry : World.StableSubBodyIds)
     {
         if (!Entry.Key || !Entry.Value || !Entry.Key->GetParentComponent()) return {};
-        const auto* Parent = Entry.Key->GetParentComponent();
-        const uint64 Actor = World.FindStableId(*Parent);
-        if (!Actor || World.FindAdapterByStableId(Actor) != Parent) return {};
+        auto* Parent = Entry.Key->GetParentComponent();
+        const uint64 Actor = World.StableIds.FindRef(Parent);
+        if (!Actor || World.AdaptersByStableId.FindRef(Actor) != Parent) return {};
         const auto* Solid = World.SolidSubBodiesByStableId.FindRef(Entry.Value);
         if (Solid && Solid != Entry.Key) return {};
         if (Solid) ++Solids;

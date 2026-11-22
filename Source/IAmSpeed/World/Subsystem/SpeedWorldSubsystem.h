@@ -148,7 +148,11 @@ public:
 	bool ValidateSimulationBindings(FString& OutReason);
 	/** Keeps the admitted registry fixed until the canonical frame has ended. */
 	bool BeginCanonicalFrame(FString& OutReason);
-	void EndCanonicalFrame() { bCanonicalFrameActive = false; }
+	void EndCanonicalFrame()
+	{
+		const auto Access = SimulationWorld.BorrowStorage();
+		if (Access) bCanonicalFrameActive = false;
+	}
 	ECanonicalRunControlState GetCanonicalRunControlState();
 #if !UE_BUILD_SHIPPING
     /** Owner-only observer over the already admitted registry. No pending-op
@@ -168,6 +172,16 @@ public:
 	{
 		return SimulationWorld.GetStaticCollisionWorld();
 	}
+	bool HasStaticCollisionWorld() const { return SimulationWorld.HasStaticCollisionWorld(); }
+    // The visitor must leave only values or immutable publications behind.
+    // A component lifetime pin belongs to its owner independently of this scope.
+    bool VisitBorrowedSimulationWorld(TFunctionRef<void(const Speed::FSimulationWorld&)> Visit) const
+    {
+        const auto Access = SimulationWorld.BorrowStorage();
+        if (!Access) return false;
+        Visit(SimulationWorld);
+        return true;
+    }
     // Preparation publication only. It keeps physical stepping closed until
     // the typed consumer is qualified; no asset eligibility flag is changed.
     bool TryPublishPreparedIntervalWorld(const Speed::FHostedGTStaticWorldLease& Lease,

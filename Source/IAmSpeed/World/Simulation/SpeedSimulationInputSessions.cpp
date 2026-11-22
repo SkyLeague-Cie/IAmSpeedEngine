@@ -147,6 +147,12 @@ ESimulationBoundaryResult ASpeedPhysicsSimulation::ServiceInputSessionBoundary(b
     if (!ValidateAnalyticNumericOwner()) return ESimulationBoundaryResult::Failed;
     if (ExactRemoteRoundProvider)
         if (const auto Round = ServiceExactRemoteRoundBoundary(bPauseRequested)) return *Round;
+    std::optional<Speed::FWorldBorrowGate::FBorrow> WorldBorrow;
+    if (SpeedWorldSubsystem)
+    {
+        WorldBorrow.emplace(SpeedWorldSubsystem->SimulationWorld.StorageAccess);
+        if (!*WorldBorrow) return ESimulationBoundaryResult::Failed;
+    }
     if (CompleteOwnedWorkerAtBoundary())
     {
         bOwnedWorkerTerminal.Store(true);

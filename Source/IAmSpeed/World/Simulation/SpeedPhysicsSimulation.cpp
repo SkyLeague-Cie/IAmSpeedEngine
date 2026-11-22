@@ -1030,6 +1030,9 @@ void ASpeedPhysicsSimulation::ResumeOwnedSimulation()
     // paused until the actual first FullFrame has closed and armed this worker.
     if(Speed::PreparedExecution::Requested())
     {
+        if (!SpeedWorldSubsystem) return;
+        const auto Access = SpeedWorldSubsystem->SimulationWorld.BorrowStorage();
+        if (!Access) return;
         const auto* provider=SpeedWorldSubsystem?SpeedWorldSubsystem->GetStaticCollisionWorld():nullptr;
         const auto snapshot=provider?provider->GetPreparedSnapshot():Speed::FPreparedWorldSnapshotPtr{};
         const auto consumer=provider?provider->GetPreparedNativeFrameConsumer():Speed::FPreparedNativeFrameConsumerPtr{};
@@ -1170,6 +1173,12 @@ bool ASpeedPhysicsSimulation::ValidateAnalyticNumericOwner()
 {
     if (bCanonicalPublicationTerminal.Load()) return false;
     const auto* Subsystem=SpeedWorldSubsystem ? SpeedWorldSubsystem : GetSpeedWorldSubsystem(GetWorld());
+    std::optional<Speed::FWorldBorrowGate::FBorrow> Access;
+    if (Subsystem)
+    {
+        Access.emplace(Subsystem->SimulationWorld.StorageAccess);
+        if (!*Access) return false;
+    }
     const auto* Data=Subsystem ? Subsystem->GetAnalyticWorldData() : nullptr;
     const auto Contract=Data ? Data->NumericContract : Speed::Analytic::EAnalyticNumericContract::Unspecified;
     try
@@ -1217,6 +1226,8 @@ bool ASpeedPhysicsSimulation::EnsureSimulationWorldReady()
 		SpeedWorldSubsystem = GetSpeedWorldSubsystem(GetWorld());
 	}
 	if (!SpeedWorldSubsystem) return false;
+	const auto Access = SpeedWorldSubsystem->SimulationWorld.BorrowStorage();
+	if (!Access) return false;
 	if (Speed::Analytic::FStaticWorldQueryAudit::IsSurfaceAnalyticBackend() &&
 		(!SpeedWorldSubsystem->GetStaticCollisionWorld() || !SpeedWorldSubsystem->GetStaticCollisionWorld()->IsReadyForPhysicsStep()))
 	{
@@ -1662,6 +1673,8 @@ bool ASpeedPhysicsSimulation::StepCanonicalFrame(const FCanonicalFrameContext& C
 			return false;
 		}
 	}
+    const auto WorldBorrow = SpeedWorldSubsystem->SimulationWorld.BorrowStorage();
+    if (!WorldBorrow) return false;
 
 	FString BindingFailure;
 	bool bAdmitted = false;
