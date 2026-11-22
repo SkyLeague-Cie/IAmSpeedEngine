@@ -1,11 +1,19 @@
 #pragma once
 
 #include "ActionMapping.h"
+#include "../PreparedInputResume.h"
 #include "InputProducerPollFence.h"
 
 namespace Speed::Input::V2
 {
 enum class EProducerContract : std::uint8_t { Unknown, Device, ExactScenario, ExactRemote, AI };
+// Initial host opt-in preserves original Device identity; other remote origins stay closed.
+enum class EExactRemoteAdmission : std::uint8_t { Closed, OriginalDeviceExact, OriginalDeviceAuthoritativeProcessing };
+inline bool AdmitsOriginalDeviceRemote(EExactRemoteAdmission A) noexcept
+{ return A == EExactRemoteAdmission::OriginalDeviceExact || A == EExactRemoteAdmission::OriginalDeviceAuthoritativeProcessing; }
+inline bool UsesAuthoritativeDeviceProcessing(EProducerContract Kind, EExactRemoteAdmission A) noexcept
+{ return Kind == EProducerContract::Device || (Kind == EProducerContract::ExactRemote && A == EExactRemoteAdmission::OriginalDeviceAuthoritativeProcessing); }
+enum class EInputFrameReadiness : std::uint8_t { Ready, Waiting, Rejected };
 enum class ELifecycleResult : std::uint8_t { Applied, Unaffected, Rejected };
 class IInputProducer
 {
@@ -14,7 +22,11 @@ public:
 	virtual IInputProducerPollFence* PollFence() noexcept { return nullptr; }
 	virtual bool SupportsPollFence() const noexcept { return false; }
 	virtual EProducerContract GetProducerContract() const noexcept { return EProducerContract::Unknown; }
+	// Owner admission hint only: no freeze, consume, synthetic input or processing ACK.
+	// Ordinary producers retain their existing synchronous poll behavior.
+	virtual EInputFrameReadiness QueryFrameReadiness(FFrameNumber) const { return EInputFrameReadiness::Ready; }
 	virtual std::optional<FInputFrame> InspectBaseline(FFrameNumber) const { return {}; }
+	virtual std::unique_ptr<IPreparedInputResume> PrepareResumeAtBoundary(FFrameNumber) { return {}; }
 	virtual std::optional<FInputFrame> Produce(FFrameNumber Frame) = 0;
 	// Exact test authoring only: seal a future frame on the owner before poll.
 	// Device/network producers deliberately keep the rejecting default.

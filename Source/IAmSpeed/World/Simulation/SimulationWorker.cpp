@@ -16,6 +16,40 @@
 #include <cstring>
 #include <stdexcept>
 
+namespace
+{
+thread_local const FSimulationWorker* CurrentInputBoundaryOwner=nullptr;
+thread_local const FSimulationWorker* CurrentCanonicalWorkOwner=nullptr;
+class FOwnedCanonicalWorkScope final
+{
+public:
+    explicit FOwnedCanonicalWorkScope(const FSimulationWorker& Worker)
+    {
+        if(CurrentCanonicalWorkOwner)throw std::runtime_error("nested native canonical Work");
+        CurrentCanonicalWorkOwner=&Worker;
+    }
+    ~FOwnedCanonicalWorkScope(){CurrentCanonicalWorkOwner=nullptr;}
+    FOwnedCanonicalWorkScope(const FOwnedCanonicalWorkScope&)=delete;
+    FOwnedCanonicalWorkScope& operator=(const FOwnedCanonicalWorkScope&)=delete;
+};
+class FOwnedInputBoundaryScope final
+{
+public:
+    explicit FOwnedInputBoundaryScope(const FSimulationWorker& Worker)
+    {
+        if(CurrentInputBoundaryOwner)throw std::runtime_error("nested native input boundary");
+        CurrentInputBoundaryOwner=&Worker;
+    }
+    ~FOwnedInputBoundaryScope(){CurrentInputBoundaryOwner=nullptr;}
+    FOwnedInputBoundaryScope(const FOwnedInputBoundaryScope&)=delete;
+    FOwnedInputBoundaryScope& operator=(const FOwnedInputBoundaryScope&)=delete;
+};
+}
+bool FSimulationWorker::OwnsCurrentInputBoundary() const
+{return CurrentInputBoundaryOwner==this&&bRunning.Load()&&!bStopRequested.Load();}
+bool FSimulationWorker::OwnsCurrentCanonicalWork() const
+{return CurrentCanonicalWorkOwner==this&&bRunning.Load();}
+
 #if WITH_DEV_AUTOMATION_TESTS
 namespace Speed::Testing
 {
@@ -969,8 +1003,16 @@ uint32 FSimulationWorker::Run()
 			// an acknowledgment from work performed for an earlier boundary.
 			const uint64 Request = PauseRequestSerial.Load();
 			const bool bPauseAtBoundary = bPaused.Load();
-			const ESimulationBoundaryResult Boundary = ServiceBoundary
-				? ServiceBoundary(bPauseAtBoundary) : ESimulationBoundaryResult::Ready;
+            ESimulationBoundaryResult Boundary=ESimulationBoundaryResult::Ready;
+            {
+                FOwnedInputBoundaryScope InputBoundary(*this);
+                Boundary=ServiceBoundary?ServiceBoundary(bPauseAtBoundary):ESimulationBoundaryResult::Ready;
+            }
+			if (Boundary == ESimulationBoundaryResult::Complete)
+			{
+				ExitCode = 0;
+				break; // owner closes its ledger even when the next input is absent
+			}
 			if (Boundary == ESimulationBoundaryResult::Failed)
 			{
 				ExitCode = 1;
@@ -1005,6 +1047,7 @@ uint32 FSimulationWorker::Run()
 			PauseAcknowledgedEvent->Reset();
 			const ESimulationWorkerResult Result = [&]()
             {
+                FOwnedCanonicalWorkScope CanonicalWork(*this);
                 Speed::PreparedExecution::FWorkerCallScope PhysicalWorker(*this);
                 return Work();
             }();
@@ -1027,6 +1070,7 @@ uint32 FSimulationWorker::Run()
 #endif
 				continue;
 			}
+            if(Result==ESimulationWorkerResult::NeedsOwnerBoundary)continue;
 			WaitBetweenFrames(WaitContext);
 		}
 	}

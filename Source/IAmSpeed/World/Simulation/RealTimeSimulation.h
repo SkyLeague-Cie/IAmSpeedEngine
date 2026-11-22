@@ -64,6 +64,9 @@ UCLASS()
 class IAMSPEED_API ARealTimeSimulation : public ASpeedPhysicsSimulation
 {
 	GENERATED_BODY()
+protected:
+    bool SupportsRequestedV2FrameControl()const override{return true;}
+public:
 #if WITH_DEV_AUTOMATION_TESTS
 	friend class FSkyCameraPacedPhysicalFrameCounterbalancedTest;
 #endif
@@ -92,6 +95,7 @@ protected:
 	void OnOwnedWorkerStarting() override;
 	void OnOwnedSimulationPaused() override;
 	void OnOwnedSimulationResumed() override;
+    void OnOwnedInputWaitEnded() override;
 
 private:
 #if !UE_BUILD_SHIPPING

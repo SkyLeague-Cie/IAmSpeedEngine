@@ -9,6 +9,7 @@ extern thread_local FCallbackRecord* CallbackCurrent;
 void ObserveCallbackStage(uint32 stage,uint64 start);
 }
 #endif
+#include "IAmSpeed/Netcode/presentation-client/PresentationClientWorld.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Engine/Engine.h"
 #include "IAmSpeed/World/ReplayInertWorld.h"
@@ -40,6 +41,8 @@ void ObserveCallbackStage(uint32 stage,uint64 start);
 #include "Misc/Parse.h"
 #include "UObject/UnrealType.h"
 #include "Misc/ScopeLock.h"
+#include "IAmSpeed/Netcode/remote-input/ExactRemoteDedicatedHost.h"
+#include "Misc/ScopeTryLock.h"
 #include "EngineUtils.h"
 #include "IAmSpeed/World/Simulation/SpeedPhysicsSimulation.h"
 #include "IAmSpeed/Camera/SpeedCarCameraPresentation.h"
@@ -460,6 +463,12 @@ float GetSmishTurnTargetSpeed(
 USpeedWheeledComponent::USpeedWheeledComponent(const FObjectInitializer& ObjectInitializer) :
 	Super(ObjectInitializer)
 {
+    // Chaos can construct a THIRD network component in Super when prediction is
+    // enabled. Keep that original DSO inert before registration too; no removal
+    // of an already registered/history-bearing component is allowed.
+    if(Speed::Netcode::PresentationClient::IsSelected()&&NetworkPhysicsComponent)
+    { NetworkPhysicsComponent->bAutoRegister=false;NetworkPhysicsComponent->SetAutoActivate(false);NetworkPhysicsComponent->SetIsReplicated(false); }
+
 	SetIsReplicatedByDefault(true);
 
 	InitChaosVehicle();
@@ -488,6 +497,7 @@ USpeedWheeledComponent::USpeedWheeledComponent(const FObjectInitializer& ObjectI
 
 void USpeedWheeledComponent::OnRegister()
 {
+    if (Speed::Netcode::PresentationClient::SuppressesLocalPhysics(GetWorld())) { UActorComponent::OnRegister(); return; }
     Super::OnRegister();
     AActor* Actor=GetOwner();
     if(!Actor || Actor->IsTemplate() || !Actor->GetRootComponent())return;
@@ -519,6 +529,7 @@ void USpeedWheeledComponent::ResolveFixedCenterOfMassFromConfiguration()
 
 void USpeedWheeledComponent::SetOwner(AActor* NewOwner)
 {
+	if (Speed::Netcode::PresentationClient::SuppressesLocalPhysics(GetWorld())) return;
 	if (NewOwner == nullptr)
 	{
 		return;
@@ -638,9 +649,19 @@ void USpeedWheeledComponent::BindWheelSimulationPointers(
 		WheelSubBodies.Num(),
 		PVehicle->Wheels.Num(),
 		PVehicle->Suspension.Num());
-	UE_LOG(LogTemp, Warning, TEXT("[WheelSuspensionBinding] subbodies=%d vehicle_wheels=%d vehicle_suspensions=%d bindings=%d component_wheels=%d"),
+	UE_LOG(LogTemp, Display, TEXT("[WheelSuspensionBinding] subbodies=%d vehicle_wheels=%d vehicle_suspensions=%d bindings=%d component_wheels=%d"),
 		WheelSubBodies.Num(), PVehicle->Wheels.Num(),
 		PVehicle->Suspension.Num(), NumBindings, Wheels.Num());
+	// This message describes ordinary setup, including the earlier stage where
+	// Chaos storage exists before component wheel configurations. Only an actual
+	// storage-count mismatch is a warning; canonical admission still validates
+	// every final index/pointer/configuration without relaxation.
+	if (WheelSubBodies.Num() <= 0 || PVehicle->Wheels.Num() != WheelSubBodies.Num()
+		|| PVehicle->Suspension.Num() != WheelSubBodies.Num())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[WheelSuspensionBindingIncomplete] subbodies=%d vehicle_wheels=%d vehicle_suspensions=%d"),
+			WheelSubBodies.Num(), PVehicle->Wheels.Num(), PVehicle->Suspension.Num());
+	}
 	for (int32 WheelIdx = 0; WheelIdx < WheelSubBodies.Num(); ++WheelIdx)
 	{
 		USWheelSubBody* WheelSubBody = WheelSubBodies[WheelIdx].Get();
@@ -848,11 +869,13 @@ ASpeedCar* USpeedWheeledComponent::GetSpeedCarOwner() const
 
 bool USpeedWheeledComponent::ShouldCreatePhysicsState() const
 {
+    if (Speed::Netcode::PresentationClient::SuppressesLocalPhysics(GetWorld())) return false;
     if (Speed::ReplayIsolation::IsInertReplayWorld(GetWorld())) return false;
     return Super::ShouldCreatePhysicsState();
 }
 void USpeedWheeledComponent::OnCreatePhysicsState()
 {
+	if (Speed::Netcode::PresentationClient::SuppressesLocalPhysics(GetWorld())) return;
 	if (Speed::ReplayIsolation::IsInertReplayWorld(GetWorld()))
 	{ Speed::ReplayIsolation::FailInertReplayBootstrap(*GetWorld(),TEXT("unexpected IAS wheeled physics-state creation in inert replay")); return; }
 	// =========> START OVERLOAD Chaos prediction here
@@ -895,8 +918,29 @@ void USpeedWheeledComponent::OnCreatePhysicsState()
 	}
 	// =========> END OVERLOAD Chaos pediction here
 
-	// only create data history in game
-	if (World->IsGameWorld())
+    // This immutable process opt-in belongs to the dedicated canonical Demo
+    // host only. Never unregister an already active history or borrow its state.
+    const auto RemotePolicy = Speed::Netcode::QueryExactRemoteHostPolicy(World);
+    const bool bExactDedicatedHost = World->IsGameWorld()
+        && RemotePolicy == Speed::Netcode::EExactRemoteHostPolicy::IsolatedDedicated;
+    if (World->IsGameWorld() && RemotePolicy == Speed::Netcode::EExactRemoteHostPolicy::Invalid)
+    { UE_LOG(SpeedInputLog, Fatal, TEXT("Invalid ExactRemote dedicated host policy; legacy fallback forbidden")); return; }
+    bLegacyNetworkHistoryExcluded = false;
+    if (bExactDedicatedHost)
+    {
+        if ((SNetworkSettings && SNetworkSettings->IsRegistered())
+            || !SNetworkPhysicsComponent || !WheeledNetworkPhysicsComponent
+            || SNetworkPhysicsComponent->IsRegistered() || WheeledNetworkPhysicsComponent->IsRegistered()
+            || SNetworkPhysicsComponent->GetStateHistory_External() || SNetworkPhysicsComponent->GetInputHistory_External()
+            || WheeledNetworkPhysicsComponent->GetStateHistory_External() || WheeledNetworkPhysicsComponent->GetInputHistory_External())
+            { UE_LOG(SpeedInputLog, Fatal, TEXT("ExactRemote refuses an already active or missing legacy history component")); return; }
+        SNetworkPhysicsComponent->SetIsReplicated(false);
+        WheeledNetworkPhysicsComponent->SetIsReplicated(false);
+        bLegacyNetworkHistoryExcluded = true;
+        UE_LOG(SpeedInputLog, Display, TEXT("[ExactRemoteLegacyHistoryExcluded] Speed=1 Wheeled=1 BeforeRegistration=1"));
+    }
+    // Default standalone and SL behavior remains the existing legacy route.
+	if (World->IsGameWorld() && !bExactDedicatedHost)
 	{
 		if (SNetworkSettings && !SNetworkSettings->IsRegistered())
 		{
@@ -958,6 +1002,7 @@ void USpeedWheeledComponent::OnCreatePhysicsState()
 
 void USpeedWheeledComponent::BeginPlay()
 {
+	if (Speed::Netcode::PresentationClient::SuppressesLocalPhysics(GetWorld())) { UActorComponent::BeginPlay(); return; }
 	bWheeledEndPlayTeardown = false;
 	bSpeedWorldAdapterRetiredForTeardown = false;
 	Super::BeginPlay();
@@ -1147,6 +1192,8 @@ USWheelSubBody* USpeedWheeledComponent::CreateWheelSubBody(const int& WheelIndex
 
 void USpeedWheeledComponent::SetSubBodies(const TArray<USSubBody*>& NewSubBodies)
 {
+    if(RequestedInputBodyGeneration==MAX_uint64)RequestedInputBodyGeneration=0;
+    else if(RequestedInputBodyGeneration)++RequestedInputBodyGeneration;
 	SubBodies = NewSubBodies;
 }
 
@@ -1544,7 +1591,7 @@ void USpeedWheeledComponent::PhysicsTick(const float& DeltaTime, const float& Si
 bool USpeedWheeledComponent::NeutralizeCanonicalInputAtBoundary()
 {
 	if (bCanonicalInputPending || InputReservationV2 || !CanNeutralizeProducedInputStateAtBoundary()) return false;
-	CanonicalInputSnapshot.reset(); PreparedCanonicalInputFrame.Reset();
+	CanonicalInputSnapshot.reset(); CanonicalRequestedInput.reset(); PreparedCanonicalInputFrame.Reset();
 	PublishedWheeledNetworkInput.store(std::shared_ptr<const FCompletedWheeledInput>{}, std::memory_order_seq_cst);
 	WheeledPhysicalInput.Throttle = 0; WheeledPhysicalInput.Brake = 0; WheeledPhysicalInput.Steer = 0;
 	SyncWheeledPhysicalInputToState(); ResetProducedInputState();
@@ -1554,13 +1601,64 @@ bool USpeedWheeledComponent::NeutralizeCanonicalInputAtBoundary()
 bool USpeedWheeledComponent::InstallCanonicalInput(uint64 Frame,
 	std::shared_ptr<const Speed::Input::V2::FOwnerInputSnapshot> Snapshot)
 {
-	if (!Snapshot || bCanonicalInputPending || InputReservationV2 || FrameInputStream || FrameInputStreamV2
+	if (!Snapshot || bCanonicalRequestedAuthority.load(std::memory_order_acquire) || bCanonicalInputPending || InputReservationV2 || FrameInputStream || FrameInputStreamV2
 		|| !HasProducedInputAuthority() || IsTestInputOverrideEnabled()
 		|| Snapshot->Input.GetData().ConsumptionFrame != Frame) return false;
 	CanonicalInputSnapshot = std::move(Snapshot);
 	bCanonicalInputPending = true;
 	bInputFrameRejectedV2 = false;
 	return true;
+}
+
+bool USpeedWheeledComponent::CanAdmitCanonicalRequestedInput() const
+{
+    const auto Clear=[this]()
+    {return !CanonicalInputSnapshot&&!InputReservationV2&&!FrameInputStream&&!FrameInputStreamV2
+        &&!HasLegacyRemoteInputAuthority()&&!IsTestInputOverrideEnabled();};
+    if(bCanonicalRequestedAuthority.load(std::memory_order_acquire))return Clear();
+    FScopeTryLock Lock(&FrameInputProducerMutex);return Lock.IsLocked()&&Clear();
+}
+
+bool USpeedWheeledComponent::SupportsCanonicalRequestedInputs(const Speed::Input::V2::FInputActionContract& Contract,
+    const Speed::Input::V2::FInputProcessingPolicy&,Speed::Input::V2::ERequestedDigitalPolicy Digital) const
+{
+    using namespace Speed::Input::V2;
+    if(Digital!=ERequestedDigitalPolicy::HeldStateAndCancelInactive)return false;
+    // Generic wheeled input has no digital gameplay dispatcher. A game with
+    // Boolean actions must explicitly implement and opt in its own adapter.
+    for(const auto& A:Contract.GetDescription().Actions)
+        if(A.Wiring==EActionWiring::Wired&&A.Type==EActionType::Bool)return false;
+    return true;
+}
+
+bool USpeedWheeledComponent::InstallCanonicalRequestedInput(uint64 Frame,
+    std::shared_ptr<const Speed::Input::V2::FRequestedInputConsumption> Input)
+{
+    if(CanonicalRequestedBindingV2||bCanonicalRequestedV2Retired)return false;
+    if(!Input||!Input->Request||Input->Request->GetState().Frame!=Frame||bCanonicalInputPending||CanonicalInputSnapshot)return false;
+    if(!bCanonicalRequestedAuthority.load(std::memory_order_acquire))
+    {
+        FScopeTryLock Lock(&FrameInputProducerMutex);
+        if(!Lock.IsLocked()||InputReservationV2||FrameInputStream||FrameInputStreamV2
+            ||HasLegacyRemoteInputAuthority()||IsTestInputOverrideEnabled())return false;
+        bCanonicalRequestedAuthority.store(true,std::memory_order_release);
+        bProducedInputAuthority.store(true,std::memory_order_release);
+    }
+    if(!CanAdmitCanonicalRequestedInput())return false;
+    CanonicalRequestedInput=std::move(Input);bCanonicalInputPending=true;bInputFrameRejectedV2=false;return true;
+}
+
+bool USpeedWheeledComponent::ValidateCanonicalRequestedInput(const Speed::Input::V2::FRequestedInputConsumption& Input) const
+{
+    if(!Input.Request||!Input.Request->GetContract())return false;
+    return SupportsCanonicalRequestedInputs(*Input.Request->GetContract(),{},
+        Speed::Input::V2::ERequestedDigitalPolicy::HeldStateAndCancelInactive)&&!Input.CancelDigitalMask;
+}
+
+bool USpeedWheeledComponent::ApplyCanonicalRequestedInput(const Speed::Input::V2::FRequestedInputConsumption& Input)
+{
+    return Input.Request&&Input.Request->GetContract()&&!Input.CancelDigitalMask
+        &&ApplyProducedCameraValuesV2(*Input.Request->GetContract(),Input.Applied);
 }
 
 bool USpeedWheeledComponent::PrepareCanonicalInputs(const FCanonicalFrameContext& Context)
@@ -1757,6 +1855,28 @@ void USpeedWheeledComponent::UpdateNumFrame(const float& SimTime)
 void USpeedWheeledComponent::UpdateInputs()
 {
 	const int32 CurrentFrame = NumFrame();
+    if(bCanonicalRequestedV2Retired)
+    {
+        // Retirement already published the game's cancellation once. Keep
+        // its neutral held values while physics/timers/contacts continue.
+        // No legacy poll, synthetic frame or repeated digital reset follows.
+        bProducedInputFrameOwned=true;
+        WheeledPhysicalInput.bCanMove=CanMove();SyncWheeledPhysicalInputToState();return;
+    }
+    if(CanonicalRequestedInput)
+    {
+        using namespace Speed::Input;
+        bProducedInputFrameOwned=true;const auto N=FromLegacyLocalFrame(NumFrame());
+        const auto& Input=*CanonicalRequestedInput;
+        if(!bCanonicalInputPending||!N||!Input.Request||Input.Request->GetState().Frame!=*N
+            ||!(CanonicalRequestedBindingV2?ValidateCanonicalRequestedInputV2(Input,*CanonicalRequestedBindingV2):ValidateCanonicalRequestedInput(Input))){bInputFrameRejectedV2=true;return;}
+        if(Input.Request->GetState().Reset)ResetProducedInputState();
+        WheeledPhysicalInput.Throttle=uint8(Input.Applied[Throttle]);WheeledPhysicalInput.Brake=uint8(Input.Applied[Brake]);
+        WheeledPhysicalInput.Steer=int8(Input.Applied[Steering]);WheeledPhysicalInput.bCanMove=CanMove();
+        SyncWheeledPhysicalInputToState();bInputFrameRejectedV2=!(CanonicalRequestedBindingV2?ApplyCanonicalRequestedInputV2(Input,*CanonicalRequestedBindingV2):ApplyCanonicalRequestedInput(Input));
+        if(!bInputFrameRejectedV2&&bGenericCameraInputEnabled.load(std::memory_order_acquire))ConsumeQueuedCameraInputsForFrame(CurrentFrame);
+        return;
+    }
 	if (CanonicalInputSnapshot)
 	{
 		using namespace Speed::Input;
@@ -1813,6 +1933,7 @@ void USpeedWheeledComponent::SetFrameInputStream(std::shared_ptr<Speed::Input::F
 	// Null is mandatory lifecycle teardown, including UnPossess during dispatch.
 	if (Stream && Speed::Input::FPresentationInputScope::IsActive()) return;
 	FScopeLock Lock(&FrameInputProducerMutex);
+	if(bCanonicalRequestedAuthority.load(std::memory_order_acquire))return;
 	if (Stream && (FrameInputStreamV2 || HasLegacyRemoteInputAuthority())) return; // Never install a second authority.
 	if (FrameInputStream && FrameInputStream != Stream) FrameInputStream->Deactivate();
 	FrameInputStream = MoveTemp(Stream);
@@ -1888,6 +2009,7 @@ bool USpeedWheeledComponent::SetFrameInputStreamV2(std::shared_ptr<Speed::Input:
 	check(IsInGameThread());
 	if (Stream && Speed::Input::FPresentationInputScope::IsActive()) return false;
 	FScopeLock Lock(&FrameInputProducerMutex);
+    if(bCanonicalRequestedAuthority.load(std::memory_order_acquire))return false;
 	if (HasLegacyRemoteInputAuthority() || InputReservationV2 || (Stream && (FrameInputStream || IsTestInputOverrideEnabled()))) return false;
 	if (FrameInputStreamV2 && FrameInputStreamV2 != Stream) FrameInputStreamV2->RequestStop();
 	FrameInputStreamV2 = MoveTemp(Stream);
@@ -1961,6 +2083,7 @@ bool USpeedWheeledComponent::ValidateCanonicalFrameCommit(uint64 Frame) const
 	if (bInputFrameRejectedV2 || (LegacyWheeledOwner && !LegacyWheeledOwner->CanComplete(Frame))
 		|| !PrepareWheeledNetworkInput(Frame)) return false;
 	if (CanonicalInputSnapshot) return bCanonicalInputPending && CanonicalInputSnapshot->Input.GetData().ConsumptionFrame == Frame;
+    if(CanonicalRequestedInput)return bCanonicalInputPending&&CanonicalRequestedInput->Request->GetState().Frame==Frame;
 	if (!InputReservationV2) return !ConsumedFrameInputStreamV2;
 	return ReservedInputFrameV2 && *ReservedInputFrameV2 == Frame && ConsumedFrameInputStreamV2
 		&& ConsumedFrameInputStreamV2->PrepareFinalization(*InputReservationV2);
@@ -1972,6 +2095,11 @@ bool USpeedWheeledComponent::CommitCanonicalFrame(uint64 Frame) noexcept
 	if (LegacyWheeledOwner && !LegacyWheeledOwner->Complete(Frame)) return false;
 	PublishedWheeledNetworkInput.store(PreparedWheeledNetworkInput, std::memory_order_seq_cst);
 	PreparedWheeledNetworkInput.reset();
+    if(CanonicalRequestedInput)
+    {
+        if(bInputFrameRejectedV2||!bCanonicalInputPending||CanonicalRequestedInput->Request->GetState().Frame!=Frame)return false;
+        bCanonicalInputPending=false;return true;
+    }
 	if (CanonicalInputSnapshot)
 	{
 		if (bInputFrameRejectedV2 || !bCanonicalInputPending || CanonicalInputSnapshot->Input.GetData().ConsumptionFrame != Frame) return false;
@@ -1992,6 +2120,7 @@ void USpeedWheeledComponent::AbortCanonicalFrame(uint64, ECanonicalFrameAbortRea
 	if (LegacyWheeledOwner) LegacyWheeledOwner->Abort();
 	PreparedWheeledNetworkInput.reset();
 	PublishedWheeledNetworkInput.store(std::shared_ptr<const FCompletedWheeledInput>{}, std::memory_order_seq_cst);
+    if(CanonicalRequestedInput){CanonicalRequestedInput.reset();bCanonicalInputPending=false;bInputFrameRejectedV2=true;}
 	if (CanonicalInputSnapshot)
 	{
 		CanonicalInputSnapshot.reset(); bCanonicalInputPending = false; bInputFrameRejectedV2 = true;
@@ -2141,18 +2270,23 @@ void USpeedWheeledComponent::ConsumeQueuedCameraInputsForFrame(int32 CurrentFram
 }
 bool USpeedWheeledComponent::ApplyProducedInputFrameV2(const Speed::Input::V2::FInputFrame& Frame)
 {
+    const auto Contract=Frame.GetContract();return Contract&&ApplyProducedCameraValuesV2(*Contract,Frame.GetData().Values);
+}
+
+bool USpeedWheeledComponent::ApplyProducedCameraValuesV2(const Speed::Input::V2::FInputActionContract& Contract,
+    const Speed::Input::FActionValues& Values)
+{
     // Disabled by default: existing game adapters and the old explicit queue
     // retain their exact behavior. Enabled slots are immutable car setup.
     if(CanonicalCameraYawAction<0 && CanonicalCameraPitchAction<0)return true;
     FSpeedCarCameraPhysicalInput Camera;
-    const auto Contract=Frame.GetContract();if(!Contract)return false;
     const auto ReadAxis=[&](int32 Slot,int8& Value)
     {
         if(Slot==-1){Value=0;return true;}
         if(Slot<0 || Slot>=int32(Speed::Input::ActionCount))return false;
-        const auto* A=Contract->Find(Speed::Input::FActionId(Slot));
+        const auto* A=Contract.Find(Speed::Input::FActionId(Slot));
         if(!A || A->Type!=Speed::Input::V2::EActionType::Axis1D || A->Wiring!=Speed::Input::V2::EActionWiring::Wired || !A->Signed || A->Quantization!=127)return false;
-        const auto V=Frame.GetData().Values[Slot];if(V < -127 || V>127)return false;
+        const auto V=Values[Slot];if(V < -127 || V>127)return false;
         Value=int8(V);return true;
     };
     if(!ReadAxis(CanonicalCameraYawAction,Camera.Yaw) || !ReadAxis(CanonicalCameraPitchAction,Camera.Pitch))return false;
@@ -3758,6 +3892,10 @@ float USpeedWheeledComponent::GetSuspensionOffset(int WheelIndex)
 
 bool USpeedWheeledComponent::CanMove() const
 {
+    // Native requested-network F0/F1 physical agreement is not implemented
+    // by source admission or a Reset input. Keep this new route closed until
+    // that actual agreement is admitted; the timer cannot grant it implicitly.
+    if(bCanonicalRequestedAuthority.load(std::memory_order_acquire))return false;
 	return WheeledPhysicsState.nbFramesbeforeCanMove == 0;
 }
 
@@ -5561,6 +5699,16 @@ HandbrakeLowSlipYawCorrectionScaleCurve = {
 	SteeringInputRate.InputCurveFunction = EInputFunctionType::LinearFunction;
 	bEnableCenterOfMassOverride = true;
 	SteeringSetup.SteeringType = ESteeringType::Ackermann;
+}
+
+bool USpeedWheeledComponent::IsLegacyNetworkHistoryExcluded() const
+{
+    check(IsInGameThread());
+    return bLegacyNetworkHistoryExcluded && SNetworkPhysicsComponent && WheeledNetworkPhysicsComponent
+        && (!SNetworkSettings || !SNetworkSettings->IsRegistered())
+        && !SNetworkPhysicsComponent->IsRegistered() && !WheeledNetworkPhysicsComponent->IsRegistered()
+        && !SNetworkPhysicsComponent->GetStateHistory_External() && !SNetworkPhysicsComponent->GetInputHistory_External()
+        && !WheeledNetworkPhysicsComponent->GetStateHistory_External() && !WheeledNetworkPhysicsComponent->GetInputHistory_External();
 }
 
 void USpeedWheeledComponent::InitNetwork()

@@ -55,6 +55,8 @@ bool USpeedWheeledComponent::PrepareLegacyWheeledInput(uint64 Frame)
 
 bool USpeedWheeledComponent::RetireInputProcessingOnWorker()
 {
+    if(CanonicalRequestedInput&&bCanonicalInputPending)return false;
+    CanonicalRequestedInput.reset();bCanonicalRequestedAuthority.store(false,std::memory_order_release);
 	FScopeLock Lock(&LegacyWheeledIngressMutex);
 	if (LegacyWheeledOwner && !LegacyWheeledOwner->IsOwnerThread()) return false;
 	bLegacyWheeledRetired = true;
