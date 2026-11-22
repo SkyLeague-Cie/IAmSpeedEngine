@@ -10,7 +10,7 @@
 #include "IAmSpeed/SubBodies/Solid/SolidSubBody.h"
 
 class ISpeedComponent;
-namespace Speed { class FHostedGTStaticWorldLease; }
+namespace Speed { class FHostedGTStaticWorldLease; class FPreparedNativeKinematicFields; }
 namespace Speed::PreparedExecution { class FCanonicalFramePreflight; }
 enum class ECanonicalFrameAbortReason : uint8;
 enum class ECanonicalPublicationResult : uint8 { Completed, ValidationFailed, PublicationFailed, CommitInvariantFailed };
@@ -101,6 +101,7 @@ namespace Speed
 	{
         friend class PreparedExecution::FCanonicalFramePreflight;
         friend class FHostedGTStaticWorldLease;
+        friend class FPreparedNativeKinematicFields;
 	public:
         FSimulationWorld();
         ~FSimulationWorld();

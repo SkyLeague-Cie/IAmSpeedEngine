@@ -14,6 +14,7 @@
 namespace Speed { struct FNativeBallMechanicalWitnessForTesting; }
 #endif
 namespace Speed::PreparedExecution { class FStepScope; }
+namespace Speed { class FPreparedNativeKinematicFields; }
 class ISpeedComponent;
 class UBoxSubBody;
 class USphereSubBody;
@@ -38,6 +39,7 @@ UCLASS()
 class IAMSPEED_API USSubBody : public UShapeComponent
 {
     GENERATED_UCLASS_BODY()
+    friend class Speed::FPreparedNativeKinematicFields;
 #if !UE_BUILD_SHIPPING
     friend struct Speed::FNativeBallMechanicalWitnessForTesting;
 #endif

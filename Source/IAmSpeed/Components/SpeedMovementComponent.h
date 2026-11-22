@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 namespace Speed::Replay { class FFieldWriter; }
+namespace Speed { class FPreparedNativeKinematicFields; }
 #include "GameFramework/MovementComponent.h"
 #include "ISpeedComponent.h"
 #include "Netcode/SpeedPhysicsComponent.h"
@@ -22,6 +23,7 @@ UCLASS()
 class IAMSPEED_API USpeedMovementComponent : public UMovementComponent, public ISpeedComponent
 {
 	GENERATED_BODY()
+    friend class Speed::FPreparedNativeKinematicFields;
 #if !UE_BUILD_SHIPPING
     friend struct Speed::FNativeBallMechanicalWitnessForTesting;
 #endif
