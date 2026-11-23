@@ -5,6 +5,7 @@
 class USpeedMovementComponent;
 class USpeedWheeledComponent;
 class USolidSubBody;
+class USensorSubBody;
 
 namespace Speed
 {
@@ -65,6 +66,8 @@ private:
     static bool MatchesActor(const FSimulationWorld&, const FSimulationComponentRestoreRequest&, const ISpeedComponent&);
     static bool MatchesSolid(const FSimulationWorld&, const FSimulationComponentRestoreRequest&,
         const USolidSubBody&, const PreparedWorld::FEndpointBinding&);
+    static bool MatchesSensor(const FSimulationWorld&, const FSimulationComponentRestoreRequest&,
+        const USensorSubBody&, const FRoster::FSubBody&);
     FPreparedNativeKinematicFields(const FSimulationWorld&, const FSimulationComponentRestoreRequest&,
         SKinematic& Live, bool* Frozen, const SKinematic& State);
 

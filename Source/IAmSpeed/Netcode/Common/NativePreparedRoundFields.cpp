@@ -1,9 +1,9 @@
 #include "NativePreparedRoundFields.h"
 
-#include "NativePreparedKinematicFields.h"
 #include "IAmSpeed/Base/SpeedConstant.h"
 #include "IAmSpeed/Components/SpeedMovementComponent.h"
 #include "IAmSpeed/Components/SpeedWheeledComponent.h"
+#include "IAmSpeed/SubBodies/Sensor/SensorSubBody.h"
 #include "SuspensionSystem.h"
 #include "WheelSystem.h"
 #include <functional>
@@ -180,7 +180,7 @@ std::unique_ptr<FPreparedNativeRoundFields> FPreparedNativeRoundFields::Prepare(
     return Fragment;
 }
 
-void FPreparedNativeRoundFields::StageClearContacts(USolidSubBody& Target)
+void FPreparedNativeRoundFields::StageClearContacts(USSubBody& Target)
 {
     auto& P = *Plan;
     for (auto* Hit : {&Target.CurrentHit, &Target.FutureHit, &Target.GroundHit, &Target.BoxHit, &Target.SphereHit, &Target.WheelHit})
@@ -195,6 +195,34 @@ std::unique_ptr<FPreparedNativeRoundFields> FPreparedNativeRoundFields::PrepareC
     if (!World || !FPreparedNativeKinematicFields::MatchesSolid(*World, Request, Target, Endpoint)) return {};
     auto Fragment = std::unique_ptr<FPreparedNativeRoundFields>(new FPreparedNativeRoundFields(*World, Request));
     Fragment->StageClearContacts(Target);
+    return Fragment;
+}
+
+std::unique_ptr<FPreparedNativeRoundFields> FPreparedNativeRoundFields::PrepareClearSensorOverlaps(USensorSubBody& Target,
+    const FSimulationComponentRestoreRequest& Request, const FPreparedNativeKinematicFields::FRoster::FSubBody& Sensor)
+{
+    const auto* World = Request.OwnerLease.ResolvePreparingWorld(Request, Request.Address);
+    if (!World || !FPreparedNativeKinematicFields::MatchesSensor(*World, Request, Target, Sensor)
+        || static_cast<std::size_t>(Target.AlwaysIgnoredComponents.Num()) > PreparedWorld::FLimits{}.MaxEndpoints)
+        return {};
+
+    auto Fragment = std::unique_ptr<FPreparedNativeRoundFields>(new FPreparedNativeRoundFields(*World, Request));
+    Fragment->StageClearContacts(Target);
+    auto& P = *Fragment->Plan;
+    P.StageArray(Target.OverlapsOrdered, {});
+    // Exchange the set headers only. Old entries and buckets remain owned by
+    // the staged sets until the plan is released, without traversing weak refs.
+    static_assert(TUseBitwiseSwap<decltype(Target.OverlapsSet)>::Value);
+    P.Stage(Target.OverlapsSet, {});
+    P.Stage(Target.TouchedThisFrame, {});
+
+    auto& K = P.Access.ReadOnly;
+    K.push_back(Range(&Target.OnBeginOverlap, sizeof(Target.OnBeginOverlap)));
+    K.push_back(Range(&Target.OnEndOverlap, sizeof(Target.OnEndOverlap)));
+    K.push_back(Range(&Target.OnContinuousOverlap, sizeof(Target.OnContinuousOverlap)));
+    K.push_back(Range(&Target.BeginOverlapHandle, sizeof(Target.BeginOverlapHandle)));
+    K.push_back(Range(&Target.EndOverlapHandle, sizeof(Target.EndOverlapHandle)));
+    K.push_back(Range(&Target.ContinuousOverlapHandle, sizeof(Target.ContinuousOverlapHandle)));
     return Fragment;
 }
 

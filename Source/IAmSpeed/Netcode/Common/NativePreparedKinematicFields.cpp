@@ -2,6 +2,7 @@
 
 #include "IAmSpeed/Components/SpeedMovementComponent.h"
 #include "IAmSpeed/Components/SpeedWheeledComponent.h"
+#include "IAmSpeed/SubBodies/Sensor/SensorSubBody.h"
 #include "IAmSpeed/World/Simulation/SimulationWorld.h"
 #include <algorithm>
 #include <type_traits>
@@ -126,6 +127,22 @@ bool FPreparedNativeKinematicFields::MatchesSolid(const FSimulationWorld& World,
         && World.SolidSubBodiesByStableId.FindRef(Endpoint.StableId) == &Target
         && World.FindStableSubBodyId(&Target) == Endpoint.StableId && Target.GetUniqueID() == Endpoint.NativeObjectId
         && Target.GetParentComponent() && MatchesActor(World, Request, *Target.GetParentComponent());
+}
+
+bool FPreparedNativeKinematicFields::MatchesSensor(const FSimulationWorld& World,
+    const FSimulationComponentRestoreRequest& Request, const USensorSubBody& Target, const FRoster::FSubBody& Sensor)
+{
+    const auto& Binding = Request.Supplement.Binding;
+    if (!Request.OwnerLease.HoldsExactBoundary(World, Request.Address) || !Binding.Valid()
+        || !Sensor.StableId || !Sensor.NativeObjectId || Sensor.IsSolidEndpoint
+        || Sensor.ActorStableId != Binding.StableId || (Sensor.StableId >> 16) != Binding.StableId
+        || World.SolidSubBodiesByStableId.Contains(Sensor.StableId)
+        || World.FindStableSubBodyId(&Target) != Sensor.StableId
+        || World.SubBodyNativeObjectIds.FindRef(Sensor.StableId) != Sensor.NativeObjectId
+        || Target.GetUniqueID() != Sensor.NativeObjectId || !Target.IsSensor()) return false;
+
+    const auto* Parent = Target.GetParentComponent();
+    return Parent && MatchesActor(World, Request, *Parent);
 }
 
 FPreparedNativeKinematicFields::FPreparedNativeKinematicFields(const FSimulationWorld& InWorld,

@@ -1,9 +1,9 @@
 #pragma once
 
+#include "NativePreparedKinematicFields.h"
 #include "IAmSpeed/Components/Netcode/SpeedPhysicsComponent.h"
 #include "IAmSpeed/Components/Netcode/SpeedWheeledPhysicsComponent.h"
 #include "IAmSpeed/SubBodies/Solid/SWheelSubBody.h"
-#include "IAmSpeed/World/Simulation/PreparedSimulationRestore.h"
 
 class USpeedMovementComponent;
 
@@ -59,6 +59,10 @@ public:
     // For a contact-free reset. The first new physical step reacquires hits.
     static std::unique_ptr<FPreparedNativeRoundFields> PrepareClearSolidContacts(USolidSubBody&,
         const FSimulationComponentRestoreRequest&, const PreparedWorld::FEndpointBinding&);
+    // Use the native sensor's row from the reauthenticated roster. The reset
+    // clears transient overlap/hit state without broadcasting overlap events.
+    static std::unique_ptr<FPreparedNativeRoundFields> PrepareClearSensorOverlaps(USensorSubBody&,
+        const FSimulationComponentRestoreRequest&, const FPreparedNativeKinematicFields::FRoster::FSubBody&);
     // Includes cleared solid contacts. Combine with the separate solid pose,
     // and supply the matching suspension displacement in FVehicleState.
     static std::unique_ptr<FPreparedNativeRoundFields> PrepareWheel(USWheelSubBody&,
@@ -77,7 +81,7 @@ public:
 private:
     struct FPlan;
     FPreparedNativeRoundFields(const FSimulationWorld&, const FSimulationComponentRestoreRequest&);
-    void StageClearContacts(USolidSubBody&);
+    void StageClearContacts(USSubBody&);
     std::unique_ptr<FPlan> Plan;
 };
 }
