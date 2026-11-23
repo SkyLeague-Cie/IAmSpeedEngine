@@ -69,6 +69,28 @@ std::optional<FPreparedNativeKinematicFields::FRoster> FPreparedNativeKinematicF
 }
 
 std::unique_ptr<FPreparedNativeKinematicFields> FPreparedNativeKinematicFields::Prepare(
+    USpeedMovementComponent& Target, const FSimulationComponentRestoreRequest& Request)
+{
+    const auto* World = Request.OwnerLease.ResolvePreparingWorld(Request, Request.Address);
+    return World ? Prepare(Target, *World, Request) : nullptr;
+}
+
+std::unique_ptr<FPreparedNativeKinematicFields> FPreparedNativeKinematicFields::Prepare(
+    USpeedWheeledComponent& Target, const FSimulationComponentRestoreRequest& Request)
+{
+    const auto* World = Request.OwnerLease.ResolvePreparingWorld(Request, Request.Address);
+    return World ? Prepare(Target, *World, Request) : nullptr;
+}
+
+std::unique_ptr<FPreparedNativeKinematicFields> FPreparedNativeKinematicFields::PrepareSolid(
+    USolidSubBody& Target, const FSimulationComponentRestoreRequest& Request,
+    const PreparedWorld::FEndpointBinding& Endpoint, const SKinematic& EndpointState)
+{
+    const auto* World = Request.OwnerLease.ResolvePreparingWorld(Request, Request.Address);
+    return World ? PrepareSolid(Target, *World, Request, Endpoint, EndpointState) : nullptr;
+}
+
+std::unique_ptr<FPreparedNativeKinematicFields> FPreparedNativeKinematicFields::Prepare(
     USpeedMovementComponent& Target, const FSimulationWorld& World, const FSimulationComponentRestoreRequest& Request)
 {
     if (!MatchesActor(World, Request, Target) || !ValidKinematics(Request.Kinematic)) return {};

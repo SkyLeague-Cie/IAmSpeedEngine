@@ -32,6 +32,15 @@ public:
     static std::optional<FRoster> CaptureRoster(const FSimulationWorld&, const PreparedWorld::FAddress&,
         const ISimulationRestoreBoundaryLease&);
 
+    // Use the exact request by reference inside PrepareCompleteSimulationRestore.
+    // The factory resolves the world without exposing a registry or world view.
+    static std::unique_ptr<FPreparedNativeKinematicFields> Prepare(USpeedMovementComponent& Target,
+        const FSimulationComponentRestoreRequest&);
+    static std::unique_ptr<FPreparedNativeKinematicFields> Prepare(USpeedWheeledComponent& Target,
+        const FSimulationComponentRestoreRequest&);
+    static std::unique_ptr<FPreparedNativeKinematicFields> PrepareSolid(USolidSubBody& Target,
+        const FSimulationComponentRestoreRequest&, const PreparedWorld::FEndpointBinding&, const SKinematic& EndpointState);
+
     static std::unique_ptr<FPreparedNativeKinematicFields> Prepare(USpeedMovementComponent& Target,
         const FSimulationWorld&, const FSimulationComponentRestoreRequest&);
     static std::unique_ptr<FPreparedNativeKinematicFields> Prepare(USpeedWheeledComponent& Target,
@@ -50,6 +59,7 @@ public:
     void ReleaseAfterPublication() noexcept;
 
 private:
+    friend struct FCommonComponentValueAccess;
     enum class EPhase : uint8 { Prepared, Ready, Finalized, Released, Aborted };
     static bool MatchesActor(const FSimulationWorld&, const FSimulationComponentRestoreRequest&, const ISpeedComponent&);
     FPreparedNativeKinematicFields(const FSimulationWorld&, const FSimulationComponentRestoreRequest&,

@@ -176,7 +176,10 @@ std::optional<FSimulationWorld::FPreparedRestoreToken> FSimulationWorld::Prepare
             const FSimulationComponentRestoreRequest Request{Publication->Envelope->Address,
                 Publication->Envelope->ActorSupplements[I], K, State->Frozen,
                 TConstArrayView<uint8>(State->MechanicPayload.data(), static_cast<int32>(State->MechanicPayload.size())), PreparedRestore->LeaseOwner->View()};
-            auto Component = AdaptersByStableId.FindRef(Binding.StableId)->PrepareCompleteSimulationRestore(Request);
+            auto Component = PreparedRestore->LeaseOwner->PrepareComponent(Request, [&]
+            {
+                return AdaptersByStableId.FindRef(Binding.StableId)->PrepareCompleteSimulationRestore(Request);
+            });
             if (!Component) return Fail(); // ALL frozen production adapters take this default rejection
             PreparedRestore->Components.push_back(std::move(Component));
             const auto& Stored = *PreparedRestore->Components.back();

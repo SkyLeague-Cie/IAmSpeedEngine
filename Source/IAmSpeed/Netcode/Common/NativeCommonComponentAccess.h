@@ -1,6 +1,7 @@
 #pragma once
 #include "NativeCommonCacheAccess.h"
 #include "NativeOwnedArrayExchange.h"
+#include "NativePreparedKinematicFields.h"
 #include "IAmSpeed/Components/ISpeedComponent.h"
 #include "IAmSpeed/SubBodies/SSubBody.h"
 #include "Components/PrimitiveComponent.h"
@@ -98,6 +99,18 @@ struct FCommonComponentValueAccess
         void ReleaseAfterCommonPublication() noexcept
         { if (!Finalized || Released) std::terminate(); Released = true; }
     };
+    // Same callback contract as the kinematic fragments. Values must name the
+    // same physical actor and binding as the request issued by the world.
+    template<class Resolver> static std::unique_ptr<FPreparedCommonFields> Prepare(
+        ISpeedComponent& C, const FSimulationComponentRestoreRequest& Request,
+        const CommonState::FComponentValues& Values, uint64 ParticipantIdentity, Resolver& Resolve)
+    {
+        const auto* World = Request.OwnerLease.ResolvePreparingWorld(Request, Request.Address);
+        if (!World || !(Values.Actor == Request.Supplement.Binding)
+            || !FPreparedNativeKinematicFields::MatchesActor(*World, Request, C)) return {};
+        return Prepare(C, *World, Request.OwnerLease, Request.Address, Values, ParticipantIdentity, Resolve);
+    }
+
     // ResolveOther/ResolveSubBody return typed pointers already pinned and exact
     // identity-validated under Lease; nullptr is accepted ONLY for explicit null.
     // ResolveStaticAuthority returns pointer + the entire typed immutable config

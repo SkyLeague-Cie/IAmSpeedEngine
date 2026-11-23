@@ -8,6 +8,17 @@
 #include <functional>
 #include <thread>
 
+// Exercise the real private gate from a shim for the native friend factory.
+namespace Speed
+{
+class FPreparedNativeKinematicFields
+{
+public:
+    static const FSimulationWorld* Resolve(const FSimulationComponentRestoreRequest& R, const PreparedWorld::FAddress& At)
+    { return R.OwnerLease.ResolvePreparingWorld(R, At); }
+};
+}
+
 class ISpeedComponent
 {
 public:
@@ -129,10 +140,16 @@ public:
     std::array<uint64, 4> CommonConfiguration{}, WheelConfiguration{}, SubbodyConfiguration{};
     std::uintptr_t ExtraWrite = 0;
     FPreparedRestoreLeaseView SavedLease;
+    std::function<void(const FSimulationComponentRestoreRequest&)> OnPrepare;
     std::function<void()> Reenter;
     std::function<void()> OnCleanup;
     std::unique_ptr<IPreparedSimulationComponentRestore> PrepareCompleteSimulationRestore(const FSimulationComponentRestoreRequest& R) override
-    { if (Refuse || !R.OwnerLease.IsExactAddress(R.Address)) return {}; SavedLease = R.OwnerLease; return std::make_unique<FTestComponentPlan>(R, *this); }
+    {
+        if (Refuse || !R.OwnerLease.IsExactAddress(R.Address)) return {};
+        SavedLease = R.OwnerLease;
+        if (OnPrepare) OnPrepare(R);
+        return std::make_unique<FTestComponentPlan>(R, *this);
+    }
 };
 FTestComponentPlan::FTestComponentPlan(const FSimulationComponentRestoreRequest& R, FTestComponent& C)
     : At(R.Address), Actor(R.Supplement.Binding), Component(C), State(R.Kinematic), Frozen(R.bFrozen), OwnerLease(R.OwnerLease) {}
@@ -284,6 +301,47 @@ static void TestActualPlanControlFlowUnderShim()
     CHECK(Complete && Failures > 50);
     std::printf("actual plan INC under ORDINARY SHIMS: %u failure budgets; full UE/native world remains NOT_COMPILED/RUN/ADMITTED\n", Failures);
 }
+static void TestFragmentWorldResolutionDuringExactRequest()
+{
+    FWorldFixture F;
+    using FFactory = Speed::FPreparedNativeKinematicFields;
+    auto Lease = std::make_unique<FTestLease>(F.World, F.Envelope->Address, F.LeaseCounters);
+    auto* NativeLease = Lease.get();
+    unsigned Calls = 0;
+    F.Components[0].OnPrepare = [&](const FSimulationComponentRestoreRequest& R)
+    {
+        ++Calls;
+        CHECK(FFactory::Resolve(R, R.Address) == &F.World);
+        const auto Copy = R;
+        CHECK(!FFactory::Resolve(Copy, Copy.Address));
+        auto WrongAddress = R.Address;
+        ++WrongAddress.WorldIncarnation;
+        CHECK(!FFactory::Resolve(R, WrongAddress));
+        bool ForeignGranted = true;
+        std::thread Foreign([&] { ForeignGranted = FFactory::Resolve(R, R.Address) != nullptr; });
+        Foreign.join();
+        CHECK(!ForeignGranted);
+        unsigned Reentries = 0;
+        NativeLease->OnQuery = [&]
+        {
+            ++Reentries;
+            CHECK(!FFactory::Resolve(R, R.Address));
+        };
+        CHECK(FFactory::Resolve(R, R.Address) == &F.World);
+        NativeLease->OnQuery = {};
+        CHECK(Reentries == 1);
+    };
+    auto T = F.World.PrepareSnapshotRestore(F.Snapshot, F.Envelope, std::move(Lease),
+        std::make_unique<FTestSupplement>(F.Envelope->Address, F.SupplementCounters));
+    CHECK(T && Calls == 1 && F.Untouched());
+    const SKinematic K;
+    const FSimulationComponentRestoreRequest Later{F.Envelope->Address, F.Envelope->ActorSupplements[0],
+        K, false, TConstArrayView<uint8>(nullptr, 0), F.Components[0].SavedLease};
+    CHECK(Later.OwnerLease.IsExactAddress(Later.Address) && !FFactory::Resolve(Later, Later.Address));
+    CHECK(F.World.AbortPreparedRestore(*T));
+    CHECK(!FFactory::Resolve(Later, Later.Address) && F.Untouched());
+}
+
 static void TestCompositionAndLeaseExpiry()
 {
     FPreparedRestoreLeaseView Empty;
@@ -474,7 +532,8 @@ static void TestLeaseCallbackAndCleanupReentry()
 }
 int RebasedWorldShimRegressionMain()
 {
-    FrozenCoreTestsMain(); TestActualPlanControlFlowUnderShim(); TestCompositionAndLeaseExpiry(); TestLeaseCallbackAndCleanupReentry();
+    FrozenCoreTestsMain(); TestActualPlanControlFlowUnderShim(); TestFragmentWorldResolutionDuringExactRequest();
+    TestCompositionAndLeaseExpiry(); TestLeaseCallbackAndCleanupReentry();
     std::printf("PreparedWorld combined ordinary checks: %u PASS; SHIM fence/actors are fixture-only, zero native qualification\n", Checks);
     return 0; // Test main may be included under another entry point.
 }
