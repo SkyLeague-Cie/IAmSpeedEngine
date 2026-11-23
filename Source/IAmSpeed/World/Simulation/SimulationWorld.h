@@ -2,6 +2,10 @@
 
 #include "CoreMinimal.h"
 #include "SimulationFrameJournal.h"
+#include "PreparedSimulationRestore.h"
+#include <memory>
+#include <optional>
+#include <thread>
 #include "IAmSpeed/World/Collision/StaticCollisionWorld.h"
 #include "IAmSpeed/SubBodies/Solid/SolidSubBody.h"
 
@@ -98,6 +102,30 @@ namespace Speed
         friend class PreparedExecution::FCanonicalFramePreflight;
         friend class FHostedGTStaticWorldLease;
 	public:
+        FSimulationWorld();
+        ~FSimulationWorld();
+        FSimulationWorld(const FSimulationWorld&) = delete;
+        FSimulationWorld& operator=(const FSimulationWorld&) = delete;
+        struct FPreparedRestorePublication
+        {
+            std::shared_ptr<const PreparedWorld::FRestoreEnvelope> Envelope;
+            std::shared_ptr<const PreparedWorld::FParsedWorld> Physical;
+        };
+#include "PreparedRestoreToken.inc"
+        std::optional<FPreparedRestoreToken> PrepareSnapshotRestore(
+            const FSimulationSnapshot&, std::shared_ptr<const PreparedWorld::FRestoreEnvelope>,
+            std::unique_ptr<ISimulationRestoreBoundaryLease>,
+            std::unique_ptr<IPreparedSimulationWorldSupplement>);
+        std::shared_ptr<const FPreparedRestorePublication> ReadPreparedRestore(const FPreparedRestoreToken&) const noexcept;
+        bool PrepareRestoreFinalization(const FPreparedRestoreToken&);
+        bool AbortPreparedRestore(const FPreparedRestoreToken&) noexcept;
+        void FinalizePreparedRestore(const FPreparedRestoreToken&) noexcept;
+        // Caller must already have atomically published its COMMON input/world
+        // view containing this EXACT immutable publication. This API alone does
+        // not implement that common publisher or establish a native lease.
+        void ReleasePreparedRestoreAfterPublication(const FPreparedRestoreToken&,
+            const std::shared_ptr<const FPreparedRestorePublication>& Published) noexcept;
+        bool IsRestoreBoundaryReserved() const noexcept { return PreparedRestoreEntryActive || PreparedRestore != nullptr; }
 #if !UE_BUILD_SHIPPING
         bool InspectBodyContactPairsForTesting(const USolidSubBody& Body,uint64 PreparingFrame,FBodyContactPairInspection& Out) const;
 #endif
@@ -110,15 +138,15 @@ namespace Speed
         /** Joined empty-registry boundary; stable identities stay monotonic. */
         bool ResetEmptyCollisionMatrixEpisodeForTesting()
         {
-            if (!Adapters.IsEmpty()) return false;
+            if (IsRestoreBoundaryReserved() || !Adapters.IsEmpty()) return false;
             RebuildOrderedAdapters();
             if (!OrderedAdapters.IsEmpty() || !Bodies.IsEmpty()
                 || !ProjectionSpheres.IsEmpty() || !ProjectionBoxes.IsEmpty()) return false;
-            DynamicContactPairs.Reset();
-            PendingRollingContactPairs.Reset();
-            DynamicContactPairIndices.Reset();
-            PendingRollingContactPairIndices.Reset();
-            DynamicContactPairKeysByBody.Reset();
+            ContactStorage->DynamicContactPairs.Reset();
+            ContactStorage->PendingRollingContactPairs.Reset();
+            ContactStorage->DynamicContactPairIndices.Reset();
+            ContactStorage->PendingRollingContactPairIndices.Reset();
+            ContactStorage->DynamicContactPairKeysByBody.Reset();
             StaticCollisionWorld.Reset();
             return true;
         }
@@ -133,17 +161,18 @@ namespace Speed
 		/** Transfers ownership of the immutable static-query authority. */
 		void SetStaticCollisionWorld(TUniquePtr<IStaticCollisionWorld>&& InWorld)
 		{
-			StaticCollisionWorld = MoveTemp(InWorld);
+			if (IsRestoreBoundaryReserved()) std::terminate(); StaticCollisionWorld = MoveTemp(InWorld);
 		}
 		const IStaticCollisionWorld* GetStaticCollisionWorld() const
 		{
 			return StaticCollisionWorld.Get();
 		}
-		void ResetStaticCollisionWorld() { StaticCollisionWorld.Reset(); }
-		TArray<FDynamicContactPair>& GetDynamicContactPairs() { return DynamicContactPairs; }
-		const TArray<FDynamicContactPair>& GetDynamicContactPairs() const { return DynamicContactPairs; }
-		TArray<FDynamicContactPair>& GetPendingRollingContactPairs() { return PendingRollingContactPairs; }
-        const TArray<FDynamicContactPair>& GetPendingRollingContactPairs() const { return PendingRollingContactPairs; }
+		void ResetStaticCollisionWorld() { if (IsRestoreBoundaryReserved()) std::terminate(); StaticCollisionWorld.Reset(); }
+		TArray<FDynamicContactPair>& GetDynamicContactPairs() { if (IsRestoreBoundaryReserved()) std::terminate(); return ContactStorage->DynamicContactPairs; }
+		const TArray<FDynamicContactPair>& GetDynamicContactPairs() const { if (IsRestoreBoundaryReserved()) std::terminate(); return ContactStorage->DynamicContactPairs; }
+		TArray<FDynamicContactPair>& GetPendingRollingContactPairs() { if (IsRestoreBoundaryReserved()) std::terminate(); return ContactStorage->PendingRollingContactPairs; }
+		const TArray<FDynamicContactPair>& GetPendingRollingContactPairs() const
+		{ if (IsRestoreBoundaryReserved()) std::terminate(); return ContactStorage->PendingRollingContactPairs; }
 		/** Resolves an active persistent pair by its canonical key in average O(1). */
 		FDynamicContactPair* FindDynamicContactPair(uint64 PairKey);
 		const FDynamicContactPair* FindDynamicContactPair(uint64 PairKey) const;
@@ -163,7 +192,7 @@ namespace Speed
 		/** Returns the active pair keys incident to one sub-body identity. */
 		const TSet<uint64>* FindDynamicContactPairKeys(uint32 SubBodyId) const;
 		int32 FindDynamicContactPairIndex(uint64 PairKey) const;
-		unsigned int& GetCurrentStepFrame() { return CurrentStepFrame; }
+		unsigned int& GetCurrentStepFrame() { if (IsRestoreBoundaryReserved()) std::terminate(); return CurrentStepFrame; }
 		unsigned int GetCurrentStepFrame() const { return CurrentStepFrame; }
 		/** Returns the run-stable id used to address inputs and snapshot records. */
 		uint64 FindStableId(const ISpeedComponent& Adapter) const;
@@ -181,7 +210,7 @@ namespace Speed
 		void NotifyCanonicalFramePublished(uint64 NumFrame);
 		ECanonicalPublicationResult PublishCanonicalFrame(uint64 Frame, TFunctionRef<bool()> Publish);
 		void AbortCanonicalFrame(uint64 Frame, ECanonicalFrameAbortReason Reason) noexcept;
-		/** Atomically validates and restores a snapshot captured from this registry. */
+		/** Legacy local restore. This does not qualify a complete prepared network restore. */
 		bool RestoreSnapshot(const FSimulationSnapshot& Snapshot, uint64 ExpectedInputJournalHash);
 		int32 NumBodies() const { return Bodies.Num(); }
 
@@ -201,11 +230,23 @@ namespace Speed
 		uint64 NextStableId = 1;
 		bool bOrderDirty = true;
 		TUniquePtr<IStaticCollisionWorld> StaticCollisionWorld;
-		TArray<FDynamicContactPair> DynamicContactPairs;
-		TArray<FDynamicContactPair> PendingRollingContactPairs;
-		TMap<uint64, int32> DynamicContactPairIndices;
-		TMap<uint64, int32> PendingRollingContactPairIndices;
-		TMap<uint32, TSet<uint64>> DynamicContactPairKeysByBody;
+        // Entire contact storage is allocated/indexed BEFORE any component
+        // finalization. One standard unique_ptr::swap is the no-fail install.
+        struct FContactStorage
+        {
+            TArray<FDynamicContactPair> DynamicContactPairs;
+            TArray<FDynamicContactPair> PendingRollingContactPairs;
+            TMap<uint64, int32> DynamicContactPairIndices;
+            TMap<uint64, int32> PendingRollingContactPairIndices;
+            TMap<uint32, TSet<uint64>> DynamicContactPairKeysByBody;
+        };
+        std::unique_ptr<FContactStorage> ContactStorage;
+        struct FPreparedWorldRestore;
+        std::unique_ptr<FPreparedWorldRestore> PreparedRestore;
+        bool PreparedRestoreEntryActive = false; // worker-only: includes cleanup callbacks
+        bool MatchesPreparedRestore(const FPreparedRestoreToken&) const noexcept;
+        bool CollectPreparedAccess(std::vector<PreparedAccess::FParticipantAccess>&) const;
+        uint64 LastPreparedRestoreGeneration = 0, LastPreparedRestorePublication = 0;
 		unsigned int CurrentStepFrame = 0;
 
 		uint64 FindStableSubBodyId(const USSubBody* SubBody) const;

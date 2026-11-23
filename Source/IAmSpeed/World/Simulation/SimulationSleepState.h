@@ -4,6 +4,7 @@
 
 namespace Speed
 {
+    struct FCommonCacheValueAccess;
 	/** Recomputable sleep eligibility; never an independent physical state. */
 	class FSimulationSleepState
 	{
@@ -39,6 +40,7 @@ namespace Speed
 #endif
 
 	private:
+        friend struct FCommonCacheValueAccess;
 		FVector Location = FVector::ZeroVector;
 		FQuat Rotation = FQuat::Identity;
 		bool bHasCompletedPose = false;

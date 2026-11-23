@@ -3,6 +3,8 @@
 // USpeedWorldSubsystem.cpp
 
 #include "SpeedWorldSubsystem.h"
+#include "IAmSpeed/Netcode/presentation-client/PresentationClientWorld.h"
+#include "IAmSpeed/World/Analytic/SpeedAnalyticContactComponent.h"
 #include "HAL/CriticalSection.h"
 #include "Misc/ScopeLock.h"
 #include <atomic>
@@ -18,7 +20,6 @@
 #include "IAmSpeed/World/Simulation/OnePausedCanonicalWork.h"
 #include "IAmSpeed/World/Collision/PreparedSweepEvidence.h"
 #include "IAmSpeed/World/Collision/PreparedIntervalStaticWorld.h"
-#include "IAmSpeed/World/Analytic/SpeedAnalyticContactComponent.h"
 #include "IAmSpeed/World/Simulation/CcdPoseAudit.h"
 #include "IAmSpeed/World/Simulation/SubBodyKinematicsTasks.h"
 #include "IAmSpeed/World/Simulation/JoinedActorKinematics1213.h"
@@ -327,6 +328,7 @@ namespace
 
 void USpeedWorldSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 {
+	if (Speed::Netcode::PresentationClient::SuppressesLocalPhysics(&InWorld)) { Super::OnWorldBeginPlay(InWorld); return; }
 	if (Speed::ReplayIsolation::IsInertReplayWorld(&InWorld)) return;
 
 	Super::OnWorldBeginPlay(InWorld);
@@ -1307,6 +1309,7 @@ bool USpeedWorldSubsystem::ShouldAcquireUnilateralRollingPair(
 
 void USpeedWorldSubsystem::RegisterSpeedComponent(ISpeedComponent* Comp)
 {
+    if (Speed::Netcode::PresentationClient::SuppressesLocalPhysics(GetWorld())) return;
     if (!Comp) return;
     FScopeLock Lock(&PendingCS);
     PendingOps.Add({ true, Comp });
@@ -1319,8 +1322,16 @@ void USpeedWorldSubsystem::UnregisterSpeedComponent(ISpeedComponent* Comp)
     PendingOps.Add({ false, Comp });
 }
 
+bool USpeedWorldSubsystem::HasPhysicalRegistrationsForPresentationAdmission()
+{
+    check(IsInGameThread());
+    FScopeLock Lock(&PendingCS);
+    return PendingOps.Num()!=0 || !SimulationWorld.GetAdapters().IsEmpty();
+}
+
 void USpeedWorldSubsystem::ApplyPendingOps()
 {
+    if (Speed::Netcode::PresentationClient::SuppressesLocalPhysics(GetWorld())) return;
 	FScopedGameThreadAdapterAccess Access(GetWorld());
 	if (!Access.IsValid())
 	{

@@ -1,0 +1,119 @@
+"""Build the private ordinary Netcode suites against THIS repository's inputs.
+
+No Engine/UBT/Editor or socket peers are launched. World/mechanics/gameplay
+providers in these suites are synthetic. This never qualifies native restore.
+"""
+from pathlib import Path
+import argparse
+import datetime
+import hashlib
+import json
+import os
+import re
+import subprocess
+import time
+
+def main():
+    parser=argparse.ArgumentParser()
+    parser.add_argument('--out',type=Path,required=True)
+    parser.add_argument('--vc',type=Path,default=Path('C:/Program Files/Microsoft Visual Studio/18/Community/VC/Tools/MSVC/14.38.33130'))
+    parser.add_argument('--windows-kits',type=Path,default=Path('C:/Program Files (x86)/Windows Kits/10'))
+    parser.add_argument('--sdk-version',default='10.0.22621.0')
+    parser.add_argument('--suite',choices=['all','world','registry','driving','remote','contract','presentation-client'],default='all')
+    args=parser.parse_args()
+    tests=Path(__file__).resolve().parent
+    repo=tests.parents[2]
+    source=repo/'Source'
+    assert source.is_dir()
+    out=args.out.resolve();out.mkdir(parents=True,exist_ok=False)
+    env=os.environ.copy();env['VSLANG']='1033'
+    # All compiler/linker scratch writes belong to this exact run, including
+    # when the caller has no write permission to the account-wide TEMP.
+    scratch=out/'temporary';scratch.mkdir()
+    env['TEMP']=env['TMP']=str(scratch)
+    env['PATH']=str(args.vc/'bin/Hostx64/x64')+os.pathsep+env['PATH']
+    env['INCLUDE']=os.pathsep.join(str(p) for p in [args.vc/'include']+[args.windows_kits/'Include'/args.sdk_version/s for s in ('ucrt','shared','um')])
+    env['LIB']=os.pathsep.join(str(p) for p in [args.vc/'lib/x64']+[args.windows_kits/'Lib'/args.sdk_version/s/'x64' for s in ('ucrt','um')])
+    cl=args.vc/'bin/Hostx64/x64/cl.exe';link=args.vc/'bin/Hostx64/x64/link.exe'
+    pins={};operations=[];results={};start=time.monotonic()
+    def sha(b):return hashlib.sha256(b).hexdigest()
+    def pin(p):
+        p=p.resolve();b=p.read_bytes();pins[str(p)]=dict(path=str(p),bytes=len(b),sha256=sha(b))
+    for root in (source,repo/'Tests/Netcode'):
+        for p in sorted(root.rglob('*')):
+            if p.is_file():pin(p)
+    pin(cl);pin(link)
+    include=[source]+sorted(p for p in (source/'IAmSpeed/Netcode').iterdir() if p.is_dir())+sorted(p for p in tests.iterdir() if p.is_dir())
+    policy=['/nologo','/std:c++17','/EHsc','/W4','/WX','/Od','/MT','/showIncludes']
+    flags=policy+['/I'+str(p) for p in include]
+    def execute(label,argv,expected=0):
+        t=time.monotonic()
+        if label.endswith('-compile'):
+            argv=list(argv)+['/sourceDependencies',str(out/(label+'.dependencies.json'))]
+        try:
+            p=subprocess.run([str(a) for a in argv],cwd=repo,env=env,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,timeout=60)
+            raw=p.stdout;code=p.returncode
+        except subprocess.TimeoutExpired as e:raw=e.stdout or b'';code='TIMEOUT'
+        (out/(label+'.raw.txt')).write_bytes(raw)
+        operations.append(dict(label=label,command=[str(a) for a in argv],actual_exit=code,expected_exit=expected,elapsed_seconds=time.monotonic()-t))
+        (out/'operations.json').write_text(json.dumps(operations,indent=2)+'\n')
+        print(json.dumps(dict(label=label,actual_exit=code,expected_exit=expected)),flush=True)
+        if label.endswith('-run'):
+            results[label]=raw.decode(errors='replace').strip();print(results[label],flush=True)
+        return code==expected
+    ok=execute('presentation-compile',[cl]+flags+['/c','/Fo:'+str(out/'p.obj'),source/'IAmSpeed/Input/InputPresentationScope.cpp'])
+    suites=[('presentation-client',tests/'presentation-client/PresentationClientGateTests.cpp'),('contract',tests/'contract-offer/ActionContractOfferCodecTests.cpp'),('input',tests/'transport/TransportTests.cpp'),('state',tests/'transport/StateTransportTests.cpp'),
+            ('consumed',tests/'consumed-command-v2/ConsumedTests.cpp'),('authority',tests/'authoritative-owner-v2/AuthoritativeOwnerTests.cpp'),
+            ('envelope',tests/'state-authority-envelope-v2/StateEnvelopeTests.cpp'),('remote',tests/'remote-input/ExactRemoteInputProducerTests.cpp'),
+            ('registry',repo/'Tests/Netcode/EmptyInputFrameTests.cpp'),
+            ('world',repo/'Tests/Netcode/WorldTokenGuardTests.cpp'),('driving',tests/'DrivingActionsTests.cpp')]
+    if args.suite!='all':suites=[s for s in suites if s[0]==args.suite]
+    for n,(name,cpp) in enumerate(suites):
+        if not ok:break
+        obj=out/(str(n)+'.obj');exe=out/(name+'.exe')
+        suite_flags=flags
+        if name=='world':
+            support=repo/'Tests/Netcode/WorldSupport'
+            suite_flags=policy+['/I'+str(support/'test-shim'),'/I'+str(support)]+['/I'+str(p) for p in include]
+        ok=execute(name+'-compile',[cl]+suite_flags+['/c','/Fo:'+str(obj),cpp])
+        if ok:ok=execute(name+'-link',[link,'/nologo','/out:'+str(exe),obj,out/'p.obj'])
+        if ok:ok=execute(name+'-run',[exe]+([out] if name=='registry' else []))
+    if ok and args.suite in ('all','driving'):ok=execute('driving-wire-run',[out/'driving.exe','--wire'])
+    if ok and args.suite in ('all','registry'):ok=execute('registry-lifetime',[out/'registry.exe','--boundary-reservation-live-destruction'],86)
+    if ok and args.suite in ('all','registry'):
+        for mode in ('submit','stop'):
+            if not ok:break
+            ok=execute('capture-probe-'+mode,[out/'registry.exe','--capture-alloc-'+mode])
+    if ok and args.suite in ('all','world'):
+        for mode in ('worker','world','default','finalize','release'):
+            if not ok:break
+            ok=execute('world-probe-'+mode,[out/'world.exe','--probe-'+mode],86 if mode in ('finalize','release') else 0)
+    trace=set()
+    for p in out.glob('*.dependencies.json'):
+        data=json.loads(p.read_text(encoding='utf-8-sig'))['Data']
+        for item in data.get('Includes',[]):
+            trace.add(Path(item).resolve())
+    dependency_trace_complete=all((out/(op['label']+'.dependencies.json')).is_file()
+        for op in operations if op['label'].endswith('-compile') and op['actual_exit']==0)
+    if not trace or not dependency_trace_complete:ok=False
+    for p in trace:
+        if str(p) not in pins:pin(p)
+    unchanged=all(sha(Path(e['path']).read_bytes())==e['sha256'] for e in pins.values())
+    # Every local Input implementation and protocol include must come from this
+    # repository; compiler/Windows SDK headers are separately observed below.
+    outside=[str(p) for p in trace if p.is_relative_to(repo.parent) and not p.is_relative_to(repo)]
+    if outside or not unchanged:ok=False
+    (out/'inputs.json').write_text(json.dumps(list(pins.values()),indent=2)+'\n')
+    receipt=dict(schema='netcode-consolidated-repository-ordinary-tests/v1',utc=datetime.datetime.now(datetime.timezone.utc).isoformat(),selected_suite=args.suite,
+        repository=str(repo),qualification_exit=0 if ok else 1,operations=operations,results=results,elapsed_seconds=time.monotonic()-start,temporary_directory=str(scratch),
+        inputs=str(out/'inputs.json'),inputs_unchanged=unchanged,repository_includes=sorted(str(p) for p in trace if p.is_relative_to(repo)),
+        historical_artifact_includes=outside,dependency_trace_complete=dependency_trace_complete,
+        not_run=[name for name in [n for n,_ in suites]+(['driving-wire'] if args.suite in ('all','driving') else []) if name+'-run' not in results],
+        scope='Actual current rebased Input implementations/protocol headers; world token and transaction INC under explicit ordinary World/UE shims, own protected-page negative probes. Synthetic mechanics/gameplay/ledger and native lifetime providers remain unqualified; no native integration/restore verdict.',
+        Engine_SDK_UBT_Editor_jobs=0,socket_peer_jobs=0,full_state_v3=False,old_PASS_transferred=False,
+        toolchain_headers='Compiler-discovered header hashes observed after compilation; not a frozen native toolchain admission.')
+    (out/'receipt.json').write_text(json.dumps(receipt,indent=2)+'\n')
+    print(json.dumps(dict(receipt=str(out/'receipt.json'),qualification_exit=receipt['qualification_exit'],repository_includes=len(receipt['repository_includes']),not_run=receipt['not_run'])))
+    return receipt['qualification_exit']
+
+if __name__=='__main__':raise SystemExit(main())

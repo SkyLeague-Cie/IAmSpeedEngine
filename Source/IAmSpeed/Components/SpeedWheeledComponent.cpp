@@ -9,6 +9,7 @@ extern thread_local FCallbackRecord* CallbackCurrent;
 void ObserveCallbackStage(uint32 stage,uint64 start);
 }
 #endif
+#include "IAmSpeed/Netcode/presentation-client/PresentationClientWorld.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Engine/Engine.h"
 #include "IAmSpeed/World/ReplayInertWorld.h"
@@ -40,6 +41,7 @@ void ObserveCallbackStage(uint32 stage,uint64 start);
 #include "Misc/Parse.h"
 #include "UObject/UnrealType.h"
 #include "Misc/ScopeLock.h"
+#include "IAmSpeed/Netcode/remote-input/ExactRemoteDedicatedHost.h"
 #include "EngineUtils.h"
 #include "IAmSpeed/World/Simulation/SpeedPhysicsSimulation.h"
 #include "IAmSpeed/Camera/SpeedCarCameraPresentation.h"
@@ -460,6 +462,12 @@ float GetSmishTurnTargetSpeed(
 USpeedWheeledComponent::USpeedWheeledComponent(const FObjectInitializer& ObjectInitializer) :
 	Super(ObjectInitializer)
 {
+    // Chaos can construct a THIRD network component in Super when prediction is
+    // enabled. Keep that original DSO inert before registration too; no removal
+    // of an already registered/history-bearing component is allowed.
+    if(Speed::Netcode::PresentationClient::IsSelected()&&NetworkPhysicsComponent)
+    { NetworkPhysicsComponent->bAutoRegister=false;NetworkPhysicsComponent->SetAutoActivate(false);NetworkPhysicsComponent->SetIsReplicated(false); }
+
 	SetIsReplicatedByDefault(true);
 
 	InitChaosVehicle();
@@ -488,6 +496,7 @@ USpeedWheeledComponent::USpeedWheeledComponent(const FObjectInitializer& ObjectI
 
 void USpeedWheeledComponent::OnRegister()
 {
+    if (Speed::Netcode::PresentationClient::SuppressesLocalPhysics(GetWorld())) { UActorComponent::OnRegister(); return; }
     Super::OnRegister();
     AActor* Actor=GetOwner();
     if(!Actor || Actor->IsTemplate() || !Actor->GetRootComponent())return;
@@ -519,6 +528,7 @@ void USpeedWheeledComponent::ResolveFixedCenterOfMassFromConfiguration()
 
 void USpeedWheeledComponent::SetOwner(AActor* NewOwner)
 {
+	if (Speed::Netcode::PresentationClient::SuppressesLocalPhysics(GetWorld())) return;
 	if (NewOwner == nullptr)
 	{
 		return;
@@ -638,9 +648,19 @@ void USpeedWheeledComponent::BindWheelSimulationPointers(
 		WheelSubBodies.Num(),
 		PVehicle->Wheels.Num(),
 		PVehicle->Suspension.Num());
-	UE_LOG(LogTemp, Warning, TEXT("[WheelSuspensionBinding] subbodies=%d vehicle_wheels=%d vehicle_suspensions=%d bindings=%d component_wheels=%d"),
+	UE_LOG(LogTemp, Display, TEXT("[WheelSuspensionBinding] subbodies=%d vehicle_wheels=%d vehicle_suspensions=%d bindings=%d component_wheels=%d"),
 		WheelSubBodies.Num(), PVehicle->Wheels.Num(),
 		PVehicle->Suspension.Num(), NumBindings, Wheels.Num());
+	// This message describes ordinary setup, including the earlier stage where
+	// Chaos storage exists before component wheel configurations. Only an actual
+	// storage-count mismatch is a warning; canonical admission still validates
+	// every final index/pointer/configuration without relaxation.
+	if (WheelSubBodies.Num() <= 0 || PVehicle->Wheels.Num() != WheelSubBodies.Num()
+		|| PVehicle->Suspension.Num() != WheelSubBodies.Num())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[WheelSuspensionBindingIncomplete] subbodies=%d vehicle_wheels=%d vehicle_suspensions=%d"),
+			WheelSubBodies.Num(), PVehicle->Wheels.Num(), PVehicle->Suspension.Num());
+	}
 	for (int32 WheelIdx = 0; WheelIdx < WheelSubBodies.Num(); ++WheelIdx)
 	{
 		USWheelSubBody* WheelSubBody = WheelSubBodies[WheelIdx].Get();
@@ -848,11 +868,13 @@ ASpeedCar* USpeedWheeledComponent::GetSpeedCarOwner() const
 
 bool USpeedWheeledComponent::ShouldCreatePhysicsState() const
 {
+    if (Speed::Netcode::PresentationClient::SuppressesLocalPhysics(GetWorld())) return false;
     if (Speed::ReplayIsolation::IsInertReplayWorld(GetWorld())) return false;
     return Super::ShouldCreatePhysicsState();
 }
 void USpeedWheeledComponent::OnCreatePhysicsState()
 {
+	if (Speed::Netcode::PresentationClient::SuppressesLocalPhysics(GetWorld())) return;
 	if (Speed::ReplayIsolation::IsInertReplayWorld(GetWorld()))
 	{ Speed::ReplayIsolation::FailInertReplayBootstrap(*GetWorld(),TEXT("unexpected IAS wheeled physics-state creation in inert replay")); return; }
 	// =========> START OVERLOAD Chaos prediction here
@@ -895,8 +917,29 @@ void USpeedWheeledComponent::OnCreatePhysicsState()
 	}
 	// =========> END OVERLOAD Chaos pediction here
 
-	// only create data history in game
-	if (World->IsGameWorld())
+    // This immutable process opt-in belongs to the dedicated canonical Demo
+    // host only. Never unregister an already active history or borrow its state.
+    const auto RemotePolicy = Speed::Netcode::QueryExactRemoteHostPolicy(World);
+    const bool bExactDedicatedHost = World->IsGameWorld()
+        && RemotePolicy == Speed::Netcode::EExactRemoteHostPolicy::IsolatedDedicated;
+    if (World->IsGameWorld() && RemotePolicy == Speed::Netcode::EExactRemoteHostPolicy::Invalid)
+    { UE_LOG(SpeedInputLog, Fatal, TEXT("Invalid ExactRemote dedicated host policy; legacy fallback forbidden")); return; }
+    bLegacyNetworkHistoryExcluded = false;
+    if (bExactDedicatedHost)
+    {
+        if ((SNetworkSettings && SNetworkSettings->IsRegistered())
+            || !SNetworkPhysicsComponent || !WheeledNetworkPhysicsComponent
+            || SNetworkPhysicsComponent->IsRegistered() || WheeledNetworkPhysicsComponent->IsRegistered()
+            || SNetworkPhysicsComponent->GetStateHistory_External() || SNetworkPhysicsComponent->GetInputHistory_External()
+            || WheeledNetworkPhysicsComponent->GetStateHistory_External() || WheeledNetworkPhysicsComponent->GetInputHistory_External())
+            { UE_LOG(SpeedInputLog, Fatal, TEXT("ExactRemote refuses an already active or missing legacy history component")); return; }
+        SNetworkPhysicsComponent->SetIsReplicated(false);
+        WheeledNetworkPhysicsComponent->SetIsReplicated(false);
+        bLegacyNetworkHistoryExcluded = true;
+        UE_LOG(SpeedInputLog, Display, TEXT("[ExactRemoteLegacyHistoryExcluded] Speed=1 Wheeled=1 BeforeRegistration=1"));
+    }
+    // Default standalone and SL behavior remains the existing legacy route.
+	if (World->IsGameWorld() && !bExactDedicatedHost)
 	{
 		if (SNetworkSettings && !SNetworkSettings->IsRegistered())
 		{
@@ -958,6 +1001,7 @@ void USpeedWheeledComponent::OnCreatePhysicsState()
 
 void USpeedWheeledComponent::BeginPlay()
 {
+	if (Speed::Netcode::PresentationClient::SuppressesLocalPhysics(GetWorld())) { UActorComponent::BeginPlay(); return; }
 	bWheeledEndPlayTeardown = false;
 	bSpeedWorldAdapterRetiredForTeardown = false;
 	Super::BeginPlay();
@@ -5561,6 +5605,16 @@ HandbrakeLowSlipYawCorrectionScaleCurve = {
 	SteeringInputRate.InputCurveFunction = EInputFunctionType::LinearFunction;
 	bEnableCenterOfMassOverride = true;
 	SteeringSetup.SteeringType = ESteeringType::Ackermann;
+}
+
+bool USpeedWheeledComponent::IsLegacyNetworkHistoryExcluded() const
+{
+    check(IsInGameThread());
+    return bLegacyNetworkHistoryExcluded && SNetworkPhysicsComponent && WheeledNetworkPhysicsComponent
+        && (!SNetworkSettings || !SNetworkSettings->IsRegistered())
+        && !SNetworkPhysicsComponent->IsRegistered() && !WheeledNetworkPhysicsComponent->IsRegistered()
+        && !SNetworkPhysicsComponent->GetStateHistory_External() && !SNetworkPhysicsComponent->GetInputHistory_External()
+        && !WheeledNetworkPhysicsComponent->GetStateHistory_External() && !WheeledNetworkPhysicsComponent->GetInputHistory_External();
 }
 
 void USpeedWheeledComponent::InitNetwork()
