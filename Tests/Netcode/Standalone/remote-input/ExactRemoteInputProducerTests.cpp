@@ -4,6 +4,7 @@
 #include <future>
 #include "IAmSpeed/Input/SameFrameInputOwner.h"
 #include "IAmSpeed/Input/InputSessionRegistry.h"
+#include "IAmSpeed/Input/RawAcquisitionJournal.h"
 #include "../transport/TransportFixture.h"
 #include <iostream>
 #include <stdexcept>
@@ -20,6 +21,113 @@ static void Consume(FExactRemoteInputProducer& P, std::uint64_t N)
     auto C = P.FreezeForOwner(N); CHECK(C); auto F = P.Produce(N); CHECK(F);
     CHECK(F->GetData().ConsumptionFrame == N && F->GetData().SourceSequence == C->Sequence);
     CHECK(!P.Produce(N)); CHECK(P.CloseFrozenCutoff(*C)); CHECK(!P.CloseFrozenCutoff(*C));
+}
+static void DeviceRoundBaselineUsesOneContinuousCapture()
+{
+    namespace Input = Speed::Input;
+    constexpr Input::FActionId Jump = 3;
+    const V2::FRawControl Button{V2::ERawControlKind::PadButton, std::uint16_t(V2::EPadButton::South)};
+    const V2::FRawControl Trigger{V2::ERawControlKind::PadAxis, std::uint16_t(V2::EPadAxis::LeftTrigger)};
+    auto Description = Fixture::Contract()->GetDescription();
+    Description.Mapping = {{Button, Jump, 1, {}}, {Trigger, Input::Throttle, 1, {}}};
+    auto Contract = V2::FInputActionContract::Create(std::move(Description));
+    CHECK(Contract);
+    for (const bool DesktopAware : {false, true})
+    {
+        constexpr Input::FFrameNumber F = 20;
+        auto Journal = std::make_shared<V2::FRawAcquisitionJournal>(7, F - 1);
+        auto Device = DesktopAware
+            ? V2::FDeviceInputProducer::CreateDesktop(Journal, Contract, {7}, {Input::EProducerKind::Device, 99}, F - 1)
+            : V2::FDeviceInputProducer::Create(Journal, Contract, {7}, {Input::EProducerKind::Device, 99}, F - 1);
+        CHECK(Device);
+        const auto Publish = [&](std::uint64_t Sequence, bool Pressed, bool Fresh, std::uint64_t Generation,
+            bool Selected = true, std::optional<V2::FAcquisitionTicket> Ticket = {})
+        {
+            V2::FRawAcquisitionBatch Batch;
+            Batch.Count = 1;
+            auto& Reading = Batch.Readings[0];
+            Reading.DeviceId = 73;
+            Reading.Sequence = Sequence;
+            Reading.Generation = {Generation};
+            Reading.Kind = V2::ERawDeviceKind::Gamepad;
+            Reading.TimestampMicroseconds = Sequence;
+            Reading.FreshBaseline = Fresh;
+            Reading.HasSelectedDevice = Selected;
+            Reading.State.Count = 2;
+            Reading.State.Values[0] = {Button, Pressed ? 1.0f : 0.0f};
+            Reading.State.Values[1] = {Trigger, 0.75f};
+            CHECK(Journal->Publish(Ticket.value_or(Journal->BeginAcquisition()), Batch));
+        };
+        const auto OrdinaryCapture = [&](Input::FFrameNumber Frame)
+        {
+            const auto Cutoff = Device->FreezeForOwner(Frame); CHECK(Cutoff);
+            auto Captured = Device->Produce(Frame); CHECK(Captured);
+            CHECK(Device->CloseFrozenCutoff(*Cutoff));
+            CHECK(Captured->GetData().SourceSequence == Cutoff->Sequence);
+            return *Captured;
+        };
+        Publish(1, false, true, 6);
+        CHECK(!Device->CaptureRoundBaselineForOwner(F - 1));
+        const auto Before = OrdinaryCapture(F - 1).GetData();
+        const auto Boundary = Journal->ReadInitialOwnerAdmission();
+        Publish(2, true, false, 6); // Omit this new edge while preserving its raw held level.
+        CHECK(!Device->CaptureRoundBaselineForOwner(F + 1));
+        CHECK(Journal->ReadInitialOwnerAdmission().DeliverySequence == Before.SourceSequence);
+        const auto Baseline = Device->CaptureRoundBaselineForOwner(F);
+        CHECK(Baseline && Baseline->IsValidFor(*Contract));
+        const auto& Data = Baseline->GetData();
+        CHECK(Data.Reset && Data.Transitions.empty() && Data.ConsumptionFrame == F);
+        CHECK(Data.SourceSequence == Before.SourceSequence + 1 && Data.DeviceGeneration.Value == 6);
+        CHECK(Data.StreamEpoch.Value == Before.StreamEpoch.Value && Data.Producer.Id == Before.Producer.Id
+            && Data.Producer.Kind == Input::EProducerKind::Device);
+        CHECK(Data.Values[Input::Throttle] == 191 && Data.Values[Jump] == 1
+            && (Data.ActiveMask & (std::uint32_t{1} << Jump)));
+        CHECK(!Device->CaptureRoundBaselineForOwner(F));
+        const auto After = Journal->ReadInitialOwnerAdmission();
+        CHECK(After.PhysicalFence == Boundary.PhysicalFence && After.ControlBarrier == Boundary.ControlBarrier
+            && After.NextFrame == F + 1 && !After.Paused && !After.HasFrozenCutoff);
+        if (!DesktopAware)
+        {
+            CHECK(Device->SetLifecyclePaused(true) == V2::ELifecycleResult::Applied);
+            const auto OldTicket = Journal->BeginAcquisition();
+            CHECK(Journal->RequestFreshRoundResume() && Journal->NeedsFreshRoundResume());
+            Publish(3, false, true, 7, true, OldTicket);
+            CHECK(!Journal->IsResumeReady() && !Journal->ReadFreshRoundResumeBaseline());
+            Publish(4, false, true, 8, false);
+            CHECK(!Journal->IsResumeReady() && !Journal->ReadFreshRoundResumeBaseline());
+            CHECK(Device->SetLifecyclePaused(false) == V2::ELifecycleResult::Rejected);
+            Publish(5, true, true, 9);
+            Publish(6, false, false, 9);
+            {
+                const auto ResumeCapture = Journal->ReserveAcquisition();
+                const auto Fresh = Journal->ReadFreshRoundResumeBaseline();
+                CHECK(Fresh && Fresh->Baseline.Sequence == 5 && Fresh->Baseline.Generation.Value == 9
+                    && Fresh->Ticket.PhysicalFence != OldTicket.PhysicalFence);
+                CHECK(Journal->IsResumeReady() && Device->SetLifecyclePaused(false) == V2::ELifecycleResult::Applied);
+                const auto Playing = OrdinaryCapture(F + 1).GetData();
+                CHECK(Playing.Reset && Playing.Transitions.empty() && Playing.SourceSequence == Data.SourceSequence + 1);
+                CHECK(Playing.DeviceGeneration.Value == 9 && Playing.StreamEpoch.Value == Data.StreamEpoch.Value
+                    && Playing.Producer.Id == Data.Producer.Id && Playing.Values[Jump] == 1
+                    && Playing.Values[Input::Throttle] == Data.Values[Input::Throttle]);
+            }
+            const auto Suffix = OrdinaryCapture(F + 2).GetData();
+            CHECK(!Suffix.Reset && Suffix.Transitions.size() == 1 && Suffix.Transitions[0].Action == Jump
+                && Suffix.Transitions[0].State == V2::ETransition::Completed);
+            continue;
+        }
+        Publish(3, false, false, 6);
+        const auto Next = OrdinaryCapture(F + 1).GetData();
+        CHECK(!Next.Reset && Next.SourceSequence == Data.SourceSequence + 1 && Next.DeviceGeneration.Value == 6);
+        CHECK(Next.Values[Input::Throttle] == Data.Values[Input::Throttle] && Next.Values[Jump] == 0);
+        CHECK(Next.Transitions.size() == 1 && Next.Transitions[0].Action == Jump
+            && Next.Transitions[0].State == V2::ETransition::Completed);
+        const auto History = Journal->ReadControlsSince({7, 0});
+        CHECK(History.Status == V2::EAcquisitionRead::Batch && History.Readings.size() == 3
+            && History.Readings[0].FreshBaseline && !History.Readings[1].FreshBaseline && !History.Readings[2].FreshBaseline);
+        Publish(4, false, true, 7);
+        CHECK(!Device->CaptureRoundBaselineForOwner(F + 2)); // A hardware resync cannot pose as a continuous round baseline.
+        CHECK(!Journal->ReadInitialOwnerAdmission().HasFrozenCutoff);
+    }
 }
 static void ExactFramesAndImmutableCutoff()
 {
@@ -513,7 +621,7 @@ int main()
             FailedCloseQuarantinesAndPauseDoesNotForge, SourceContinuityAndAddress, CurrentOwnerAdmissionStillRefuses,
             FullEdgesAndStaleLeaseSerial, GenerationChangeRequiresFreshReset,
             ExplicitLaterBaselinePreservesSameEpochAndHistory, BaselineInspectionRejectsStaleResetWithoutMutation,
-            RegistryRoundCutoverKeepsOwnersAndRejectsLateCommands}) Test();
+            RegistryRoundCutoverKeepsOwnersAndRejectsLateCommands, DeviceRoundBaselineUsesOneContinuousCapture}) Test();
         std::cout << "PASS checks=" << Checks << " scope=portable_optin_remote_registry_default_closed_no_UE_no_physics\n"; return 0;
     }
     catch (const std::exception& E) { std::cerr << "FAIL " << E.what() << '\n'; return 1; }

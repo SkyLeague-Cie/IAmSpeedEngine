@@ -89,6 +89,34 @@ public:
 		return std::unique_ptr<FDeviceInputProducer>(new FDeviceInputProducer(std::move(Raw), std::move(Mapper), ResumeRearmMask,true));
 	}
     const std::vector<FDesktopActionTerminal>& DesktopTerminals()const{return Mapper->DesktopTerminals();}
+	// On the capture owner, call in place of Freeze/Produce/Close for the
+	// exact reserved frame, before opening any cutoff. A failed capture after
+	// freeze closes its cutoff; it cannot safely be retried at that frame.
+	// Retain the raw mapped levels even when ordinary play would rearm a hold.
+	std::optional<FInputFrame> CaptureRoundBaselineForOwner(FFrameNumber Frame)
+	{
+		if (FPresentationInputScope::IsActive() || RearmOnNextResume
+			|| !Mapper->CanCaptureRoundBaseline(Frame)) return {};
+		std::optional<FInputPollCutoff> Cutoff;
+		std::optional<FInputFrame> Result;
+		try
+		{
+			Cutoff = FreezeForOwner(Frame);
+			if (Cutoff && Cutoff->Sequence && Cutoff->Generation && Cutoff->LifecycleFence)
+			{
+				const auto Sample = Raw->Poll(Frame);
+				if (Sample && Sample->Sequence == Cutoff->Sequence && Sample->Generation.Value == Cutoff->Generation)
+					Result = Mapper->MapRoundBaseline(*Sample, Frame).Frame;
+			}
+		}
+		catch (...) { Result.reset(); }
+		if (!CloseFrozenCutoff(Cutoff.value_or(FInputPollCutoff{})) || !Result)
+		{
+			if (Cutoff) Mapper->RequireFreshBaseline();
+			return {};
+		}
+		return Result;
+	}
 	std::optional<FInputFrame> Produce(FFrameNumber Frame) override
 	{
 		if (FPresentationInputScope::IsActive()) return {};

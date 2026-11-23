@@ -7,6 +7,7 @@
 
 namespace Speed::Input::V2
 {
+class FDeviceInputProducer;
 enum class EMappingStatus : std::uint8_t
 {
 	Mapped, InvalidConfiguration, ResyncRequired, InvalidRaw, DeviceChanged,
@@ -83,7 +84,20 @@ public:
     FMappingResult MapDesktop(const FRawInputSample& Sample,FFrameNumber Frame,const FDesktopFrameFinalizer& Finalize={})
     {return MapInternal(Sample,Frame,true,Finalize);}
 private:
-	FMappingResult MapInternal(const FRawInputSample& Sample, FFrameNumber Frame,bool TypedDesktop,const FDesktopFrameFinalizer& Finalize={})
+	friend class FDeviceInputProducer;
+	bool CanCaptureRoundBaseline(FFrameNumber Frame) const noexcept
+	{
+		return HasBaseline && !NeedsResync && !Exhausted && Frame == NextFrame
+			&& LastSequence != std::numeric_limits<std::uint64_t>::max();
+	}
+	FMappingResult MapRoundBaseline(const FRawInputSample& Sample, FFrameNumber Frame)
+	{
+		if (!CanCaptureRoundBaseline(Frame) || Sample.Status != ERawSampleStatus::Valid)
+			return Reject(EMappingStatus::ResyncRequired);
+		return MapInternal(Sample, Frame, DesktopAware, {}, true);
+	}
+	FMappingResult MapInternal(const FRawInputSample& Sample, FFrameNumber Frame, bool TypedDesktop,
+		const FDesktopFrameFinalizer& Finalize = {}, bool RoundBaseline = false)
 	{
 		if (FPresentationInputScope::IsActive()) return {EMappingStatus::PresentationForbidden, {}};
         const bool DesktopPath=DesktopAware&&(TypedDesktop||Sample.Kind!=ERawDeviceKind::Desktop);
@@ -158,7 +172,12 @@ private:
 				if (Working[I].Value != Sample.FinalState[I].Value) return Reject(EMappingStatus::UnexplainedState);
 			Output.Values = Values; Output.ActiveMask = Active;
 		}
+        // The raw sample follows the ordinary mapping path, including the
+        // hysteresis and desktop contribution ledger. The Reset is on the
+        // outgoing frame only. Its omitted edges must not remain in metadata.
+        if (RoundBaseline) Output.Reset = true;
         const auto BeforeFinalization=Output;
+        if (RoundBaseline) Output.Transitions.clear();
         if(Finalize&&!Finalize(Output))return Reject(EMappingStatus::InvalidValue);
 		FInputFrame Result(Contract, Output);
 		if (!Result.IsValidFor(*Contract)) return Reject(EMappingStatus::InvalidValue);

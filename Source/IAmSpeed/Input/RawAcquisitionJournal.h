@@ -74,6 +74,7 @@ struct FAcquisitionHistory
 	std::uint64_t ControlBarrier = 0; // Diagnostic only; read under the journal gate.
 };
 struct FAcquisitionBaseline { FAcquisitionCursor Cursor; FAcquiredRawState State; };
+struct FRoundResumeAcquisition { FAcquisitionTicket Ticket; FAcquiredRawState Baseline; };
 struct FAcquisitionInvalidation
 {
 	std::uint64_t Session = 0, Serial = 0, BarrierBefore = 0, BarrierAfter = 0;
@@ -163,8 +164,15 @@ public:
 				const bool Same = Previous && SameDevice(*Previous, R);
 				if ((!Same && !R.FreshBaseline) || (Same && !SameControls(Previous->State, R.State))
 					|| (Same && R.TimestampMicroseconds < Previous->TimestampMicroseconds)) { FrozenInvalid = true; return false; }
-				if (!PhysicalClosed && Ticket.PhysicalFence == PhysicalFence
-					&& (!Paused || Ready || (ResumeRequested && R.FreshBaseline)))
+				const bool SamePhysicalFence = !PhysicalClosed && Ticket.PhysicalFence == PhysicalFence;
+				if (SamePhysicalFence && RoundResumeAfter && (!R.HasSelectedDevice || R.Sequence <= *RoundResumeAfter))
+				{
+					// Control acquisition remains observable, but neutral
+					// recovery may never acknowledge the round's resume.
+					Prepared = {};
+					Ready = false;
+				}
+				else if (SamePhysicalFence && (!Paused || Ready || (ResumeRequested && R.FreshBaseline)))
 				{
 					if (R.FreshBaseline)
 					{
@@ -296,12 +304,12 @@ public:
 		{
 			if (PhysicalFence == std::numeric_limits<std::uint64_t>::max()) return ELifecycleResult::Rejected;
 			++PhysicalFence;
-			Paused = true; ResumeRequested = ResumeReady = false; Physical = {};
+			Paused = true; ResumeRequested = ResumeReady = false; RoundResumeAfter.reset(); Physical = {};
 			return ELifecycleResult::Applied;
 		}
 		if (!Paused) return ELifecycleResult::Unaffected;
 		if (!ResumeReady) return ELifecycleResult::Rejected;
-		Paused = false; ResumeRequested = ResumeReady = false;
+		Paused = false; ResumeRequested = ResumeReady = false; RoundResumeAfter.reset();
 		return ELifecycleResult::Applied;
 	}
 	// Request from the quiescent host authorizes logical resume at the first
@@ -311,25 +319,32 @@ public:
 	// releases consumption; it is NOT a second discard boundary.
 	// Before requesting this, the host must have resolved every other pause gate.
 	// Merely resubmitting a cached state is forbidden.
-	bool RequestFreshResume()
-	{
-		if (FPresentationInputScope::IsActive()) return false;
-		std::lock_guard<std::recursive_mutex> Window(PollWindowGate);
-		std::lock_guard<std::mutex> Lock(Gate);
-		if (Closed || PhysicalClosed || !Paused || PhysicalFence == std::numeric_limits<std::uint64_t>::max()) return false;
-		++PhysicalFence;
-		ResumeRequested = true; ResumeReady = false; Physical = {}; return true;
-	}
+	bool RequestFreshResume() { return RequestFreshResumeInternal(false); }
+	// Round-only opt-in. The acquisition adapter must obtain current readings
+	// instead of using a pre-resume callback as the first playing baseline.
+	bool RequestFreshRoundResume() { return RequestFreshResumeInternal(true); }
 	bool NeedsFreshResume() const
 	{ std::lock_guard<std::mutex> Lock(Gate); return ResumeRequested && !ResumeReady; }
+	bool NeedsFreshRoundResume() const
+	{ std::lock_guard<std::mutex> Lock(Gate); return RoundResumeAfter && !ResumeReady; }
 	bool IsResumeReady() const
 	{ std::lock_guard<std::mutex> Lock(Gate); return ResumeRequested && ResumeReady; }
+	// For the capture owner, hold ReserveAcquisition from this read through
+	// lifecycle resume and the first playing Freeze/Produce/Close.
+	std::optional<FRoundResumeAcquisition> ReadFreshRoundResumeBaseline() const
+	{
+		std::lock_guard<std::mutex> Lock(Gate);
+		if (!RoundResumeAfter || !ResumeReady || Closed || PhysicalClosed || !Physical.Baseline
+			|| !Physical.Baseline->FreshBaseline || !Physical.Baseline->HasSelectedDevice
+			|| Physical.Baseline->Sequence <= *RoundResumeAfter) return {};
+		return FRoundResumeAcquisition{{SessionId, PhysicalFence}, *Physical.Baseline};
+	}
 	ELifecycleResult CancelLifecycle() override
 	{
 		if (FPresentationInputScope::IsActive()) return ELifecycleResult::Rejected;
 		std::lock_guard<std::recursive_mutex> Window(PollWindowGate);
 		std::lock_guard<std::mutex> Lock(Gate);
-		PhysicalClosed = true; Physical = {}; ResumeRequested = ResumeReady = false;
+		PhysicalClosed = true; Physical = {}; ResumeRequested = ResumeReady = false; RoundResumeAfter.reset();
 		return ELifecycleResult::Applied; // Control acquisition has a separate owner.
 	}
 	FAcquisitionHistory ReadControlsSince(FAcquisitionCursor Cursor) const
@@ -368,6 +383,17 @@ public:
 	void Close()
 	{ std::lock_guard<std::recursive_mutex> Window(PollWindowGate); std::lock_guard<std::mutex> Lock(Gate); Closed = true; Physical = {}; }
 private:
+	bool RequestFreshResumeInternal(bool Round)
+	{
+		if (FPresentationInputScope::IsActive()) return false;
+		std::lock_guard<std::recursive_mutex> Window(PollWindowGate);
+		std::lock_guard<std::mutex> Lock(Gate);
+		if (Closed || PhysicalClosed || !Paused || PhysicalFence == std::numeric_limits<std::uint64_t>::max()) return false;
+		++PhysicalFence;
+		RoundResumeAfter.reset();
+		if (Round) RoundResumeAfter = LastAcquired ? LastAcquired->Sequence : 0;
+		ResumeRequested = true; ResumeReady = false; Physical = {}; return true;
+	}
 	static bool SameDevice(const FAcquiredRawState& A, const FAcquiredRawState& B) noexcept
 	{ return A.DeviceId == B.DeviceId && A.Generation.Value == B.Generation.Value && A.Kind == B.Kind; }
 	static bool SameControls(const FCanonicalRawState& A, const FCanonicalRawState& B) noexcept
@@ -390,6 +416,7 @@ private:
 	const std::uint64_t SessionId;
 	std::array<FAcquiredRawState, Capacity> History{};
 	std::optional<FAcquiredRawState> LastAcquired;
+	std::optional<std::uint64_t> RoundResumeAfter;
 	FPhysicalBuffer Physical;
 	std::optional<FRawInputSample> Frozen;
 	FFrameNumber FrozenFrame = 0;
