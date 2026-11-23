@@ -1195,6 +1195,134 @@ bool UBoxSubBody::RequiresEstablishedStaticContactTransport() const
 		!ParentComponent->HasCompatibleEstablishedStaticSupport(GroundHit);
 }
 
+namespace
+{
+struct FLowerPreTransportPointTrial
+{
+    const TCHAR* Rejection = TEXT("InvalidBodyOrVelocity");
+    FVector V = FVector::ZeroVector;
+    FVector W = FVector::ZeroVector;
+    double BeforeVN = 0.0;
+    double AfterVN = 0.0;
+    double J = 0.0;
+    double DeltaKE = 0.0;
+    double MinConstraintMargin = 0.0;
+    int32 ConstraintCount = 0;
+};
+
+bool PassesLowerPointBackboardScope(const FVector& Normal)
+{
+    // The current C2 arena uses world X for the end-wall axis.
+    return Normal.Z > 0.0 && FMath::Abs(Normal.X) > FMath::Abs(Normal.Y);
+}
+
+bool CanCommitUnclampedLowerPointVelocity(const FVector& V, const double Cap)
+{
+    return FMath::IsFinite(Cap) && Cap > 0.0 && !V.ContainsNaN() &&
+        V.SizeSquared() < FMath::Square(Cap) * (1.0 - 64.0 * DBL_EPSILON) &&
+        V.GetClampedToMaxSize(Cap) == V;
+}
+
+FLowerPreTransportPointTrial PreviewLowerPreTransportPoint(
+    const ISpeedComponent& Body, const USSubBody* Box, const FMatrix& BoxInvI,
+    const UPrimitiveComponent* Surface, const SKinematic& Pre, const FVector& P, const FVector& N,
+    const FVector& PreviousPoint, const FVector& PreviousN, const FVector& StockV)
+{
+    FLowerPreTransportPointTrial Trial;
+    Trial.V = Pre.Velocity;
+    Trial.W = Pre.AngularVelocity;
+    const double Mass = Body.GetPhysMass();
+    const auto InvI = Body.ComputeWorldInvInertiaTensor();
+    if (!FMath::IsFinite(Mass) || Mass <= 0.0 || InvI != BoxInvI ||
+        Pre.Location.ContainsNaN() || Pre.Velocity.ContainsNaN() || Pre.AngularVelocity.ContainsNaN() ||
+        P.ContainsNaN() || N.ContainsNaN() || StockV.ContainsNaN())
+    {
+        return Trial;
+    }
+
+    const FVector R = P - Pre.Location;
+    const FVector Moment = FVector::CrossProduct(R, N);
+    const FVector AngularPerImpulse = FVector(InvI.TransformVector(Moment));
+    const double InvMass = 1.0 / Mass;
+    const double EffectiveInverseMass = InvMass + FVector::DotProduct(Moment, AngularPerImpulse);
+    const FVector PrePointV = Pre.Velocity + FVector::CrossProduct(Pre.AngularVelocity, R);
+    Trial.BeforeVN = FVector::DotProduct(PrePointV, N);
+    Trial.Rejection = TEXT("NotClosingOrInvalidEffectiveMass");
+    if (!FMath::IsFinite(EffectiveInverseMass) || EffectiveInverseMass < InvMass ||
+        !FMath::IsFinite(Trial.BeforeVN) || Trial.BeforeVN >= 0.0)
+    {
+        return Trial;
+    }
+
+    // Solve at the native point using the state before normal-to-normal transport.
+    Trial.J = -Trial.BeforeVN / EffectiveInverseMass;
+    const FVector Impulse = Trial.J * N;
+    const FVector AngularImpulse = Trial.J * Moment;
+    Trial.V = Pre.Velocity + InvMass * Impulse;
+    Trial.W = Pre.AngularVelocity + Trial.J * AngularPerImpulse;
+    Trial.AfterVN = FVector::DotProduct(Trial.V + FVector::CrossProduct(Trial.W, R), N);
+    Trial.DeltaKE = 0.5 * (FVector::DotProduct(Pre.Velocity + Trial.V, Impulse) +
+        FVector::DotProduct(Pre.AngularVelocity + Trial.W, AngularImpulse));
+    const double Work = 0.5 * Trial.J * (Trial.BeforeVN + Trial.AfterVN);
+    const double RoundoffScale = 64.0 * DBL_EPSILON;
+    const auto VelocityRoundoff = [&](const FVector& Lever)
+    {
+        return RoundoffScale * FMath::Max(1.0, Pre.Velocity.Size() + Trial.V.Size() + StockV.Size() +
+            Lever.Size() * (Pre.AngularVelocity.Size() + Trial.W.Size()));
+    };
+    const double ClosureTolerance = VelocityRoundoff(R);
+    Trial.Rejection = TEXT("ClosureWorkOrClamp");
+    if (!FMath::IsFinite(Trial.J) || Trial.J <= 0.0 || !FMath::IsFinite(Trial.AfterVN) ||
+        FMath::Abs(Trial.AfterVN) > ClosureTolerance || !FMath::IsFinite(Trial.DeltaKE) ||
+        !FMath::IsFinite(Work) || Trial.DeltaKE > 0.0 || Work > 0.0 ||
+        FMath::Abs(Trial.DeltaKE - Work) > ClosureTolerance * Trial.J ||
+        !CanCommitUnclampedLowerPointVelocity(Trial.V, Body.GetPhysMaxSpeed()) ||
+        !CanCommitUnclampedLowerPointVelocity(Trial.W, Body.GetPhysMaxAngularSpeed()))
+    {
+        return Trial;
+    }
+
+    const auto RetainsContactVelocity = [&](const FVector& Point, const FVector& Direction)
+    {
+        if (Point.ContainsNaN() || Direction.ContainsNaN() || Direction.IsNearlyZero())
+        {
+            return false;
+        }
+        const FVector Lever = Point - Pre.Location;
+        const double NativeVN = FVector::DotProduct(
+            StockV + FVector::CrossProduct(Pre.AngularVelocity, Lever), Direction);
+        const double ProposedVN = FVector::DotProduct(
+            Trial.V + FVector::CrossProduct(Trial.W, Lever), Direction);
+        // Preserve the native post-transport floor up to the non-closing boundary.
+        const double Margin = ProposedVN - FMath::Min(0.0, NativeVN);
+        Trial.MinConstraintMargin = FMath::Min(Trial.MinConstraintMargin, Margin);
+        return FMath::IsFinite(NativeVN) && FMath::IsFinite(ProposedVN) && Margin >= -VelocityRoundoff(Lever);
+    };
+
+    Trial.Rejection = TEXT("PreviousSupportWouldClose");
+    if (!RetainsContactVelocity(PreviousPoint, PreviousN))
+    {
+        return Trial;
+    }
+    Trial.Rejection = TEXT("RetainedConstraintWouldCloseOrIsForeign");
+    for (const FPhysicalContactConstraint& Row : Body.GetPhysicalConstraints())
+    {
+        if (!Row.IsValid())
+        {
+            continue;
+        }
+        ++Trial.ConstraintCount;
+        if (Row.SourceSubBody.Get() != Box || Row.OtherComponent.Get() != Surface ||
+            !RetainsContactVelocity(Row.ContactPoint, Row.Normal.GetSafeNormal()))
+        {
+            return Trial;
+        }
+    }
+    Trial.Rejection = nullptr;
+    return Trial;
+}
+}
+
 bool UBoxSubBody::ProjectEstablishedStaticContactImpl(
     const float& Delta, const bool bProjectVelocity)
 {
@@ -1447,6 +1575,71 @@ bool UBoxSubBody::ProjectEstablishedStaticContactImpl(
                 GetVelocityAtPoint(ContactPoint), Normal);
             if (!Normal.IsNearlyZero() && NormalSpeed < 0.0f)
             {
+                if (bProjectVelocity && PassesLowerPointBackboardScope(Normal))
+                {
+                    const SKinematic Pre = ParentComponent->GetKinematicState();
+                    const FVector RequestedStockDelta = -NormalSpeed * Normal;
+                    const FVector StockV = Pre.Velocity + RequestedStockDelta;
+                    // AddPhysVelocity projects against all live rows. Certify the unprojected delta
+                    // against every valid retained row before using it as the reference floor.
+                    bool bStockDeltaUnchanged = CanCommitUnclampedLowerPointVelocity(
+                        StockV, ParentComponent->GetPhysMaxSpeed());
+                    for (const FPhysicalContactConstraint& Row : ParentComponent->GetPhysicalConstraints())
+                    {
+                        if (Row.IsValid() && static_cast<float>(FVector::DotProduct(
+                            RequestedStockDelta, Row.Normal.GetSafeNormal())) < 0.0f)
+                        {
+                            bStockDeltaUnchanged = false;
+                            break;
+                        }
+                    }
+                    const double PositionTolerance = 64.0 * DBL_EPSILON * FMath::Max(1.0,
+                        FMath::Max(Query.Start.GetAbsMax(), Projection.Location.GetAbsMax()));
+                    const double NativePreGap = FVector::DotProduct(
+                        FVector(Projection.Hit.QueryPoint) - Correction - ContactPoint, Normal);
+                    const FVector SeedNormal = ProjectionSeed.ImpactNormal.GetSafeNormal();
+                    const bool bNativeVertex = Projection.bConverged && Projection.Hit.bHit &&
+                        !Projection.Hit.bStartPenetrating && Projection.Hit.bSurfaceNormalMayVary &&
+                        Projection.Hit.QueryFeatureKind == Speed::EContactFeatureKind::Vertex &&
+                        static_cast<uint8>(Projection.Hit.QueryFeatureIndex) < 8u &&
+                        Projection.Hit.SourceId == Query.RequiredSourceId &&
+                        Projection.Hit.SurfaceId == Query.RequiredSurfaceId &&
+                        Projection.Hit.CanonicalGroupId == Query.RequiredCanonicalGroupId &&
+                        Projection.Hit.Location.Equals(Projection.Location, PositionTolerance) &&
+                        FMath::IsFinite(NativePreGap) &&
+                        FMath::IsFinite(Projection.Hit.GeometricErrorBoundCm) &&
+                        Projection.Hit.GeometricErrorBoundCm >= 0.0 &&
+                        NativePreGap + Projection.Hit.GeometricErrorBoundCm < -PositionTolerance &&
+                        Projection.ResidualPenetrationDepth >= 0.0 &&
+                        Projection.ResidualPenetrationDepth <= ResidualToleranceCm &&
+                        FVector::DotProduct(SeedNormal, Normal) >= Query.MinimumReferenceNormalDot;
+                    const FVector LocalNormal = Query.Rotation.UnrotateVector(Normal);
+                    const bool bIsolatedRoofBody = IsMainSubBody() &&
+                        -LocalNormal.Z > FMath::Max(FMath::Abs(LocalNormal.X), FMath::Abs(LocalNormal.Y)) &&
+                        !ProjectionSeed.SubBody.IsValid() && !ParentComponent->IsFrozen() &&
+                        StaticWorld == ParentComponent->GetStaticCollisionWorldForFrame() &&
+                        !ParentComponent->HasCompatibleEstablishedStaticSupport(ProjectionSeed) &&
+                        !ParentComponent->HasActivePhysicalConstraintsOtherThan(this);
+                    if (bNativeVertex && bIsolatedRoofBody && bStockDeltaUnchanged)
+                    {
+                        const FLowerPreTransportPointTrial Trial = PreviewLowerPreTransportPoint(
+                            *ParentComponent, this, ComputeWorldInvInertiaTensor(), ProjectionSeed.Component.Get(),
+                            Pre, ContactPoint, Normal, ProjectionSeed.ImpactPoint, SeedNormal, StockV);
+                        if (!Trial.Rejection)
+                        {
+                            ParentComponent->SetPhysCOMVelocity(Trial.V);
+                            ParentComponent->SetPhysAngularVelocity(Trial.W);
+#if !UE_BUILD_SHIPPING
+                            if (CVarHitboxNativeProjectionTrace.GetValueOnAnyThread() != 0)
+                            {
+                                UE_LOG(BoxSubBodyLog, Display, TEXT("[LowerBackboardContact] Stage=Transient Frame=%u"),
+                                    ParentComponent->NumFrame());
+                            }
+#endif
+                            return true;
+                        }
+                    }
+                }
                 ParentComponent->AddPhysVelocity(-NormalSpeed * Normal);
             }
         }
@@ -1465,6 +1658,8 @@ bool UBoxSubBody::ProjectEstablishedStaticContactImpl(
         return !Correction.IsNearlyZero();
     }
 
+    const FVector LowerPointPreviousContact = GroundPlanePointWS;
+    const bool bLowerPointHadPlane = bGroundPlaneValid;
 	const FVector PreviousNormal = GroundPlaneN.GetSafeNormal();
     GroundHit = ProjectedHit;
     GroundPlaneN = Normal;
@@ -1503,6 +1698,54 @@ bool UBoxSubBody::ProjectEstablishedStaticContactImpl(
 			Speed::TransportEstablishedContactVelocity(
 				ParentComponent->GetPhysCOMVelocity(),
 				RotationalPointVelocity, PreviousNormal, Normal);
+        if (PassesLowerPointBackboardScope(Normal))
+        {
+            const FVector LocalNormal = Query.Rotation.UnrotateVector(Normal);
+            const bool bRoofSide = -LocalNormal.Z > FMath::Max(FMath::Abs(LocalNormal.X), FMath::Abs(LocalNormal.Y));
+            const double PositionTolerance = 64.0 * DBL_EPSILON * FMath::Max(1.0,
+                FMath::Max(Query.Start.GetAbsMax(), Projection.Location.GetAbsMax()));
+            const double NativePreGap = FVector::DotProduct(
+                FVector(Projection.Hit.QueryPoint) - Correction - ContactPoint, Normal);
+            const UPrimitiveComponent* Surface = GroundComp.Get();
+            const bool bNativeVertex = bHasCorrection && Projection.bConverged &&
+                Projection.Hit.bHit && !Projection.Hit.bStartPenetrating && Projection.Hit.bSurfaceNormalMayVary &&
+                Projection.Hit.QueryFeatureKind == Speed::EContactFeatureKind::Vertex &&
+                static_cast<uint8>(Projection.Hit.QueryFeatureIndex) < 8u &&
+                Projection.Hit.SourceId == Query.RequiredSourceId &&
+                Projection.Hit.SurfaceId == Query.RequiredSurfaceId &&
+                Projection.Hit.CanonicalGroupId == Query.RequiredCanonicalGroupId &&
+                Projection.Hit.Location.Equals(Projection.Location, PositionTolerance) &&
+                FMath::IsFinite(NativePreGap) && NativePreGap < -PositionTolerance &&
+                Projection.ResidualPenetrationDepth >= 0.0 &&
+                Projection.ResidualPenetrationDepth <= ResidualToleranceCm;
+            const bool bSameStaticSupport = bLowerPointHadPlane && Surface &&
+                Surface->GetMobility() == EComponentMobility::Static &&
+                StaticWorld == ParentComponent->GetStaticCollisionWorldForFrame() &&
+                FVector::DotProduct(PreviousNormal, Normal) >= Query.MinimumReferenceNormalDot;
+            const bool bIsolatedRoofBody = IsMainSubBody() && bRoofSide && !ParentComponent->IsFrozen() &&
+                !ParentComponent->HasCompatibleEstablishedStaticSupport(ProjectedHit) &&
+                !ParentComponent->HasActivePhysicalConstraintsOtherThan(this);
+
+            if (bNativeVertex && bSameStaticSupport && bIsolatedRoofBody)
+            {
+                const FLowerPreTransportPointTrial Trial = PreviewLowerPreTransportPoint(
+                    *ParentComponent, this, ComputeWorldInvInertiaTensor(), Surface, ParentComponent->GetKinematicState(),
+                    ContactPoint, Normal, LowerPointPreviousContact, PreviousNormal, TransportedLinearVelocity);
+                if (!Trial.Rejection)
+                {
+                    ParentComponent->SetPhysCOMVelocity(Trial.V);
+                    ParentComponent->SetPhysAngularVelocity(Trial.W);
+#if !UE_BUILD_SHIPPING
+                    if (CVarHitboxNativeProjectionTrace.GetValueOnAnyThread() != 0)
+                    {
+                        UE_LOG(BoxSubBodyLog, Display, TEXT("[LowerBackboardContact] Stage=PreTransport Frame=%u"),
+                            ParentComponent->NumFrame());
+                    }
+#endif
+                    return true;
+                }
+            }
+        }
 		ParentComponent->SetPhysCOMVelocity(TransportedLinearVelocity);
 		bVelocityProjected = true;
     }
