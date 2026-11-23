@@ -1,4 +1,5 @@
 #include "IAmSpeed/World/Simulation/PreparedWorldCore.h"
+#include "IAmSpeed/World/Simulation/PreparedWorldReplacement.h"
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
@@ -137,6 +138,70 @@ static void TestRoundTripAndIndex()
     const auto EI = BuildContactIndexes(*Empty, F.Envelope.Actors, F.Envelope.Endpoints);
     CHECK(EI && EI->Dynamic.empty() && EI->Pending.empty() && EI->DynamicByBody.empty());
 }
+static void TestReplacementPreservesOriginalBytesAndRetiresOnlySelectedPairs()
+{
+    const FFixture Original;
+    const auto& A = Original.Envelope.Address;
+    const FSnapshotView Source{Original.Bytes.data(), Original.Bytes.size(), A.Frame, A.InputHash, A.StateHash, A.PublicationSerial};
+    auto Envelope = Original.Envelope;
+    ++Envelope.Address.PublicationSerial;
+    ++Envelope.Address.ResumeGeneration;
+
+    const auto Unchanged = BuildReplacement(Source, Envelope, {}, {});
+    CHECK(Unchanged && Unchanged->Payload == Original.Bytes && ValidEnvelope(Unchanged->Envelope));
+    CHECK(Unchanged->Envelope.Address.StateHash == A.StateHash);
+
+    auto Body = Original.Values.Bodies[1];
+    Body.Kinematic[0] = 125.25;
+    Body.Frozen = !Body.Frozen;
+    const FBodyReplacement Actor{Body.StableId, Body.Kinematic, Body.Frozen};
+    const std::vector<FContactRemoval> Contacts{{7001, 8001}, {9001, 8001}}; // active and pending, reversed
+    const auto Changed = BuildReplacement(Source, Envelope, {Actor}, Contacts);
+    CHECK(Changed && ValidEnvelope(Changed->Envelope));
+    CHECK(Changed->Envelope.Address.Frame == A.Frame && Changed->Envelope.Address.Next == A.Next);
+    CHECK(Changed->Envelope.Address.InputHash == A.InputHash && Changed->Envelope.Address.StateHash != A.StateHash);
+    CHECK(Changed->Envelope.Address.SupplementHash != Envelope.Address.SupplementHash);
+    const auto P = Parse(Changed->Payload.data(), Changed->Payload.size(), Changed->Envelope.Address, Envelope.Actors);
+    CHECK(P && P->Dynamic.size() == 1 && P->Pending.empty());
+    CHECK(P->Bodies[1].Kinematic[0] == 125.25 && P->Bodies[1].Frozen == Body.Frozen);
+    CHECK(P->Bodies[1].MechanicPayload == Original.Values.Bodies[1].MechanicPayload);
+    CHECK(BuildContactIndexes(*P, Envelope.Actors, Envelope.Endpoints));
+
+    auto Expected = Original;
+    Expected.Values.Bodies[1] = Body;
+    Expected.Values.Dynamic.erase(Expected.Values.Dynamic.begin());
+    Expected.Values.Pending.clear();
+    Expected.Encode();
+    CHECK(Changed->Payload == Expected.Bytes); // includes every surviving contact bit and body payload
+
+    CHECK(!BuildReplacement(Source, Original.Envelope, {Actor}, Contacts));
+    CHECK(!BuildReplacement(Source, Envelope, {Actor, Actor}, Contacts));
+    auto BadActor = Actor;
+    BadActor.StableId = 99;
+    CHECK(!BuildReplacement(Source, Envelope, {BadActor}, Contacts));
+    BadActor = Actor;
+    BadActor.Kinematic[2] = std::numeric_limits<double>::infinity();
+    CHECK(!BuildReplacement(Source, Envelope, {BadActor}, Contacts));
+    CHECK(!BuildReplacement(Source, Envelope, {Actor}, {{8001, 7001}, {7001, 8001}}));
+    CHECK(!BuildReplacement(Source, Envelope, {Actor}, {{7001, 9001}}));
+    CHECK(!BuildReplacement(Source, Envelope, {Actor}, {{8001, 8001}}));
+    auto Corrupt = Source;
+    ++Corrupt.StateHash;
+    CHECK(!BuildReplacement(Corrupt, Envelope, {Actor}, Contacts));
+    Corrupt = Source;
+    ++Corrupt.InputHash;
+    CHECK(!BuildReplacement(Corrupt, Envelope, {Actor}, Contacts));
+    Corrupt = Source;
+    ++Corrupt.Frame;
+    CHECK(!BuildReplacement(Corrupt, Envelope, {Actor}, Contacts));
+    auto Oversize = Envelope;
+    Oversize.ActorSupplements[0].GameplayPayload.resize(FLimits{}.MaxMechanicPayload + 1);
+    CHECK(!BuildReplacement(Source, std::move(Oversize), {Actor}, Contacts));
+    Envelope.Endpoints.pop_back();
+    CHECK(!BuildReplacement(Source, Envelope, {Actor}, Contacts));
+    CHECK(Original.ParseNow());
+}
+
 static void TestMalformedBytes()
 {
     const FFixture Original;
@@ -233,7 +298,8 @@ int main()
     const U32 Order = 0x04030201; CHECK(*reinterpret_cast<const Byte*>(&Order) == 1);
     static_assert(PairBytes == 198 && BodyFixedBytes == 165);
     static_assert(noexcept(std::declval<std::unique_ptr<FContactIndexes>&>().swap(std::declval<std::unique_ptr<FContactIndexes>&>())));
-    TestRoundTripAndIndex(); TestMalformedBytes(); TestEnvelopeAndLimits(); TestAllocationFailureAndPreparedStorageTail();
+    TestRoundTripAndIndex(); TestReplacementPreservesOriginalBytesAndRetiresOnlySelectedPairs();
+    TestMalformedBytes(); TestEnvelopeAndLimits(); TestAllocationFailureAndPreparedStorageTail();
     std::printf("PreparedWorldCore: %u checks PASS; real frozen2776-format parser/indexes, fixture bytes only; native NOT_COMPILED/RUN/ADMITTED\n", Checks);
     return 0;
 }

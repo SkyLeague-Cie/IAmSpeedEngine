@@ -1,6 +1,8 @@
 #pragma once
 
 #include "CompletedSimulationPublication.h"
+#include "IAmSpeed/Netcode/Common/NativePreparedKinematicFields.h"
+#include "PreparedWorldReplacement.h"
 #include "SimulationWorld.h"
 #include <atomic>
 #include <chrono>
@@ -33,6 +35,31 @@ struct FExactRemoteRoundCommit
     uint64 NeutralBaselineHash = 0;
     FExactRemoteRoundPlan::FClock::time_point Deadline{};
     std::shared_ptr<const std::atomic<bool>> Cancellation;
+};
+
+// Values-only preparation on the original worker, inside the provider's
+// Build call for this exact completed publication. No native object pin or
+// permission to stage/commit is granted here.
+class IAMSPEED_API FExactRemoteRoundBuild final
+{
+public:
+    using FRoster = FPreparedNativeKinematicFields::FRoster;
+
+    struct FActorReplacement { uint64 StableId = 0; SKinematic Kinematic; bool bFrozen = false; };
+    struct FReplacement
+    {
+        FSimulationSnapshot Snapshot;
+        std::shared_ptr<const PreparedWorld::FRestoreEnvelope> Envelope;
+    };
+
+    static std::optional<FRoster> CaptureRoster(const FSimulationWorld&, const FCompletedSimulationPublication&);
+
+    // Sets Frame, Next, InputHash, StateHash and SupplementHash. The host
+    // supplies the other address fields and full bindings/supplements.
+    // Use the returned immutable envelope to acquire the real native lease.
+    static std::optional<FReplacement> BuildReplacement(const FSimulationWorld&, const FCompletedSimulationPublication&,
+        PreparedWorld::FRestoreEnvelope, const std::vector<FActorReplacement>&,
+        const std::vector<PreparedWorld::FContactRemoval>&);
 };
 
 // Coordinator/provider installed before worker creation. Build runs on the

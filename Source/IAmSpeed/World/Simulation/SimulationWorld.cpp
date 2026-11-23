@@ -211,6 +211,7 @@ namespace Speed
 		OrderedAdapters = Adapters;
 		Bodies.Reset(OrderedAdapters.Num());
 		StableSubBodyIds.Reset();
+		SubBodyNativeObjectIds.Reset();
 		SolidSubBodiesByStableId.Reset();
 		ProjectionSpheres.Empty();
 		ProjectionBoxes.Empty();
@@ -232,14 +233,12 @@ namespace Speed
 					}
 					if (SubBodies[SubBodyIndex] && SubBodyIndex <= MAX_uint16)
 					{
-						StableSubBodyIds.Add(
-							SubBodies[SubBodyIndex],
-							(*StableId << 16) | static_cast<uint16>(SubBodyIndex));
+						const uint64 SubBodyId = (*StableId << 16) | static_cast<uint16>(SubBodyIndex);
+						StableSubBodyIds.Add(SubBodies[SubBodyIndex], SubBodyId);
+						SubBodyNativeObjectIds.Add(SubBodyId, SubBodies[SubBodyIndex]->GetUniqueID());
 						if (USolidSubBody* SolidSubBody = Cast<USolidSubBody>(SubBodies[SubBodyIndex]))
 						{
-							SolidSubBodiesByStableId.Add(
-								(*StableId << 16) | static_cast<uint16>(SubBodyIndex),
-								SolidSubBody);
+							SolidSubBodiesByStableId.Add(SubBodyId, SolidSubBody);
 						}
 					}
 				}

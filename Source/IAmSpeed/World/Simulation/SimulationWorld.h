@@ -12,7 +12,7 @@
 #include "IAmSpeed/SubBodies/Solid/SolidSubBody.h"
 
 class ISpeedComponent;
-namespace Speed { class FHostedGTStaticWorldLease; class FPreparedNativeKinematicFields; }
+namespace Speed { class FHostedGTStaticWorldLease; class FPreparedNativeKinematicFields; class FExactRemoteRoundBuild; class FCompletedSimulationPublication; }
 namespace Speed::PreparedExecution { class FCanonicalFramePreflight; }
 class ASpeedPhysicsSimulation;
 class USpeedWorldSubsystem;
@@ -106,6 +106,7 @@ namespace Speed
         friend class PreparedExecution::FCanonicalFramePreflight;
         friend class FHostedGTStaticWorldLease;
         friend class FPreparedNativeKinematicFields;
+        friend class FExactRemoteRoundBuild;
         friend class ::ASpeedPhysicsSimulation;
         friend class ::USpeedWorldSubsystem;
 	public:
@@ -256,12 +257,14 @@ namespace Speed
             if (IsRestoreBoundaryReserved()) std::terminate();
         }
         FWorldBorrowGate StorageAccess;
+        const FCompletedSimulationPublication* RoundBuildBoundary = nullptr;
 #if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
         friend struct FBodyContactPairReadOnlyTestFixture;
 #endif
 		TMap<ISpeedComponent*, uint64> StableIds;
 		TMap<uint64, ISpeedComponent*> AdaptersByStableId;
 		TMap<const USSubBody*, uint64> StableSubBodyIds;
+		TMap<uint64, uint32> SubBodyNativeObjectIds;
 		TMap<uint64, USolidSubBody*> SolidSubBodiesByStableId;
 		TArray<ISpeedComponent*> Adapters;
 		TArray<ISpeedComponent*> OrderedAdapters;

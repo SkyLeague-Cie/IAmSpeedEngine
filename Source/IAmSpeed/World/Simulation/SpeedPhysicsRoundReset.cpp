@@ -129,7 +129,12 @@ std::optional<ESimulationBoundaryResult> ASpeedPhysicsSimulation::ServiceExactRe
             Refusal = ERefusal::RegistryOrFrameBusy;
             return {};
         }
-        auto Plan = ExactRemoteRoundProvider->Build(World, Current);
+        std::unique_ptr<Speed::FExactRemoteRoundPlan> Plan;
+        {
+            World.RoundBuildBoundary = Current.get();
+            ON_SCOPE_EXIT { World.RoundBuildBoundary = nullptr; };
+            Plan = ExactRemoteRoundProvider->Build(World, Current);
+        }
         if (!Plan) return {};
         if (Plan->Envelope && Plan->Lease && Plan->Boundary == Current && Plan->Inputs.Next == CanonicalNumFrame
             && Plan->Inputs.RoundBaselines.size() == RequiredExactRemoteInputSessions
