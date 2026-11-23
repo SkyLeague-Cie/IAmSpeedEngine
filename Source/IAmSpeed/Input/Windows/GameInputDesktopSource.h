@@ -127,14 +127,14 @@ public:
         {
             for(const auto& Q:Observed)
             {
+                TComPtr<IUnknown> Identity;
+                if(FAILED(Q.Reading.As(&Identity))||!Identity)return Fail(EStatus::Rejected,E_UNEXPECTED);
                 if(Q.Reader->RoundBaseline)
                 {
-                    const auto After=FollowsRoundBaseline(Q);
+                    const auto After=FollowsRoundBaseline(Q,Identity.Get());
                     if(!After)return Fail(EStatus::Unavailable,E_BOUNDS);
                     if(!*After){Result->Consumed.push_back(Q.Arrival);continue;}
                 }
-                TComPtr<IUnknown> Identity;
-                if(FAILED(Q.Reading.As(&Identity)))return Fail(EStatus::Rejected,E_UNEXPECTED);
                 bool Duplicate=Seen(*Q.Reader,Identity.Get());
                 std::uint64_t Sequence=Q.Reader->Sequence,Stamp=Q.Reader->Timestamp;
                 for(const auto& Before:Result->Accepted)if(Before.Reader==Q.Reader)
@@ -245,24 +245,30 @@ private:
         for(auto I=Pending.begin();I!=Pending.end();)
             if(std::find(Consumed.begin(),Consumed.end(),I->Arrival)!=Consumed.end())I=Pending.erase(I);else ++I;
     }
-    std::optional<bool> FollowsRoundBaseline(const FQueued& Q) const
+    std::optional<bool> FollowsRoundBaseline(const FQueued& Q,IUnknown* ReadingIdentity) const
     {
         const auto& Anchor=Q.Reader->RoundBaseline;
-        if(Q.Reading.Get()==Anchor.Get())return false;
         const auto Stamp=Q.Reading->GetTimestamp(), BaselineStamp=Anchor->GetTimestamp();
         if(Stamp!=BaselineStamp)return Stamp>BaselineStamp;
         // Distinct readings can share a timestamp. Only the SDK history can
         // place such a reading before or after this exact retained snapshot.
+        // Callback and history interfaces can expose the same COM identity.
         auto Cursor=Anchor;
+        TComPtr<IUnknown> CursorIdentity;
+        if(FAILED(Cursor.As(&CursorIdentity))||!CursorIdentity)return {};
+        if(CursorIdentity.Get()==ReadingIdentity)return false;
         for(std::size_t I=0;I<QueueCapacity;++I)
         {
             TComPtr<FReading> Next;
             const auto H=Api->GetNextReading(Cursor.Get(),Kind(*Q.Reader),Q.Reader->Lease.Device.Get(),Next.GetAddressOf());
             if(H==GameInput::v3::GAMEINPUT_E_READING_NOT_FOUND)return false;
-            if(FAILED(H)||!Next||Next.Get()==Cursor.Get()||Next->GetTimestamp()<BaselineStamp)return {};
-            if(Next.Get()==Q.Reading.Get())return true;
+            if(FAILED(H)||!Next||Next->GetTimestamp()<BaselineStamp)return {};
+            TComPtr<IUnknown> NextIdentity;
+            if(FAILED(Next.As(&NextIdentity))||!NextIdentity||NextIdentity==CursorIdentity)return {};
+            if(NextIdentity.Get()==ReadingIdentity)return true;
             if(Next->GetTimestamp()>BaselineStamp)return false;
             Cursor=std::move(Next);
+            CursorIdentity=std::move(NextIdentity);
         }
         return {};
     }

@@ -205,9 +205,10 @@ int main()
             "SDK current snapshot subsumes the older equal-timestamp press");
         F.Api->Push(F.Api->Mouse(F.Mouse.Get(),2,GameInputMouseLeftButton));
         F.Accept(Round);
+        F.Api->AliasHistoryReadings=true;
         auto After=F.Prepare();const auto Publication=F.Accept(After);
         Check(Publication->Changes.size()==1&&Publication->Changes.front().Value==1,
-            "SDK history preserves the distinct equal-timestamp reading after the snapshot");
+            "SDK history preserves the equal-timestamp successor exposed through a different interface pointer");
     }
     {
         Fixture F(true,true,"interleaved-transaction");
