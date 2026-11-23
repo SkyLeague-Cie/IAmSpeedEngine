@@ -60,8 +60,11 @@ public:
 
 private:
     friend struct FCommonComponentValueAccess;
+    friend class FPreparedNativeRoundFields;
     enum class EPhase : uint8 { Prepared, Ready, Finalized, Released, Aborted };
     static bool MatchesActor(const FSimulationWorld&, const FSimulationComponentRestoreRequest&, const ISpeedComponent&);
+    static bool MatchesSolid(const FSimulationWorld&, const FSimulationComponentRestoreRequest&,
+        const USolidSubBody&, const PreparedWorld::FEndpointBinding&);
     FPreparedNativeKinematicFields(const FSimulationWorld&, const FSimulationComponentRestoreRequest&,
         SKinematic& Live, bool* Frozen, const SKinematic& State);
 

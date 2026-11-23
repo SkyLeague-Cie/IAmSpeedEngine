@@ -9,6 +9,7 @@ namespace Speed
 {
 class FPreparedRestoreLeaseOwner;
 class FPreparedNativeKinematicFields;
+class FPreparedNativeRoundFields;
 struct FCommonComponentValueAccess;
 struct FSimulationComponentRestoreRequest;
 namespace RestoreLeaseDetail
@@ -47,6 +48,7 @@ class FPreparedRestoreLeaseView final
 {
     friend class FPreparedRestoreLeaseOwner;
     friend class FPreparedNativeKinematicFields;
+    friend class FPreparedNativeRoundFields;
     friend struct FCommonComponentValueAccess;
     std::weak_ptr<RestoreLeaseDetail::FState> State;
     explicit FPreparedRestoreLeaseView(const std::shared_ptr<RestoreLeaseDetail::FState>& S) noexcept : State(S) {}

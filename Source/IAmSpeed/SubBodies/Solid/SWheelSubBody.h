@@ -8,6 +8,7 @@
 #include "SWheelSubBody.generated.h"
 
 namespace Speed::Analytic { struct FAnalyticPrefetchQuery1075; }
+namespace Speed { class FPreparedNativeRoundFields; }
 namespace Speed {struct FPreparedNativeOwnerBinding;struct FNativePrepareGTFields;namespace Analytic::Certified {struct FDistanceBudget;}}
 class ISpeedWheeledComponent;
 class UChaosVehicleWheel;
@@ -233,6 +234,7 @@ public:
     void HandleTimers();
 private:
     friend class ISpeedWheeledComponent;
+    friend class Speed::FPreparedNativeRoundFields;
 
     struct FPrimarySuspensionMiss
     {

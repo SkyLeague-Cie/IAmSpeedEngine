@@ -5,7 +5,7 @@
 #include "CoreMinimal.h"
 #include "IAmSpeed/Concurrency/AtomicSharedPtr.h"
 namespace Speed::Replay { class FFieldWriter; }
-namespace Speed { class FPreparedNativeKinematicFields; }
+namespace Speed { class FPreparedNativeKinematicFields; class FPreparedNativeRoundFields; }
 #include "ChaosWheeledVehicleMovementComponent.h"
 #include "ISpeedWheeledComponent.h"
 #include "Netcode/SpeedPhysicsComponent.h"
@@ -913,6 +913,7 @@ private:
 
 	//=========== Internal state variables for the movement component ===========
     friend class Speed::FPreparedNativeKinematicFields;
+    friend class Speed::FPreparedNativeRoundFields;
 	SBaseGameState BaseGameState; // current game state of the component
 	FBasePhysicsState BasePhysicsState; // current physics state of the component (replicated on network)
 	FWheeledGameState WheeledGameState; // current wheeled game state of the component

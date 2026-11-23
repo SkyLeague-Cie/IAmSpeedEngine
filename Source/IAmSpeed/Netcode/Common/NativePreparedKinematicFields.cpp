@@ -112,15 +112,20 @@ std::unique_ptr<FPreparedNativeKinematicFields> FPreparedNativeKinematicFields::
     USolidSubBody& Target, const FSimulationWorld& World, const FSimulationComponentRestoreRequest& Request,
     const PreparedWorld::FEndpointBinding& Endpoint, const SKinematic& EndpointState)
 {
-    if (!Request.OwnerLease.HoldsExactBoundary(World, Request.Address) || !Endpoint.StableId
-        || !Endpoint.Incarnation || !Endpoint.NativeObjectId || Endpoint.Actor != Request.Supplement.Binding.StableId
-        || Endpoint.ActorIncarnation != Request.Supplement.Binding.Incarnation
-        || World.SolidSubBodiesByStableId.FindRef(Endpoint.StableId) != &Target
-        || World.FindStableSubBodyId(&Target) != Endpoint.StableId
-        || Target.GetUniqueID() != Endpoint.NativeObjectId || !Target.GetParentComponent()
-        || !MatchesActor(World, Request, *Target.GetParentComponent()) || !ValidKinematics(EndpointState)) return {};
+    if (!MatchesSolid(World, Request, Target, Endpoint) || !ValidKinematics(EndpointState)) return {};
     return std::unique_ptr<FPreparedNativeKinematicFields>(new FPreparedNativeKinematicFields(
         World, Request, Target.Kinematics, nullptr, EndpointState));
+}
+
+bool FPreparedNativeKinematicFields::MatchesSolid(const FSimulationWorld& World,
+    const FSimulationComponentRestoreRequest& Request, const USolidSubBody& Target, const PreparedWorld::FEndpointBinding& Endpoint)
+{
+    return Request.OwnerLease.HoldsExactBoundary(World, Request.Address) && Endpoint.StableId
+        && Endpoint.Incarnation && Endpoint.NativeObjectId && Endpoint.Actor == Request.Supplement.Binding.StableId
+        && Endpoint.ActorIncarnation == Request.Supplement.Binding.Incarnation
+        && World.SolidSubBodiesByStableId.FindRef(Endpoint.StableId) == &Target
+        && World.FindStableSubBodyId(&Target) == Endpoint.StableId && Target.GetUniqueID() == Endpoint.NativeObjectId
+        && Target.GetParentComponent() && MatchesActor(World, Request, *Target.GetParentComponent());
 }
 
 FPreparedNativeKinematicFields::FPreparedNativeKinematicFields(const FSimulationWorld& InWorld,
