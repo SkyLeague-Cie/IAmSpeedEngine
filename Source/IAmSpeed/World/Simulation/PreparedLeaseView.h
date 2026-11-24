@@ -122,10 +122,16 @@ public:
 class FPreparedRestoreLeaseOwner final
 {
     friend class FSimulationWorld;
-    std::shared_ptr<RestoreLeaseDetail::FState> State;
+    const std::shared_ptr<RestoreLeaseDetail::FState> State;
     FPreparedRestoreLeaseOwner(const FSimulationWorld& W, std::shared_ptr<const PreparedWorld::FRestoreEnvelope> E,
         std::unique_ptr<ISimulationRestoreBoundaryLease> L)
         : State(std::make_shared<RestoreLeaseDetail::FState>(W, std::move(E), std::move(L))) {}
+    bool HoldsExactBoundary(const FSimulationWorld& World, const PreparedWorld::FAddress& Address) const noexcept
+    {
+        // The world owns State for this call. Avoid a temporary weak view and
+        // its control-block updates in the no-fail finalization tail.
+        return State->Query(&World, &Address);
+    }
     template<class Callback>
     auto WithComponent(const FSimulationComponentRestoreRequest* Request, const ISpeedComponent& Target,
         const PreparedWorld::FActorBinding& Binding, Callback&& Prepare)
@@ -168,7 +174,8 @@ public:
             Span(&State->Lease, sizeof(State->Lease)), Span(&State->ComponentRequest, sizeof(State->ComponentRequest)),
             Span(&State->ComponentTarget, sizeof(State->ComponentTarget)),
             Span(&State->ComponentBinding, sizeof(State->ComponentBinding))};
-        P.ReadOnly = {Span(&State->World, sizeof(State->World)), Span(&State->Envelope, sizeof(State->Envelope)),
+        P.ReadOnly = {Span(&State, sizeof(State)), Span(&State->World, sizeof(State->World)),
+            Span(&State->Envelope, sizeof(State->Envelope)),
             Span(&State->Address, sizeof(State->Address)), Span(&State->Worker, sizeof(State->Worker))};
         Out.push_back(std::move(P));
         const auto Before = Out.size();

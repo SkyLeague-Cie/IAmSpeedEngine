@@ -464,6 +464,91 @@ static void TestCompositionAndLeaseExpiry()
         CHECK(F.Untouched() && F.LeaseCounters.Abort == 1);
     }
 }
+static void TestWorldControlAccessAndAdapterIdentity()
+{
+    // Inject only a conflicting declaration. No fixture writes to owner cells.
+    using FWorld = FSimulationWorld;
+    struct FControlCell
+    {
+        const void* (*Address)(const FWorld&);
+        bool WrittenByWorld;
+    };
+    const FControlCell Cells[] = {
+        {[](const FWorld& W) -> const void* { return &W.PreparedRestore; }, true},
+        {[](const FWorld& W) -> const void* { return &W.PreparedRestore->Storage; }, true},
+        {[](const FWorld& W) -> const void* { return &W.PreparedRestore->Identity; }, false},
+        {[](const FWorld& W) -> const void* { return &W.PreparedRestore->Worker; }, false},
+        {[](const FWorld& W) -> const void* { return &W.PreparedRestore->Components; }, false},
+        {[](const FWorld& W) -> const void* { return &W.PreparedRestore->Components.back(); }, false},
+        {[](const FWorld& W) -> const void* { return &W.PreparedRestore->Supplement; }, false},
+        {[](const FWorld& W) -> const void* { return &W.PreparedRestore->LeaseOwner; }, false},
+        {[](const FWorld& W) -> const void* { return W.PreparedRestore->LeaseOwner.get(); }, false},
+        {[](const FWorld& W) -> const void* { return &W.PreparedRestore->Publication; }, false},
+        {[](const FWorld& W) -> const void* { return &W.PreparedRestore->Publication->Envelope; }, false},
+        {[](const FWorld& W) -> const void* { return &W.PreparedRestore->Publication->Physical; }, false},
+    };
+    for (const auto& Cell : Cells)
+    {
+        FWorldFixture F;
+        auto Lease = std::make_unique<FTestLease>(F.World, F.Envelope->Address, F.LeaseCounters);
+        Lease->OnAccess = [&]()
+        {
+            F.Components[0].ExtraWrite = reinterpret_cast<std::uintptr_t>(Cell.Address(F.World));
+        };
+        CHECK(!F.World.PrepareSnapshotRestore(F.Snapshot, F.Envelope, std::move(Lease),
+            std::make_unique<FTestSupplement>(F.Envelope->Address, F.SupplementCounters)));
+        CHECK(F.Untouched() && !F.World.IsRestoreBoundaryReserved());
+    }
+    {
+        FWorldFixture F;
+        auto Token = F.Prepare();
+        CHECK(Token);
+        const auto& Plan = *F.World.PreparedRestore;
+        const auto Contains = [](const auto& Ranges, std::uintptr_t Address)
+        {
+            return std::any_of(Ranges.begin(), Ranges.end(), [&](const auto& Range)
+            {
+                return PreparedAccess::Overlap(Range, {Address, 1});
+            });
+        };
+        for (const auto& Cell : Cells)
+        {
+            const auto Address = reinterpret_cast<std::uintptr_t>(Cell.Address(F.World));
+            CHECK(Contains(Plan.Access.front().Writes, Address) == Cell.WrittenByWorld);
+            CHECK(std::any_of(Plan.Access.begin(), Plan.Access.end(), [&](const auto& Participant)
+            {
+                return Contains(Participant.ReadOnly, Address);
+            }) != Cell.WrittenByWorld);
+        }
+        CHECK(std::any_of(Plan.Access.front().ReadOnly.begin(), Plan.Access.front().ReadOnly.end(), [&](const auto& Range)
+        {
+            return Range.Begin == reinterpret_cast<std::uintptr_t>(Plan.Components.data())
+                && Range.Bytes == Plan.Components.size() * sizeof(Plan.Components.front());
+        }));
+        CHECK(F.World.AbortPreparedRestore(*Token));
+    }
+    for (bool ReplaceDuringPreparation : {false, true})
+    {
+        FWorldFixture F;
+        ISpeedComponent Replacement;
+        Replacement.StableId = F.Components[0].StableId;
+        auto Token = F.Prepare();
+        CHECK(Token);
+        const auto Replace = [&]()
+        {
+            // Only the shim can edit the registry with the boundary held.
+            F.World.AdaptersByStableId.Add(Replacement.StableId, &Replacement);
+        };
+        if (ReplaceDuringPreparation)
+            F.Components[2].Reenter = Replace;
+        else
+            Replace();
+        CHECK(!F.World.PrepareRestoreFinalization(*Token));
+        CHECK(F.Untouched() && !F.World.IsRestoreBoundaryReserved());
+        CHECK(F.LeaseCounters.Abort == 1 && F.SupplementCounters.Abort == 1);
+    }
+}
+
 static void TestLeaseCallbackAndCleanupReentry()
 {
     // Real transaction INC and owner view code; these participants remain
@@ -570,7 +655,7 @@ static void TestLeaseCallbackAndCleanupReentry()
 int RebasedWorldShimRegressionMain()
 {
     FrozenCoreTestsMain(); TestActualPlanControlFlowUnderShim(); TestFragmentWorldResolutionDuringExactRequest();
-    TestCompositionAndLeaseExpiry(); TestLeaseCallbackAndCleanupReentry();
+    TestCompositionAndLeaseExpiry(); TestWorldControlAccessAndAdapterIdentity(); TestLeaseCallbackAndCleanupReentry();
     std::printf("PreparedWorld combined ordinary checks: %u PASS; SHIM fence/actors are fixture-only, zero native qualification\n", Checks);
     return 0; // Test main may be included under another entry point.
 }
