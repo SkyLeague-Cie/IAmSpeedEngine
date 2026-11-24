@@ -121,4 +121,33 @@ struct FExactRoundSuspensionSettings final
         Writer.Boolean(ForceDiagnosticReads);
     }
 };
+
+// Response shared by the grouped impulse solve and the delayed support checks.
+struct FExactRoundWheelGroundContactSettings final
+{
+    float NormalVelocityTimeConstantOverride = -1.f;
+    float NormalVelocityDeadzone = 0.f;
+    float LockedSeparatingTimeConstant = 0.f;
+    float LockedSeparatingMaxNormalVelocity = 0.f;
+    bool LockedSeparatingDamping = false;
+    float ImpulseDeadzone = 0.f;
+    float Softness = 0.f;
+    std::int32_t SolverMode = 0;
+    bool RequireFinalSupport = false;
+
+    bool operator==(const FExactRoundWheelGroundContactSettings&) const = default;
+
+    void AppendHash(FExactRoundConfigurationWriter& Writer) const noexcept
+    {
+        Writer.Float(NormalVelocityTimeConstantOverride);
+        Writer.Float(NormalVelocityDeadzone);
+        Writer.Float(LockedSeparatingTimeConstant);
+        Writer.Float(LockedSeparatingMaxNormalVelocity);
+        Writer.Boolean(LockedSeparatingDamping);
+        Writer.Float(ImpulseDeadzone);
+        Writer.Float(Softness);
+        Writer.Signed(SolverMode);
+        Writer.Boolean(RequireFinalSupport);
+    }
+};
 }

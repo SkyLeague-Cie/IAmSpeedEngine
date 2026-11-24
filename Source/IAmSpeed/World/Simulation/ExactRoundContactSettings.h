@@ -11,7 +11,7 @@ namespace Speed
 // Subbody-specific values still belong to the native round roster.
 struct FExactRoundContactSettings final
 {
-    static constexpr std::uint64_t HashSchema = 3;
+    static constexpr std::uint64_t HashSchema = 4;
 
     std::optional<float> SphereBoxRestitution;
     std::optional<float> SphereBoxFriction;
@@ -25,6 +25,7 @@ struct FExactRoundContactSettings final
     bool SphereBoxNonpenetrating = true;
     bool ForceSphereBoxNonpenetratingForTesting = false;
     FExactRoundBoxContactSettings BoxContact;
+    FExactRoundWheelGroundContactSettings WheelGroundContact;
     FExactRoundSuspensionSettings Suspension;
 
     bool operator==(const FExactRoundContactSettings&) const = default;
@@ -51,6 +52,7 @@ struct FExactRoundContactSettings final
         Writer.Boolean(ForceSphereBoxNonpenetratingForTesting);
         BoxContact.AppendHash(Writer);
         Suspension.AppendHash(Writer);
+        WheelGroundContact.AppendHash(Writer);
         return Writer.Hash();
     }
 
@@ -60,6 +62,7 @@ private:
     bool CaptureSolidSettings() noexcept;
     void CaptureSphereProjectionSettings() noexcept;
     void CaptureBoxContactSettings() noexcept;
+    void CaptureWheelGroundContactSettings() noexcept;
     void CaptureSuspensionSettings() noexcept;
 };
 
