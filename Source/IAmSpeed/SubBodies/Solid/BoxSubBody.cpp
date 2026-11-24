@@ -3955,6 +3955,78 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
     const FVector COMVelocityBeforeSolve = ParentComponent->GetPhysCOMVelocity();
     FVector TotalNormalImpulse = FVector::ZeroVector;
     FVector TotalTangentialImpulse = FVector::ZeroVector;
+    const bool bReverseFreshRoofOrder = [&]()
+    {
+        if (!bFreshSweepSupport || !IsMainSubBody() || NumC != 4 || !bRoofFaceNearlyAligned ||
+            !Hit.bBlockingHit || Hit.bStartPenetrating || !(Hit.PenetrationDepth <= 0.0f) ||
+            !FMath::IsFinite(Hit.TOI) || Hit.TOI <= 0.0f ||
+            !Hit.bSurfaceNormalMayVary || Hit.SourceId == 0 || Hit.SurfaceId == 0 ||
+            Hit.CanonicalGroupId == 0 || Hit.PrimitiveId == 0 || Hit.FeatureId == 0)
+        {
+            return false;
+        }
+
+        const int32 AnchorCorner = int32(Hit.ContactFeatureIndexThis);
+        if (Hit.ContactFeatureThis != Speed::EContactFeatureKind::Vertex ||
+            AnchorCorner < 4 || AnchorCorner > 7 || !BoxRotWS.IsNormalized())
+        {
+            return false;
+        }
+
+        // Match the native sweep's box corners using only transform roundoff.
+        const FCollisionShape QueryShape = GetWorldStaticCollisionShape();
+        const FVector NativeExtent = QueryShape.IsBox() ? QueryShape.GetExtent() : FVector::ZeroVector;
+        const double RoundoffCm = 64.0 * DBL_EPSILON *
+            FMath::Max(1.0, CenterWS.Size() + Hit.Location.Size() + NativeExtent.Size());
+        if (!QueryShape.IsBox() || NativeExtent.ContainsNaN() || NativeExtent.GetMin() <= 0.0 ||
+            !FMath::IsFinite(RoundoffCm))
+        {
+            return false;
+        }
+
+        const auto MatchesCorner = [RoundoffCm](const FVector& Local, const FVector& Corner)
+        {
+            const FVector Error = (Local - Corner).GetAbs();
+            return !Local.ContainsNaN() && FMath::Max3(Error.X, Error.Y, Error.Z) <= RoundoffCm;
+        };
+        const bool bAnchorPositiveY = (AnchorCorner & 2) != 0;
+        const FVector AnchorLocal = BoxRotWS.UnrotateVector(Hit.ContactPointThis - Hit.Location);
+        const FVector ExpectedAnchor(
+            (AnchorCorner & 1) != 0 ? NativeExtent.X : -NativeExtent.X,
+            bAnchorPositiveY ? NativeExtent.Y : -NativeExtent.Y,
+            NativeExtent.Z);
+        const double NormalLocalY = FVector::DotProduct(N, BoxRotWS.GetRightVector());
+        if (!MatchesCorner(AnchorLocal, ExpectedAnchor) || !FMath::IsFinite(NormalLocalY) ||
+            (bAnchorPositiveY ? -NormalLocalY : NormalLocalY) <= 64.0 * DBL_EPSILON)
+        {
+            return false;
+        }
+
+        int32 SlotsByRank[4] = {INDEX_NONE, INDEX_NONE, INDEX_NONE, INDEX_NONE};
+        for (int32 Slot = 0; Slot < NumC; ++Slot)
+        {
+            const FVector Local = BoxRotWS.UnrotateVector(CurrentGroundContactsWS[Slot] - CenterWS);
+            const bool bPositiveX = Local.X > 0.0;
+            const bool bPositiveY = Local.Y > 0.0;
+            const FVector Corner(
+                bPositiveX ? NativeExtent.X : -NativeExtent.X,
+                bPositiveY ? NativeExtent.Y : -NativeExtent.Y,
+                NativeExtent.Z);
+            // Visit the anchor half rear to front, then the opposite half front to rear.
+            const int32 Rank = bPositiveY == bAnchorPositiveY
+                ? (bPositiveX ? 1 : 0) : (bPositiveX ? 2 : 3);
+            if (!MatchesCorner(Local, Corner) || SlotsByRank[Rank] != INDEX_NONE)
+            {
+                return false;
+            }
+            SlotsByRank[Rank] = Slot;
+        }
+
+        return SlotsByRank[0] == 3 && SlotsByRank[1] == 2 &&
+            SlotsByRank[2] == 1 && SlotsByRank[3] == 0 &&
+            !PassesLowerPointBackboardScope(N);
+    }();
+
     // (BoxSubBodyLog, Log, TEXT("[CCDBox] ResolveDirectGroundSupport for frame = %d CurrentGroundContactsWS.Num = %d, ImpactNormal = %s, Kinematic = %s"),
     //     ParentComponent->NumFrame(), CurrentGroundContactsWS.Num(), *N.ToString(), *Kinematics.ToString());
 
@@ -3968,8 +4040,9 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
                 N, CurrentGroundContactsWS, Dt, /*bDoFriction=*/false, /*Mu=*/0.f, bRoofSurfaceTraversalActive);
             break;
         }
-        for (int32 i = 0; i < NumC; ++i)
+        for (int32 VisitIndex = 0; VisitIndex < NumC; ++VisitIndex)
         {
+            const int32 i = bReverseFreshRoofOrder ? 3 - VisitIndex : VisitIndex;
             const FVector& P = CurrentGroundContactsWS[i];
             const FVector Vp = GetVelocityAtPoint(P);
             const float vN = FVector::DotProduct(Vp, N);
