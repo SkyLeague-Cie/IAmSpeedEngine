@@ -2,6 +2,7 @@
 
 #include "CompletedSimulationPublication.h"
 #include "ExactRemoteRoundFence.h"
+#include "ExactRoundConfiguration.h"
 #include "IAmSpeed/Netcode/Common/NativePreparedKinematicFields.h"
 #include "PreparedWorldReplacement.h"
 #include "SimulationWorld.h"
@@ -54,6 +55,9 @@ public:
     };
 
     static std::optional<FRoster> CaptureRoster(const FSimulationWorld&, const FCompletedSimulationPublication&);
+    // Keep game actor incarnations/schemas and take configuration hashes and
+    // solid endpoint incarnations from CaptureRoster for the exact F-1.
+    static bool MatchesBindings(const FRoster&, const PreparedWorld::FRestoreEnvelope&) noexcept;
 
     // Sets Frame, Next, InputHash, StateHash and SupplementHash. The host
     // supplies the other address fields and full bindings/supplements.

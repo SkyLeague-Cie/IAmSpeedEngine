@@ -171,6 +171,7 @@ namespace Speed
 		const auto Access = BorrowStorage();
 		if (!Access || IsRestoreBoundaryReserved()) return false;
 		if (StableIds.Contains(&Adapter)) return false;
+        if (ExactRoundWorkerGeneration && NextStableId > (UINT64_MAX >> 16)) return false;
 		const uint64 StableId = NextStableId++;
 		Adapters.Add(&Adapter);
 		StableIds.Add(&Adapter, StableId);
@@ -222,6 +223,13 @@ namespace Speed
 		return (Access || StorageAccess.IsReservationOwner()) && StableIds.Contains(const_cast<ISpeedComponent*>(&Adapter));
 	}
 
+    uint64 FSimulationWorld::ReadExactRoundSubBodyIncarnation(uint64 StableId, const USSubBody& Body) const
+    {
+        const auto* Slot = ExactRoundSubBodySlots.Find(StableId);
+        if (!Slot || !Slot->Object.HasSameIndexAndSerialNumber(FWeakObjectPtr(&Body))) return 0;
+        return Slot->Incarnation;
+    }
+
 	void FSimulationWorld::RebuildOrderedAdapters()
 	{
 		const auto Access = BorrowStorage();
@@ -230,6 +238,7 @@ namespace Speed
         if (PreparedExecution::RejectPreparedOrderMutation(PreparedExecution::Requested() && OnePausedWork::IsActive(), bOrderDirty))
             throw std::runtime_error("Prepared native dirty registry ordering refused before callbacks or table mutation");
         if (!bOrderDirty) return;
+        auto PreviousExactSlots = MoveTemp(ExactRoundSubBodySlots);
         Adapters.Remove(nullptr);
 		OrderedAdapters = Adapters;
 		Bodies.Reset(OrderedAdapters.Num());
@@ -261,6 +270,17 @@ namespace Speed
 						StableSubBodyIds.Add(SubBodies[SubBodyIndex], SubBodyId);
 						SubBodiesByStableId.Add(SubBodyId, SubBodies[SubBodyIndex]);
 						SubBodyNativeObjectIds.Add(SubBodyId, SubBodies[SubBodyIndex]->GetUniqueID());
+                        if (ExactRoundWorkerGeneration)
+                        {
+                            const FWeakObjectPtr Object(SubBodies[SubBodyIndex]);
+                            const auto* Previous = PreviousExactSlots.Find(SubBodyId);
+                            uint64 Incarnation = 0;
+                            if (Previous && Previous->Object.HasSameIndexAndSerialNumber(Object))
+                                Incarnation = Previous->Incarnation;
+                            else if (NextExactRoundSubBodyIncarnation && NextExactRoundSubBodyIncarnation != MAX_uint64)
+                                Incarnation = NextExactRoundSubBodyIncarnation++;
+                            ExactRoundSubBodySlots.Add(SubBodyId, {Object, Incarnation});
+                        }
 						if (USolidSubBody* SolidSubBody = Cast<USolidSubBody>(SubBodies[SubBodyIndex]))
 						{
 							SolidSubBodiesByStableId.Add(SubBodyId, SolidSubBody);

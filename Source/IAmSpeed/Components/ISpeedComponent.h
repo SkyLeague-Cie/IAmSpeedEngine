@@ -17,7 +17,7 @@ enum class ERequestedDigitalPolicy:std::uint8_t;
 #include "IAmSpeed/Base/KinematicQuantizationCache.h"
 #include "IAmSpeed/World/Simulation/SimulationSleepState.h"
 class USpeedWheeledComponent;
-namespace Speed {class FNativeRequestedPreparationContextV2;}
+namespace Speed {class FNativeRequestedPreparationContextV2; class FExactRoundConfigurationWriter;}
 namespace Speed::Input::V2 {class FNativeRequestedBindingV2;}
 struct FSimulationWheelVisual;
 
@@ -208,6 +208,13 @@ public:
 	virtual void AbortCanonicalFrame(uint64 Frame, ECanonicalFrameAbortReason Reason) noexcept {}
 	/** Read-only identity publication; querying this never mutates the world registry. */
 	uint64 GetPublishedSimulationStableId() const { return PublishedSimulationStableId.Load(); }
+    // Called only on the reserved original exact-round boundary. Append the
+    // effective adapter configuration (including game-specific mechanics)
+    // or the effective configuration of the indicated native sub-body slot.
+    // Each writer starts empty. Include a schema tag. The readers must be
+    // bounded, avoid waiting on the game thread, and leave the world untouched.
+    virtual bool AppendExactRoundActorConfiguration(Speed::FExactRoundConfigurationWriter&) const { return false; }
+    virtual bool AppendExactRoundSubBodyConfiguration(uint16 Slot, Speed::FExactRoundConfigurationWriter&) const { return false; }
     /** Complete prepared restore is opt-in. Legacy payload validation does not
      * qualify mechanical/gameplay/caches/lifecycle state for this transaction. */
     virtual std::unique_ptr<Speed::IPreparedSimulationComponentRestore>

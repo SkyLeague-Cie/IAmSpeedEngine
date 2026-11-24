@@ -351,6 +351,8 @@ bool USpeedWorldSubsystem::BindExactRemoteRoundStorageOwner(ASpeedPhysicsSimulat
 {
     if (!IsInGameThread() || !Generation || Driver.GetWorld() != GetWorld()
         || ExactRoundStorageGeneration.Load()) return false;
+    SimulationWorld.ExactRoundWorkerGeneration = Generation;
+    SimulationWorld.bOrderDirty = true; // also stamp any roster admitted before mode configuration
     ExactRoundStorageDriver = &Driver;
     ExactRoundStorageGeneration.Store(Generation);
     return true;

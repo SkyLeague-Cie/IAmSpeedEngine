@@ -6,43 +6,39 @@ std::optional<FExactRemoteRoundBuild::FRoster> FExactRemoteRoundBuild::CaptureRo
     const FSimulationWorld& World, const FCompletedSimulationPublication& Current)
 {
     if (!World.StorageAccess.IsReservationOwner() || World.RoundBuildBoundary != &Current
-        || World.bOrderDirty || World.IsRestoreBoundaryReserved() || !Current.World().PublicationSerial) return {};
+        || World.bOrderDirty || World.IsRestoreBoundaryReserved() || !Current.World().PublicationSerial
+        || World.Bodies.IsEmpty() || !Current.Source() || !World.ExactRoundWorkerGeneration
+        || Current.Source()->WorkerGeneration() != World.ExactRoundWorkerGeneration) return {};
+    return FPreparedNativeKinematicFields::CaptureRosterContents(World);
+}
 
-    const PreparedWorld::FLimits Limits;
-    if (World.Bodies.IsEmpty() || static_cast<std::size_t>(World.Bodies.Num()) > Limits.MaxBodies
-        || static_cast<std::size_t>(World.StableSubBodyIds.Num()) > Limits.MaxEndpoints
-        || World.Bodies.Num() != World.AdaptersByStableId.Num()
-        || World.StableSubBodyIds.Num() != World.SubBodyNativeObjectIds.Num()
-        || World.StableSubBodyIds.Num() != World.SubBodiesByStableId.Num()) return {};
-
-    FRoster Result;
-    Result.HasStaticGeometryAuthority = World.StaticCollisionWorld.Get() != nullptr;
-    Result.Actors.reserve(World.Bodies.Num());
-    Result.SubBodies.reserve(World.StableSubBodyIds.Num());
-    for (const auto& Body : World.Bodies)
+bool FExactRemoteRoundBuild::MatchesBindings(const FRoster& Roster,
+    const PreparedWorld::FRestoreEnvelope& Envelope) noexcept
+{
+    if (!Roster.WorkerGeneration || Envelope.Actors.size() != Roster.Actors.size()
+        || Roster.ActorConfigurations.size() != Roster.Actors.size()) return false;
+    for (std::size_t I = 0; I < Roster.Actors.size(); ++I)
     {
-        if (!Body.StableId || !Body.Adapter || World.AdaptersByStableId.FindRef(Body.StableId) != Body.Adapter) return {};
-        Result.Actors.push_back(Body.StableId);
+        const auto& Binding = Envelope.Actors[I];
+        const auto& Row = Roster.ActorConfigurations[I];
+        if (!Binding.Valid() || Binding.StableId != Roster.Actors[I] || Binding.StableId != Row.StableId
+            || Binding.ConfigurationHash != Row.ConfigurationHash) return false;
     }
 
-    int32 Solids = 0;
-    for (const auto& Entry : World.StableSubBodyIds)
+    std::size_t NextEndpoint = 0;
+    for (const auto& Row : Roster.SubBodies)
     {
-        const uint64 Id = Entry.Value;
-        const uint64 Actor = Id >> 16;
-        const uint32 NativeId = World.SubBodyNativeObjectIds.FindRef(Id);
-        const auto* Solid = World.SolidSubBodiesByStableId.FindRef(Id);
-        if (!Entry.Key || !Actor || !NativeId || World.SubBodiesByStableId.FindRef(Id) != Entry.Key
-            || !World.AdaptersByStableId.FindRef(Actor)
-            || (Solid && Solid != Entry.Key)) return {};
-        if (Solid) ++Solids;
-        Result.SubBodies.push_back({Id, Actor, NativeId, Solid != nullptr});
+        if (!Row.IsSolidEndpoint) continue;
+        if (NextEndpoint == Envelope.Endpoints.size()) return false;
+        const auto& Binding = Envelope.Endpoints[NextEndpoint++];
+        const auto Actor = std::lower_bound(Envelope.Actors.begin(), Envelope.Actors.end(), Row.ActorStableId,
+            [](const auto& Entry, uint64 ActorId) { return Entry.StableId < ActorId; });
+        if (Binding.StableId != Row.StableId || Binding.Actor != Row.ActorStableId
+            || Binding.NativeObjectId != Row.NativeObjectId || Binding.Incarnation != Row.Incarnation
+            || Actor == Envelope.Actors.end() || Actor->StableId != Binding.Actor
+            || Binding.ActorIncarnation != Actor->Incarnation) return false;
     }
-    if (Solids != World.SolidSubBodiesByStableId.Num()) return {};
-    std::sort(Result.Actors.begin(), Result.Actors.end());
-    std::sort(Result.SubBodies.begin(), Result.SubBodies.end(),
-        [](const auto& A, const auto& B) { return A.StableId < B.StableId; });
-    return Result;
+    return NextEndpoint == Envelope.Endpoints.size();
 }
 
 std::optional<FExactRemoteRoundBuild::FReplacement> FExactRemoteRoundBuild::BuildReplacement(
@@ -51,20 +47,7 @@ std::optional<FExactRemoteRoundBuild::FReplacement> FExactRemoteRoundBuild::Buil
     const std::vector<PreparedWorld::FContactRemoval>& ContactsToRemove)
 {
     const auto Roster = CaptureRoster(World, Current);
-    if (!Roster || Envelope.Actors.size() != Roster->Actors.size() || Actors.size() > Roster->Actors.size()) return {};
-    for (std::size_t I = 0; I < Roster->Actors.size(); ++I)
-        if (Envelope.Actors[I].StableId != Roster->Actors[I]) return {};
-
-    std::size_t NextEndpoint = 0;
-    for (const auto& Row : Roster->SubBodies)
-    {
-        if (!Row.IsSolidEndpoint) continue;
-        if (NextEndpoint == Envelope.Endpoints.size()) return {};
-        const auto& Binding = Envelope.Endpoints[NextEndpoint++];
-        if (Binding.StableId != Row.StableId || Binding.Actor != Row.ActorStableId
-            || Binding.NativeObjectId != Row.NativeObjectId) return {};
-    }
-    if (NextEndpoint != Envelope.Endpoints.size()) return {};
+    if (!Roster || Actors.size() > Roster->Actors.size() || !MatchesBindings(*Roster, Envelope)) return {};
 
     std::vector<PreparedWorld::FBodyReplacement> Replacements;
     Replacements.reserve(Actors.size());
@@ -94,3 +77,37 @@ std::optional<FExactRemoteRoundBuild::FReplacement> FExactRemoteRoundBuild::Buil
     return Result;
 }
 }
+
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+#include "Misc/AutomationTest.h"
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FIAmSpeedExactRoundBindingValuesTest,
+    "IAmSpeed.Netcode.RoundReset.BindingValues",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FIAmSpeedExactRoundBindingValuesTest::RunTest(const FString&)
+{
+    using FBuild = Speed::FExactRemoteRoundBuild;
+    FBuild::FRoster Roster;
+    Roster.WorkerGeneration = 3;
+    Roster.Actors = {4};
+    Roster.ActorConfigurations = {{4, 17}};
+    const uint64 Slot = uint64{4} << 16;
+    Roster.SubBodies = {{Slot, 4, 25, true, 28, 31}, {Slot + 1, 4, 26, false, 29, 32}};
+
+    Speed::PreparedWorld::FRestoreEnvelope Envelope;
+    Envelope.Actors = {{4, 100, 17, 1, 1}};
+    Envelope.Endpoints = {{Slot, 28, 4, 100, 25}};
+    TestTrue(TEXT("Registered local endpoints and wire actor join"), FBuild::MatchesBindings(Roster, Envelope));
+    ++Roster.SubBodies[0].Incarnation;
+    TestFalse(TEXT("Reused slot and UObject index reject an earlier incarnation"), FBuild::MatchesBindings(Roster, Envelope));
+    Envelope.Endpoints[0].Incarnation = Roster.SubBodies[0].Incarnation;
+    TestTrue(TEXT("Rebound exact incarnation joins"), FBuild::MatchesBindings(Roster, Envelope));
+    ++Envelope.Endpoints[0].ActorIncarnation;
+    TestFalse(TEXT("Foreign actor incarnation refused"), FBuild::MatchesBindings(Roster, Envelope));
+    --Envelope.Endpoints[0].ActorIncarnation;
+    ++Envelope.Actors[0].ConfigurationHash;
+    TestFalse(TEXT("Stale actor configuration refused"), FBuild::MatchesBindings(Roster, Envelope));
+    return true;
+}
+#endif

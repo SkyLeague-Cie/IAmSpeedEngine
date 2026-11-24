@@ -1,6 +1,8 @@
 #include "IAmSpeed/Netcode/round-reset/ExactRemoteRoundControl.h"
+#include "IAmSpeed/World/Simulation/ExactRoundConfiguration.h"
 #include <cstdlib>
 #include <iostream>
+#include <limits>
 
 namespace N = Speed::Netcode;
 namespace R = Speed::Netcode::RoundControl;
@@ -312,10 +314,28 @@ static void TestFailClosed()
     }
 }
 
+static void TestEffectiveConfigurationWriter()
+{
+    using FWriter = Speed::FExactRoundConfigurationWriter;
+    FWriter A, Same, Diff;
+    CHECK(!A.Hash());
+    CHECK(A.Unsigned(1) && A.Float(6) && A.Boolean(true) && A.Double(2) && A.Signed(-1));
+    CHECK(Same.Unsigned(1) && Same.Float(6) && Same.Boolean(true) && Same.Double(2) && Same.Signed(-1));
+    CHECK(A.Hash() && A.Hash() == Same.Hash());
+    CHECK(Diff.Unsigned(1) && Diff.Float(6) && Diff.Boolean(true) && Diff.Float(2) && Diff.Signed(-1));
+    CHECK(A.Hash() != Diff.Hash());
+    CHECK(!Diff.Double(std::numeric_limits<double>::quiet_NaN()) && !Diff.Hash());
+    CHECK(!Diff.Unsigned(1) && !Diff.Hash());
+    FWriter Limit;
+    for (unsigned I = 0; I < FWriter::MaxValues; ++I) CHECK(Limit.Unsigned(I));
+    CHECK(Limit.Hash() && !Limit.Unsigned(17) && !Limit.Hash());
+}
+
 int main()
 {
     TestWire();
     TestTwoClientCutover();
     TestFailClosed();
+    TestEffectiveConfigurationWriter();
     std::cout << "PASS checks=" << Checks << " scope=portable_round_control_no_sockets_no_native_application\n";
 }

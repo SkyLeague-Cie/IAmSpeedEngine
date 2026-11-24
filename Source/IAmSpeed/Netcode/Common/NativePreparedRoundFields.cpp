@@ -151,6 +151,8 @@ std::optional<FPreparedNativeRoundFields::FCapturedKickoffVehicle> FPreparedNati
 
             auto& Out = Capture.Wheels[Index];
             Out.Binding = {StableId, ActorId, NativeId, true};
+            Out.Binding.Incarnation = World.ReadExactRoundSubBodyIncarnation(StableId, *Wheel);
+            if (World.ExactRoundWorkerGeneration && !Out.Binding.Incarnation) return;
             Out.Pose = Wheel->GetKinematicState();
             Out.LocalOffset = Wheel->GetLocalOffset();
             Out.LocalRotation = Wheel->GetLocalRotation();

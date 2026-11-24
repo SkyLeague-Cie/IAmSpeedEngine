@@ -168,7 +168,8 @@ std::optional<ESimulationBoundaryResult> ASpeedPhysicsSimulation::ServiceExactRe
                 });
             const auto RetainedRoster = Speed::FPreparedNativeKinematicFields::CaptureRoster(
                 World, Plan->Envelope->Address, *Plan->Lease);
-            if (RetainedRoster && *RetainedRoster == *OriginalRoster)
+            if (RetainedRoster && *RetainedRoster == *OriginalRoster
+                && Speed::FExactRemoteRoundBuild::MatchesBindings(*RetainedRoster, *Plan->Envelope))
                 ActiveExactRemoteRound = Speed::ExactRemoteRound::Commit(
                     World, *InputSessionRegistry, ExactRemoteRoundFence, std::move(*Plan), PublishedExactRemoteRound);
             if (ActiveExactRemoteRound)

@@ -4,6 +4,7 @@
 #include "SimulationFrameJournal.h"
 #include "PreparedSimulationRestore.h"
 #include "WorldBorrowGate.h"
+#include "UObject/WeakObjectPtr.h"
 #include <memory>
 #include <optional>
 #include <stdexcept>
@@ -259,6 +260,15 @@ namespace Speed
         }
         FWorldBorrowGate StorageAccess;
         bool RetireExactRoundStorageAfterJoin();
+        uint64 ReadExactRoundSubBodyIncarnation(uint64 StableId, const USSubBody&) const;
+        struct FExactSubBodySlot
+        {
+            FWeakObjectPtr Object;
+            uint64 Incarnation = 0;
+        };
+        TMap<uint64, FExactSubBodySlot> ExactRoundSubBodySlots;
+        uint64 ExactRoundWorkerGeneration = 0;
+        uint64 NextExactRoundSubBodyIncarnation = 1;
         const FCompletedSimulationPublication* RoundBuildBoundary = nullptr;
 #if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
         friend struct FBodyContactPairReadOnlyTestFixture;

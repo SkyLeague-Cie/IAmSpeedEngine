@@ -6,6 +6,7 @@ class USpeedMovementComponent;
 class USpeedWheeledComponent;
 class USolidSubBody;
 class USensorSubBody;
+class USSubBody;
 
 namespace Speed
 {
@@ -17,26 +18,43 @@ class IAMSPEED_API FPreparedNativeKinematicFields final
 public:
     struct FRoster
     {
+        struct FActorConfiguration
+        {
+            uint64 StableId = 0, ConfigurationHash = 0;
+            bool operator==(const FActorConfiguration& B) const noexcept
+            { return StableId == B.StableId && ConfigurationHash == B.ConfigurationHash; }
+        };
         struct FSubBody
         {
             uint64 StableId = 0, ActorStableId = 0;
             uint32 NativeObjectId = 0;
             bool IsSolidEndpoint = false;
+            uint64 Incarnation = 0, ConfigurationHash = 0;
             bool operator==(const FSubBody& B) const noexcept
             {
                 return StableId == B.StableId && ActorStableId == B.ActorStableId && NativeObjectId == B.NativeObjectId
-                    && IsSolidEndpoint == B.IsSolidEndpoint;
+                    && IsSolidEndpoint == B.IsSolidEndpoint && Incarnation == B.Incarnation
+                    && ConfigurationHash == B.ConfigurationHash;
             }
         };
         std::vector<uint64> Actors;
+        // The native actor registration itself is the monotonic StableId.
+        // The game still joins its own actor incarnation and schemas to it.
+        std::vector<FActorConfiguration> ActorConfigurations;
         std::vector<FSubBody> SubBodies;
+        uint64 WorkerGeneration = 0;
         bool HasStaticGeometryAuthority = false;
         bool operator==(const FRoster& B) const noexcept
-        { return Actors == B.Actors && SubBodies == B.SubBodies && HasStaticGeometryAuthority == B.HasStaticGeometryAuthority; }
+        {
+            return Actors == B.Actors && ActorConfigurations == B.ActorConfigurations && SubBodies == B.SubBodies
+                && WorkerGeneration == B.WorkerGeneration && HasStaticGeometryAuthority == B.HasStaticGeometryAuthority;
+        }
     };
 
     // Values-only census of the actual registry. Capture on the original
-    // owner before staging; incarnation and schema come from the game binding.
+    // owner before staging. The exact route includes the registered endpoint
+    // incarnation and live configuration hashes. Actor schemas and the wire
+    // actor incarnation still come from the game binding.
     static std::optional<FRoster> CaptureRoster(const FSimulationWorld&, const PreparedWorld::FAddress&,
         const ISimulationRestoreBoundaryLease&);
 
@@ -75,7 +93,11 @@ public:
 private:
     friend struct FCommonComponentValueAccess;
     friend class FPreparedNativeRoundFields;
+    friend class FExactRemoteRoundBuild;
     enum class EPhase : uint8 { Prepared, Ready, Finalized, Released, Aborted };
+    static std::optional<FRoster> CaptureRosterContents(const FSimulationWorld&);
+    static std::optional<FRoster::FSubBody> ReadSubBodyRow(
+        const FSimulationWorld&, const ISpeedComponent&, uint64 ActorId, uint16 Index, const USSubBody&);
     static bool MatchesActor(const FSimulationWorld&, const FSimulationComponentRestoreRequest&, const ISpeedComponent&);
     static bool MatchesSolid(const FSimulationWorld&, const FSimulationComponentRestoreRequest&,
         const USolidSubBody&, const PreparedWorld::FEndpointBinding&);
