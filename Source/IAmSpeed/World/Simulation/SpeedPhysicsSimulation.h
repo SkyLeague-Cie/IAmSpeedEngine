@@ -42,7 +42,7 @@ namespace PreparationPrefix { class FClosedSourceProducer; }
 class USpeedWorldSubsystem;
 struct FCanonicalFrameContext;
 class ISpeedComponent;
-class USubBody;
+class USSubBody;
 
 struct FSimulationPresentationBinding
 {
@@ -201,7 +201,7 @@ public:
     // Provide exactly one producer, the actor or the actual overlap sensor.
     bool IsCurrentExactNeutralDispatch(const Speed::FWorldBorrowGate& HostGate,
         uint64 WorkerGeneration, uint64 Frame, Speed::EExactNeutralDispatch Kind,
-        const ISpeedComponent* Actor, const USubBody* Sensor = nullptr) const noexcept;
+        const ISpeedComponent* Actor, const USSubBody* Sensor = nullptr) const noexcept;
     Speed::Input::V2::ECommandAdmission SubmitRequestedNetworkInputSession(
         const Speed::Input::V2::FBoundaryCommandDescriptor& Command,
         std::shared_ptr<Speed::Netcode::FNetworkRequestedInputService> Service);

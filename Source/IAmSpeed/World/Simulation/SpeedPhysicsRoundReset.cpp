@@ -308,7 +308,7 @@ const Speed::FExactRoundHostHold* ASpeedPhysicsSimulation::ReadExactNeutralDispa
 
 bool ASpeedPhysicsSimulation::IsCurrentExactNeutralDispatch(const Speed::FWorldBorrowGate& HostGate,
     uint64 WorkerGeneration, uint64 Frame, Speed::EExactNeutralDispatch Kind,
-    const ISpeedComponent* Actor, const USubBody* Sensor) const noexcept
+    const ISpeedComponent* Actor, const USSubBody* Sensor) const noexcept
 {
     using namespace Speed::ExactNeutralDispatchDetail;
     const auto* Callback = FCallbackScope::Current;
