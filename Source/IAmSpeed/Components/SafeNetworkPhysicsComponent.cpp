@@ -1,4 +1,5 @@
 #include "SafeNetworkPhysicsComponent.h"
+#include "SpeedMovementComponent.h"
 #include "IAmSpeed/Netcode/presentation-client/PresentationClientWorld.h"
 
 #include "Physics/PhysScene.h"
@@ -8,6 +9,12 @@
 #include "Misc/Parse.h"
 
 DEFINE_LOG_CATEGORY(SafeNetworkPhysicsLog);
+
+bool USafeNetworkPhysicsComponent::IsPresentationOnlyMoverSubobject() const
+{
+    const auto* Mover = Cast<USpeedMovementComponent>(GetOuter());
+    return Mover && Mover->IsPresentationOnly();
+}
 
 bool USafeNetworkPhysicsComponent::ShouldBypassNetworkPhysicsLifecycle() const
 {
@@ -95,8 +102,16 @@ void USafeNetworkPhysicsComponent::PrepareAsyncShutdown(const TCHAR* Stage)
 	}
 }
 
+void USafeNetworkPhysicsComponent::OnPreRegister()
+{
+    bEverRegistered = true;
+    Super::OnPreRegister();
+}
+
 void USafeNetworkPhysicsComponent::OnRegister()
 {
+    bEverRegistered = true;
+    if (IsPresentationOnlyMoverSubobject()) { UActorComponent::OnRegister(); return; }
     if (Speed::Netcode::PresentationClient::SuppressesLocalPhysics(GetWorld()))
     {
         if(GetWorld())Speed::Netcode::PresentationClient::Fail(*GetWorld(),TEXT("Unexpected client network physics registration; seamless-travel initialization forbidden"));
@@ -107,6 +122,7 @@ void USafeNetworkPhysicsComponent::OnRegister()
 
 void USafeNetworkPhysicsComponent::InitializeComponent()
 {
+    if (IsPresentationOnlyMoverSubobject()) { UActorComponent::InitializeComponent(); return; }
 	if (Speed::Netcode::PresentationClient::SuppressesLocalPhysics(GetWorld())) { UActorComponent::InitializeComponent(); return; }
 	if (ShouldBypassNetworkPhysicsLifecycle())
 	{
@@ -144,6 +160,7 @@ void USafeNetworkPhysicsComponent::BeginDestroy()
 
 bool USafeNetworkPhysicsComponent::CallRemoteFunction(UFunction* Function, void* Parameters, FOutParmRec* OutParms, FFrame* Stack)
 {
+    if (IsPresentationOnlyMoverSubobject()) return false;
 	if (Speed::Netcode::PresentationClient::SuppressesLocalPhysics(GetWorld())) return false;
 #if !(UE_BUILD_SHIPPING)
     static const bool bPrivateTrace = FParse::Param(FCommandLine::Get(), TEXT("SLBumpPrivateRPCEnvelopeTrace"));

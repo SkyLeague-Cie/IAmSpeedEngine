@@ -642,8 +642,26 @@ SComponentTOI ISpeedComponent::SweepTOISubBodies(
     return Best;
 }
 
+bool ISpeedComponent::CanInstallOwnedSubBodies(const UObject& Owner, const TArray<USSubBody*>& Bodies)
+{
+    for (USSubBody* Body : Bodies)
+    {
+        if (Body && (Body->IsPresentationOnly() ||
+            (Body->GetOuter() != &Owner && !Body->NativePhysicsUse.TryUseNative()))) return false;
+    }
+    return true;
+}
+
+bool ISpeedComponent::TryAdmitNativeSubBodies() const
+{
+    for (USSubBody* Body : GetSubBodies())
+        if (Body && !Body->NativePhysicsUse.TryUseNative()) return false;
+    return true;
+}
+
 void ISpeedComponent::AddExternalSubBodies(const TArray<USSubBody*>& ExtSubBodies)
 {
+    if (IsPresentationOnly()) return;
     const TArray<USSubBody*>& InSubBodies = GetSubBodies();
     for (USSubBody* SubBody : InSubBodies)
     {

@@ -31,8 +31,15 @@ USSubBody::USSubBody(const FObjectInitializer& ObjectInitializer):
     SetCollisionEnabled(ECollisionEnabled::NoCollision);
 }
 
+void USSubBody::OnPreRegister()
+{
+    NativePhysicsUse.TryUseNative();
+    Super::OnPreRegister();
+}
+
 void USSubBody::OnRegister()
 {
+    NativePhysicsUse.TryUseNative();
     // A nested native component can inherit a Blueprint-template parent
     // pointer. Resolve that exact default-subobject identity on this actor
     // before SceneComponent attempts attachment. Preserve every authored
@@ -50,6 +57,21 @@ void USSubBody::OnRegister()
         }
     }
     Super::OnRegister();
+}
+
+void USSubBody::SetCollisionEnabled(ECollisionEnabled::Type NewType)
+{
+    Super::SetCollisionEnabled(IsPresentationOnly() ? ECollisionEnabled::NoCollision : NewType);
+}
+
+ECollisionEnabled::Type USSubBody::GetCollisionEnabled() const
+{
+    return IsPresentationOnly() ? ECollisionEnabled::NoCollision : Super::GetCollisionEnabled();
+}
+
+bool USSubBody::ShouldCreatePhysicsState() const
+{
+    return !IsPresentationOnly() && Super::ShouldCreatePhysicsState();
 }
 
 void USSubBody::RequireExactRoundStorageTeardown() const
@@ -108,6 +130,7 @@ void USSubBody::OnAsyncDestroyPhysicsStateBegin_GameThread(TSet<UObject*>& OutRo
 
 void USSubBody::Initialize(ISpeedComponent* InParentComponent)
 {
+    if ((InParentComponent && InParentComponent->IsPresentationOnly()) || !NativePhysicsUse.TryUseNative()) return;
     if (ParentComponent && (ParentComponent != InParentComponent || InParentComponent->GetPublishedSimulationStableId()))
         RequireExactRoundStorageTeardown();
 	ParentComponent = InParentComponent;
@@ -123,7 +146,7 @@ void USSubBody::Initialize(ISpeedComponent* InParentComponent)
         
         for (USSubBody* SubBody: ParentComponent->GetSubBodies())
         {
-            if (SubBody)
+            if (SubBody && SubBody->NativePhysicsUse.TryUseNative())
             {
                 AlwaysIgnoredComponents.AddUnique(SubBody);
             }
@@ -162,9 +185,10 @@ void USSubBody::ResetIgnoredComponents()
 
 void USSubBody::AddExternalSubBodies(const TArray<USSubBody*>& SubBodies)
 {
+    if (IsPresentationOnly()) return;
     for (USSubBody* SubBody : SubBodies)
     {
-        if (SubBody && SubBody->GetParentComponent() != ParentComponent &&
+        if (SubBody && !SubBody->IsPresentationOnly() && SubBody->GetParentComponent() != ParentComponent &&
             !AlwaysIgnoredComponents.Contains(SubBody) && !SubBody->IsSensor() &&
             !(ParentComponent && ParentComponent->IsPrescribedMotion() && SubBody->GetParentComponent() && SubBody->GetParentComponent()->IsPrescribedMotion()))
         {

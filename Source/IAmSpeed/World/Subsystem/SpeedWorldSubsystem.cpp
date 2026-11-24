@@ -30,6 +30,7 @@
 #include "IAmSpeed/Input/InputSessionRegistry.h"
 #include "IAmSpeed/Actors/SpeedStaticActor.h"
 #include "IAmSpeed/Components/ISpeedComponent.h"
+#include "IAmSpeed/Components/SpeedMovementComponent.h"
 #include "IAmSpeed/World/Simulation/CanonicalFrameContext.h"
 #include "IAmSpeed/World/Simulation/SpeedPhysicsSimulation.h"
 #include "IAmSpeed/World/Simulation/SimulationActorDiagnostics.h"
@@ -393,6 +394,11 @@ bool USpeedWorldSubsystem::JoinExactRemoteRoundBeforeStorageMutationGT()
 
 bool USpeedWorldSubsystem::RequireExactRemoteRoundStorageTeardown(const UActorComponent& Component)
 {
+    // The local seal survives unregister and does not dereference a potentially
+    // destroyed parent or infer anything from the current registry.
+    const auto* Mover = Cast<USpeedMovementComponent>(&Component);
+    const auto* Body = Cast<USSubBody>(&Component);
+    if ((Mover && Mover->IsPresentationOnly()) || (Body && Body->IsPresentationOnly())) return false;
     const auto* World = Component.IsTemplate() ? nullptr : Component.GetWorld();
     auto* Subsystem = World ? World->GetSubsystem<USpeedWorldSubsystem>() : nullptr;
     if (!Subsystem || !Subsystem->ExactRoundStorageGeneration.Load()) return false;
@@ -1375,17 +1381,17 @@ bool USpeedWorldSubsystem::ShouldAcquireUnilateralRollingPair(
 void USpeedWorldSubsystem::RegisterSpeedComponent(ISpeedComponent* Comp)
 {
     if (Speed::Netcode::PresentationClient::SuppressesLocalPhysics(GetWorld())) return;
-    if (!Comp) return;
+    if (!Comp || !Comp->NativePhysicsUse.TryUseNative()) return;
     if (SimulationWorld.StorageAccess.IsReservationOwner())
         throw std::logic_error("Cannot register an adapter from round preparation");
     FScopeLock Lock(&PendingCS);
-    if (bExactRoundStorageRetired.Load()) return;
+    if (bExactRoundStorageRetired.Load() || !Comp->TryAdmitNativeSubBodies()) return;
     PendingOps.Add({ true, Comp });
 }
 
 void USpeedWorldSubsystem::UnregisterSpeedComponent(ISpeedComponent* Comp)
 {
-    if (!Comp) return;
+    if (!Comp || Comp->IsPresentationOnly()) return;
     if (SimulationWorld.StorageAccess.IsReservationOwner())
         throw std::logic_error("Cannot unregister an adapter from round preparation");
     if (ExactRoundStorageGeneration.Load())
@@ -1458,6 +1464,7 @@ void USpeedWorldSubsystem::RebuildSortedIfNeeded()
 
 void USpeedWorldSubsystem::AddComponent(ISpeedComponent& Comp)
 {
+    if (!Comp.NativePhysicsUse.TryUseNative() || !Comp.TryAdmitNativeSubBodies()) return;
     // Add New component to all existing ones
     for (ISpeedComponent* Component : SimulationWorld.GetAdapters())
     {

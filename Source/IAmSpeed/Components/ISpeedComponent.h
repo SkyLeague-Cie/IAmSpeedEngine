@@ -16,7 +16,10 @@ enum class ERequestedDigitalPolicy:std::uint8_t;
 #include "IAmSpeed/Base/Kinematic.h"
 #include "IAmSpeed/Base/KinematicQuantizationCache.h"
 #include "IAmSpeed/World/Simulation/SimulationSleepState.h"
+#include "NativePhysicsUse.h"
 class USpeedWheeledComponent;
+class USpeedMovementComponent;
+class USpeedWorldSubsystem;
 namespace Speed {class FNativeRequestedPreparationContextV2; class FExactRoundConfigurationWriter;}
 namespace Speed::Input::V2 {class FNativeRequestedBindingV2;}
 struct FSimulationWheelVisual;
@@ -208,6 +211,7 @@ public:
 	virtual void AbortCanonicalFrame(uint64 Frame, ECanonicalFrameAbortReason Reason) noexcept {}
 	/** Read-only identity publication; querying this never mutates the world registry. */
 	uint64 GetPublishedSimulationStableId() const { return PublishedSimulationStableId.Load(); }
+    bool IsPresentationOnly() const noexcept { return NativePhysicsUse.IsPresentationOnly(); }
     // Called only on the reserved original exact-round boundary. Append the
     // effective adapter configuration (including game-specific mechanics)
     // or the effective configuration of the indicated native sub-body slot.
@@ -417,6 +421,7 @@ protected:
 	virtual void ObserveStaticRestingReaction(EStaticRestingReactionStatus Status) const {}
 	bool bObserveStaticRestingReaction = false;
 #endif
+    static bool CanInstallOwnedSubBodies(const UObject&, const TArray<USSubBody*>&);
 	/** Quantizes in place unless the exact state/reference was already proved a no-op. */
 	void QuantizeKinematicState(SKinematic& State, const FQuat& PreviousRotation);
 	/** Opt-in support certificate; unsupported component kinds remain awake. */
@@ -455,9 +460,13 @@ private:
 	friend struct Speed::FCanonicalForeignStateForTesting;
 #endif
 	friend class Speed::FSimulationWorld;
+    friend class USpeedMovementComponent;
+    friend class USpeedWorldSubsystem;
     friend struct Speed::FCommonComponentValueAccess;
     friend class Speed::FPreparedNativeRoundFields;
 	TAtomic<uint64> PublishedSimulationStableId = 0;
+    Speed::FNativePhysicsUse NativePhysicsUse;
+    bool TryAdmitNativeSubBodies() const;
 	// Borrowed only during the world's canonical step; no historical/cache state.
 	const Speed::IStaticCollisionWorld* StaticRestingWorld = nullptr;
 	float StaticSupportFrameHorizon = 0;

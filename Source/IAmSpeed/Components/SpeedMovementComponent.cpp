@@ -17,6 +17,7 @@
 #include "PhysicsEngine/PhysicsSettings.h"
 #include "IAmSpeed/Base/SpeedConstant.h"
 #include "IAmSpeed/SubBodies/Solid/SolidSubBody.h"
+#include "IAmSpeed/SubBodies/Sensor/SensorSubBody.h"
 #include "IAmSpeed/World/Subsystem/SpeedWorldSubsystem.h"
 #include "IAmSpeed/Components/SafeNetworkPhysicsComponent.h"
 #include "UObject/UnrealType.h"
@@ -84,11 +85,13 @@ USpeedMovementComponent::USpeedMovementComponent(const FObjectInitializer& Objec
 
 void USpeedMovementComponent::SetOwner(AActor* NewOwner)
 {
+    if (IsPresentationOnly()) return;
 	if (Speed::Netcode::PresentationClient::SuppressesLocalPhysics(GetWorld())) return;
 	if (NewOwner == nullptr)
 	{
 		return;
 	}
+    if (!NativePhysicsUse.TryUseNative()) return;
     if (GetPublishedSimulationStableId()) USpeedWorldSubsystem::RequireExactRemoteRoundStorageTeardown(*this);
 
 	SetPhysRotation(NewOwner->GetActorRotation().Quaternion());
@@ -102,14 +105,93 @@ void USpeedMovementComponent::SetOwner(AActor* NewOwner)
 	UpdateSubBodiesKinematics();
 }
 
+bool USpeedMovementComponent::SealPresentationOnlyBeforeRegistration()
+{
+    if (!IsInGameThread() || IsGarbageCollecting()) return false;
+    if (IsPresentationOnly()) return true;
+    if (IsTemplate() || !GetOwner() || IsRegistered() || IsPhysicsStateCreated() || UpdatedComponent ||
+        IsPreRegistering() || IsPreRegistered() ||
+        IsBeingDestroyed() || HasAnyFlags(RF_BeginDestroyed | RF_FinishDestroyed) ||
+        GetPublishedSimulationStableId() || &GetSubBodies() != &SubBodies) return false;
+
+    auto* NetworkPhysics = Cast<USafeNetworkPhysicsComponent>(SNetworkPhysicsComponent.Get());
+    if (!NetworkPhysics || NetworkPhysics->GetOuter() != this || NetworkPhysics->IsTemplate()
+        || NetworkPhysics->HasEverRegistered() || NetworkPhysics->IsBeingDestroyed()
+        || NetworkPhysics->IsRegistered() || NetworkPhysics->IsPhysicsStateCreated()
+        || NetworkPhysics->IsPreRegistering() || NetworkPhysics->IsPreRegistered()
+        || !SNetworkSettings || SNetworkSettings->GetOuter() != this || SNetworkSettings->IsTemplate()
+        || SNetworkSettings->IsRegistered() || SNetworkSettings->IsPhysicsStateCreated()
+        || SNetworkSettings->IsPreRegistering() || SNetworkSettings->IsPreRegistered()
+        || SNetworkSettings->IsBeingDestroyed())
+        return false;
+
+    TArray<UObject*> Defaults;
+    GetDefaultSubobjects(Defaults);
+    int32 SensorCount = 0;
+    for (UObject* Default : Defaults)
+    {
+        auto* Body = Cast<USSubBody>(Default);
+        if (!Body) continue;
+        if (!Body->IsA<USensorSubBody>() || !SubBodies.Contains(Body) || Body->IsTemplate() ||
+            Body->GetOuter() != this || Body->GetOwner() != GetOwner() ||
+            Body->IsRegistered() || Body->IsPhysicsStateCreated() || Body->IsBeingDestroyed() ||
+            Body->IsPreRegistering() || Body->IsPreRegistered() ||
+            Body->HasAnyFlags(RF_BeginDestroyed | RF_FinishDestroyed) || Body->GetParentComponent() ||
+            Body->GetCollisionEnabled() != ECollisionEnabled::NoCollision || Body->GetGenerateOverlapEvents())
+            return false;
+        ++SensorCount;
+    }
+    if (!SensorCount || SensorCount != SubBodies.Num() || !SolidSubBodies.IsEmpty()) return false;
+
+    {
+        if (!NativePhysicsUse.TryBeginPresentationSeal()) return false;
+        int32 Staged = 0;
+        bool bSealed = false;
+        ON_SCOPE_EXIT
+        {
+            for (int32 Index = 0; Index < Staged; ++Index)
+                SubBodies[Index]->NativePhysicsUse.FinishPresentationSeal(bSealed);
+            NativePhysicsUse.FinishPresentationSeal(bSealed);
+        };
+        for (USSubBody* Body : SubBodies)
+        {
+            if (!Body || !Defaults.Contains(Body) || !Body->NativePhysicsUse.TryBeginPresentationSeal())
+                return false;
+            ++Staged;
+        }
+        bSealed = true;
+    }
+
+    NetworkPhysics->bAutoRegister = false;
+    NetworkPhysics->SetAutoActivate(false);
+    NetworkPhysics->SetIsReplicated(false);
+    SNetworkSettings->bAutoRegister = false;
+    return true;
+}
+
+void USpeedMovementComponent::OnPreRegister()
+{
+    NativePhysicsUse.TryUseNative();
+    Super::OnPreRegister();
+}
+
 void USpeedMovementComponent::OnRegister()
 {
+    NativePhysicsUse.TryUseNative(); // A registration that later unregisters still seals the ordinary path.
+    if (IsPresentationOnly()) { UActorComponent::OnRegister(); return; }
     if (Speed::Netcode::PresentationClient::SuppressesLocalPhysics(GetWorld())) { UActorComponent::OnRegister(); return; }
     Super::OnRegister();
 }
 
+void USpeedMovementComponent::InitializeComponent()
+{
+    if (IsPresentationOnly()) { UActorComponent::InitializeComponent(); return; }
+    Super::InitializeComponent();
+}
+
 void USpeedMovementComponent::OnCreatePhysicsState()
 {
+    if (IsPresentationOnly()) return;
 	if (Speed::Netcode::PresentationClient::SuppressesLocalPhysics(GetWorld())) return;
 	if (Speed::ReplayIsolation::IsInertReplayWorld(GetWorld()))
 	{ Speed::ReplayIsolation::FailInertReplayBootstrap(*GetWorld(),TEXT("unexpected IAS movement physics-state creation in inert replay")); return; }
@@ -138,6 +220,7 @@ void USpeedMovementComponent::OnCreatePhysicsState()
 
 bool USpeedMovementComponent::ShouldCreatePhysicsState() const
 {
+    if (IsPresentationOnly()) return false;
 	if (Speed::Netcode::PresentationClient::SuppressesLocalPhysics(GetWorld())) return false;
 	if (Speed::ReplayIsolation::IsInertReplayWorld(GetWorld())) return false;
 	if (!IsRegistered() || IsBeingDestroyed())
@@ -162,6 +245,7 @@ bool USpeedMovementComponent::ShouldCreatePhysicsState() const
 void USpeedMovementComponent::OnDestroyPhysicsState()
 {
     USpeedWorldSubsystem::RequireExactRemoteRoundStorageTeardown(*this);
+    if (IsPresentationOnly()) { UActorComponent::OnDestroyPhysicsState(); return; }
 	Super::OnDestroyPhysicsState();
 	if (SNetworkPhysicsComponent)
 	{
@@ -308,7 +392,7 @@ void USpeedMovementComponent::ApplyTestVelocity()
 
 void USpeedMovementComponent::AsyncPhysicsTickComponent(float DeltaTime, float SimTime)
 {
-	if (Speed::CanonicalFrameDriver::IsEnabled())
+	if (IsPresentationOnly() || Speed::CanonicalFrameDriver::IsEnabled())
 	{
 		return;
 	}
@@ -461,7 +545,9 @@ unsigned int USpeedMovementComponent::NbFramesSinceCanMove() const
 
 void USpeedMovementComponent::SetSubBodies(const TArray<USSubBody*>& NewSubBodies)
 {
+    if (IsPresentationOnly()) return;
     if (GetPublishedSimulationStableId()) USpeedWorldSubsystem::RequireExactRemoteRoundStorageTeardown(*this);
+    if (!CanInstallOwnedSubBodies(*this, NewSubBodies)) return;
 	SubBodies = NewSubBodies;
 }
 
@@ -630,6 +716,7 @@ FString USpeedMovementComponent::GetRole() const
 
 void USpeedMovementComponent::BeginPlay()
 {
+    if (IsPresentationOnly()) { UActorComponent::BeginPlay(); return; }
 	if (Speed::Netcode::PresentationClient::SuppressesLocalPhysics(GetWorld())) { UActorComponent::BeginPlay(); return; }
 	Super::BeginPlay();
 
@@ -651,6 +738,7 @@ void USpeedMovementComponent::BeginPlay()
 void USpeedMovementComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
     USpeedWorldSubsystem::RequireExactRemoteRoundStorageTeardown(*this);
+    if (IsPresentationOnly()) { UActorComponent::EndPlay(EndPlayReason); return; }
 	if (IsValid(SNetworkPhysicsComponent) && SNetworkPhysicsComponent->IsRegistered())
 	{
 		SNetworkPhysicsComponent->UnregisterComponent();

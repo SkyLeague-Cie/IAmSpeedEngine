@@ -7,6 +7,7 @@
 #include "IAmSpeed/Base/SUtils.h"
 #include "IAmSpeed/Base/EpisodeShapeFieldsForTesting.h"
 #include "IAmSpeed/Base/InheritedMotionPolicyValues91.h"
+#include "IAmSpeed/Components/NativePhysicsUse.h"
 #include "SSubBody.generated.h"
 
 
@@ -47,7 +48,10 @@ class IAMSPEED_API USSubBody : public UShapeComponent
 
 	
 public:
+    bool IsPresentationOnly() const noexcept { return NativePhysicsUse.IsPresentationOnly(); }
     void OnRegister() override;
+    void SetCollisionEnabled(ECollisionEnabled::Type NewType) override;
+    ECollisionEnabled::Type GetCollisionEnabled() const override;
     void DestroyComponent(bool bPromoteChildren = false) override;
     void OnComponentDestroyed(bool bDestroyingHierarchy) override;
     void BeginDestroy() override;
@@ -187,6 +191,8 @@ protected:
     // Derived lifecycle hooks must call this before touching native storage
     // or delegates if they do their own work before Super.
     void RequireExactRoundStorageTeardown() const;
+    void OnPreRegister() override;
+    bool ShouldCreatePhysicsState() const override;
     void OnUnregister() override;
     void OnDestroyPhysicsState() override;
     void OnAsyncDestroyPhysicsStateBegin_GameThread(TSet<UObject*>& OutRootedObjects) override;
@@ -202,6 +208,9 @@ protected:
 protected:
 
 private:
+    friend class ISpeedComponent;
+    friend class USpeedMovementComponent;
+    Speed::FNativePhysicsUse NativePhysicsUse;
     Speed::FInheritedMotionPolicyValues91 InheritedMotionPolicy91;
 protected:
 	ISpeedComponent* ParentComponent;

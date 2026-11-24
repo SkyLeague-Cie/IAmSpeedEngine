@@ -1203,6 +1203,7 @@ USWheelSubBody* USpeedWheeledComponent::CreateWheelSubBody(const int& WheelIndex
 void USpeedWheeledComponent::SetSubBodies(const TArray<USSubBody*>& NewSubBodies)
 {
     if (GetPublishedSimulationStableId()) USpeedWorldSubsystem::RequireExactRemoteRoundStorageTeardown(*this);
+    if (!CanInstallOwnedSubBodies(*this, NewSubBodies)) return;
     if(RequestedInputBodyGeneration==MAX_uint64)RequestedInputBodyGeneration=0;
     else if(RequestedInputBodyGeneration)++RequestedInputBodyGeneration;
 	SubBodies = NewSubBodies;

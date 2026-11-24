@@ -54,6 +54,10 @@ public:
         Speed::FNativePrepareGTFields& Out,Speed::Analytic::Certified::FDistanceBudget& Budget,FString& Reason) const;
 
 	USpeedMovementComponent(const FObjectInitializer& ObjectInitializer);
+    /** GT, lifetime decision for this real mover and its own native sensor DSOs.
+     * Call before their first UE registration. A failed call proves nothing.
+     * A successful call is permanent and may be repeated for the same instance. */
+    bool SealPresentationOnlyBeforeRegistration();
 #if WITH_DEV_AUTOMATION_TESTS
 	/** Fixture-only control for an owned physical worker; UE keeps the underlying setter protected. */
 	void DisableAsyncPhysicsTickForTesting() { SetAsyncPhysicsTickEnabled(false); }
@@ -66,6 +70,8 @@ public:
 	void InitNetwork();
 	/** Used to create any physics engine information for this component */
 	virtual void OnRegister() override;
+    void OnPreRegister() override;
+    void InitializeComponent() override;
 	virtual void OnCreatePhysicsState() override;
 	bool ShouldCreatePhysicsState() const override;
 	/** Used to shut down and physics engine structure for this component */

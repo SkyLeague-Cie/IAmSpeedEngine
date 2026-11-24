@@ -173,6 +173,7 @@ namespace Speed
 		if (!Access || StorageAccess.IsReservationOwner() || IsRestoreBoundaryReserved()) return false;
 		if (StableIds.Contains(&Adapter)) return false;
         if (ExactRoundWorkerGeneration && NextStableId > (UINT64_MAX >> 16)) return false;
+        if (!Adapter.NativePhysicsUse.TryUseNative() || !Adapter.TryAdmitNativeSubBodies()) return false;
 		const uint64 StableId = NextStableId++;
 		Adapters.Add(&Adapter);
 		StableIds.Add(&Adapter, StableId);
@@ -265,6 +266,9 @@ namespace Speed
         if (PreparedExecution::RejectPreparedOrderMutation(PreparedExecution::Requested() && OnePausedWork::IsActive(), bOrderDirty))
             throw std::runtime_error("Prepared native dirty registry ordering refused before callbacks or table mutation");
         if (!bOrderDirty) return;
+        for (const ISpeedComponent* Adapter : Adapters)
+            if (Adapter && !Adapter->TryAdmitNativeSubBodies())
+                throw std::logic_error("Presentation-only sub-body cannot enter native simulation storage");
         auto PreviousExactSlots = MoveTemp(ExactRoundSubBodySlots);
         Adapters.Remove(nullptr);
 		OrderedAdapters = Adapters;
