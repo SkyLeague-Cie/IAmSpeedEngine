@@ -149,6 +149,8 @@ public:
     void UpdatePhysicsState(const float& delta);
 
     // --- suspension methods ---
+    // Uses the calling thread's retained round policy, with the live policy outside that scope.
+    static bool ReadEffectiveJumpStateClampsNegativeForce() noexcept;
     virtual void UpdateSuspension(const float& delta);
     // sweep for suspension
     virtual void SweepSuspension(const float& delta);

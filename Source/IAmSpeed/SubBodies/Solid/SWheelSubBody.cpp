@@ -360,6 +360,12 @@ namespace
     }
 }
 
+bool USWheelSubBody::ReadEffectiveJumpStateClampsNegativeForce() noexcept
+{
+    return ReadSuspension(&FSuspensionSettings::JumpStateClampsNegativeForce,
+        CVarSkyLeagueSuspensionJumpStateClampsNegativeForce);
+}
+
 USWheelSubBody::USWheelSubBody(const FObjectInitializer& ObjectInitializer):
 	Super(ObjectInitializer)
 {
@@ -1101,9 +1107,7 @@ void USWheelSubBody::UpdateSuspension(const float& delta)
         // A jumping wheel may keep a sweep hit while its suspension extends,
         // but it must no longer pull the chassis back toward that support.
         const bool bClampJumpForce =
-            ReadSuspension(&FSuspensionSettings::JumpStateClampsNegativeForce,
-            CVarSkyLeagueSuspensionJumpStateClampsNegativeForce) &&
-            HasJumpUnilateralSupport();
+            ReadEffectiveJumpStateClampsNegativeForce() && HasJumpUnilateralSupport();
         const bool bClampPositive = bClampJumpForce || ClampsSuspensionForceToPositive() ||
             ReadSuspension(&FSuspensionSettings::ClampPositiveForce,
             CVarSkyLeagueSuspensionClampPositiveForce);
