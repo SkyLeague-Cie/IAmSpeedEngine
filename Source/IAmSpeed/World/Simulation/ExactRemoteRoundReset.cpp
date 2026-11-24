@@ -49,7 +49,7 @@ std::shared_ptr<const FExactRemoteRoundCommit> Commit(
     {
         return Plan.Cancellation && Plan.Cancellation->load(std::memory_order_acquire);
     };
-    if (!Previous || !Plan.Envelope || !Lease || !Plan.Supplement
+    if (!Previous || !Previous->ExactRoundContactSettings() || !Plan.Envelope || !Lease || !Plan.Supplement
         || !Previous->World().PublicationSerial || !Previous->ConsumedInputs()
         || Previous->ConsumedInputs() != Registry.ReadLatest() || IsCancelled() || Fence.IsClosed()
         || Plan.Deadline <= Now || Plan.Deadline == FExactRemoteRoundPlan::FClock::time_point::max()
@@ -134,7 +134,11 @@ bool IsExactNeutralStep(const FExactRemoteRoundCommit& Commit, const FCompletedS
     if (!Commit.Inputs || !Commit.Previous || !Commit.World || !Commit.World->Envelope) return false;
     const auto& Group = *Commit.Inputs;
     const auto& Consumed = Step.ConsumedInputs();
-    if (Step.Source() != Commit.Previous->Source() || Step.World().NumFrame != Group.Next
+    const auto& PreviousSettings = Commit.Previous->ExactRoundContactSettings();
+    const auto& NextSettings = Step.ExactRoundContactSettings();
+    if (!PreviousSettings || !NextSettings || *PreviousSettings != *NextSettings
+        || PreviousSettings->Hash() != NextSettings->Hash()
+        || Step.Source() != Commit.Previous->Source() || Step.World().NumFrame != Group.Next
         || Commit.Previous->World().PublicationSerial == UINT64_MAX
         || Step.World().PublicationSerial != Commit.Previous->World().PublicationSerial + 1
         || Step.World().PublicationSerial != Commit.World->Envelope->Address.PublicationSerial

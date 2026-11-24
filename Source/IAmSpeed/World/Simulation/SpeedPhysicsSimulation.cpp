@@ -25,6 +25,7 @@
 #include "IAmSpeed/World/Collision/PreparedNativeFrameConsumer.h"
 #include "IAmSpeed/World/Simulation/FramePresentationTasks.h"
 #include "CanonicalFrameContext.h"
+#include "ExactRemoteRoundReset.h"
 #include "IAmSpeed/World/Collision/PreparedPhysicalExecution.h"
 #include "CanonicalEpisodeTestingScope.h"
 #include "SimulationActorDiagnostics.h"
@@ -1708,6 +1709,25 @@ bool ASpeedPhysicsSimulation::StepCanonicalFrame(const FCanonicalFrameContext& C
     const auto WorldBorrow = SpeedWorldSubsystem->SimulationWorld.BorrowStorage();
     if (!WorldBorrow) return false;
 
+    // Sample before any consumer runs. Neutral F inherits the effective F-1
+    // values sealed by this owner, even if a process CVar changed since then.
+    std::optional<Speed::FExactRoundContactSettings> RoundContactSettings;
+    if (ExactRemoteRoundProvider && bPublishCompletedWorldInput)
+    {
+        if (ExactRemoteRoundStorage)
+        {
+            if (!ActiveExactRemoteRound || resimulation || Context.NumFrame != ActiveExactRemoteRound->Inputs->Next
+                || !(ActiveExactRemoteRound->Previous->ExactRoundOrigin() ==
+                    SpeedWorldSubsystem->SimulationWorld.ReadExactRoundOrigin())) return false;
+            RoundContactSettings = ActiveExactRemoteRound->Previous->ExactRoundContactSettings();
+        }
+        else
+            RoundContactSettings = Speed::FExactRoundContactSettings::Capture();
+        if (!RoundContactSettings) return false;
+    }
+    const Speed::FScopedExactRoundContactSettings RoundContactScope(
+        RoundContactSettings ? &*RoundContactSettings : nullptr);
+
 	FString BindingFailure;
 	bool bAdmitted = false;
     // Lives through Prepare, Step and EndCanonicalFrame; never a second nested Host.
@@ -2082,7 +2102,7 @@ bool ASpeedPhysicsSimulation::StepCanonicalFrame(const FCanonicalFrameContext& C
                 throw std::runtime_error("completed world/input preparation rejected");
             CompletedDraft.reset(new Speed::FCompletedSimulationPublication(
                 Snapshot, CompletedPublicationSource, CapturedRegistry, Installed,
-                SpeedWorldSubsystem->SimulationWorld.ReadExactRoundOrigin()));
+                SpeedWorldSubsystem->SimulationWorld.ReadExactRoundOrigin(), RoundContactSettings));
         }
         const auto PublishCompletedWorldInput =
             [&](const std::shared_ptr<const Speed::Input::V2::FRegistryFrame>& Completed)

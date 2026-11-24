@@ -183,6 +183,9 @@ std::optional<ESimulationBoundaryResult> ASpeedPhysicsSimulation::ServiceExactRe
         std::shared_ptr<const Speed::FExactRoundHostHold> HostHold;
         std::optional<Speed::FExactRemoteRoundBuild::FRoster> OriginalRoster;
         std::unique_ptr<Speed::FExactRemoteRoundPlan> Plan;
+        const auto& ContactSettings = Current->ExactRoundContactSettings();
+        if (!ContactSettings) return {};
+        const Speed::FScopedExactRoundContactSettings ContactScope(&*ContactSettings);
         {
             World.RoundBuildBoundary = Current.get();
             ON_SCOPE_EXIT { World.RoundBuildBoundary = nullptr; };

@@ -1,6 +1,7 @@
 #pragma once
 #include "SimulationFrameJournal.h"
 #include "ExactRoundNativeAddress.h"
+#include "ExactRoundContactSettings.h"
 #include "IAmSpeed/Input/InputSessionRegistry.h"
 #include <memory>
 #include <utility>
@@ -32,6 +33,8 @@ class FCompletedSimulationPublication final
 public:
     const FSimulationSnapshot& World() const noexcept { return BodySnapshot; }
     const FExactRoundNativeOrigin& ExactRoundOrigin() const noexcept { return RoundOrigin; }
+    // Effective response policy used by this exact dedicated frame.
+    const std::optional<FExactRoundContactSettings>& ExactRoundContactSettings() const noexcept { return ContactSettings; }
     const std::shared_ptr<const FCompletedSimulationSource>& Source() const noexcept { return OwnerSource; }
     const std::shared_ptr<const Input::V2::FRegistryFrame>& ConsumedInputs() const noexcept { return Inputs; }
     const std::shared_ptr<const Input::V2::FInputRegistryView>& RegistryAtFrame() const noexcept { return Registry; }
@@ -55,9 +58,11 @@ private:
     }
     FCompletedSimulationPublication(const FSimulationSnapshot& Snapshot,
         std::shared_ptr<const FCompletedSimulationSource> Source,
-        std::shared_ptr<const FRegistry> View, std::shared_ptr<const FFrame> Installed, FExactRoundNativeOrigin Origin = {})
+        std::shared_ptr<const FRegistry> View, std::shared_ptr<const FFrame> Installed,
+        FExactRoundNativeOrigin Origin = {}, std::optional<FExactRoundContactSettings> InContactSettings = {})
         : BodySnapshot(Snapshot), OwnerSource(std::move(Source)),
-          Inputs(std::move(Installed)), Registry(std::move(View)), RoundOrigin(Origin) {}
+          Inputs(std::move(Installed)), Registry(std::move(View)), RoundOrigin(Origin),
+          ContactSettings(std::move(InContactSettings)) {}
     bool MatchesCompleted(const std::shared_ptr<const FFrame>& Completed) const noexcept
     {
         // CompleteAll transfers the exact preallocated Pending frame to Latest.
@@ -79,5 +84,6 @@ private:
     std::shared_ptr<const FFrame> Inputs;
     std::shared_ptr<const FRegistry> Registry;
     const FExactRoundNativeOrigin RoundOrigin;
+    const std::optional<FExactRoundContactSettings> ContactSettings;
 };
 }
