@@ -363,7 +363,7 @@ bool USpeedWorldSubsystem::TryWriteSolidContactConfiguration(
 }
 
 bool USpeedWorldSubsystem::TryWriteOwnedRoundConfiguration(
-    const UActorComponent& Component, TFunctionRef<void()> Write, const USolidSubBody* SphereSlot)
+    const UActorComponent& Component, TFunctionRef<void()> Write, const USolidSubBody* RetainedSlot)
 {
     auto* World = Component.GetWorld();
     auto* Subsystem = World ? World->GetSubsystem<USpeedWorldSubsystem>() : nullptr;
@@ -372,7 +372,7 @@ bool USpeedWorldSubsystem::TryWriteOwnedRoundConfiguration(
         // This lock is never held during a worker step, a host callback or a join.
         FScopeLock Lock(&Subsystem->ExactRoundConfigurationCS);
         if (Subsystem->ExactRoundStorageGeneration.Load() && !Subsystem->bExactRoundStorageRetired.Load() &&
-            (!SphereSlot || SphereSlot->bExactRoundSphereSlotRetained))
+            (!RetainedSlot || RetainedSlot->bExactRoundSolidSlotRetained))
             return false;
         Write();
         return true;
@@ -2459,25 +2459,30 @@ bool USpeedWorldSubsystem::ValidateSimulationBindings(FString& OutReason)
             }
             for (auto* Body : Component->GetSubBodies())
             {
-                if (!Body || Body->IsSensor() || Body->GetSubBodyType() != USSubBody::ESubBodyType::Sphere) continue;
-                auto* Sphere = Cast<USphereSubBody>(Body);
-                if (!Sphere || Sphere->GetParentComponent() != Component ||
+                if (!Body || Body->IsSensor()) continue;
+                const auto Type = Body->GetSubBodyType();
+                if (Type != USSubBody::ESubBodyType::Sphere && Type != USSubBody::ESubBodyType::Hitbox) continue;
+                auto* Box = Type == USSubBody::ESubBodyType::Hitbox ? Cast<UBoxSubBody>(Body) : nullptr;
+                USolidSubBody* Solid = Type == USSubBody::ESubBodyType::Hitbox ? static_cast<USolidSubBody*>(Box)
+                    : Cast<USphereSubBody>(Body);
+                if (!Solid || Solid->GetParentComponent() != Component ||
                     !Component->GetPublishedSimulationStableId())
                 {
-                    OutReason = TEXT("sphere slot has no registered owner");
+                    OutReason = TEXT("solid slot has no registered owner");
                     return false;
                 }
-                if (Sphere->bExactRoundSphereSlotRetained) continue;
-                const uint64 SlotId = SimulationWorld.FindStableSubBodyId(Sphere);
-                if (!bAllowCapture || !SlotId || SimulationWorld.SolidSubBodiesByStableId.FindRef(SlotId) != Sphere)
+                if (Solid->bExactRoundSolidSlotRetained) continue;
+                const uint64 SlotId = SimulationWorld.FindStableSubBodyId(Solid);
+                if (!bAllowCapture || !SlotId || SimulationWorld.SolidSubBodiesByStableId.FindRef(SlotId) != Solid)
                 {
-                    OutReason = TEXT("original sphere slot configuration unavailable");
+                    OutReason = TEXT("original solid slot configuration unavailable");
                     return false;
                 }
                 // Assembly and pre-admission profile writes are still legal.
-                // Seal only this native sphere before its first solver read.
+                // Seal this slot before its first solver read.
                 const FScopeLock Lock(&ExactRoundConfigurationCS);
-                Sphere->bExactRoundSphereSlotRetained = true;
+                if (Box) Box->bRetainedPersistentFloorFrictionOnly = Box->bPersistentFloorFrictionOnly;
+                Solid->bExactRoundSolidSlotRetained = true;
             }
         }
     }

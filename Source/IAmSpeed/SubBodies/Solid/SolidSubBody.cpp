@@ -142,26 +142,27 @@ void USolidSubBody::ApplyImpulse(const FVector& LinearImpulse, const FVector& Wo
 	}
 }
 
-void USolidSubBody::ChangeSphereSlotConfiguration(TFunctionRef<void()> Write)
+void USolidSubBody::ChangeExactSolidSlotConfiguration(TFunctionRef<void()> Write)
 {
-    if (GetSubBodyType() != ESubBodyType::Sphere || IsTemplate() ||
+    const auto Type = GetSubBodyType();
+    if ((Type != ESubBodyType::Sphere && Type != ESubBodyType::Hitbox) || IsTemplate() ||
         (HasAnyFlags(RF_NeedInitialization) && !ParentComponent))
     {
         Write();
         return;
     }
     if (!USpeedWorldSubsystem::TryWriteOwnedRoundConfiguration(*this, Write, this))
-        UE_LOG(LogTemp, Warning, TEXT("Sphere slot configuration is retained by the exact round owner (%s)"), *GetName());
+        UE_LOG(LogTemp, Warning, TEXT("Solid slot configuration is retained by the exact round owner (%s)"), *GetName());
 }
 
 void USolidSubBody::SetMass(float InMass)
 {
-    ChangeSphereSlotConfiguration([this, InMass] { Mass = InMass; });
+    ChangeExactSolidSlotConfiguration([this, InMass] { Mass = InMass; });
 }
 
 void USolidSubBody::SetIdx(int InIdx)
 {
-    ChangeSphereSlotConfiguration([this, InIdx] { idx = InIdx; });
+    ChangeExactSolidSlotConfiguration([this, InIdx] { idx = InIdx; });
 }
 
 void USolidSubBody::ChangeSolidContactConfiguration(TFunctionRef<void()> Write)

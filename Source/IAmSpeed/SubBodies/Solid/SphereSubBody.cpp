@@ -1624,7 +1624,7 @@ void USphereSubBody::UpdateBodySetup()
 bool USphereSubBody::AppendExactRoundSphereConfiguration(Speed::FExactRoundConfigurationWriter& Out) const
 {
     if (GetSubBodyType() != ESubBodyType::Sphere || !Speed::FScopedExactRoundContactSettings::Current() ||
-        !HasRetainedExactSphereSlotConfiguration() || !AppendExactRoundSolidConfiguration(Out)) return false;
+        !HasRetainedExactSolidSlotConfiguration() || !AppendExactRoundSolidConfiguration(Out)) return false;
 
     // CCD and static support consume different radii. Hash the authored
     // contributions separately, together with the actual response policy.
@@ -1641,12 +1641,12 @@ bool USphereSubBody::AppendExactRoundSphereConfiguration(Speed::FExactRoundConfi
 
 void USphereSubBody::SetRadius(const float& NewRadius)
 {
-    ChangeSphereSlotConfiguration([this, NewRadius] { Radius = NewRadius; });
+    ChangeExactSolidSlotConfiguration([this, NewRadius] { Radius = NewRadius; });
 }
 
 void USphereSubBody::SetRadiusForConfiguration(float NewRadius)
 {
-    ChangeSphereSlotConfiguration([this, NewRadius]
+    ChangeExactSolidSlotConfiguration([this, NewRadius]
     {
         Radius = NewRadius;
         InvInertiaLocal = InitInvInertiaTensor();
@@ -1655,12 +1655,12 @@ void USphereSubBody::SetRadiusForConfiguration(float NewRadius)
 
 void USphereSubBody::SetProductionNonpenetratingBoxContacts(bool bEnabled)
 {
-    ChangeSphereSlotConfiguration([this, bEnabled] { bProductionNonpenetratingBoxContacts = bEnabled; });
+    ChangeExactSolidSlotConfiguration([this, bEnabled] { bProductionNonpenetratingBoxContacts = bEnabled; });
 }
 
 void USphereSubBody::SetSphereBoxTangentialContactArmScale(float InScale)
 {
-    ChangeSphereSlotConfiguration([this, InScale]
+    ChangeExactSolidSlotConfiguration([this, InScale]
     {
         SphereBoxTangentialContactArmScale = FMath::Max(0.0f, InScale);
     });
@@ -1668,7 +1668,7 @@ void USphereSubBody::SetSphereBoxTangentialContactArmScale(float InScale)
 
 void USphereSubBody::SetSphereBoxTangentialContactArmSpeedRange(float InStartSpeed, float InFullSpeed)
 {
-    ChangeSphereSlotConfiguration([this, InStartSpeed, InFullSpeed]
+    ChangeExactSolidSlotConfiguration([this, InStartSpeed, InFullSpeed]
     {
         SphereBoxTangentialContactArmStartSpeed = FMath::Max(0.0f, InStartSpeed);
         SphereBoxTangentialContactArmFullSpeed = FMath::Max(SphereBoxTangentialContactArmStartSpeed, InFullSpeed);
@@ -1679,7 +1679,7 @@ void USphereSubBody::SetSphereBoxTangentialContactArmKinematicWindow(
     float InMinSphereSpeed, float InMaxSphereSpeed, float InMinSphereAngularSpeed,
     float InMaxSphereAngularSpeed, float InMinBoxSpeed)
 {
-    ChangeSphereSlotConfiguration([=, this]
+    ChangeExactSolidSlotConfiguration([=, this]
     {
         SphereBoxTangentialArmMinSphereSpeed = InMinSphereSpeed;
         SphereBoxTangentialArmMaxSphereSpeed = InMaxSphereSpeed;

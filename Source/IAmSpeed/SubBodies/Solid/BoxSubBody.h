@@ -30,7 +30,8 @@ class IAMSPEED_API UBoxSubBody : public USolidSubBody, public IBoxSweeper, publi
 #endif
 	
 public:
-    /** Appends solid and box configuration from this registered hitbox, including correction slop. */
+    // Appends solid and box configuration from this registered hitbox,
+    // including correction slop. The game retains its own response policy.
     bool AppendExactRoundBoxConfiguration(Speed::FExactRoundConfigurationWriter& Out) const;
 
     const USolidSubBody* GetSolidSweepBody() const override { return this; }
@@ -99,7 +100,7 @@ public:
     SKinematic GetKinematicsFromOwnerKS(const SKinematic& CarKinematicState) const;
     SSBox MakeBox() const;
     // Construction-time physical policy; not driven by a test ID or diagnostic.
-    void SetProductionNonpenetratingSphereContacts(bool bEnabled) { bProductionNonpenetratingSphereContacts = bEnabled; }
+    void SetProductionNonpenetratingSphereContacts(bool bEnabled);
     bool UsesProductionNonpenetratingSphereContacts() const { return bProductionNonpenetratingSphereContacts; }
 
     SSBox MakeBoxFromKS(const SKinematic& CarKinematicState) const;
@@ -423,6 +424,9 @@ private:
     TWeakObjectPtr<UPrimitiveComponent> RoofSurfaceComp;
     FVector CompositeGroundNormal; // average normal from all ground contacts this frame
     TMap<TWeakObjectPtr<UPrimitiveComponent>, uint32> HitCountThisFrame;
+    friend class USpeedWorldSubsystem;
+    bool UsesPersistentFloorFrictionOnly() const;
+    bool bRetainedPersistentFloorFrictionOnly = false;
     uint32 MaxHitsPerComponentPerFrame = 4; // face = 4 corners
     TArray<float> PrevLambdaN;
 

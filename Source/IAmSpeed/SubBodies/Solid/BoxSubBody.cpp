@@ -189,11 +189,17 @@ static TAutoConsoleVariable<float> CVarIAmSpeedBoxContactResponseTime(
  TEXT("Physical contact regularization horizon in seconds, independent of frame dt. Critical effective spring/damper CFM and positive-gap candidate closing bounds. 0 selects rigid contacts. No positional snapping or adjusted TOI."));
 
 
+bool UBoxSubBody::UsesPersistentFloorFrictionOnly() const
+{
+    return Speed::FScopedExactRoundContactSettings::Current() && HasRetainedExactSolidSlotConfiguration()
+        ? bRetainedPersistentFloorFrictionOnly : bPersistentFloorFrictionOnly;
+}
+
 float UBoxSubBody::GetStaticWorldContactFriction(const Speed::IStaticCollisionWorld* World, const FVector& Normal) const
 {
     // Only static analytical floor reactions use this policy. Pair/ball/other
     // object contacts keep the material coefficient and their existing path.
-    if (bPersistentFloorFrictionOnly && World && Normal.Z >= 0.999999 &&
+    if (UsesPersistentFloorFrictionOnly() && World && Normal.Z >= 0.999999 &&
         !HasContinuingFloorContact2778()) return 0.0f;
     return GetDynamicFriction();
 }
@@ -707,11 +713,13 @@ UBoxSubBody::UBoxSubBody(const FObjectInitializer& ObjectInitializer):
 
 bool UBoxSubBody::AppendExactRoundBoxConfiguration(Speed::FExactRoundConfigurationWriter& Out) const
 {
-    return AppendExactRoundSolidConfiguration(Out) &&
-        Out.Unsigned(0x494153424f580001ull) &&
+    return GetSubBodyType() == ESubBodyType::Hitbox && Speed::FScopedExactRoundContactSettings::Current() &&
+        HasRetainedExactSolidSlotConfiguration() && AppendExactRoundSolidConfiguration(Out) &&
+        Out.Unsigned(0x494153424f580002ull) &&
         Out.Double(BoxExtent.X) && Out.Double(BoxExtent.Y) && Out.Double(BoxExtent.Z) &&
         Out.Float(MinSlopCm) && Out.Unsigned(MaxHitsPerComponentPerFrame) &&
-        Out.Boolean(bPersistentFloorFrictionOnly) && Out.Boolean(bProductionNonpenetratingSphereContacts);
+        Out.Boolean(UsesPersistentFloorFrictionOnly()) && Out.Boolean(bProductionNonpenetratingSphereContacts) &&
+        Out.Boolean(UsesNonclosingBoxBumpResponse());
 }
 
 void UBoxSubBody::Initialize(ISpeedComponent* InParentComponent)
@@ -5732,7 +5740,15 @@ float UBoxSubBody::GetSphereSeparation(
 
 void UBoxSubBody::SetBoxExtent(const FVector& InBoxExtent)
 {
-	BoxExtent = InBoxExtent.ComponentMax(FVector::ZeroVector);
+    ChangeExactSolidSlotConfiguration([this, InBoxExtent]
+    {
+        BoxExtent = InBoxExtent.ComponentMax(FVector::ZeroVector);
+    });
+}
+
+void UBoxSubBody::SetProductionNonpenetratingSphereContacts(bool bEnabled)
+{
+    ChangeExactSolidSlotConfiguration([this, bEnabled] { bProductionNonpenetratingSphereContacts = bEnabled; });
 }
 
 FCollisionShape UBoxSubBody::GetCollisionShape(float Inflation) const

@@ -188,8 +188,8 @@ public:
 	bool HasToApplyRestForce() const { return bApplyRestForce; }
 
 protected:
-    void ChangeSphereSlotConfiguration(TFunctionRef<void()> Write);
-    bool HasRetainedExactSphereSlotConfiguration() const { return bExactRoundSphereSlotRetained; }
+    void ChangeExactSolidSlotConfiguration(TFunctionRef<void()> Write);
+    bool HasRetainedExactSolidSlotConfiguration() const { return bExactRoundSolidSlotRetained; }
 	virtual FMatrix InitInvInertiaTensor() const { return FMatrix::Identity; }
 	void RegisterCurrentHitAsConstraint();
 	void RegisterContactAsConstraint(
@@ -301,6 +301,6 @@ private:
     friend class USpeedWorldSubsystem;
     // Written by the exact worker under the same lock as supported setters.
     // Read only by that worker or by a setter holding the lock.
-    bool bExactRoundSphereSlotRetained = false;
+    bool bExactRoundSolidSlotRetained = false;
     void ChangeSolidContactConfiguration(TFunctionRef<void()> Write);
 };
