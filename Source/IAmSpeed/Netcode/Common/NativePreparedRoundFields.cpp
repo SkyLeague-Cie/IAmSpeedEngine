@@ -13,7 +13,6 @@
 #include "IAmSpeed/World/Subsystem/SpeedWorldSubsystem.h"
 #include "SuspensionSystem.h"
 #include "WheelSystem.h"
-#include <functional>
 #include <type_traits>
 
 namespace Speed
@@ -304,6 +303,14 @@ std::optional<FPreparedNativeRoundFields::FContactFreeKickoff> FPreparedNativeRo
 struct FPreparedNativeRoundFields::FPlan
 {
     enum class EPhase { Prepared, Ready, Finalized, Released, Aborted };
+    using FOwnedValue = std::unique_ptr<void, void(*)(void*) noexcept>;
+    struct FExchange
+    {
+        void* Live;
+        FOwnedValue Staged;
+        void (*Swap)(void*, void*) noexcept;
+        void Apply() const noexcept { Swap(Live, Staged.get()); }
+    };
     using FOverlapToken = TWeakObjectPtr<UPrimitiveComponent>;
     struct FKeptSensorOverlaps
     {
@@ -336,7 +343,7 @@ struct FPreparedNativeRoundFields::FPlan
     const FPreparedRestoreLeaseView Lease;
     EPhase Phase = EPhase::Prepared;
     PreparedAccess::FParticipantAccess Access;
-    std::vector<std::function<void()>> Exchanges;
+    std::vector<FExchange> Exchanges;
     std::optional<FKeptSensorOverlaps> KeptSensor;
     std::optional<FColdHitbox> ColdHitbox;
 
@@ -351,11 +358,23 @@ struct FPreparedNativeRoundFields::FPlan
     template<class T>
     void Stage(T& Live, T Value)
     {
-        static_assert(TUseBitwiseSwap<T>::Value || std::is_nothrow_move_assignable_v<T>);
-        auto Staged = std::make_shared<T>(std::move(Value));
+        // The exchange touches only the two declared objects. A non-bitwise
+        // swap may only use the built-in scalar moves.
+        static_assert(TUseBitwiseSwap<T>::Value || std::is_scalar_v<T>);
+        FOwnedValue Staged(new T(std::move(Value)), [](void* Object) noexcept { delete static_cast<T*>(Object); });
         Access.Writes.push_back(Range(&Live, sizeof(Live)));
         Access.Writes.push_back(Range(Staged.get(), sizeof(T)));
-        Exchanges.emplace_back([&Live, Staged]() noexcept { ::Swap<T>(Live, *Staged); });
+        Exchanges.push_back({&Live, std::move(Staged), [](void* A, void* B) noexcept
+        {
+            ::Swap<T>(*static_cast<T*>(A), *static_cast<T*>(B));
+        }});
+    }
+
+    void DeclareExchangeReads(PreparedAccess::FParticipantAccess& Declaration) const
+    {
+        Declaration.ReadOnly.push_back(Range(&Exchanges, sizeof(Exchanges)));
+        if (!Exchanges.empty())
+            Declaration.ReadOnly.push_back(Range(Exchanges.data(), Exchanges.size() * sizeof(FExchange)));
     }
 
     template<class T>
@@ -906,7 +925,10 @@ bool FPreparedNativeRoundFields::AppendPreparedAccess(std::vector<PreparedAccess
 {
     if ((Plan->Phase != FPlan::EPhase::Prepared && Plan->Phase != FPlan::EPhase::Ready) || !Plan->HoldsBoundary()
         || !Plan->ValidateKeptSensor() || !Plan->ValidateColdHitbox()) return false;
-    Out.push_back(Plan->Access);
+    auto Declaration = Plan->Access;
+    Declaration.ReadOnly.push_back(Range(&Plan, sizeof(Plan)));
+    Plan->DeclareExchangeReads(Declaration);
+    Out.push_back(std::move(Declaration));
     return true;
 }
 
@@ -921,7 +943,7 @@ bool FPreparedNativeRoundFields::PrepareFinalization() noexcept
 void FPreparedNativeRoundFields::Finalize() noexcept
 {
     if (Plan->Phase != FPlan::EPhase::Ready) std::terminate();
-    for (const auto& Exchange : Plan->Exchanges) Exchange();
+    for (const auto& Exchange : Plan->Exchanges) Exchange.Apply();
     Plan->Phase = FPlan::EPhase::Finalized;
 }
 
