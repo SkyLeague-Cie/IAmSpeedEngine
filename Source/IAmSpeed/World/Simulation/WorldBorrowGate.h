@@ -19,6 +19,7 @@ class FWorldBorrowGate final
     mutable std::atomic<std::uint32_t> State{0};
 
 public:
+    class FReservation;
     class FBorrow final
     {
         friend class FWorldBorrowGate;
@@ -28,6 +29,9 @@ public:
         inline static thread_local FBorrow* Current = nullptr;
 
     public:
+        // Only the exact reservation owner can admit a nested scope for its
+        // own canonical work. Other lanes still see the storage as closed.
+        explicit FBorrow(const FReservation&) noexcept;
         explicit FBorrow(const FWorldBorrowGate& InGate) noexcept
         {
             if (InGate.HasScopedBorrow())
@@ -69,6 +73,7 @@ public:
     class FReservation final
     {
         friend class FWorldBorrowGate;
+        friend class FBorrow;
         const FWorldBorrowGate* Gate = nullptr;
         const std::thread::id Owner = std::this_thread::get_id();
         FReservation* Previous = nullptr;
@@ -90,7 +95,7 @@ public:
         ~FReservation() noexcept
         {
             if (!Gate) return;
-            if (Current != this) std::terminate();
+            if (Current != this || Gate->HasScopedBorrow()) std::terminate();
             Current = Previous;
             Gate->State.store(0, std::memory_order_release);
         }
@@ -143,4 +148,9 @@ private:
         return false;
     }
 };
+
+inline FWorldBorrowGate::FBorrow::FBorrow(const FReservation& Reservation) noexcept
+{
+    if (Reservation.Gate && Reservation.Holds(*Reservation.Gate)) Enter(*Reservation.Gate);
+}
 }

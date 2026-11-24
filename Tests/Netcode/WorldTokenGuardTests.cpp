@@ -5,6 +5,7 @@
 #include <new>
 #include <string>
 #include "NativePlanControlFlowTests.cpp"
+#include "IAmSpeed/World/Simulation/ExactRemoteRoundFence.h"
 #include <windows.h>
 
 // Only our fixture allocation is protected. Its C++ object remains alive;
@@ -162,6 +163,45 @@ static void BareLegacyReferencesStayVisibleToReservation()
     CHECK(!ReferenceRefused.Holds(ReferenceGate));
 }
 
+static void PublicationAndRetirementUseTheSameFence()
+{
+    using FGate = Speed::FWorldBorrowGate;
+    Speed::FExactRemoteRoundFence ClosedFirst;
+    ClosedFirst.Close();
+    CHECK(ClosedFirst.IsClosed() && !ClosedFirst.TryBeginPublication() && !ClosedFirst.HoldsPublication());
+
+    Speed::FExactRemoteRoundFence PublishingFirst;
+    FGate Gate;
+    {
+        const FGate::FReservation Reservation(Gate);
+        CHECK(PublishingFirst.TryBeginPublication() && !PublishingFirst.TryBeginPublication());
+        {
+            const FGate::FBorrow OwnerWork(Reservation);
+            const FGate::FBorrow Nested(Gate);
+            CHECK(OwnerWork && Nested);
+            bool Denied = false;
+            std::thread Closer([&] {
+                PublishingFirst.Close();
+                const FGate::FBorrow OtherWork(Reservation);
+                const FGate::FBorrow Ordinary(Gate);
+                Denied = !OtherWork && !Ordinary;
+            });
+            Closer.join();
+            CHECK(Denied && PublishingFirst.IsClosed() && PublishingFirst.HoldsPublication());
+        }
+        CHECK(!FGate::FBorrow(Gate));
+    }
+    PublishingFirst.FinishPublication();
+    CHECK(PublishingFirst.IsClosed() && !PublishingFirst.HoldsPublication() && !PublishingFirst.TryBeginPublication());
+    CHECK(FGate::FBorrow(Gate) && !Gate.HasUntrackedReference());
+
+    Speed::FExactRemoteRoundFence NextRound;
+    CHECK(NextRound.TryBeginPublication());
+    NextRound.FinishPublication();
+    CHECK(NextRound.TryBeginPublication());
+    NextRound.FinishPublication();
+}
+
 int main(int Argc,char* Argv[])
 {
     SetErrorMode(SEM_FAILCRITICALERRORS|SEM_NOGPFAULTERRORBOX|SEM_NOOPENFILEERRORBOX);
@@ -170,6 +210,7 @@ int main(int Argc,char* Argv[])
     ActualTokenMoveAndOrigin();
     ReserveBeforeBuildingWithAnOutstandingBorrow();
     BareLegacyReferencesStayVisibleToReservation();
+    PublicationAndRetirementUseTheSameFence();
     std::printf("WORLD_TOKEN_GUARD ordinary combined checks=%u; full UE class/native lease NOT_COMPILED/RUN/ADMITTED\n",Checks);
     return 0;
 }

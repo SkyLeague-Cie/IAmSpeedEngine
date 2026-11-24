@@ -6,6 +6,8 @@
 #include "IAmSpeed/Concurrency/AtomicSharedPtr.h"
 #include "GameFramework/Actor.h"
 #include "CanonicalFrameDriver.h"
+#include "ExactRemoteRoundFence.h"
+#include "WorldBorrowGate.h"
 #include "SimulationFrameJournal.h"
 #include "CompletedSimulationPublication.h"
 #include "NativeRequestedInputObservation.h"
@@ -30,6 +32,7 @@
 namespace Speed
 {
 class FHostedGTStaticWorldLease;
+class FPreparedNativeRoundFields;
 class IExactRemoteRoundProvider;
 struct FExactRemoteRoundCommit;
 namespace PreparationPrefix { class FClosedSourceProducer; }
@@ -60,6 +63,7 @@ class IAMSPEED_API ASpeedPhysicsSimulation : public ASpeedSimulation
 {
 	GENERATED_BODY()
     friend class Speed::FHostedGTStaticWorldLease;
+    friend class Speed::FPreparedNativeRoundFields;
     friend class Speed::PreparationPrefix::FClosedSourceProducer;
 #if WITH_DEV_AUTOMATION_TESTS
 	friend struct FLocalNormalCameraFixtureAccess;
@@ -184,6 +188,9 @@ public:
     bool ConfigureOriginalDeviceRemoteInputHost(uint32 RequiredSessions, Speed::Input::V2::EExactRemoteAdmission Admission);
     /** Dedicated ExactRemote only. Install after remote host configuration and before its worker starts. */
     bool ConfigureExactRemoteRoundReset(std::shared_ptr<Speed::IExactRemoteRoundProvider>);
+    // At the entry to a GT teardown callback, before touching registered
+    // storage. A failed result never authorizes retirement of that storage.
+    bool JoinExactRemoteRoundBeforeStorageTeardown(uint64 ExpectedWorkerGeneration);
     std::shared_ptr<const Speed::FExactRemoteRoundCommit> ReadExactRemoteRoundCommit() const;
     std::shared_ptr<const Speed::FCompletedSimulationPublication> ReadExactRemoteRoundNeutralStep() const;
     Speed::Input::V2::ECommandAdmission SubmitRequestedNetworkInputSession(
@@ -425,9 +432,13 @@ private:
 
 	ESimulationBoundaryResult ServiceInputSessionBoundary(bool bPauseRequested);
 	std::optional<ESimulationBoundaryResult> ServiceExactRemoteRoundBoundary(bool bPauseRequested);
+	ESimulationWorkerResult FinishExactRemoteRoundWork(ESimulationWorkerResult);
 	std::shared_ptr<Speed::IExactRemoteRoundProvider> ExactRemoteRoundProvider;
+	Speed::FExactRemoteRoundFence ExactRemoteRoundFence;
+	std::unique_ptr<Speed::FWorldBorrowGate::FReservation> ExactRemoteRoundStorage; // original worker only
 	std::shared_ptr<const Speed::FExactRemoteRoundCommit> PublishedExactRemoteRound;
 	std::shared_ptr<const Speed::FCompletedSimulationPublication> PublishedRoundNeutralStep;
+	std::shared_ptr<const Speed::FCompletedSimulationPublication> PendingRoundNeutralStep; // original worker only
 	std::shared_ptr<const Speed::FExactRemoteRoundCommit> ActiveExactRemoteRound; // original worker only
 	void CloseInputSessionsOnWorker();
 	std::shared_ptr<Speed::Input::V2::FInputSessionCommands> InputSessionCommands;

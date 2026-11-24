@@ -625,6 +625,7 @@ void ASpeedPhysicsSimulation::StartOwnedWorkerIfReady()
 {
 	if (Speed::Netcode::PresentationClient::SuppressesLocalPhysics(GetWorld())) return;
     if (IsInGameThread() && bStaticWorldPublicationLease) return;
+    if (ExactRemoteRoundFence.IsClosed()) return;
     // Never validate GT as numeric owner of an already running worker.
     // Retain common startup observations around the same terminal guards.
     if (SimulationWorker)
@@ -668,8 +669,16 @@ void ASpeedPhysicsSimulation::StartOwnedWorkerIfReady()
 #if WITH_DEV_AUTOMATION_TESTS
 			Speed::OwnedFrameAudit::BeginWork(OwnedAudit, CanonicalNumFrame);
 #endif
-			const ESimulationWorkerResult Result = ExecuteCheckedSimulationPulse([this]()
+			const ESimulationWorkerResult Result = FinishExactRemoteRoundWork(ExecuteCheckedSimulationPulse([this]()
             {
+                std::optional<Speed::FWorldBorrowGate::FBorrow> ReservedRoundWork;
+                if (ExactRemoteRoundStorage)
+                {
+                    if (ExactRemoteRoundFence.IsClosed() || Speed::OnePausedWork::IsActive())
+                        return ESimulationWorkerResult::Failed;
+                    ReservedRoundWork.emplace(*ExactRemoteRoundStorage);
+                    if (!*ReservedRoundWork) return ESimulationWorkerResult::Failed;
+                }
                 if (Speed::OnePausedWork::IsPreparationPrefixFor(this)||Speed::OnePausedWork::IsPostPrepareInitialPositionFor(this)||Speed::OnePausedWork::IsTerminalStepSyncFor(this)||Speed::OnePausedWork::IsTerminalSphereRsCaptureFor(this)||Speed::OnePausedWork::IsTerminalConsumedPrefixAdvanceFor(this)||Speed::OnePausedWork::IsTerminalRsContactAdvanceFor(this)||Speed::OnePausedWork::IsTerminalRsResponseFor(this)||Speed::OnePausedWork::IsTerminalRsResponseSyncFor(this)||Speed::OnePausedWork::IsTerminalPostSyncRsCaptureFor(this))
                 {
                     bool noRollback=false;
@@ -693,7 +702,7 @@ void ASpeedPhysicsSimulation::StartOwnedWorkerIfReady()
                     nativeContext.NumFrame,nativeContext.PhysicalDeltaTime,nativeContext.SimTime);
                 const auto pulse=DriveOwnedWorkerPulse(FCanonicalFrameContext::CanonicalPhysicalDeltaTime, GetCanonicalPulseSimTime());
                 return nativeStream.Finish(pulse,CanonicalNumFrame);
-            });
+            }));
 #if WITH_DEV_AUTOMATION_TESTS
 			Speed::OwnedFrameAudit::EndWork(OwnedAudit, Result);
 #endif
@@ -773,6 +782,7 @@ void ASpeedPhysicsSimulation::StopOwnedWorker()
 {
 	if (SimulationWorker)
 	{
+        if (ExactRemoteRoundProvider) ExactRemoteRoundFence.Close();
 		SimulationWorker->StopAndJoin();
 		SimulationWorker.Reset();
 	}
@@ -786,7 +796,7 @@ bool ASpeedPhysicsSimulation::PrepareControlledInputRun()
 {
     if (IsInGameThread() && bStaticWorldPublicationLease) return false;
 	check(IsInGameThread());
-	if (GetActiveExecutionMode() != ESimulationExecutionMode::IAmSpeedThread
+	if (ExactRemoteRoundProvider || GetActiveExecutionMode() != ESimulationExecutionMode::IAmSpeedThread
 		|| bCanonicalPublicationTerminal.Load()) return false;
 	const auto Boundary = TryPauseOwnedSimulation();
 	if (Boundary != ESimulationQuiescence::BoundaryAcknowledged
@@ -876,6 +886,7 @@ ESimulationQuiescence ASpeedPhysicsSimulation::TryPauseOwnedSimulation(const uin
 ESimulationQuiescence ASpeedPhysicsSimulation::TrySuspendOwnedBoundaryService(const uint32 TimeoutMilliseconds)
 {
 	check(IsInGameThread());
+    if (ExactRemoteRoundFence.HoldsPublication()) return ESimulationQuiescence::Failed;
 	PublishedCompletedWorldInput.store({}, std::memory_order_seq_cst);
 	if (GetActiveExecutionMode() != ESimulationExecutionMode::IAmSpeedThread)
 		return ESimulationQuiescence::Failed;
@@ -908,9 +919,16 @@ ESimulationQuiescence ASpeedPhysicsSimulation::TrySuspendOwnedBoundaryService(co
 	}
 	if (!SimulationWorker || !SimulationWorker->IsRunning())
 		return ESimulationQuiescence::AlreadyStopped;
+    const bool bWasPaused = bOwnedSimulationPaused.Load();
 	bOwnedSimulationPaused.Store(true);
 	if (!SimulationWorker->TrySuspendBoundaryService(TimeoutMilliseconds))
 		return ESimulationQuiescence::TimedOut;
+    if (ExactRemoteRoundFence.HoldsPublication())
+    {
+        SimulationWorker->ResumeBoundaryService();
+        if (!bWasPaused) ResumeOwnedSimulation();
+        return ESimulationQuiescence::Failed;
+    }
 	OwnedBoundarySuspendDepth = 1;
 	return ESimulationQuiescence::BoundaryAcknowledged;
 }
@@ -973,6 +991,7 @@ bool ASpeedPhysicsSimulation::JoinOwnedSimulationForInputTeardown()
 	check(IsInGameThread());
 	// An async callback (or absent driver) cannot grant an owned-thread fence.
 	if (GetActiveExecutionMode() != ESimulationExecutionMode::IAmSpeedThread) return false;
+    if (ExactRemoteRoundProvider) ExactRemoteRoundFence.Close();
 	bInputOwnerRetired.Store(true);
 	PublishedCompletedWorldInput.store({}, std::memory_order_seq_cst);
 	bOwnedSimulationPaused.Store(true); bOwnedWorkerTerminal.Store(true);
@@ -2060,6 +2079,7 @@ bool ASpeedPhysicsSimulation::StepCanonicalFrame(const FCanonicalFrameContext& C
             // No allocation, callbacks or separate endpoint loads in this store.
             // Moving consumes the only mutable alias; readers retain one object.
             std::shared_ptr<const Speed::FCompletedSimulationPublication> Sealed = std::move(CompletedDraft);
+            if (ExactRemoteRoundStorage) PendingRoundNeutralStep = Sealed;
             PublishedCompletedWorldInput.store(std::move(Sealed), std::memory_order_seq_cst);
             return true;
         };
@@ -2301,7 +2321,7 @@ bool ASpeedPhysicsSimulation::RequestRollbackAndResimulation(
 	const FSimulationSnapshot& Snapshot,
 	const uint64 TargetFrameInclusive)
 {
-	if (!Speed::CanonicalFrameDriver::IsEnabled() || !InputJournal.IsSealed() ||
+	if (ExactRemoteRoundProvider || !Speed::CanonicalFrameDriver::IsEnabled() || !InputJournal.IsSealed() ||
 		Snapshot.InputJournalHash != InputJournal.StableHash() ||
 		Snapshot.NumFrame > TargetFrameInclusive ||
 		TargetFrameInclusive >= TNumericLimits<unsigned int>::Max())
@@ -2536,6 +2556,7 @@ TUniquePtr<Speed::SimulationBoundary::FLiveBoundaryRequest> ASpeedPhysicsSimulat
     if (!IsInGameThread() || !IsValid(this) || IsActorBeingDestroyed() || !HasActorBegunPlay() || !GetWorld() || GetWorld()->bIsTearingDown
         || !IsOwnedWorkerExecutionMode() || !SimulationWorker || !SimulationWorker->IsRunning()
         || bInputOwnerRetired.Load() || bOwnedWorkerTerminal.Load() || bCanonicalPublicationTerminal.Load()
+        || ExactRemoteRoundFence.HoldsPublication()
         || OwnedBoundarySuspendDepth || SimulationWorker->IsBoundaryServiceSuspendRequested())
     { Failure = TEXT("Live boundary requires an available owned worker without a legacy suspension"); return {}; }
     if (LiveBoundaryControl)
@@ -2592,6 +2613,7 @@ Speed::SimulationBoundary::ELiveBoundaryResult ASpeedPhysicsSimulation::PollLive
     if (!CurrentOwner || Control->CancelRequested.load() || Phase != ELiveBoundaryPhase::Acknowledged)
         return ELiveBoundaryResult::Waiting;
     if (LiveBoundaryControl != Control || OwnedBoundarySuspendDepth || SimulationWorker->IsBoundaryServiceSuspendRequested()
+        || ExactRemoteRoundFence.HoldsPublication()
         || !SimulationWorker->OwnsAcknowledgedLiveBoundary(Control))
     {
         Control->Failure = TEXT("Live boundary ACK overlaps another structural owner");

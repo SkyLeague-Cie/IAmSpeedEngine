@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CompletedSimulationPublication.h"
+#include "ExactRemoteRoundFence.h"
 #include "IAmSpeed/Netcode/Common/NativePreparedKinematicFields.h"
 #include "PreparedWorldReplacement.h"
 #include "SimulationWorld.h"
@@ -65,7 +66,9 @@ public:
 // Coordinator/provider installed before worker creation. Build runs on the
 // same worker which will commit and step, with the native storage reserved.
 // Build consumes the completed publication and lease-bound native values.
-// Implementations must be bounded and must not wait on the game thread.
+// Implementations must be bounded and must not wait on the game thread. The
+// host must retain the original registered storage and gate direct views
+// until the neutral step publishes or the original worker has joined.
 class IAMSPEED_API IExactRemoteRoundProvider
 {
 public:
@@ -90,7 +93,7 @@ namespace ExactRemoteRound
 // slot and prevents other APIs from observing the participants until commit.
 // A null result has aborted both prepared participants without a write.
 std::shared_ptr<const FExactRemoteRoundCommit> Commit(
-    FSimulationWorld&, Input::V2::FInputSessionRegistry&, FExactRemoteRoundPlan&&,
+    FSimulationWorld&, Input::V2::FInputSessionRegistry&, FExactRemoteRoundFence&, FExactRemoteRoundPlan&&,
     std::shared_ptr<const FExactRemoteRoundCommit>& Publication);
 
 bool IsExactNeutralStep(const FExactRemoteRoundCommit&, const FCompletedSimulationPublication&) noexcept;

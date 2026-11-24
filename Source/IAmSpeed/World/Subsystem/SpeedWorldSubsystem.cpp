@@ -1340,6 +1340,9 @@ bool USpeedWorldSubsystem::HasPhysicalRegistrationsForPresentationAdmission()
 void USpeedWorldSubsystem::ApplyPendingOps()
 {
     if (Speed::Netcode::PresentationClient::SuppressesLocalPhysics(GetWorld())) return;
+    // Keep the admitted topology across restore and the neutral physical
+    // frame. New requests remain queued for the next ordinary boundary.
+    if (SimulationWorld.StorageAccess.IsReservationOwner()) return;
     const auto StorageBorrow = SimulationWorld.BorrowStorage();
     if (!StorageBorrow) return;
 	FScopedGameThreadAdapterAccess Access(GetWorld());

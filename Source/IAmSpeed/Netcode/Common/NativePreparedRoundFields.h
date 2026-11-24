@@ -4,7 +4,9 @@
 #include "IAmSpeed/Components/Netcode/SpeedPhysicsComponent.h"
 #include "IAmSpeed/Components/Netcode/SpeedWheeledPhysicsComponent.h"
 #include "IAmSpeed/SubBodies/Solid/SWheelSubBody.h"
+#include <array>
 
+class ASpeedPhysicsSimulation;
 class USpeedMovementComponent;
 
 namespace Speed
@@ -48,6 +50,50 @@ public:
         bool bJumpUnilateralSupport = false;
         SWheelRenderData Render;
     };
+
+    struct FCapturedKickoffWheel
+    {
+        FPreparedNativeKinematicFields::FRoster::FSubBody Binding;
+        SKinematic Pose;
+        FWheelState State;
+        FVector LocalOffset;
+        FQuat LocalRotation;
+        float MaxSuspensionLengthCm = 0.0f;
+        float SuspensionRestRaiseCm = 0.0f;
+    };
+
+    struct FCapturedKickoffVehicle
+    {
+        uint64 WorkerGeneration = 0;
+        uint64 FirstFrame = 0;
+        uint64 ActorStableId = 0;
+        uint32 ActorNativeObjectId = 0;
+        SKinematic CenterOfMass;
+        FVector LocalCenterOfMass;
+        bool bFrozen = false;
+        FVehicleState State;
+        std::array<FCapturedKickoffWheel, 4> Wheels;
+    };
+
+    struct FContactFreeKickoff
+    {
+        struct FWheel { FPreparedNativeKinematicFields::FRoster::FSubBody Binding; SKinematic Pose; FWheelState State; };
+        FVehicleState Vehicle;
+        std::array<FWheel, 4> Wheels;
+    };
+
+    // Copies the four actual indexed wheels while the original worker is
+    // paused and its boundary service is already acknowledged as parked.
+    // The caller owns that park. This read neither extends it nor grants a lease.
+    static std::optional<FCapturedKickoffVehicle> CaptureKickoffVehicleGT(
+        const ASpeedPhysicsSimulation&, uint64 ExpectedGeneration, uint64 ExpectedFirstFrame,
+        const USpeedWheeledComponent&);
+
+    // Projects a stationary target with cold wheel contacts. The optional
+    // support request sweeps the installed pose on the first movable frame.
+    // The result carries no support witness for the target at the reset frame.
+    static std::optional<FContactFreeKickoff> ProjectContactFreeKickoff(
+        const FCapturedKickoffVehicle&, const SKinematic& TargetCenterOfMass, bool bRequestStartupSupport);
 
     // Call these with the exact request received by PrepareCompleteSimulationRestore.
     // The local frame is derived from the canonical address. History is sized

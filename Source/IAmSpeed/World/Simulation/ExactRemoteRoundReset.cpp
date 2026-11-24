@@ -39,7 +39,7 @@ uint64 HashBaselines(const FRegistry::FGroupResumePublication& Group) noexcept
 }
 
 std::shared_ptr<const FExactRemoteRoundCommit> Commit(
-    FSimulationWorld& World, FRegistry& Registry, FExactRemoteRoundPlan&& Plan,
+    FSimulationWorld& World, FRegistry& Registry, FExactRemoteRoundFence& Fence, FExactRemoteRoundPlan&& Plan,
     std::shared_ptr<const FExactRemoteRoundCommit>& Publication)
 {
     const auto& Previous = Plan.Boundary;
@@ -50,7 +50,7 @@ std::shared_ptr<const FExactRemoteRoundCommit> Commit(
     };
     if (!Previous || !Plan.Envelope || !Plan.Lease || !Plan.Supplement
         || !Previous->World().PublicationSerial || !Previous->ConsumedInputs()
-        || Previous->ConsumedInputs() != Registry.ReadLatest() || IsCancelled()
+        || Previous->ConsumedInputs() != Registry.ReadLatest() || IsCancelled() || Fence.IsClosed()
         || Plan.Deadline <= Now || Plan.Deadline == FExactRemoteRoundPlan::FClock::time_point::max()
         || Plan.Inputs.RoundBaselines.empty()) return {};
 
@@ -114,7 +114,8 @@ std::shared_ptr<const FExactRemoteRoundCommit> Commit(
             if (!World.AbortPreparedRestore(*Restore)) std::terminate();
             return {};
         }
-        if (IsCancelled() || FExactRemoteRoundPlan::FClock::now() >= Plan.Deadline) { Abort(); return {}; }
+        if (IsCancelled() || FExactRemoteRoundPlan::FClock::now() >= Plan.Deadline || !Fence.TryBeginPublication())
+        { Abort(); return {}; }
         World.FinalizePreparedRestore(*Restore);
         Registry.FinalizePreparedGroupResume(*Input);
         Registry.PublishPreparedGroupResume(*Input);

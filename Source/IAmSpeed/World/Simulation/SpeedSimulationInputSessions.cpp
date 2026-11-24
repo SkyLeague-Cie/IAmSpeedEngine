@@ -1,5 +1,6 @@
 #include "SpeedPhysicsSimulation.h"
 #include "CanonicalFrameContext.h"
+#include "Misc/ScopeExit.h"
 #include "Misc/ScopeLock.h"
 #include "IAmSpeed/Netcode/remote-input/ExactRemoteDedicatedHost.h"
 #include "IAmSpeed/World/Subsystem/SpeedWorldSubsystem.h"
@@ -309,7 +310,16 @@ ESimulationBoundaryResult ASpeedPhysicsSimulation::ServiceInputSessionBoundary(b
 
 void ASpeedPhysicsSimulation::CloseInputSessionsOnWorker()
 {
+    if (ExactRemoteRoundProvider) ExactRemoteRoundFence.Close();
+    ON_SCOPE_EXIT { ExactRemoteRoundStorage.reset(); ExactRemoteRoundFence.FinishPublication(); };
+    std::optional<Speed::FWorldBorrowGate::FBorrow> ReservedRoundClose;
+    if (ExactRemoteRoundStorage)
+    {
+        ReservedRoundClose.emplace(*ExactRemoteRoundStorage);
+        if (!*ReservedRoundClose) std::terminate();
+    }
     ActiveExactRemoteRound.reset();
+    PendingRoundNeutralStep.reset();
     if(RequestedPreparationV2)RequestedPreparationV2->CloseOnNativeOwner();
     CloseRequestedInputPresentationsOnWorker();
     PublishedRequestedInputObservation.store({},std::memory_order_seq_cst);

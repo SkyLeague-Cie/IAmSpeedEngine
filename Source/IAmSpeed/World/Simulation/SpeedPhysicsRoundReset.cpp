@@ -67,6 +67,13 @@ bool ASpeedPhysicsSimulation::ConfigureExactRemoteRoundReset(std::shared_ptr<Spe
     return true;
 }
 
+bool ASpeedPhysicsSimulation::JoinExactRemoteRoundBeforeStorageTeardown(uint64 ExpectedWorkerGeneration)
+{
+    if (!IsInGameThread() || !ExactRemoteRoundProvider || !ExpectedWorkerGeneration
+        || ExpectedWorkerGeneration != InputWorkerGeneration || !IsOwnedWorkerExecutionMode()) return false;
+    return JoinOwnedSimulationForInputTeardown() && InputOwnersRetiredAfterJoin(ExpectedWorkerGeneration);
+}
+
 std::shared_ptr<const Speed::FExactRemoteRoundCommit> ASpeedPhysicsSimulation::ReadExactRemoteRoundCommit() const
 {
     return std::atomic_load_explicit(&PublishedExactRemoteRound, std::memory_order_acquire);
@@ -83,6 +90,7 @@ std::shared_ptr<const Speed::FCompletedSimulationPublication> ASpeedPhysicsSimul
 std::optional<ESimulationBoundaryResult> ASpeedPhysicsSimulation::ServiceExactRemoteRoundBoundary(bool bPauseRequested)
 {
     using EResult = ESimulationBoundaryResult;
+    if (ExactRemoteRoundFence.IsClosed()) return EResult::Failed;
     if (!SimulationWorker || !SimulationWorker->OwnsCurrentInputBoundary()
         || !InputSessionRegistry || !SpeedWorldSubsystem || !bPublishCompletedWorldInput)
         return ActiveExactRemoteRound ? std::optional<EResult>{EResult::Failed} : std::nullopt;
@@ -98,9 +106,8 @@ std::optional<ESimulationBoundaryResult> ASpeedPhysicsSimulation::ServiceExactRe
             return InputSessionRegistry->QueryFrameReadiness(CanonicalNumFrame, RequiredExactRemoteInputSessions)
                 == Speed::Input::V2::EInputFrameReadiness::Ready ? EResult::Ready : EResult::Failed;
         if (CanonicalNumFrame != Round.Inputs->Next + 1) return EResult::Failed;
-        const auto Neutral = ReadCompletedWorldAndInputFrame();
+        const auto Neutral = ReadExactRemoteRoundNeutralStep();
         if (!Neutral || !Speed::ExactRemoteRound::IsExactNeutralStep(Round, *Neutral)) return EResult::Failed;
-        std::atomic_store_explicit(&PublishedRoundNeutralStep, Neutral, std::memory_order_release);
         if (!ExactRemoteRoundProvider->ReleaseGameplay(Round, *Neutral)) return EResult::Waiting;
         ActiveExactRemoteRound.reset();
         return {};
@@ -116,8 +123,8 @@ std::optional<ESimulationBoundaryResult> ASpeedPhysicsSimulation::ServiceExactRe
     try
     {
         auto& World = SpeedWorldSubsystem->SimulationWorld;
-        const Speed::FWorldBorrowGate::FReservation StorageReservation(World.StorageAccess);
-        if (!StorageReservation.Holds(World.StorageAccess))
+        auto StorageReservation = std::make_unique<Speed::FWorldBorrowGate::FReservation>(World.StorageAccess);
+        if (!StorageReservation->Holds(World.StorageAccess))
         {
             Refusal = World.StorageAccess.HasUntrackedReference()
                 ? ERefusal::UntrackedWorldReference : ERefusal::ActiveWorldBorrow;
@@ -146,7 +153,7 @@ std::optional<ESimulationBoundaryResult> ASpeedPhysicsSimulation::ServiceExactRe
             Plan->Lease = std::make_unique<FOriginalRoundRestoreLease>(World, Plan->Envelope->Address,
                 std::move(Plan->Lease), [this, Current, &World, &StorageReservation, &RegistryLock]()
                 {
-                    return StorageReservation.Holds(World.StorageAccess) && RegistryLock.IsLocked()
+                    return StorageReservation->Holds(World.StorageAccess) && RegistryLock.IsLocked()
                         && SpeedWorldSubsystem->PendingOps.IsEmpty() && !SpeedWorldSubsystem->bCanonicalFrameActive
                         && !World.bOrderDirty
                         && SimulationWorker && SimulationWorker->OwnsCurrentInputBoundary()
@@ -157,9 +164,10 @@ std::optional<ESimulationBoundaryResult> ASpeedPhysicsSimulation::ServiceExactRe
                 World, Plan->Envelope->Address, *Plan->Lease);
             if (RetainedRoster && *RetainedRoster == *OriginalRoster)
                 ActiveExactRemoteRound = Speed::ExactRemoteRound::Commit(
-                    World, *InputSessionRegistry, std::move(*Plan), PublishedExactRemoteRound);
+                    World, *InputSessionRegistry, ExactRemoteRoundFence, std::move(*Plan), PublishedExactRemoteRound);
             if (ActiveExactRemoteRound)
             {
+                ExactRemoteRoundStorage = std::move(StorageReservation);
                 PublishedCompletedWorldInput.store({}, std::memory_order_seq_cst);
                 PublishedInputFrame.store({}, std::memory_order_seq_cst);
                 PublishedInputRegistry.store(ActiveExactRemoteRound->Inputs->Registry, std::memory_order_seq_cst);
@@ -170,4 +178,17 @@ std::optional<ESimulationBoundaryResult> ASpeedPhysicsSimulation::ServiceExactRe
     catch (...) {} // fallible preparation has no committed write
     ExactRemoteRoundProvider->OnRejected();
     return {};
+}
+
+ESimulationWorkerResult ASpeedPhysicsSimulation::FinishExactRemoteRoundWork(ESimulationWorkerResult Result)
+{
+    if (!ExactRemoteRoundStorage || Result != ESimulationWorkerResult::Advanced) return Result;
+    auto Neutral = std::move(PendingRoundNeutralStep);
+    if (!ActiveExactRemoteRound || !Neutral || CanonicalNumFrame != ActiveExactRemoteRound->Inputs->Next + 1
+        || !Speed::ExactRemoteRound::IsExactNeutralStep(*ActiveExactRemoteRound, *Neutral))
+        return ESimulationWorkerResult::Failed;
+    std::atomic_store_explicit(&PublishedRoundNeutralStep, std::move(Neutral), std::memory_order_release);
+    ExactRemoteRoundStorage.reset();
+    ExactRemoteRoundFence.FinishPublication();
+    return Result;
 }

@@ -1,10 +1,13 @@
 #include "NativePreparedRoundFields.h"
 
+#include "IAmSpeed/Base/OriginKinematicStateValues.h"
 #include "IAmSpeed/Base/SpeedConstant.h"
 #include "IAmSpeed/Components/SpeedMovementComponent.h"
 #include "IAmSpeed/Components/SpeedWheeledComponent.h"
 #include "IAmSpeed/SubBodies/Sensor/SensorSubBody.h"
 #include "IAmSpeed/World/Simulation/SimulationWorld.h"
+#include "IAmSpeed/World/Simulation/SpeedPhysicsSimulation.h"
+#include "IAmSpeed/World/Subsystem/SpeedWorldSubsystem.h"
 #include "SuspensionSystem.h"
 #include "WheelSystem.h"
 #include <functional>
@@ -68,6 +71,149 @@ bool ValidWheel(const FPreparedNativeRoundFields::FWheelState& Values)
         && Render.SteerRotation.IsNormalized() && !Render.WorldPosition.ContainsNaN()
         && Render.RightAxis.IsNormalized() && Render.UpAxis.IsNormalized() && Render.ForwardAxis.IsNormalized();
 }
+
+bool ValidPose(const SKinematic& Pose)
+{
+    return !Pose.Location.ContainsNaN() && !Pose.Velocity.ContainsNaN() && !Pose.Acceleration.ContainsNaN()
+        && !Pose.AngularVelocity.ContainsNaN() && !Pose.AngularAcceleration.ContainsNaN()
+        && !Pose.Rotation.ContainsNaN() && Pose.Rotation.IsNormalized();
+}
+
+class FSuspensionLengthSample final : public Chaos::FSimpleSuspensionSim
+{
+public:
+    explicit FSuspensionLengthSample(const Chaos::FSimpleSuspensionSim& Source)
+        : Chaos::FSimpleSuspensionSim(Source) {}
+    float LengthCm() const { return DisplacementInput; }
+};
+}
+
+std::optional<FPreparedNativeRoundFields::FCapturedKickoffVehicle> FPreparedNativeRoundFields::CaptureKickoffVehicleGT(
+    const ASpeedPhysicsSimulation& Driver, uint64 ExpectedGeneration, uint64 ExpectedFirstFrame,
+    const USpeedWheeledComponent& Target)
+{
+    if (!IsInGameThread() || !ExpectedGeneration || !Driver.IsOwnedWorkerExecutionMode()
+        || !Driver.OwnedBoundarySuspendDepth || !Driver.SimulationWorker
+        || !Driver.SimulationWorker->IsBoundaryServiceSuspended() || !Driver.SimulationWorker->IsPaused()
+        || !Driver.bOwnedSimulationPaused.Load() || Driver.bOwnedWorkerTerminal.Load()
+        || Driver.bCanonicalPublicationTerminal.Load() || Driver.bInputOwnerRetired.Load()
+        || Driver.InputWorkerGeneration != ExpectedGeneration || !Driver.bCanonicalFrameInitialized
+        || Driver.CanonicalNumFrame != ExpectedFirstFrame || Driver.SnapshotBuffer.PublishedSerial() != 0
+        || !IsValid(&Target) || !Target.IsRegistered() || !Target.GetOwner() || Target.GetWorld() != Driver.GetWorld()
+        || Target.WheelSubBodies.Num() != 4) return {};
+
+    const auto* Subsystem = Driver.SpeedWorldSubsystem;
+    if (!Subsystem || Subsystem->GetWorld() != Driver.GetWorld()) return {};
+
+    std::optional<FCapturedKickoffVehicle> Result;
+    Subsystem->VisitBorrowedSimulationWorld([&](const FSimulationWorld& World)
+    {
+        const uint64 ActorId = Target.GetPublishedSimulationStableId();
+        if (!ActorId || World.bOrderDirty || World.IsRestoreBoundaryReserved()
+            || World.AdaptersByStableId.FindRef(ActorId) != &Target || World.FindStableId(Target) != ActorId)
+            return;
+
+        FCapturedKickoffVehicle Capture;
+        Capture.WorkerGeneration = ExpectedGeneration;
+        Capture.FirstFrame = ExpectedFirstFrame;
+        Capture.ActorStableId = ActorId;
+        Capture.ActorNativeObjectId = Target.GetUniqueID();
+        Capture.CenterOfMass = Target.BasePhysicsState.Kinematic;
+        Capture.LocalCenterOfMass = Target.GetPhysCenterOfMassLocal();
+        Capture.bFrozen = Target.BasePhysicsState.bIsFrozen;
+        Capture.State.Timeline = {Target.SinceCanMoveFrame, Target.BasePhysicsState.nbFramesbeforeCanMove,
+            Target.BasePhysicsState.bStartCountdown, EHistory::Empty};
+        Capture.State.Game = Target.WheeledGameState;
+        Capture.State.Physics = Target.WheeledPhysicsState;
+        Capture.State.PhysicalInput = Target.WheeledPhysicalInput;
+        Capture.State.bSupportStartupRequested = Target.bCanonicalSupportStartupInitializationRequested;
+        Capture.State.bSupportStartupConfirmed = Target.bCanonicalSupportStartupPoseConfirmed;
+        Capture.State.bTimelineWasCanMove = Target.bSimTimelineWasCanMove;
+        Capture.State.bTimelineHasGroundState = Target.bSimTimelineHasGroundState;
+        Capture.State.bTimelineWasGrounded = Target.bSimTimelineWasGrounded;
+        if (!Capture.ActorNativeObjectId || !ValidPose(Capture.CenterOfMass)
+            || Capture.LocalCenterOfMass.ContainsNaN() || !Capture.State.Physics.LastCarBumpVictim.IsExplicitlyNull())
+            return;
+
+        const auto& Children = Target.GetSubBodies();
+        for (int32 Index = 0; Index < 4; ++Index)
+        {
+            const auto* Wheel = Target.WheelSubBodies[Index].Get();
+            if (!IsValid(Wheel) || Wheel->Idx() != Index || Wheel->GetParentComponent() != &Target
+                || !Children.Contains(Wheel) || !Wheel->IsRegistered() || Wheel->GetWorld() != Target.GetWorld()
+                || Wheel->GetOwner() != Target.GetOwner() || !Wheel->PSuspension || !Wheel->PWheel || !Wheel->ChaosWheel)
+                return;
+            const uint64 StableId = World.StableSubBodyIds.FindRef(Wheel);
+            const uint32 NativeId = Wheel->GetUniqueID();
+            if (!StableId || !NativeId || World.SubBodyNativeObjectIds.FindRef(StableId) != NativeId
+                || World.SubBodiesByStableId.FindRef(StableId) != Wheel
+                || World.SolidSubBodiesByStableId.FindRef(StableId) != Wheel) return;
+
+            auto& Out = Capture.Wheels[Index];
+            Out.Binding = {StableId, ActorId, NativeId, true};
+            Out.Pose = Wheel->GetKinematicState();
+            Out.LocalOffset = Wheel->GetLocalOffset();
+            Out.LocalRotation = Wheel->GetLocalRotation();
+            Out.MaxSuspensionLengthCm = Wheel->MaxLength();
+            Out.SuspensionRestRaiseCm = Wheel->SuspensionRestLength();
+            // GetSpringLength changes the smoothing history. Copy the native
+            // unsmoothed input instead of advancing that history on the live car.
+            Out.State = {FSuspensionLengthSample(*Wheel->PSuspension).LengthCm(), Wheel->GetLastDisplacement(),
+                Wheel->Omega, Wheel->RollAngle, Wheel->SteeringAngle, Wheel->bIsJumping,
+                Wheel->bJumpUnilateralSupport, Wheel->RenderData};
+            if (!ValidPose(Out.Pose) || !ValidWheel(Out.State)) return;
+        }
+        Result = std::move(Capture);
+    });
+    return Result;
+}
+
+std::optional<FPreparedNativeRoundFields::FContactFreeKickoff> FPreparedNativeRoundFields::ProjectContactFreeKickoff(
+    const FCapturedKickoffVehicle& Captured, const SKinematic& Target, bool bRequestStartupSupport)
+{
+    if (!Captured.WorkerGeneration || !Captured.ActorStableId || !Captured.ActorNativeObjectId
+        || Captured.LocalCenterOfMass.ContainsNaN() || !ValidPose(Target)
+        || !Target.Velocity.IsZero() || !Target.Acceleration.IsZero()
+        || !Target.AngularVelocity.IsZero() || !Target.AngularAcceleration.IsZero()) return {};
+
+    FContactFreeKickoff Result;
+    auto& Vehicle = Result.Vehicle;
+    Vehicle.Timeline = Captured.State.Timeline;
+    Vehicle.Physics.nbFramesbeforeCanMove = Captured.State.Physics.nbFramesbeforeCanMove;
+    Vehicle.Physics.bStartCountdown = Captured.State.Physics.bStartCountdown;
+    Vehicle.bSupportStartupRequested = bRequestStartupSupport;
+    const auto Origin = CalculateOriginKinematicStateValues(Target, Captured.LocalCenterOfMass);
+    for (std::size_t Index = 0; Index < Result.Wheels.size(); ++Index)
+    {
+        const auto& Seed = Captured.Wheels[Index];
+        auto& Wheel = Result.Wheels[Index];
+        if (Seed.Binding.ActorStableId != Captured.ActorStableId || !Seed.Binding.StableId || !Seed.Binding.NativeObjectId
+            || !Seed.Binding.IsSolidEndpoint || Seed.LocalOffset.ContainsNaN() || Seed.LocalRotation.ContainsNaN()
+            || !Seed.LocalRotation.IsNormalized() || !FMath::IsFinite(Seed.MaxSuspensionLengthCm)
+            || Seed.MaxSuspensionLengthCm <= 0.0f || !FMath::IsFinite(Seed.SuspensionRestRaiseCm)
+            || Seed.SuspensionRestRaiseCm < 0.0f || !FMath::IsFinite(Seed.State.RollAngle)) return {};
+        for (std::size_t Prior = 0; Prior < Index; ++Prior)
+            if (Result.Wheels[Prior].Binding.StableId == Seed.Binding.StableId
+                || Result.Wheels[Prior].Binding.NativeObjectId == Seed.Binding.NativeObjectId) return {};
+
+        Wheel.Binding = Seed.Binding;
+        Wheel.Pose.Location = Origin.Location + Origin.Rotation.RotateVector(Seed.LocalOffset);
+        Wheel.Pose.Rotation = Origin.Rotation * Seed.LocalRotation;
+        // Full extension is the no-contact default. The old slot's compression,
+        // hit and velocity are not support samples for the target slot.
+        Wheel.State.SuspensionLengthCm = Seed.MaxSuspensionLengthCm;
+        Wheel.State.RollAngle = Seed.State.RollAngle;
+        auto& Render = Wheel.State.Render;
+        Render.WorldPosition = Wheel.Pose.Location;
+        Render.UpAxis = Origin.Rotation.GetUpVector();
+        Render.ForwardAxis = Origin.Rotation.GetForwardVector().GetSafeNormal();
+        Render.RightAxis = FVector::CrossProduct(Render.UpAxis, Render.ForwardAxis).GetSafeNormal();
+        Render.RollRotation = FQuat(Render.RightAxis, Wheel.State.RollAngle);
+        Render.SpringOffset = Seed.SuspensionRestRaiseCm + Wheel.State.SuspensionLengthCm;
+        Vehicle.Game.WheelsAngularPosition[Index] = Wheel.State.RollAngle;
+        if (!ValidPose(Wheel.Pose) || !ValidWheel(Wheel.State)) return {};
+    }
+    return ValidVehicle(Vehicle) ? std::optional<FContactFreeKickoff>{std::move(Result)} : std::nullopt;
 }
 
 struct FPreparedNativeRoundFields::FPlan
@@ -380,3 +526,68 @@ void FPreparedNativeRoundFields::ReleaseAfterPublication() noexcept
     Plan->Phase = FPlan::EPhase::Released;
 }
 }
+
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+#include "Misc/AutomationTest.h"
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FIAmSpeedContactFreeKickoffValuesTest,
+    "IAmSpeed.Netcode.RoundReset.ContactFreeKickoffValues",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FIAmSpeedContactFreeKickoffValuesTest::RunTest(const FString&)
+{
+    using FRound = Speed::FPreparedNativeRoundFields;
+    FRound::FCapturedKickoffVehicle Seed;
+    Seed.WorkerGeneration = 2;
+    Seed.ActorStableId = 3;
+    Seed.ActorNativeObjectId = 9;
+    Seed.LocalCenterOfMass = FVector(10, 0, 0);
+    Seed.State.Game.bGroundState = true;
+    Seed.State.Game.NbWheelsOnGround = 4;
+    Seed.State.bSupportStartupConfirmed = true;
+    Seed.State.PhysicalInput.Throttle = 100;
+    for (uint32 Index = 0; Index < Seed.Wheels.size(); ++Index)
+    {
+        auto& Wheel = Seed.Wheels[Index];
+        Wheel.Binding = {100 + Index, 3, 10 + Index, true};
+        Wheel.LocalOffset = FVector(40, 20 * Index, 10);
+        Wheel.LocalRotation = FQuat::Identity;
+        Wheel.MaxSuspensionLengthCm = 30;
+        Wheel.SuspensionRestRaiseCm = 8;
+        Wheel.State.LastDisplacementCm = 14;
+        Wheel.State.RollAngle = 0.25f;
+        Wheel.State.AngularVelocity = 12;
+        Wheel.State.SteeringAngle = 0.4f;
+        Wheel.State.JumpFrames = 2;
+    }
+
+    SKinematic Target;
+    Target.Location = FVector(50, 100, 200);
+    Target.Rotation = FQuat(FVector::UpVector, UE_DOUBLE_PI / 2);
+    const auto Result = FRound::ProjectContactFreeKickoff(Seed, Target, true);
+    if (!TestTrue(TEXT("Stationary target projects"), Result.has_value())) return false;
+    TestTrue(TEXT("Support is requested but not confirmed"), Result->Vehicle.bSupportStartupRequested
+        && !Result->Vehicle.bSupportStartupConfirmed && !Result->Vehicle.Game.bGroundState
+        && Result->Vehicle.Game.NbWheelsOnGround == 0);
+    TestTrue(TEXT("Controls are neutral"), Result->Vehicle.PhysicalInput.Throttle == 0
+        && !Result->Vehicle.PhysicalInput.bCanMove);
+    for (uint32 Index = 0; Index < Seed.Wheels.size(); ++Index)
+    {
+        const auto& Wheel = Result->Wheels[Index];
+        TestTrue(TEXT("Target COM-to-origin transform and wheel order"),
+            Wheel.Binding == Seed.Wheels[Index].Binding
+            && Wheel.Pose.Location.Equals(FVector(50.0 - 20.0 * Index, 130, 210))
+            && Wheel.State.Render.WorldPosition.Equals(Wheel.Pose.Location));
+        TestTrue(TEXT("Cold extension and no previous contact-derived displacement"),
+            Wheel.State.SuspensionLengthCm == 30 && Wheel.State.LastDisplacementCm == 0
+            && Result->Vehicle.Physics.SuspensionLastDisplacement[Index] == 0
+            && Wheel.State.AngularVelocity == 0 && Wheel.State.SteeringAngle == 0 && Wheel.State.JumpFrames == 0);
+    }
+    Target.Velocity = FVector::ForwardVector;
+    TestFalse(TEXT("Moving target rejected"), FRound::ProjectContactFreeKickoff(Seed, Target, false).has_value());
+    Target.Velocity = FVector::ZeroVector;
+    Seed.Wheels[1].Binding = Seed.Wheels[0].Binding;
+    TestFalse(TEXT("Duplicate wheel rejected"), FRound::ProjectContactFreeKickoff(Seed, Target, false).has_value());
+    return true;
+}
+#endif
