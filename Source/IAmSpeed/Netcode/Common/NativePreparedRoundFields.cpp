@@ -337,6 +337,22 @@ struct FPreparedNativeRoundFields::FPlan
         PreparedWorld::FEndpointBinding Binding;
         std::array<FArrayBacking, 8> Backings;
     };
+    struct FWheelBinding
+    {
+        const USpeedWheeledComponent* Actor;
+        const USWheelSubBody* Body;
+        PreparedWorld::FEndpointBinding Endpoint;
+        const USpeedSimulation* Simulation;
+        const Chaos::FSimpleWheeledVehicle* Vehicle;
+        int32 Ordinal;
+        Chaos::FSimpleWheelSim* Wheel;
+        Chaos::FSimpleSuspensionSim* Suspension;
+        TWeakObjectPtr<UChaosVehicleWheel> Configuration;
+        const Chaos::FSimpleWheelConfig* WheelSetup;
+        const Chaos::FSimpleSuspensionConfig* SuspensionSetup;
+        std::array<FArrayBacking, 5> Backings;
+        bool operator==(const FWheelBinding&) const = default;
+    };
 
     const FSimulationWorld* const World;
     const PreparedWorld::FAddress Address;
@@ -346,6 +362,7 @@ struct FPreparedNativeRoundFields::FPlan
     std::vector<FExchange> Exchanges;
     std::optional<FKeptSensorOverlaps> KeptSensor;
     std::optional<FColdHitbox> ColdHitbox;
+    std::optional<FWheelBinding> RetainedWheel;
 
     FPlan(const FSimulationWorld& InWorld, const FSimulationComponentRestoreRequest& Request)
         : World(&InWorld), Address(Request.Address), Lease(Request.OwnerLease)
@@ -494,6 +511,81 @@ struct FPreparedNativeRoundFields::FPlan
     static FArrayBacking ReadBacking(const TArray<T>& Array)
     {
         return {Array.GetData(), Array.GetAllocatedSize(), Array.Num(), Array.Max()};
+    }
+
+    std::optional<FWheelBinding> ReadWheelBinding(const USpeedWheeledComponent* Actor, const USWheelSubBody* Body,
+        const PreparedWorld::FEndpointBinding& Endpoint) const noexcept
+    {
+        const FExactRoundNativeOrigin Origin{Address.Authority, Address.WorldIncarnation, Address.TopologyVersion};
+        const auto Slot = static_cast<uint16>(Endpoint.StableId & MAX_uint16);
+        if (!Actor || !Body || !Slot || !Endpoint.ActorIncarnation || !Origin.Valid()
+            || !(World->ReadExactRoundOrigin() == Origin) || !World->StorageAccess.IsReservationOwner()
+            || World->AdaptersByStableId.FindRef(Endpoint.Actor) != Actor
+            || World->SolidSubBodiesByStableId.FindRef(Endpoint.StableId) != Body
+            || !IsValid(Actor) || !IsValid(Body)
+            || !MatchesNativeSubBodySlot(*Body, Endpoint.StableId, Endpoint.NativeObjectId, Endpoint.Incarnation))
+            return {};
+
+        const auto Ordinal = Body->Idx();
+        const auto& Children = Actor->USpeedWheeledComponent::GetSubBodies();
+        const auto* Simulation = Actor->SkySimulation;
+        if (!Simulation || Actor->VehicleSimulationPT.Get() != Simulation
+            || !Children.IsValidIndex(Slot) || Children[Slot] != Body
+            || !Actor->WheelSubBodies.IsValidIndex(Ordinal) || Actor->WheelSubBodies[Ordinal].Get() != Body
+            || !Actor->Wheels.IsValidIndex(Ordinal)) return {};
+
+        const auto* Vehicle = Simulation->PVehicle.Get();
+        if (!Vehicle || !Vehicle->Wheels.IsValidIndex(Ordinal) || !Vehicle->Suspension.IsValidIndex(Ordinal))
+            return {};
+        auto* Configuration = Actor->Wheels[Ordinal].Get();
+        auto* Wheel = Body->PWheel;
+        auto* Suspension = Body->PSuspension;
+        if (!IsValid(Configuration) || Body->ChaosWheel != Configuration
+            || Wheel != &Vehicle->Wheels[Ordinal] || Suspension != &Vehicle->Suspension[Ordinal]
+            || !Wheel->SetupPtr || !Suspension->SetupPtr) return {};
+
+        return FWheelBinding{Actor, Body, Endpoint, Simulation, Vehicle, Ordinal, Wheel, Suspension,
+            TWeakObjectPtr<UChaosVehicleWheel>(Configuration), Wheel->SetupPtr, Suspension->SetupPtr,
+            {ReadBacking(Children), ReadBacking(Actor->WheelSubBodies), ReadBacking(Actor->Wheels),
+                ReadBacking(Vehicle->Wheels), ReadBacking(Vehicle->Suspension)}};
+    }
+
+    // IAS teardown retires the worker before replacing this storage. The host
+    // hold must also retain it and exclude direct Chaos writers such as SetWheelClass.
+    bool ValidateRetainedWheel() const noexcept
+    {
+        if (!RetainedWheel) return true;
+        const auto& Saved = *RetainedWheel;
+        const auto Current = ReadWheelBinding(Saved.Actor, Saved.Body, Saved.Endpoint);
+        return Current && *Current == Saved;
+    }
+
+    void DeclareWheelBindingReads()
+    {
+        const auto& Saved = *RetainedWheel;
+        const auto& Actor = *Saved.Actor;
+        const auto& Body = *Saved.Body;
+        const auto& Children = Actor.USpeedWheeledComponent::GetSubBodies();
+        const auto Slot = static_cast<uint16>(Saved.Endpoint.StableId & MAX_uint16);
+        const auto Read = [this](const auto& Value)
+        {
+            Access.ReadOnly.push_back(Range(&Value, sizeof(Value)));
+        };
+        Read(Saved);
+        Read(Actor.VehicleSimulationPT);
+        Read(Actor.SkySimulation);
+        Read(Saved.Simulation->PVehicle);
+        Read(Saved.Vehicle->Wheels);
+        Read(Saved.Vehicle->Suspension);
+        Read(Children);
+        Read(Children[Slot]);
+        Read(Actor.WheelSubBodies);
+        Read(Actor.WheelSubBodies[Saved.Ordinal]);
+        Read(Actor.Wheels);
+        Read(Actor.Wheels[Saved.Ordinal]);
+        Read(Body.PWheel);
+        Read(Body.PSuspension);
+        Read(Body.ChaosWheel);
     }
 
     static std::array<FArrayBacking, 8> ReadHitboxBackings(const UBoxSubBody& Box)
@@ -745,11 +837,20 @@ std::unique_ptr<FPreparedNativeRoundFields> FPreparedNativeRoundFields::PrepareW
     const FSimulationComponentRestoreRequest& Request, const PreparedWorld::FEndpointBinding& Endpoint, const FWheelState& Values)
 {
     const auto* World = Request.OwnerLease.ResolvePreparingWorld(Request, Request.Address);
-    if (!World || !FPreparedNativeKinematicFields::MatchesSolid(*World, Request, Target, Endpoint)
-        || !Target.PWheel || !Target.PSuspension || Target.Idx() < 0 || !ValidWheel(Values)) return {};
+    if (!World || !FPreparedNativeKinematicFields::MatchesSolid(*World, Request, Target, Endpoint) || !ValidWheel(Values))
+        return {};
+    auto* Parent = Target.GetParentComponent();
+    const auto* Actor = Parent->AsWheeledPhysicsComponent();
+    if (static_cast<const ISpeedComponent*>(Actor) != Parent) return {};
 
-    auto& LiveSuspension = *Target.PSuspension;
-    auto& LiveWheel = *Target.PWheel;
+    auto Fragment = std::unique_ptr<FPreparedNativeRoundFields>(new FPreparedNativeRoundFields(*World, Request));
+    auto& P = *Fragment->Plan;
+    P.RetainedWheel = P.ReadWheelBinding(Actor, &Target, Endpoint);
+    if (!P.RetainedWheel) return {};
+    P.DeclareWheelBindingReads();
+
+    auto& LiveSuspension = *P.RetainedWheel->Suspension;
+    auto& LiveWheel = *P.RetainedWheel->Wheel;
     const float Radius = LiveWheel.GetEffectiveRadius();
     const float TraceLength = Values.SuspensionLengthCm + LiveSuspension.Setup().RaycastSafetyMargin + Radius;
     const float SteeringDegrees = FMath::RadiansToDegrees(Values.SteeringAngle);
@@ -758,7 +859,7 @@ std::unique_ptr<FPreparedNativeRoundFields> FPreparedNativeRoundFields::PrepareW
 
     Chaos::FSimpleSuspensionSim Suspension(&LiveSuspension.Setup());
     Suspension.SetLocalRestingPosition(LiveSuspension.GetLocalRestingPosition());
-    Suspension.SetSpringIndex(static_cast<uint32>(Target.Idx()));
+    Suspension.SetSpringIndex(static_cast<uint32>(P.RetainedWheel->Ordinal));
     Suspension.SetSuspensionLength(TraceLength, Radius);
     Suspension.SetLastDisplacement(Values.LastDisplacementCm);
     Suspension.SetLastSpringLength(-Values.SuspensionLengthCm);
@@ -788,9 +889,7 @@ std::unique_ptr<FPreparedNativeRoundFields> FPreparedNativeRoundFields::PrepareW
     Wheel.bClipping = false;
     Wheel.bABSActivated = false;
 
-    auto Fragment = std::unique_ptr<FPreparedNativeRoundFields>(new FPreparedNativeRoundFields(*World, Request));
     Fragment->StageClearContacts(Target);
-    auto& P = *Fragment->Plan;
     P.Stage(LiveSuspension, std::move(Suspension));
     P.Stage(LiveWheel, std::move(Wheel));
     P.Stage(Target.SuspensionForce, 0.0f);
@@ -924,7 +1023,7 @@ FPreparedNativeRoundFields::~FPreparedNativeRoundFields() noexcept
 bool FPreparedNativeRoundFields::AppendPreparedAccess(std::vector<PreparedAccess::FParticipantAccess>& Out) const
 {
     if ((Plan->Phase != FPlan::EPhase::Prepared && Plan->Phase != FPlan::EPhase::Ready) || !Plan->HoldsBoundary()
-        || !Plan->ValidateKeptSensor() || !Plan->ValidateColdHitbox()) return false;
+        || !Plan->ValidateKeptSensor() || !Plan->ValidateColdHitbox() || !Plan->ValidateRetainedWheel()) return false;
     auto Declaration = Plan->Access;
     Declaration.ReadOnly.push_back(Range(&Plan, sizeof(Plan)));
     Plan->DeclareExchangeReads(Declaration);
@@ -935,7 +1034,7 @@ bool FPreparedNativeRoundFields::AppendPreparedAccess(std::vector<PreparedAccess
 bool FPreparedNativeRoundFields::PrepareFinalization() noexcept
 {
     if ((Plan->Phase != FPlan::EPhase::Prepared && Plan->Phase != FPlan::EPhase::Ready) || !Plan->HoldsBoundary()
-        || !Plan->ValidateKeptSensor() || !Plan->ValidateColdHitbox()) return false;
+        || !Plan->ValidateKeptSensor() || !Plan->ValidateColdHitbox() || !Plan->ValidateRetainedWheel()) return false;
     Plan->Phase = FPlan::EPhase::Ready;
     return true;
 }
