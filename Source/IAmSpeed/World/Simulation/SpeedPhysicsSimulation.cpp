@@ -1727,6 +1727,8 @@ bool ASpeedPhysicsSimulation::StepCanonicalFrame(const FCanonicalFrameContext& C
     }
     const Speed::FScopedExactRoundContactSettings RoundContactScope(
         RoundContactSettings ? &*RoundContactSettings : nullptr);
+    if (RoundContactSettings && !ExactRemoteRoundStorage)
+        SpeedWorldSubsystem->SimulationWorld.PrepareExactRoundTensorGeometryWitness(RoundContactSettings->StaticCollision);
     const auto ReadStaticRoute = [&]() -> std::optional<Speed::FExactRoundStaticRouteWitness>
     {
         if (!RoundContactSettings) return {};

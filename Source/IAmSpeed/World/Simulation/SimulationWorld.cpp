@@ -249,6 +249,17 @@ namespace Speed
         return false;
     }
 
+    void FSimulationWorld::PrepareExactRoundTensorGeometryWitness(const FExactRoundStaticCollisionSettings& Settings)
+    {
+        const auto Access = BorrowStorage();
+        if (!Access || StorageAccess.IsReservationOwner()) return;
+        const auto Route = CaptureExactRoundStaticRoute(Settings);
+        if (!Route || Route->ProviderGeneration == TensorGeometryWitnessGeneration) return;
+
+        TensorGeometryWitness = StaticCollisionWorld->BuildExactRoundTensorGeometryWitness();
+        TensorGeometryWitnessGeneration = Route->ProviderGeneration;
+    }
+
     std::optional<FExactRoundStaticRouteWitness> FSimulationWorld::CaptureExactRoundStaticRoute(
         const FExactRoundStaticCollisionSettings& Settings) const
     {
@@ -262,7 +273,8 @@ namespace Speed
             Provider->GetBackend() != Backend || !Provider->IsReadyForPhysicsStep()) return {};
         const auto Identity = Provider->GetImmutableQueryIdentity1075();
         if (!Identity.IsValid()) return {};
-        return FExactRoundStaticRouteWitness{Backend, Identity.Generation};
+        return FExactRoundStaticRouteWitness{Backend, Identity.Generation,
+            TensorGeometryWitnessGeneration == Identity.Generation ? TensorGeometryWitness : std::nullopt};
     }
 
     void FSimulationWorld::AdvanceExactRoundTopology() noexcept

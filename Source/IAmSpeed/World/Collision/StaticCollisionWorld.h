@@ -41,6 +41,9 @@ public:
     virtual bool SweepPrefetchBatch1075(TConstArrayView<Analytic::FWorldQuery>,
         TArrayView<Analytic::FWorldHit>, FIndependentQueryBatchStats* = nullptr) const { return false; }
     virtual FImmutableStaticQueryIdentity1075 GetImmutableQueryIdentity1075() const { return {}; }
+    // Called only during exact worker preparation, outside the round reservation.
+    virtual std::optional<FExactRoundTensorGeometryWitness> BuildExactRoundTensorGeometryWitness() const noexcept
+    { return {}; }
 #if WITH_EDITOR && !UE_BUILD_SHIPPING
     virtual const FOrdinaryC2DiagnosticScene* TryReadOrdinaryC2DiagnosticScene(
         const Analytic::FBoundedPlane*& Landscape) const { Landscape=nullptr;return nullptr; }
@@ -127,6 +130,7 @@ public:
     Analytic::EAnalyticNumericContract GetNumericContract() const override { return WorldData.NumericContract; }
     FImmutableStaticQueryIdentity1075 GetImmutableQueryIdentity1075() const override
     { return {&WorldData, &QueryService, ImmutableQueryGeneration1075}; }
+    std::optional<FExactRoundTensorGeometryWitness> BuildExactRoundTensorGeometryWitness() const noexcept override;
     int32 GetMinimumIndependentQueryItems() const override { return MinimumIndependentQueryItems; }
     Analytic::FFacetParallelTotals GetFacetParallelTotals() const override
     {

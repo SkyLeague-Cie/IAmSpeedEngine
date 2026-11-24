@@ -266,8 +266,13 @@ namespace Speed
         FWorldBorrowGate StorageAccess;
         bool RetireExactRoundStorageAfterJoin();
         bool BindExactRoundIdentity(uint64 WorkerGeneration);
+        void PrepareExactRoundTensorGeometryWitness(const FExactRoundStaticCollisionSettings&);
         std::optional<FExactRoundStaticRouteWitness> CaptureExactRoundStaticRoute(
             const FExactRoundStaticCollisionSettings&) const;
+        // Written only by the original publisher before reservation. A failed
+        // attestation is cached for this immutable query generation as well.
+        uint64 TensorGeometryWitnessGeneration = 0;
+        std::optional<FExactRoundTensorGeometryWitness> TensorGeometryWitness;
         FExactRoundNativeOrigin ReadExactRoundOrigin() const noexcept
         { return {ExactRoundWorkerGeneration, ExactRoundWorldIncarnation, ExactRoundTopology.load(std::memory_order_acquire)}; }
         void AdvanceExactRoundTopology() noexcept;
