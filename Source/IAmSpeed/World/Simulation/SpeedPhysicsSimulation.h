@@ -6,6 +6,7 @@
 #include "IAmSpeed/Concurrency/AtomicSharedPtr.h"
 #include "GameFramework/Actor.h"
 #include "CanonicalFrameDriver.h"
+#include "ExactNeutralDispatch.h"
 #include "ExactRemoteRoundFence.h"
 #include "WorldBorrowGate.h"
 #include "SimulationFrameJournal.h"
@@ -41,6 +42,7 @@ namespace PreparationPrefix { class FClosedSourceProducer; }
 class USpeedWorldSubsystem;
 struct FCanonicalFrameContext;
 class ISpeedComponent;
+class USubBody;
 
 struct FSimulationPresentationBinding
 {
@@ -195,6 +197,11 @@ public:
     bool JoinExactRemoteRoundBeforeStorageTeardown(uint64 ExpectedWorkerGeneration);
     std::shared_ptr<const Speed::FExactRemoteRoundCommit> ReadExactRemoteRoundCommit() const;
     std::shared_ptr<const Speed::FCompletedSimulationPublication> ReadExactRemoteRoundNeutralStep() const;
+    // Query at the synchronous callback with its zero-based canonical frame.
+    // Provide exactly one producer, the actor or the actual overlap sensor.
+    bool IsCurrentExactNeutralDispatch(const Speed::FWorldBorrowGate& HostGate,
+        uint64 WorkerGeneration, uint64 Frame, Speed::EExactNeutralDispatch Kind,
+        const ISpeedComponent* Actor, const USubBody* Sensor = nullptr) const noexcept;
     Speed::Input::V2::ECommandAdmission SubmitRequestedNetworkInputSession(
         const Speed::Input::V2::FBoundaryCommandDescriptor& Command,
         std::shared_ptr<Speed::Netcode::FNetworkRequestedInputService> Service);
@@ -436,6 +443,7 @@ private:
 	std::optional<ESimulationBoundaryResult> ServiceExactRemoteRoundBoundary(bool bPauseRequested);
 	ESimulationWorkerResult FinishExactRemoteRoundWork(ESimulationWorkerResult);
 	bool HasActiveExactRoundHostProtection() const noexcept;
+    const Speed::FExactRoundHostHold* ReadExactNeutralDispatchHold(uint64 Frame, bool bResimulation) const noexcept;
 	std::shared_ptr<Speed::IExactRemoteRoundProvider> ExactRemoteRoundProvider;
 	Speed::FExactRemoteRoundFence ExactRemoteRoundFence;
 	std::unique_ptr<Speed::FWorldBorrowGate::FReservation> ExactRemoteRoundStorage; // original worker only

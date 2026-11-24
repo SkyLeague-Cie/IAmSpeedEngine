@@ -2,6 +2,7 @@
 
 
 #include "SensorSubBody.h"
+#include "IAmSpeed/World/Simulation/ExactNeutralDispatch.h"
 #include "Engine/OverlapResult.h"
 
 USensorSubBody::USensorSubBody(const FObjectInitializer& ObjectInitializer) :
@@ -56,6 +57,8 @@ void USensorSubBody::ResolveCurrentHitPrv(const float& Delta, const float& SimTi
     OverlapsOrdered.Add(Other);
     OverlapsSet.Add(Other);
 
+    const Speed::ExactNeutralDispatchDetail::FCallbackScope Dispatch(Speed::EExactNeutralDispatch::SensorBeginOverlap,
+        static_cast<const USSubBody*>(this));
     OnBeginOverlap.Broadcast(this, Other);
 }
 

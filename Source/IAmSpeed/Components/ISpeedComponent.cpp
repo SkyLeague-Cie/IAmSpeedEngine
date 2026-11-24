@@ -9,6 +9,7 @@
 #include "IAmSpeed/World/Analytic/AnalyticWorldData.h"
 #include "Misc/ScopeExit.h"
 #include "IAmSpeed/World/Simulation/CcdPoseAudit.h"
+#include "IAmSpeed/World/Simulation/ExactNeutralDispatch.h"
 #include "IAmSpeed/World/Analytic/AnalyticNumericContext.h"
 #include <cmath>
 
@@ -700,7 +701,10 @@ void ISpeedComponent::PostPhysicsUpdate(const float& delta)
         }
 	}
 
-    PostPhysicsUpdatePrv(delta);
+    {
+        const Speed::ExactNeutralDispatchDetail::FCallbackScope Dispatch(Speed::EExactNeutralDispatch::ActorPostPhysics, this);
+        PostPhysicsUpdatePrv(delta);
+    }
 	SleepState.ObserveCompletedPose(GetKinematicState());
 }
 

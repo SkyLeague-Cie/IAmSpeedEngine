@@ -2729,7 +2729,12 @@ void USpeedWorldSubsystem::PrepareCanonicalFrame(
                 Speed::PreparationPrefix::FEffectScope effect(Speed::PreparationPrefix::EEffect::PrepareOwner,Component,int32(bPrescribed));
                 Speed::PreparedExecution::FOrdinaryOwnerProbePhaseScope probes(
                     Speed::PreparedExecution::ENativeOwnerProbePhase::Prepare,*Component,Context.PhysicalDeltaTime);
-                if(!Speed::PreparedExecution::FCanonicalFramePreflight::DispatchNativePrepare(*Component,Context))Component->PrepareCanonicalFrame(Context);
+                if (!Speed::PreparedExecution::FCanonicalFramePreflight::DispatchNativePrepare(*Component, Context))
+                {
+                    const Speed::ExactNeutralDispatchDetail::FSelectionScope Dispatch(*this, Context.NumFrame,
+                        Speed::EExactNeutralDispatch::ActorPreGameplay, Component);
+                    Component->PrepareCanonicalFrame(Context);
+                }
                 probes.Returned();effect.Returned();
             }
 		}
@@ -3581,7 +3586,12 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
                 Frame, TimePassed, *Resolver, Hit.Hit);
 #endif
             PhysicalStep.BeginOrdinaryResponseCall(2);
-            if(!PhysicalStep.DispatchNativeResponse(2,*Resolver,Hit.Hit,SubDelta,SimTime))Resolver->ResolveCurrentHit(SubDelta, SimTime);
+            if (!PhysicalStep.DispatchNativeResponse(2, *Resolver, Hit.Hit, SubDelta, SimTime))
+            {
+                const Speed::ExactNeutralDispatchDetail::FSelectionScope Dispatch(*this, Frame,
+                    Speed::EExactNeutralDispatch::SensorBeginOverlap, Resolver);
+                Resolver->ResolveCurrentHit(SubDelta, SimTime);
+            }
             PhysicalStep.EndOrdinaryResponseCall(2);
 #if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
             Speed::CollisionMatrix042::FObserver::After(MatrixResolution042);
@@ -3718,7 +3728,12 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
         {
             Speed::PreparedExecution::FOrdinaryOwnerProbePhaseScope probes(
                 Speed::PreparedExecution::ENativeOwnerProbePhase::FinalPost,*Comp,Dt);
-            if(!PhysicalStep.DispatchNativeFinalOwner(*Comp,Dt,true))Comp->PostPhysicsUpdate(Dt);
+            if (!PhysicalStep.DispatchNativeFinalOwner(*Comp, Dt, true))
+            {
+                const Speed::ExactNeutralDispatchDetail::FSelectionScope Dispatch(*this, Frame,
+                    Speed::EExactNeutralDispatch::ActorPostPhysics, Comp);
+                Comp->PostPhysicsUpdate(Dt);
+            }
             probes.Returned();
         }
 #if !UE_BUILD_SHIPPING

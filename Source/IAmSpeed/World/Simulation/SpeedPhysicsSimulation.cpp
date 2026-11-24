@@ -1962,6 +1962,8 @@ bool ASpeedPhysicsSimulation::StepCanonicalFrame(const FCanonicalFrameContext& C
 		ExceptionStage = TEXT("WorldPrepare");
         {
             Speed::PreparationPrefix::FEffectScope effect(Speed::PreparationPrefix::EEffect::PrepareWorld);
+            const Speed::ExactNeutralDispatchDetail::FFrameScope Dispatch(*this, *SpeedWorldSubsystem,
+                ReadExactNeutralDispatchHold(Context.NumFrame, resimulation), InputWorkerGeneration, Context.NumFrame, true);
 #if !UE_BUILD_SHIPPING
         {
             Speed::FCanonicalEpisodeTestingScope PrepareOwnerScope(Context);
@@ -2023,10 +2025,12 @@ bool ASpeedPhysicsSimulation::StepCanonicalFrame(const FCanonicalFrameContext& C
     const uint64 OwnedDiagnosticSerialBefore = OwnedPhases.CapturesPhysicalDetail()
         ? SpeedWorldSubsystem->GetLastStepDiagnostics().Serial : 0;
 #endif
-		SpeedWorldSubsystem->Step(
-			Context.PhysicalDeltaTime,
-			Context.SimTime,
-			static_cast<unsigned int>(Context.NumFrame));
+        {
+            const Speed::ExactNeutralDispatchDetail::FFrameScope Dispatch(*this, *SpeedWorldSubsystem,
+                ReadExactNeutralDispatchHold(Context.NumFrame, resimulation), InputWorkerGeneration, Context.NumFrame, false);
+            SpeedWorldSubsystem->Step(Context.PhysicalDeltaTime, Context.SimTime,
+                static_cast<unsigned int>(Context.NumFrame));
+        }
 #if WITH_DEV_AUTOMATION_TESTS
     OwnedPhases.Mark(Speed::OwnedFrameAudit::ECanonicalEdge::WorldStep);
     if (OwnedPhases.CapturesPhysicalDetail())

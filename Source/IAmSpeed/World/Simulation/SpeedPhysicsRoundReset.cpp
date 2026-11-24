@@ -1,5 +1,6 @@
 #include "SpeedPhysicsSimulation.h"
 #include "ExactRemoteRoundReset.h"
+#include "OnePausedCanonicalWork.h"
 #include "IAmSpeed/World/Subsystem/SpeedWorldSubsystem.h"
 #include "Misc/ScopeExit.h"
 #include "Misc/ScopeTryLock.h"
@@ -14,6 +15,8 @@ public:
         : Protection(std::move(InProtection)), Views(Protection->DirectStorageAccess()), Exclusion(Views), Native(InNative) {}
 
     bool ExcludesViews() const noexcept { return Exclusion.Holds(Views); }
+    bool Excludes(const FWorldBorrowGate& Gate) const noexcept { return &Gate == &Views && Exclusion.Holds(Gate); }
+    bool HoldsAddress(const FExactRoundNativeAddress& Address) const noexcept { return Native == Address; }
     bool HadUntrackedView() const noexcept { return Views.HasUntrackedReference(); }
     bool Protects() const noexcept
     {
@@ -38,6 +41,13 @@ private:
     const FWorldBorrowGate::FExclusion Exclusion;
     const FExactRoundNativeAddress Native;
 };
+}
+
+namespace Speed::ExactNeutralDispatchDetail
+{
+thread_local const FFrameScope* FFrameScope::Current = nullptr;
+thread_local const FSelectionScope* FSelectionScope::Current = nullptr;
+thread_local const FCallbackScope* FCallbackScope::Current = nullptr;
 }
 
 namespace
@@ -266,6 +276,56 @@ std::optional<ESimulationBoundaryResult> ASpeedPhysicsSimulation::ServiceExactRe
 bool ASpeedPhysicsSimulation::HasActiveExactRoundHostProtection() const noexcept
 {
     return ExactRemoteRoundHostHold && ExactRemoteRoundHostHold->Protects();
+}
+
+const Speed::FExactRoundHostHold* ASpeedPhysicsSimulation::ReadExactNeutralDispatchHold(
+    uint64 Frame, bool bResimulation) const noexcept
+{
+    if (!ExactRemoteRoundStorage || bResimulation || IsInGameThread() || Speed::OnePausedWork::IsActive() || !SimulationWorker
+        || !SimulationWorker->OwnsCurrentCanonicalWork() || !ExactRemoteRoundFence.HoldsPublication()
+        || Frame != CanonicalNumFrame || !SpeedWorldSubsystem || !SpeedWorldSubsystem->bCanonicalFrameActive
+        || !ActiveExactRemoteRound || !ExactRemoteRoundHostHold) return nullptr;
+
+    const auto& World = SpeedWorldSubsystem->SimulationWorld;
+    const auto& Round = *ActiveExactRemoteRound;
+    if (!ExactRemoteRoundStorage->Holds(World.StorageAccess) || !Round.Previous || !Round.Previous->Source()
+        || Round.Previous->Source() != CompletedPublicationSource
+        || Round.Previous->Source()->WorkerGeneration() != InputWorkerGeneration
+        || !Round.Inputs || !Round.Inputs->Registry || Round.Inputs->Registry->WorkerGeneration != InputWorkerGeneration
+        || !Round.Inputs->RoundGeneration || Round.Inputs->Next != Frame
+        || !Round.World || !Round.World->Envelope) return nullptr;
+
+    const auto& Before = Round.Previous->World();
+    const auto& Address = Round.World->Envelope->Address;
+    const auto Native = Speed::FExactRoundNativeAddress::FromCompleted(Round.Previous->ExactRoundOrigin(),
+        Before.NumFrame, Before.InputJournalHash, Before.PublicationSerial);
+    if (!Native || !Address.Valid() || !Native->Matches(Address) || Native->Next != Frame
+        || !(Native->Origin == World.ReadExactRoundOrigin()) || Native->StateVersion != SnapshotBuffer.PublishedSerial()
+        || Address.ResumeGeneration != Round.Inputs->ResumeGeneration
+        || !ExactRemoteRoundHostHold->HoldsAddress(*Native) || !HasActiveExactRoundHostProtection()) return nullptr;
+    return ExactRemoteRoundHostHold.get();
+}
+
+bool ASpeedPhysicsSimulation::IsCurrentExactNeutralDispatch(const Speed::FWorldBorrowGate& HostGate,
+    uint64 WorkerGeneration, uint64 Frame, Speed::EExactNeutralDispatch Kind,
+    const ISpeedComponent* Actor, const USubBody* Sensor) const noexcept
+{
+    using namespace Speed::ExactNeutralDispatchDetail;
+    const auto* Callback = FCallbackScope::Current;
+    if (!Callback || !Callback->bActive || Callback->Selection != FSelectionScope::Current
+        || Callback->Selection->Frame != FFrameScope::Current || IsInGameThread()) return false;
+
+    const bool bSensor = Kind == Speed::EExactNeutralDispatch::SensorBeginOverlap;
+    if ((bSensor && (!Sensor || Actor)) || (!bSensor && (!Actor || Sensor))) return false;
+    const void* Producer = bSensor ? static_cast<const void*>(Sensor) : static_cast<const void*>(Actor);
+    const auto& Selection = *Callback->Selection;
+    const auto& Current = *Selection.Frame;
+    if (&Current.Driver != this || Selection.Kind != Kind || Selection.Producer != Producer
+        || Current.Frame != Frame || Current.Generation != WorkerGeneration) return false;
+    return SimulationWorker && SimulationWorker->OwnsCurrentCanonicalWork()
+        && InputWorkerGeneration == WorkerGeneration && CanonicalNumFrame == Frame
+        && ExactRemoteRoundFence.HoldsPublication() && ExactRemoteRoundHostHold.get() == Current.Hold
+        && Current.Hold->Excludes(HostGate);
 }
 
 ESimulationWorkerResult ASpeedPhysicsSimulation::FinishExactRemoteRoundWork(ESimulationWorkerResult Result)

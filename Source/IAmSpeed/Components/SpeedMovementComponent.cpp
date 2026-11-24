@@ -9,6 +9,7 @@
 #include "IAmSpeed/World/Simulation/ReplayBaseStateFields.h"
 #include "IAmSpeed/World/Simulation/CanonicalEpisodeTestingScope.h"
 #include "IAmSpeed/World/Simulation/ExactRoundContactSettings.h"
+#include "IAmSpeed/World/Simulation/ExactNeutralDispatch.h"
 #include "Engine/World.h"
 #include "Misc/ScopeExit.h"
 #include "IAmSpeed/IAmSpeed.h"
@@ -458,7 +459,11 @@ void USpeedMovementComponent::PreparePhysicsFrame(
 	{
 		HandleGravity();
 	}
-	PreGameplayTick(DeltaTime, SimTime);
+    {
+        const Speed::ExactNeutralDispatchDetail::FCallbackScope Dispatch(Speed::EExactNeutralDispatch::ActorPreGameplay,
+            static_cast<const ISpeedComponent*>(this));
+        PreGameplayTick(DeltaTime, SimTime);
+    }
 	HandleRestForce(); // Handle rest force before gameplay tick so that the component can be at rest at the beginning of the tick if it should be
 
 	// Handle gameplay forces (e.g. from player input or AI)
