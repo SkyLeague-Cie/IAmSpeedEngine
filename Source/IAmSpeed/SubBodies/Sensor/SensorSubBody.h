@@ -67,6 +67,8 @@ protected:
     FCollisionQueryParams BuildTraceParams() const override;
 	virtual void BindDelegates();
 	virtual void UnbindDelegates();
+    // Invoked at the continuous emission point in PostPhysicsUpdate.
+    virtual void DispatchContinuousOverlapOnOwner(UPrimitiveComponent& Other);
 protected:
     // Overlaps in strict begin order
     UPROPERTY()

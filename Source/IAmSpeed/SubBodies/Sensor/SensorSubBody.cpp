@@ -89,13 +89,18 @@ void USensorSubBody::PostPhysicsUpdate()
         {
             if (TouchedThisFrame.Contains(C))
             {
-                OnContinuousOverlap.Broadcast(this, C);
+                DispatchContinuousOverlapOnOwner(*C);
             }
         }
     }
 
     // clear per-frame touched cache
     TouchedThisFrame.Reset();
+}
+
+void USensorSubBody::DispatchContinuousOverlapOnOwner(UPrimitiveComponent& Other)
+{
+    OnContinuousOverlap.Broadcast(this, &Other);
 }
 
 UPrimitiveComponent* USensorSubBody::GetFirstOverlappingComponent() const
