@@ -89,6 +89,12 @@ public:
         const ASpeedPhysicsSimulation&, uint64 ExpectedGeneration, uint64 ExpectedFirstFrame,
         const USpeedWheeledComponent&);
 
+    // Reads the movement countdown floor from the original registered
+    // component during the caller's acknowledged startup park. Zero is valid.
+    static std::optional<uint16> ReadMovementMinimumFramesAtParkedStartupGT(
+        const ASpeedPhysicsSimulation&, uint64 ExpectedGeneration, uint64 ExpectedFirstFrame,
+        uint64 ExpectedActorStableId, const USpeedMovementComponent&);
+
     // Projects a stationary target with cold wheel contacts. The optional
     // support request sweeps the installed pose on the first movable frame.
     // The result carries no support witness for the target at the reset frame.
@@ -142,6 +148,8 @@ public:
     void ReleaseAfterPublication() noexcept;
 
 private:
+    static bool MatchesParkedKickoffDriverGT(
+        const ASpeedPhysicsSimulation&, uint64 ExpectedGeneration, uint64 ExpectedFirstFrame);
     struct FPlan;
     FPreparedNativeRoundFields(const FSimulationWorld&, const FSimulationComponentRestoreRequest&);
     void StageClearContacts(USSubBody&);

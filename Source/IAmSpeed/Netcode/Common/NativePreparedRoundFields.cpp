@@ -88,17 +88,51 @@ public:
 };
 }
 
+bool FPreparedNativeRoundFields::MatchesParkedKickoffDriverGT(
+    const ASpeedPhysicsSimulation& Driver, uint64 ExpectedGeneration, uint64 ExpectedFirstFrame)
+{
+    return IsInGameThread() && ExpectedGeneration && Driver.IsOwnedWorkerExecutionMode()
+        && Driver.OwnedBoundarySuspendDepth && Driver.SimulationWorker
+        && Driver.SimulationWorker->IsBoundaryServiceSuspended() && Driver.SimulationWorker->IsPaused()
+        && Driver.bOwnedSimulationPaused.Load() && !Driver.bOwnedWorkerTerminal.Load()
+        && !Driver.bCanonicalPublicationTerminal.Load() && !Driver.bInputOwnerRetired.Load()
+        && Driver.InputWorkerGeneration == ExpectedGeneration && Driver.bCanonicalFrameInitialized
+        && Driver.CanonicalNumFrame == ExpectedFirstFrame && Driver.SnapshotBuffer.PublishedSerial() == 0;
+}
+
+std::optional<uint16> FPreparedNativeRoundFields::ReadMovementMinimumFramesAtParkedStartupGT(
+    const ASpeedPhysicsSimulation& Driver, uint64 ExpectedGeneration, uint64 ExpectedFirstFrame,
+    uint64 ExpectedActorStableId, const USpeedMovementComponent& Target)
+{
+    if (!MatchesParkedKickoffDriverGT(Driver, ExpectedGeneration, ExpectedFirstFrame)
+        || !Driver.ExactRemoteRoundProvider || !ExpectedActorStableId || !IsValid(&Target)
+        || !Target.IsRegistered() || Target.IsPresentationOnly() || !IsValid(Target.GetOwner())) return {};
+
+    const auto* World = Driver.GetWorld();
+    const auto* Subsystem = Driver.SpeedWorldSubsystem;
+    if (!World || World->bIsTearingDown || Target.GetWorld() != World
+        || !Subsystem || Subsystem->GetWorld() != World) return {};
+
+    std::optional<uint16> Result;
+    Subsystem->VisitBorrowedSimulationWorld([&](const FSimulationWorld& NativeWorld)
+    {
+        const auto Origin = NativeWorld.ReadExactRoundOrigin();
+        if (!Origin.Valid() || Origin.Authority != ExpectedGeneration
+            || NativeWorld.bOrderDirty || NativeWorld.IsRestoreBoundaryReserved()
+            || Target.GetPublishedSimulationStableId() != ExpectedActorStableId
+            || NativeWorld.AdaptersByStableId.FindRef(ExpectedActorStableId) != &Target
+            || NativeWorld.FindStableId(Target) != ExpectedActorStableId) return;
+
+        Result = Target.MinNbFramesBeforeCanMove;
+    });
+    return Result;
+}
+
 std::optional<FPreparedNativeRoundFields::FCapturedKickoffVehicle> FPreparedNativeRoundFields::CaptureKickoffVehicleGT(
     const ASpeedPhysicsSimulation& Driver, uint64 ExpectedGeneration, uint64 ExpectedFirstFrame,
     const USpeedWheeledComponent& Target)
 {
-    if (!IsInGameThread() || !ExpectedGeneration || !Driver.IsOwnedWorkerExecutionMode()
-        || !Driver.OwnedBoundarySuspendDepth || !Driver.SimulationWorker
-        || !Driver.SimulationWorker->IsBoundaryServiceSuspended() || !Driver.SimulationWorker->IsPaused()
-        || !Driver.bOwnedSimulationPaused.Load() || Driver.bOwnedWorkerTerminal.Load()
-        || Driver.bCanonicalPublicationTerminal.Load() || Driver.bInputOwnerRetired.Load()
-        || Driver.InputWorkerGeneration != ExpectedGeneration || !Driver.bCanonicalFrameInitialized
-        || Driver.CanonicalNumFrame != ExpectedFirstFrame || Driver.SnapshotBuffer.PublishedSerial() != 0
+    if (!MatchesParkedKickoffDriverGT(Driver, ExpectedGeneration, ExpectedFirstFrame)
         || !IsValid(&Target) || !Target.IsRegistered() || !Target.GetOwner() || Target.GetWorld() != Driver.GetWorld()
         || Target.WheelSubBodies.Num() != 4) return {};
 
