@@ -117,6 +117,13 @@ public:
         const FSimulationComponentRestoreRequest&, const FPreparedNativeKinematicFields::FRoster::FSubBody&);
     static std::unique_ptr<FPreparedNativeRoundFields> PrepareClearSensorOverlaps(
         const FSimulationComponentRestoreRequest&, const FPreparedNativeKinematicFields::FRoster::FSubBody&);
+    // Keep an original sensor's ordered overlaps and membership through this
+    // restore. The optional copy contains only sealed, local solid bindings.
+    // Slot is the low 16 bits of StableId. Normal frame reset and events are
+    // untouched. Compose this fragment with the other actor domains.
+    static std::unique_ptr<FPreparedNativeRoundFields> PrepareKeepSensorOverlaps(
+        const FSimulationComponentRestoreRequest&, const FPreparedNativeKinematicFields::FRoster::FSubBody&,
+        std::vector<PreparedWorld::FEndpointBinding>* RetainedOrdered = nullptr);
     // Includes cleared solid contacts. Combine with the separate solid pose,
     // and supply the matching suspension displacement in FVehicleState.
     static std::unique_ptr<FPreparedNativeRoundFields> PrepareWheel(USWheelSubBody&,

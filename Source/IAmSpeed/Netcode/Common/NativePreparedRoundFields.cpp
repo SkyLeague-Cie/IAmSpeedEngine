@@ -221,12 +221,26 @@ std::optional<FPreparedNativeRoundFields::FContactFreeKickoff> FPreparedNativeRo
 struct FPreparedNativeRoundFields::FPlan
 {
     enum class EPhase { Prepared, Ready, Finalized, Released, Aborted };
+    using FOverlapToken = TWeakObjectPtr<UPrimitiveComponent>;
+    struct FKeptSensorOverlaps
+    {
+        struct FTarget { FOverlapToken Token; PreparedWorld::FEndpointBinding Binding; };
+        struct FSetCell { const FOverlapToken* Entry; std::size_t OrderedIndex; };
+        const USensorSubBody* Sensor = nullptr;
+        uint64 SensorStableId = 0, SensorIncarnation = 0;
+        uint32 SensorNativeObjectId = 0;
+        const FOverlapToken* OrderedData = nullptr;
+        std::vector<FTarget> Ordered;
+        std::vector<FSetCell> SetCells;
+    };
+
     const FSimulationWorld* const World;
     const PreparedWorld::FAddress Address;
     const FPreparedRestoreLeaseView Lease;
     EPhase Phase = EPhase::Prepared;
     PreparedAccess::FParticipantAccess Access;
     std::vector<std::function<void()>> Exchanges;
+    std::optional<FKeptSensorOverlaps> KeptSensor;
 
     FPlan(const FSimulationWorld& InWorld, const FSimulationComponentRestoreRequest& Request)
         : World(&InWorld), Address(Request.Address), Lease(Request.OwnerLease)
@@ -284,6 +298,70 @@ struct FPreparedNativeRoundFields::FPlan
     }
 
     bool HoldsBoundary() const noexcept { return Lease.HoldsExactBoundary(*World, Address); }
+
+    static bool HasBoundedOverlaps(const USensorSubBody& Sensor) noexcept
+    {
+        constexpr int32 MaxEntries = 256;
+        // A sparse set can have a small Num and a large iteration range.
+        constexpr SIZE_T MaxSetBytes = 64 * 1024;
+        return Sensor.OverlapsOrdered.Num() <= MaxEntries
+            && Sensor.OverlapsSet.Num() == Sensor.OverlapsOrdered.Num()
+            && Sensor.OverlapsSet.GetAllocatedSize() <= MaxSetBytes;
+    }
+
+    // The original round has already reauthenticated the adapter and its
+    // registered slots. Match those records without running adapter hooks.
+    bool MatchesNativeOverlapSlot(const USSubBody& Body, uint64 StableId, uint32 NativeObjectId,
+        uint64 Incarnation) const noexcept
+    {
+        const uint64 ActorId = StableId >> 16;
+        auto* Actor = World->AdaptersByStableId.FindRef(ActorId);
+        const auto* Slot = World->ExactRoundSubBodySlots.Find(StableId);
+        return ActorId && Actor && Slot && Incarnation && NativeObjectId
+            && World->StableIds.FindRef(Actor) == ActorId
+            && Actor->GetPublishedSimulationStableId() == ActorId
+            && World->SubBodiesByStableId.FindRef(StableId) == &Body
+            && World->StableSubBodyIds.FindRef(&Body) == StableId
+            && World->SubBodyNativeObjectIds.FindRef(StableId) == NativeObjectId
+            && Slot->Incarnation == Incarnation && Slot->Object.Get() == &Body
+            && Body.GetUniqueID() == NativeObjectId && Body.GetParentComponent() == Actor;
+    }
+
+    bool MatchesOverlapTarget(const PreparedWorld::FEndpointBinding& Binding,
+        const FOverlapToken& Token) const noexcept
+    {
+        const auto* Body = World->SolidSubBodiesByStableId.FindRef(Binding.StableId);
+        return Body && Binding.ActorIncarnation && (Binding.StableId >> 16) == Binding.Actor
+            && Token.Get() == Body
+            && MatchesNativeOverlapSlot(*Body, Binding.StableId, Binding.NativeObjectId, Binding.Incarnation);
+    }
+
+    bool ValidateKeptSensor() const noexcept
+    {
+        if (!KeptSensor) return true;
+        const auto& Keep = *KeptSensor;
+        const auto& Sensor = *Keep.Sensor;
+        if (!MatchesNativeOverlapSlot(Sensor, Keep.SensorStableId, Keep.SensorNativeObjectId, Keep.SensorIncarnation)
+            || !HasBoundedOverlaps(Sensor) || Sensor.OverlapsOrdered.GetData() != Keep.OrderedData
+            || static_cast<std::size_t>(Sensor.OverlapsOrdered.Num()) != Keep.Ordered.size()) return false;
+        for (std::size_t Index = 0; Index < Keep.Ordered.size(); ++Index)
+        {
+            const auto& Target = Keep.Ordered[Index];
+            const auto& Live = Keep.OrderedData[Index];
+            if (!Live.HasSameIndexAndSerialNumber(Target.Token)
+                || !MatchesOverlapTarget(Target.Binding, Live)
+                || !Sensor.OverlapsSet.Contains(Keep.OrderedData[Index])) return false;
+        }
+        std::size_t Index = 0;
+        for (const auto& Entry : Sensor.OverlapsSet)
+        {
+            if (Index == Keep.SetCells.size()) return false;
+            const auto& Cell = Keep.SetCells[Index++];
+            if (Cell.Entry != &Entry || !Entry.HasSameIndexAndSerialNumber(Keep.Ordered[Cell.OrderedIndex].Token))
+                return false;
+        }
+        return Index == Keep.SetCells.size();
+    }
 };
 
 FPreparedNativeRoundFields::FPreparedNativeRoundFields(const FSimulationWorld& World,
@@ -481,6 +559,93 @@ std::unique_ptr<FPreparedNativeRoundFields> FPreparedNativeRoundFields::PrepareC
     return Target ? PrepareClearSensorOverlaps(*Target, Request, Row) : nullptr;
 }
 
+std::unique_ptr<FPreparedNativeRoundFields> FPreparedNativeRoundFields::PrepareKeepSensorOverlaps(
+    const FSimulationComponentRestoreRequest& Request, const FPreparedNativeKinematicFields::FRoster::FSubBody& Row,
+    std::vector<PreparedWorld::FEndpointBinding>* RetainedOrdered)
+{
+    const auto State = Request.OwnerLease.ResolvePreparingState(Request, Request.Address);
+    if (!State) return {};
+    const auto& World = *State->World;
+    const auto& Envelope = *State->Envelope;
+    const FExactRoundNativeOrigin Origin{Request.Address.Authority, Request.Address.WorldIncarnation,
+        Request.Address.TopologyVersion};
+    const auto Limits = PreparedWorld::FLimits{};
+    if (!Origin.Valid() || !(World.ReadExactRoundOrigin() == Origin) || !World.StorageAccess.IsReservationOwner()
+        || !Row.Incarnation || Envelope.Endpoints.size() > Limits.MaxEndpoints
+        || Envelope.Actors.size() > Limits.MaxBodies) return {};
+    if (Row.IsSolidEndpoint || Row.ActorStableId != State->ComponentBinding->StableId
+        || (Row.StableId >> 16) != Row.ActorStableId || World.SolidSubBodiesByStableId.Contains(Row.StableId))
+        return {};
+    const auto* Sensor = Cast<USensorSubBody>(World.SubBodiesByStableId.FindRef(Row.StableId));
+    if (!Sensor || Sensor->GetParentComponent() != State->ComponentTarget || !FPlan::HasBoundedOverlaps(*Sensor))
+        return {};
+
+    auto Fragment = std::unique_ptr<FPreparedNativeRoundFields>(new FPreparedNativeRoundFields(World, Request));
+    auto& P = *Fragment->Plan;
+    if (!P.MatchesNativeOverlapSlot(*Sensor, Row.StableId, Row.NativeObjectId, Row.Incarnation)) return {};
+    auto& Keep = P.KeptSensor.emplace();
+    Keep.Sensor = Sensor;
+    Keep.SensorStableId = Row.StableId;
+    Keep.SensorNativeObjectId = Row.NativeObjectId;
+    Keep.SensorIncarnation = Row.Incarnation;
+    Keep.OrderedData = Sensor->OverlapsOrdered.GetData();
+    Keep.Ordered.reserve(Sensor->OverlapsOrdered.Num());
+    Keep.SetCells.reserve(Sensor->OverlapsSet.Num());
+
+    // Resolve raw addresses for lookup only. Dereference a target only after
+    // joining it to a solid in the sealed native registry.
+    TMap<const UPrimitiveComponent*, std::size_t> Wanted;
+    const auto& Ordered = Sensor->OverlapsOrdered;
+    for (const auto& Entry : Ordered)
+    {
+        const auto* Target = Entry.Get();
+        if (!Target || Wanted.Contains(Target)) return {};
+        Wanted.Add(Target, Keep.Ordered.size());
+        Keep.Ordered.push_back({Entry, {}});
+    }
+    if (!Wanted.IsEmpty())
+    {
+        std::size_t Found = 0;
+        for (const auto& Endpoint : Envelope.Endpoints)
+        {
+            const auto* Solid = World.SolidSubBodiesByStableId.FindRef(Endpoint.StableId);
+            const auto* Index = Solid ? Wanted.Find(Solid) : nullptr;
+            if (!Index) continue;
+            auto& Target = Keep.Ordered[*Index];
+            const auto Actor = std::lower_bound(Envelope.Actors.begin(), Envelope.Actors.end(), Endpoint.Actor,
+                [](const auto& Binding, uint64 Id) { return Binding.StableId < Id; });
+            if (Target.Binding.StableId || Actor == Envelope.Actors.end() || Actor->StableId != Endpoint.Actor
+                || Actor->Incarnation != Endpoint.ActorIncarnation || !P.MatchesOverlapTarget(Endpoint, Target.Token)) return {};
+            Target.Binding = Endpoint;
+            if (++Found == Keep.Ordered.size()) break;
+        }
+        if (Found != Keep.Ordered.size()) return {};
+    }
+
+    auto& Reads = P.Access.ReadOnly;
+    Reads.push_back(Range(&Sensor->OverlapsOrdered, sizeof(Sensor->OverlapsOrdered)));
+    Reads.push_back(Range(&Sensor->OverlapsSet, sizeof(Sensor->OverlapsSet)));
+    if (!Ordered.IsEmpty()) Reads.push_back(Range(Keep.OrderedData, sizeof(Ordered[0]) * Ordered.Num()));
+    for (const auto& Entry : Sensor->OverlapsSet)
+    {
+        const auto* Target = Entry.Get();
+        const auto* Index = Wanted.Find(Target);
+        if (!Index || !Entry.HasSameIndexAndSerialNumber(Keep.Ordered[*Index].Token)) return {};
+        Reads.push_back(Range(&Entry, sizeof(Entry)));
+        Keep.SetCells.push_back({&Entry, *Index});
+        Wanted.Remove(Target);
+    }
+    if (!Wanted.IsEmpty() || !P.HoldsBoundary() || !P.ValidateKeptSensor()) return {};
+    if (RetainedOrdered)
+    {
+        std::vector<PreparedWorld::FEndpointBinding> Values;
+        Values.reserve(Keep.Ordered.size());
+        for (const auto& Kept : Keep.Ordered) Values.push_back(Kept.Binding);
+        *RetainedOrdered = std::move(Values);
+    }
+    return Fragment;
+}
+
 std::unique_ptr<FPreparedNativeRoundFields> FPreparedNativeRoundFields::PrepareWheel(
     const FSimulationComponentRestoreRequest& Request, const PreparedWorld::FEndpointBinding& Endpoint, const FWheelState& Values)
 {
@@ -496,14 +661,16 @@ FPreparedNativeRoundFields::~FPreparedNativeRoundFields() noexcept
 
 bool FPreparedNativeRoundFields::AppendPreparedAccess(std::vector<PreparedAccess::FParticipantAccess>& Out) const
 {
-    if ((Plan->Phase != FPlan::EPhase::Prepared && Plan->Phase != FPlan::EPhase::Ready) || !Plan->HoldsBoundary()) return false;
+    if ((Plan->Phase != FPlan::EPhase::Prepared && Plan->Phase != FPlan::EPhase::Ready) || !Plan->HoldsBoundary()
+        || !Plan->ValidateKeptSensor()) return false;
     Out.push_back(Plan->Access);
     return true;
 }
 
 bool FPreparedNativeRoundFields::PrepareFinalization() noexcept
 {
-    if ((Plan->Phase != FPlan::EPhase::Prepared && Plan->Phase != FPlan::EPhase::Ready) || !Plan->HoldsBoundary()) return false;
+    if ((Plan->Phase != FPlan::EPhase::Prepared && Plan->Phase != FPlan::EPhase::Ready) || !Plan->HoldsBoundary()
+        || !Plan->ValidateKeptSensor()) return false;
     Plan->Phase = FPlan::EPhase::Ready;
     return true;
 }
