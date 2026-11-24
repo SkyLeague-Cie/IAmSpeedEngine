@@ -147,7 +147,7 @@ private:
     const FSimulationWorld& World;
     const PreparedWorld::FAddress Address;
     const FPreparedRestoreLeaseView Lease;
-    SKinematic& LiveState;
+    SKinematic* const LiveState;
     bool* const LiveFrozen;
     const SKinematic State;
     const bool Frozen;

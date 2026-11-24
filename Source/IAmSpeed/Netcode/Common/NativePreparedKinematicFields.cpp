@@ -406,7 +406,7 @@ USensorSubBody* FPreparedNativeKinematicFields::ResolveBoundSensor(const FSimula
 
 FPreparedNativeKinematicFields::FPreparedNativeKinematicFields(const FSimulationWorld& InWorld,
     const FSimulationComponentRestoreRequest& Request, SKinematic& Live, bool* InFrozen, const SKinematic& InState)
-    : World(InWorld), Address(Request.Address), Lease(Request.OwnerLease), LiveState(Live),
+    : World(InWorld), Address(Request.Address), Lease(Request.OwnerLease), LiveState(&Live),
       LiveFrozen(InFrozen), State(InState), Frozen(Request.bFrozen) {}
 
 FPreparedNativeKinematicFields::~FPreparedNativeKinematicFields() noexcept
@@ -420,10 +420,10 @@ bool FPreparedNativeKinematicFields::AppendPreparedAccess(std::vector<PreparedAc
         return false;
     PreparedAccess::FParticipantAccess Part;
     Part.Participant = reinterpret_cast<std::uintptr_t>(this);
-    Part.Writes = {KinematicFieldSpan(&LiveState, sizeof(LiveState)), KinematicFieldSpan(&Phase, sizeof(Phase))};
+    Part.Writes = {KinematicFieldSpan(LiveState, sizeof(*LiveState)), KinematicFieldSpan(&Phase, sizeof(Phase))};
     if (LiveFrozen) Part.Writes.push_back(KinematicFieldSpan(LiveFrozen, sizeof(bool)));
     Part.ReadOnly = {KinematicFieldSpan(&State, sizeof(State)), KinematicFieldSpan(&Frozen, sizeof(Frozen)),
-        KinematicFieldSpan(&LiveFrozen, sizeof(LiveFrozen))};
+        KinematicFieldSpan(&LiveState, sizeof(LiveState)), KinematicFieldSpan(&LiveFrozen, sizeof(LiveFrozen))};
     Out.push_back(std::move(Part));
     return true;
 }
@@ -440,7 +440,7 @@ void FPreparedNativeKinematicFields::Finalize() noexcept
 {
     static_assert(std::is_nothrow_copy_assignable_v<SKinematic>);
     if (Phase != EPhase::Ready) std::terminate();
-    LiveState = State;
+    *LiveState = State;
     if (LiveFrozen) *LiveFrozen = Frozen;
     Phase = EPhase::Finalized;
 }
