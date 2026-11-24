@@ -363,7 +363,7 @@ bool USpeedWorldSubsystem::TryWriteSolidContactConfiguration(
 }
 
 bool USpeedWorldSubsystem::TryWriteOwnedRoundConfiguration(
-    const UActorComponent& Component, TFunctionRef<void()> Write)
+    const UActorComponent& Component, TFunctionRef<void()> Write, const USolidSubBody* SphereSlot)
 {
     auto* World = Component.GetWorld();
     auto* Subsystem = World ? World->GetSubsystem<USpeedWorldSubsystem>() : nullptr;
@@ -371,7 +371,8 @@ bool USpeedWorldSubsystem::TryWriteOwnedRoundConfiguration(
     {
         // This lock is never held during a worker step, a host callback or a join.
         FScopeLock Lock(&Subsystem->ExactRoundConfigurationCS);
-        if (Subsystem->ExactRoundStorageGeneration.Load() && !Subsystem->bExactRoundStorageRetired.Load())
+        if (Subsystem->ExactRoundStorageGeneration.Load() && !Subsystem->bExactRoundStorageRetired.Load() &&
+            (!SphereSlot || SphereSlot->bExactRoundSphereSlotRetained))
             return false;
         Write();
         return true;
@@ -2455,6 +2456,28 @@ bool USpeedWorldSubsystem::ValidateSimulationBindings(FString& OutReason)
             {
                 OutReason = TEXT("retained movement configuration unavailable");
                 return false;
+            }
+            for (auto* Body : Component->GetSubBodies())
+            {
+                if (!Body || Body->IsSensor() || Body->GetSubBodyType() != USSubBody::ESubBodyType::Sphere) continue;
+                auto* Sphere = Cast<USphereSubBody>(Body);
+                if (!Sphere || Sphere->GetParentComponent() != Component ||
+                    !Component->GetPublishedSimulationStableId())
+                {
+                    OutReason = TEXT("sphere slot has no registered owner");
+                    return false;
+                }
+                if (Sphere->bExactRoundSphereSlotRetained) continue;
+                const uint64 SlotId = SimulationWorld.FindStableSubBodyId(Sphere);
+                if (!bAllowCapture || !SlotId || SimulationWorld.SolidSubBodiesByStableId.FindRef(SlotId) != Sphere)
+                {
+                    OutReason = TEXT("original sphere slot configuration unavailable");
+                    return false;
+                }
+                // Assembly and pre-admission profile writes are still legal.
+                // Seal only this native sphere before its first solver read.
+                const FScopeLock Lock(&ExactRoundConfigurationCS);
+                Sphere->bExactRoundSphereSlotRetained = true;
             }
         }
     }

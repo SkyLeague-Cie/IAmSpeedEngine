@@ -104,13 +104,13 @@ public:
 	/** New mechanical obstacle path only; false preserves ordinary response. */
 	static bool ResolvePrescribedContact(USolidSubBody& A,USolidSubBody& B,const SHitResult& Hit,double Penetration);
 	float GetMass() const { return Mass; }
-	void SetMass(float InMass) { Mass = InMass; }
+	void SetMass(float InMass);
 	virtual FMatrix ComputeWorldInvInertiaTensor() const;
     // Exact cached configuration, independent of a future consumed pose.
     // Reading this cache grants no response/impulse or reconstruction policy.
     const FMatrix& GetCachedLocalInvInertiaTensor() const { return InvInertiaLocal; }
 	int Idx() const { return idx; }
-	void SetIdx(int InIdx) { idx = InIdx; }
+	void SetIdx(int InIdx);
 	bool IsMainSubBody() const { return bIsMainSubBody; }
 	bool IsFakePhysicsEnabled() const { return EnableFakePhysics; }
 	float GetRestitution() const { return Restitution; }
@@ -188,6 +188,8 @@ public:
 	bool HasToApplyRestForce() const { return bApplyRestForce; }
 
 protected:
+    void ChangeSphereSlotConfiguration(TFunctionRef<void()> Write);
+    bool HasRetainedExactSphereSlotConfiguration() const { return bExactRoundSphereSlotRetained; }
 	virtual FMatrix InitInvInertiaTensor() const { return FMatrix::Identity; }
 	void RegisterCurrentHitAsConstraint();
 	void RegisterContactAsConstraint(
@@ -296,5 +298,9 @@ protected:
 	int idx = -1;
 
 private:
+    friend class USpeedWorldSubsystem;
+    // Written by the exact worker under the same lock as supported setters.
+    // Read only by that worker or by a setter holding the lock.
+    bool bExactRoundSphereSlotRetained = false;
     void ChangeSolidContactConfiguration(TFunctionRef<void()> Write);
 };

@@ -75,7 +75,10 @@ public:
     SKinematic GetKinematicsFromOwner(const unsigned int& NumFrame) const;
     virtual SSphere MakeSphere() const;
     // Construction-time physical policy; not driven by a test ID or diagnostic.
-    void SetProductionNonpenetratingBoxContacts(bool bEnabled) { bProductionNonpenetratingBoxContacts = bEnabled; }
+    void SetProductionNonpenetratingBoxContacts(bool bEnabled);
+    // Appends the common solid and sphere configuration from the original slot.
+    // Subclass virtual margin, static offset and friction must be stable on this boundary.
+    bool AppendExactRoundSphereConfiguration(Speed::FExactRoundConfigurationWriter& Out) const;
     bool UsesProductionNonpenetratingBoxContacts() const { return bProductionNonpenetratingBoxContacts; }
 
     FMatrix ComputeWorldInvInertiaTensor() const override;
@@ -111,34 +114,15 @@ public:
     {
         return double(GetRadius()) + double(GetWorldStaticContactOffsetCm());
     }
-	void SetRadiusForConfiguration(float NewRadius)
-	{
-		SetRadius(NewRadius);
-		InvInertiaLocal = InitInvInertiaTensor();
-	}
-	void SetSphereBoxTangentialContactArmScale(float InScale)
-	{
-		SphereBoxTangentialContactArmScale = FMath::Max(0.0f, InScale);
-	}
-	void SetSphereBoxTangentialContactArmSpeedRange(float InStartSpeed, float InFullSpeed)
-	{
-		SphereBoxTangentialContactArmStartSpeed = FMath::Max(0.0f, InStartSpeed);
-		SphereBoxTangentialContactArmFullSpeed = FMath::Max(
-			SphereBoxTangentialContactArmStartSpeed, InFullSpeed);
-	}
+	void SetRadiusForConfiguration(float NewRadius);
+	void SetSphereBoxTangentialContactArmScale(float InScale);
+	void SetSphereBoxTangentialContactArmSpeedRange(float InStartSpeed, float InFullSpeed);
 	void SetSphereBoxTangentialContactArmKinematicWindow(
 		float InMinSphereSpeed,
 		float InMaxSphereSpeed,
 		float InMinSphereAngularSpeed,
 		float InMaxSphereAngularSpeed,
-		float InMinBoxSpeed)
-	{
-		SphereBoxTangentialArmMinSphereSpeed = InMinSphereSpeed;
-		SphereBoxTangentialArmMaxSphereSpeed = InMaxSphereSpeed;
-		SphereBoxTangentialArmMinSphereAngularSpeed = InMinSphereAngularSpeed;
-		SphereBoxTangentialArmMaxSphereAngularSpeed = InMaxSphereAngularSpeed;
-		SphereBoxTangentialArmMinBoxSpeed = InMinBoxSpeed;
-	}
+		float InMinBoxSpeed);
 	void ApplySphereBoxImpulse(
 		const FVector& LinearImpulse,
 		const FVector& WorldPoint,

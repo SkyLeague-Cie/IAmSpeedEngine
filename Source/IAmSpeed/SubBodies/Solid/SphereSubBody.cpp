@@ -1621,9 +1621,72 @@ void USphereSubBody::UpdateBodySetup()
     }
 }
 
+bool USphereSubBody::AppendExactRoundSphereConfiguration(Speed::FExactRoundConfigurationWriter& Out) const
+{
+    if (GetSubBodyType() != ESubBodyType::Sphere || !Speed::FScopedExactRoundContactSettings::Current() ||
+        !HasRetainedExactSphereSlotConfiguration() || !AppendExactRoundSolidConfiguration(Out)) return false;
+
+    // CCD and static support consume different radii. Hash the authored
+    // contributions separately, together with the actual response policy.
+    return Out.Unsigned(0x4941535350480001ull) &&
+        Out.Float(GetRadius()) && Out.Float(CollisionMargin()) &&
+        Out.Float(GetWorldStaticContactOffsetCm()) && Out.Float(GetWorldStaticImpactFriction()) &&
+        Out.Float(MinSlopCm) && Out.Boolean(UsesProductionNonpenetratingBoxContacts()) &&
+        Out.Float(SphereBoxTangentialContactArmScale) &&
+        Out.Float(SphereBoxTangentialContactArmStartSpeed) && Out.Float(SphereBoxTangentialContactArmFullSpeed) &&
+        Out.Float(SphereBoxTangentialArmMinSphereSpeed) && Out.Float(SphereBoxTangentialArmMaxSphereSpeed) &&
+        Out.Float(SphereBoxTangentialArmMinSphereAngularSpeed) && Out.Float(SphereBoxTangentialArmMaxSphereAngularSpeed) &&
+        Out.Float(SphereBoxTangentialArmMinBoxSpeed);
+}
+
 void USphereSubBody::SetRadius(const float& NewRadius)
 {
-    Radius = NewRadius;
+    ChangeSphereSlotConfiguration([this, NewRadius] { Radius = NewRadius; });
+}
+
+void USphereSubBody::SetRadiusForConfiguration(float NewRadius)
+{
+    ChangeSphereSlotConfiguration([this, NewRadius]
+    {
+        Radius = NewRadius;
+        InvInertiaLocal = InitInvInertiaTensor();
+    });
+}
+
+void USphereSubBody::SetProductionNonpenetratingBoxContacts(bool bEnabled)
+{
+    ChangeSphereSlotConfiguration([this, bEnabled] { bProductionNonpenetratingBoxContacts = bEnabled; });
+}
+
+void USphereSubBody::SetSphereBoxTangentialContactArmScale(float InScale)
+{
+    ChangeSphereSlotConfiguration([this, InScale]
+    {
+        SphereBoxTangentialContactArmScale = FMath::Max(0.0f, InScale);
+    });
+}
+
+void USphereSubBody::SetSphereBoxTangentialContactArmSpeedRange(float InStartSpeed, float InFullSpeed)
+{
+    ChangeSphereSlotConfiguration([this, InStartSpeed, InFullSpeed]
+    {
+        SphereBoxTangentialContactArmStartSpeed = FMath::Max(0.0f, InStartSpeed);
+        SphereBoxTangentialContactArmFullSpeed = FMath::Max(SphereBoxTangentialContactArmStartSpeed, InFullSpeed);
+    });
+}
+
+void USphereSubBody::SetSphereBoxTangentialContactArmKinematicWindow(
+    float InMinSphereSpeed, float InMaxSphereSpeed, float InMinSphereAngularSpeed,
+    float InMaxSphereAngularSpeed, float InMinBoxSpeed)
+{
+    ChangeSphereSlotConfiguration([=, this]
+    {
+        SphereBoxTangentialArmMinSphereSpeed = InMinSphereSpeed;
+        SphereBoxTangentialArmMaxSphereSpeed = InMaxSphereSpeed;
+        SphereBoxTangentialArmMinSphereAngularSpeed = InMinSphereAngularSpeed;
+        SphereBoxTangentialArmMaxSphereAngularSpeed = InMaxSphereAngularSpeed;
+        SphereBoxTangentialArmMinBoxSpeed = InMinBoxSpeed;
+    });
 }
 
 #if WITH_DEV_AUTOMATION_TESTS

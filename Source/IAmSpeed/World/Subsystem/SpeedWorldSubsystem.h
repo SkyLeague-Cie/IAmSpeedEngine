@@ -237,7 +237,8 @@ private:
     // before touching retained storage. Returns true only for the exact route.
     static bool RequireExactRemoteRoundStorageTeardown(const UActorComponent&);
     static bool TryWriteSolidContactConfiguration(const USolidSubBody&, TFunctionRef<void()> Write);
-    static bool TryWriteOwnedRoundConfiguration(const UActorComponent&, TFunctionRef<void()> Write);
+    static bool TryWriteOwnedRoundConfiguration(const UActorComponent&, TFunctionRef<void()> Write,
+        const USolidSubBody* SphereSlot = nullptr);
     // Serializes pre-bind field writes with installation of the exact native owner.
     FCriticalSection ExactRoundConfigurationCS;
     TWeakObjectPtr<ASpeedPhysicsSimulation> ExactRoundStorageDriver; // GT
