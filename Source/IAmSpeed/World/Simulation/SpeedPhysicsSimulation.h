@@ -8,6 +8,7 @@
 #include "CanonicalFrameDriver.h"
 #include "ExactNeutralDispatch.h"
 #include "ExactRemoteRoundFence.h"
+#include "RollbackWorkerAudit.h"
 #include "WorldBorrowGate.h"
 #include "SimulationFrameJournal.h"
 #include "CompletedSimulationPublication.h"
@@ -442,6 +443,8 @@ private:
 	float GetCanonicalPulseSimTime() const;
 	/** Applies at most one queued restore/replay transaction on the owning lane. */
 	bool ProcessPendingRollbackRequest();
+    Speed::RollbackAudit::FWindow* ReadOwnedRollbackAudit();
+    Speed::RollbackAudit::FWindow RollbackAudit;
 #if WITH_DEV_AUTOMATION_TESTS
     // Observation at the decision entry; tests may arrange bounded ingress races.
     TFunction<bool(uint64)> BeforeRollbackDecisionForTesting;

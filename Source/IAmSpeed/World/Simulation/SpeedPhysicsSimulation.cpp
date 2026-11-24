@@ -650,6 +650,10 @@ void ASpeedPhysicsSimulation::StartOwnedWorkerIfReady()
     if (!ValidateAnalyticNumericOwner()) return;
 	InitializeCanonicalFrame(0.0f);
 	OnOwnedWorkerStarting();
+    uint32 RollbackAuditSeconds = 0;
+    if (GetNetMode() == NM_DedicatedServer)
+        FParse::Value(FCommandLine::Get(), TEXT("SpeedRollbackAuditSeconds="), RollbackAuditSeconds);
+    RollbackAudit.Configure(RollbackAuditSeconds, InputWorkerGeneration, GetUniqueID(), bool(ExactRemoteRoundProvider));
 #if WITH_DEV_AUTOMATION_TESTS
 	// Admission is checked from the class that owns the private execution mode.
 	const auto OwnedAudit = Speed::OwnedFrameAudit::CreateForHost(this,
@@ -679,6 +683,7 @@ void ASpeedPhysicsSimulation::StartOwnedWorkerIfReady()
 #if WITH_DEV_AUTOMATION_TESTS
 			Speed::OwnedFrameAudit::BeginWork(OwnedAudit, CanonicalNumFrame);
 #endif
+            auto* const Audit = ReadOwnedRollbackAudit();
 			const ESimulationWorkerResult Result = FinishExactRemoteRoundWork(ExecuteCheckedSimulationPulse([this]()
             {
                 std::optional<Speed::FWorldBorrowGate::FBorrow> ReservedRoundWork;
@@ -714,6 +719,9 @@ void ASpeedPhysicsSimulation::StartOwnedWorkerIfReady()
                 const auto pulse=DriveOwnedWorkerPulse(FCanonicalFrameContext::CanonicalPhysicalDeltaTime, GetCanonicalPulseSimTime());
                 return nativeStream.Finish(pulse,CanonicalNumFrame);
             }));
+            if (Audit)
+                Audit->AfterWork(InputWorkerGeneration, CanonicalNumFrame,
+                    Result == ESimulationWorkerResult::Failed, Result == ESimulationWorkerResult::NeedsOwnerBoundary);
 #if WITH_DEV_AUTOMATION_TESTS
 			Speed::OwnedFrameAudit::EndWork(OwnedAudit, Result);
 #endif
@@ -750,7 +758,16 @@ void ASpeedPhysicsSimulation::StartOwnedWorkerIfReady()
 				CVarSimulationPerformanceAudit.GetValueOnAnyThread() != 0);
 			Speed::OwnedFrameAudit::BeginService(OwnedAudit, bPauseRequested, CanonicalNumFrame);
 #endif
+            const bool bAuditBoundary = RollbackAudit.Enabled() && SimulationWorker->OwnsCurrentInputBoundary();
+            if (bAuditBoundary) RollbackAudit.AtInputBoundary(InputWorkerGeneration, CanonicalNumFrame);
+            const bool bWatchCommit = bAuditBoundary && RollbackAudit.IsOpenFor(InputWorkerGeneration)
+                && !ActiveExactRemoteRound;
 			const auto Result = ServiceInputSessionBoundary(bPauseRequested);
+            if (bWatchCommit && ActiveExactRemoteRound)
+            {
+                const auto& Inputs = *ActiveExactRemoteRound->Inputs;
+                RollbackAudit.RecordRound(false, Inputs.Next, Inputs.RoundGeneration);
+            }
 #if WITH_DEV_AUTOMATION_TESTS
 			Speed::OwnedFrameAudit::EndService(OwnedAudit, Result);
 #endif
@@ -771,6 +788,7 @@ void ASpeedPhysicsSimulation::StartOwnedWorkerIfReady()
         Speed::Analytic::CaseSatDiagnostics::FlushOnOwnerThread(TEXT("WorkerCloseBeforeInputOwners"));
             if(IsA<ARealTimeSimulation>())Speed::ActorDiagnostics::EndRun();
 #endif
+            if (RollbackAudit.Enabled()) RollbackAudit.AtWorkerClose(InputWorkerGeneration, CanonicalNumFrame);
 			CloseInputSessionsOnWorker();
 		}, [this]()
         {
@@ -1481,6 +1499,7 @@ bool ASpeedPhysicsSimulation::RunCanonicalFrames(const uint32 FrameCount)
 ASpeedPhysicsSimulation::FCanonicalFrameRunResult ASpeedPhysicsSimulation::RunCanonicalFramesWithControl(const uint32 FrameCount)
 {
     uint32 AdvancedFrames=0;
+    auto* const Audit = ReadOwnedRollbackAudit();
     if (ExactRemoteRoundProvider)
     {
         if (!SimulationWorker || !SimulationWorker->OwnsCurrentCanonicalWork()
@@ -1576,7 +1595,9 @@ ASpeedPhysicsSimulation::FCanonicalFrameRunResult ASpeedPhysicsSimulation::RunCa
 #if WITH_DEV_AUTOMATION_TESTS
 		const auto OwnedStep = Speed::OwnedFrameAudit::BeginStep(CanonicalNumFrame, false);
 #endif
+        if (Audit) Audit->AttemptForward();
 		const bool StepSucceeded = StepCanonicalFrame(MakeCanonicalFrameContext(CanonicalNumFrame));
+        if (Audit && StepSucceeded) Audit->CompleteForward();
 #if WITH_DEV_AUTOMATION_TESTS
 		Speed::OwnedFrameAudit::EndStep(OwnedStep, true, StepSucceeded);
 #endif
@@ -2415,14 +2436,23 @@ bool ASpeedPhysicsSimulation::RequestRollbackAndResimulation(
 	return true;
 }
 
+Speed::RollbackAudit::FWindow* ASpeedPhysicsSimulation::ReadOwnedRollbackAudit()
+{
+    return RollbackAudit.Enabled() && SimulationWorker && SimulationWorker->OwnsCurrentCanonicalWork()
+        && !Speed::OnePausedWork::IsActive() && RollbackAudit.IsOpenFor(InputWorkerGeneration)
+        ? &RollbackAudit : nullptr;
+}
+
 bool ASpeedPhysicsSimulation::ProcessPendingRollbackRequest()
 {
 #if WITH_DEV_AUTOMATION_TESTS
     if(BeforeRollbackDecisionForTesting&&!BeforeRollbackDecisionForTesting(CanonicalNumFrame))return false;
 #endif
+    auto* const Audit = ReadOwnedRollbackAudit();
 	TOptional<FPendingRollbackRequest> Request;
 	{
 		FScopeLock Lock(&RollbackRequestMutex);
+        if (Audit) Audit->CheckRollbackSlot();
 		if (!PendingRollbackRequest.IsSet())
 		{
 			return true;
@@ -2434,19 +2464,33 @@ bool ASpeedPhysicsSimulation::ProcessPendingRollbackRequest()
 		PendingRollbackRequest.Reset();
 	}
 
+    using Speed::RollbackAudit::EOutcome;
+    Speed::RollbackAudit::FRequest Observed{CanonicalNumFrame, Request->Snapshot.NumFrame, Request->TargetFrameInclusive};
+    ON_SCOPE_EXIT { if (Audit) Audit->RecordRequest(Observed, CanonicalNumFrame); };
+
 	// Legacy restore is not a completed world/input transaction. Invalidate the
 	// optional common view before any restore mutation; retained reads are historical.
 	PublishedCompletedWorldInput.store({}, std::memory_order_seq_cst);
 	// Recheck on the worker: an input binding may have arrived since admission.
+    Observed.Stage = TEXT("InputRegistry");
 	const auto InputView = ReadInputRegistryView();
-	if (InputView && !InputView->Bindings.empty()) return false;
+	if (InputView && !InputView->Bindings.empty())
+    {
+        Observed.Outcome = EOutcome::Refused;
+        return false;
+    }
+    Observed.Stage = TEXT("PresentationValidation");
 	TArray<TSharedRef<ISimulationPresentationProducer, ESPMode::ThreadSafe>> RestoreProducers;
 	{
 		FScopeLock Lock(&PresentationProducerMutex);
 		RestoreProducers = PresentationProducers;
 	}
 	TArray<FSimulationPresentationOutput> RestoreOutputs;
-	if (Request->Snapshot.PresentationOutputs.Num() != RestoreProducers.Num()) return false;
+	if (Request->Snapshot.PresentationOutputs.Num() != RestoreProducers.Num())
+    {
+        Observed.Outcome = EOutcome::Refused;
+        return false;
+    }
 	for (const auto& Producer : RestoreProducers)
 	{
 		const FSimulationPresentationOutput* Output = Request->Snapshot.PresentationOutputs.FindByPredicate(
@@ -2455,19 +2499,26 @@ bool ASpeedPhysicsSimulation::ProcessPendingRollbackRequest()
 				return Candidate.OwnerStableId == Producer->OwnerStableId() && Candidate.Channel == Producer->Channel();
 			});
 		if (!Output || Output->NumFrame != Request->Snapshot.NumFrame ||
-			!Producer->CanRestore(*Output, Request->TargetFrameInclusive)) return false;
+			!Producer->CanRestore(*Output, Request->TargetFrameInclusive))
+        {
+            Observed.Outcome = EOutcome::Refused;
+            return false;
+        }
 		RestoreOutputs.Add(*Output);
 	}
+    Observed.Stage = TEXT("WorldRestore");
 	if (!SpeedWorldSubsystem ||
 		!SpeedWorldSubsystem->RestoreSimulationSnapshot(
 			Request->Snapshot, InputJournal.StableHash()))
 	{
+        Observed.Outcome = EOutcome::Refused;
 		UE_LOG(LogTemp, Error,
 			TEXT("[SimulationSnapshotRestoreRejected] Frame=%llu TargetFrame=%llu"),
 			Request->Snapshot.NumFrame, Request->TargetFrameInclusive);
 		return false;
 	}
 
+    Observed.Stage = TEXT("RestorePresentation");
 	Request->Snapshot.PresentationOutputs.Reset();
 	for (int32 Index = 0; Index < RestoreProducers.Num(); ++Index)
 	{
@@ -2475,6 +2526,7 @@ bool ASpeedPhysicsSimulation::ProcessPendingRollbackRequest()
 		RestoreProducers[Index]->RestoreValidated(RestoreOutputs[Index], Request->TargetFrameInclusive, Restored);
 		Request->Snapshot.PresentationOutputs.Add(MoveTemp(Restored));
 	}
+    Observed.Stage = TEXT("RepublishAnchor");
 	FrameHashes.RemoveFrom(Request->Snapshot.NumFrame);
 	if (!FrameHashes.Append(
 			Request->Snapshot.NumFrame, Request->Snapshot.StateHash) ||
@@ -2488,6 +2540,7 @@ bool ASpeedPhysicsSimulation::ProcessPendingRollbackRequest()
 
 	CanonicalNumFrame = Request->Snapshot.NumFrame + 1u;
 	_NumFrame = static_cast<unsigned int>(CanonicalNumFrame);
+    Observed.Stage = TEXT("Replay");
 	const uint64 ReplayFrameCount =
 		Request->TargetFrameInclusive - Request->Snapshot.NumFrame;
 	for (uint64 ReplayIndex = 0; ReplayIndex < ReplayFrameCount; ++ReplayIndex)
@@ -2500,7 +2553,9 @@ bool ASpeedPhysicsSimulation::ProcessPendingRollbackRequest()
 #if WITH_DEV_AUTOMATION_TESTS
         const auto OwnedReplayStep = Speed::OwnedFrameAudit::BeginStep(ReplayContext.NumFrame, true);
 #endif
+        if (Audit) ++Observed.ReplayAttempts;
         const bool ReplayStepSucceeded = StepCanonicalFrame(ReplayContext);
+        if (Audit && ReplayStepSucceeded) ++Observed.ReplayCompleted;
 #if WITH_DEV_AUTOMATION_TESTS
         Speed::OwnedFrameAudit::EndStep(OwnedReplayStep, true, ReplayStepSucceeded);
 #endif
@@ -2516,7 +2571,9 @@ bool ASpeedPhysicsSimulation::ProcessPendingRollbackRequest()
 		++CanonicalNumFrame;
 		_NumFrame = static_cast<unsigned int>(CanonicalNumFrame);
 	}
+    Observed.Stage = TEXT("TimelineRestored");
 	OnCanonicalTimelineRestored();
+    Observed.Outcome = EOutcome::Succeeded;
 	return true;
 }
 

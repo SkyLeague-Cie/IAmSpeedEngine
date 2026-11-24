@@ -374,5 +374,10 @@ ESimulationWorkerResult ASpeedPhysicsSimulation::FinishExactRemoteRoundWork(ESim
     ExactRemoteRoundHostHold.reset();
     ExactRemoteRoundStorage.reset();
     ExactRemoteRoundFence.FinishPublication();
+    if (auto* Audit = ReadOwnedRollbackAudit())
+    {
+        const auto& Inputs = *ActiveExactRemoteRound->Inputs;
+        Audit->RecordRound(true, Inputs.Next, Inputs.RoundGeneration);
+    }
     return Result;
 }
