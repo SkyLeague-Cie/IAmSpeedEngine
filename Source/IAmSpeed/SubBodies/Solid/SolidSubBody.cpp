@@ -5,6 +5,7 @@
 #include "IAmSpeed/Components/ISpeedComponent.h"
 #include "IAmSpeed/Base/PhysicalContactConstraint.h"
 #include "IAmSpeed/World/Simulation/ExactRoundContactSettings.h"
+#include "IAmSpeed/World/Subsystem/SpeedWorldSubsystem.h"
 #include "Configs/SubBodyConfig.h"
 #include "HAL/IConsoleManager.h"
 
@@ -141,9 +142,78 @@ void USolidSubBody::ApplyImpulse(const FVector& LinearImpulse, const FVector& Wo
 	}
 }
 
+void USolidSubBody::ChangeSolidContactConfiguration(TFunctionRef<void()> Write)
+{
+    if (!USpeedWorldSubsystem::TryWriteSolidContactConfiguration(*this, Write))
+    {
+        UE_LOG(LogTemp, Warning, TEXT("Solid contact configuration is sealed by the exact round owner (%s)"),
+            *GetName());
+    }
+}
+
 void USolidSubBody::SetSphereBoxRestitutionOverride(float InRestitution)
 {
-    SphereBoxRestitutionOverride = InRestitution < 0.f ? -1.f : FMath::Clamp(InRestitution, 0.f, 1.f);
+    ChangeSolidContactConfiguration([this, InRestitution]
+    {
+        SphereBoxRestitutionOverride = InRestitution < 0.f ? -1.f : FMath::Clamp(InRestitution, 0.f, 1.f);
+    });
+}
+
+void USolidSubBody::SetSphereBoxFrictionOverride(float InFriction)
+{
+    ChangeSolidContactConfiguration([this, InFriction]
+    {
+        SphereBoxFrictionOverride = InFriction < 0.0f ? -1.0f : InFriction;
+    });
+}
+
+void USolidSubBody::SetSphereBoxManifoldFrictionOverride(float InFriction)
+{
+    ChangeSolidContactConfiguration([this, InFriction]
+    {
+        SphereBoxManifoldFrictionOverride = InFriction < 0.0f ? -1.0f : InFriction;
+    });
+}
+
+void USolidSubBody::SetUseCoupledContactImpulse(bool bInEnabled)
+{
+    ChangeSolidContactConfiguration([this, bInEnabled]
+    {
+        bUseCoupledContactImpulse = bInEnabled;
+    });
+}
+
+void USolidSubBody::SetUsePostNormalFrictionImpulse(bool bInEnabled)
+{
+    ChangeSolidContactConfiguration([this, bInEnabled]
+    {
+        bUsePostNormalFrictionImpulse = bInEnabled;
+    });
+}
+
+void USolidSubBody::SetUsePersistentBilateralContact(bool bInEnabled)
+{
+    ChangeSolidContactConfiguration([this, bInEnabled]
+    {
+        bUsePersistentBilateralContact = bInEnabled;
+    });
+}
+
+void USolidSubBody::SetCoupledContactKinematicLimits(float MaxLinearSpeed, float MaxAngularSpeed)
+{
+    ChangeSolidContactConfiguration([this, MaxLinearSpeed, MaxAngularSpeed]
+    {
+        CoupledContactMaxLinearSpeed = MaxLinearSpeed;
+        CoupledContactMaxAngularSpeed = MaxAngularSpeed;
+    });
+}
+
+void USolidSubBody::SetCoupledContactMaxAbsLocalNormalY(float MaxAbsLocalNormalY)
+{
+    ChangeSolidContactConfiguration([this, MaxAbsLocalNormalY]
+    {
+        CoupledContactMaxAbsLocalNormalY = MaxAbsLocalNormalY;
+    });
 }
 
 void USolidSubBody::RegisterCurrentHitAsConstraint()

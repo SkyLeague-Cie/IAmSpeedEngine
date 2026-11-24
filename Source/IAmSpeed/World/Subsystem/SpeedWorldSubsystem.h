@@ -228,6 +228,7 @@ public:
 private:
     friend class ASpeedPhysicsSimulation;
     friend class USSubBody;
+    friend class USolidSubBody;
     friend class USpeedMovementComponent;
     friend class USpeedWheeledComponent;
     bool BindExactRemoteRoundStorageOwner(ASpeedPhysicsSimulation&, uint64 Generation);
@@ -235,6 +236,9 @@ private:
     // UE lifecycle callbacks cannot defer after failed admission. They stop
     // before touching retained storage. Returns true only for the exact route.
     static bool RequireExactRemoteRoundStorageTeardown(const UActorComponent&);
+    static bool TryWriteSolidContactConfiguration(const USolidSubBody&, TFunctionRef<void()> Write);
+    // Serializes pre-bind field writes with installation of the exact native owner.
+    FCriticalSection ExactRoundConfigurationCS;
     TWeakObjectPtr<ASpeedPhysicsSimulation> ExactRoundStorageDriver; // GT
     TAtomic<uint64> ExactRoundStorageGeneration{0};
     TAtomic<bool> bExactRoundStorageRetired{false};

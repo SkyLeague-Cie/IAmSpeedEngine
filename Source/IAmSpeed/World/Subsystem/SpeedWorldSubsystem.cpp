@@ -348,10 +348,37 @@ void USpeedWorldSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 	BuildAnalyticWorldFromLoadedSources();
 }
 
+bool USpeedWorldSubsystem::TryWriteSolidContactConfiguration(
+    const USolidSubBody& Body, TFunctionRef<void()> Write)
+{
+    // Construction and archetype edits cannot touch a registered runtime body.
+    if (Body.IsTemplate() || (Body.HasAnyFlags(RF_NeedInitialization) && !Body.GetParentComponent()))
+    {
+        Write();
+        return true;
+    }
+
+    auto* World = Body.GetWorld();
+    auto* Subsystem = World ? World->GetSubsystem<USpeedWorldSubsystem>() : nullptr;
+    if (Subsystem)
+    {
+        // This lock is never held during a worker step, a host callback or a join.
+        FScopeLock Lock(&Subsystem->ExactRoundConfigurationCS);
+        if (Subsystem->ExactRoundStorageGeneration.Load() && !Subsystem->bExactRoundStorageRetired.Load())
+            return false;
+        Write();
+        return true;
+    }
+
+    Write();
+    return true;
+}
+
 bool USpeedWorldSubsystem::BindExactRemoteRoundStorageOwner(ASpeedPhysicsSimulation& Driver, uint64 Generation)
 {
-    if (!IsInGameThread() || !Generation || Driver.GetWorld() != GetWorld()
-        || ExactRoundStorageGeneration.Load() || !SimulationWorld.BindExactRoundIdentity(Generation)) return false;
+    if (!IsInGameThread() || !Generation || Driver.GetWorld() != GetWorld()) return false;
+    FScopeLock Lock(&ExactRoundConfigurationCS);
+    if (ExactRoundStorageGeneration.Load() || !SimulationWorld.BindExactRoundIdentity(Generation)) return false;
     ExactRoundStorageDriver = &Driver;
     ExactRoundStorageGeneration.Store(Generation);
     return true;
