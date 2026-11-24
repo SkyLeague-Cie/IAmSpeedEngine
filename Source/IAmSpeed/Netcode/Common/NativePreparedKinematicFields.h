@@ -1,6 +1,7 @@
 #pragma once
 
 #include "IAmSpeed/World/Simulation/PreparedSimulationRestore.h"
+#include <array>
 
 class USpeedMovementComponent;
 class USpeedWheeledComponent;
@@ -51,6 +52,36 @@ public:
         }
     };
 
+    struct FWheeledConfigurationValues
+    {
+        uint32 ActorNativeObjectId = 0;
+        uint64 ConfigurationHash = 0;
+        std::array<FRoster::FSubBody, 5> Slots{};
+        bool operator==(const FWheeledConfigurationValues& B) const noexcept
+        { return ActorNativeObjectId == B.ActorNativeObjectId && ConfigurationHash == B.ConfigurationHash && Slots == B.Slots; }
+    };
+    class IAMSPEED_API FWheeledConfigurationAttestation final
+    {
+    public:
+        FWheeledConfigurationValues ValuesAtBind() const { return Bound; }
+        // Available only during this actor's preparation or PrepareFinalization.
+        std::optional<FWheeledConfigurationValues> Reattest() const;
+
+    private:
+        friend class FPreparedNativeKinematicFields;
+        FWheeledConfigurationAttestation(FPreparedRestoreLeaseView InLease, PreparedWorld::FAddress InAddress,
+            PreparedWorld::FActorBinding InBinding, FWheeledConfigurationValues InBound)
+            : Lease(std::move(InLease)), Address(InAddress), Binding(InBinding), Bound(InBound) {}
+        FPreparedRestoreLeaseView Lease;
+        PreparedWorld::FAddress Address;
+        PreparedWorld::FActorBinding Binding;
+        FWheeledConfigurationValues Bound;
+    };
+    // Bind inside the exact Car's synchronous callback. Returns the same
+    // aggregate hash as the roster, and the hitbox and four solid wheel slots.
+    static std::optional<FWheeledConfigurationAttestation> BindWheeledConfiguration(
+        const FSimulationComponentRestoreRequest&);
+
     // Values-only census of the actual registry. Capture on the original
     // owner before staging. The exact route includes the registered endpoint
     // incarnation and live configuration hashes. Actor schemas and the wire
@@ -97,6 +128,8 @@ private:
     enum class EPhase : uint8 { Prepared, Ready, Finalized, Released, Aborted };
     static std::optional<FRoster> CaptureRosterContents(const FSimulationWorld&);
     static uint64 ReadActorConfiguration(const ISpeedComponent&);
+    static std::optional<FWheeledConfigurationValues> ReadBoundWheeledConfiguration(
+        const FPreparedRestoreLeaseView&, const PreparedWorld::FAddress&, const PreparedWorld::FActorBinding&);
     static std::optional<FRoster::FSubBody> ReadSubBodyRow(
         const FSimulationWorld&, const ISpeedComponent&, uint64 ActorId, uint16 Index, const USSubBody&);
     static bool MatchesActor(const FSimulationWorld&, const FSimulationComponentRestoreRequest&, const ISpeedComponent&);

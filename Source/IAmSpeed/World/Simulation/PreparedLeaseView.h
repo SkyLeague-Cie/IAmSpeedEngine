@@ -66,6 +66,16 @@ class FPreparedRestoreLeaseView final
         return S;
     }
 
+    std::shared_ptr<RestoreLeaseDetail::FState> ResolvePreparingActor(
+        const PreparedWorld::FAddress& Address, const PreparedWorld::FActorBinding& Binding) const noexcept
+    {
+        auto S = State.lock();
+        if (!S || S->Worker != std::this_thread::get_id() || S->Phase != RestoreLeaseDetail::EPhase::Preparing
+            || !S->ComponentTarget || !S->ComponentBinding || !(*S->ComponentBinding == Binding)
+            || !S->Query(nullptr, &Address)) return {};
+        return S;
+    }
+
     // Only IAS fragment factories can resolve the native world, and only
     // while the world is dispatching this exact synchronous request.
     const FSimulationWorld* ResolvePreparingWorld(const FSimulationComponentRestoreRequest& Request,
@@ -117,7 +127,7 @@ class FPreparedRestoreLeaseOwner final
         std::unique_ptr<ISimulationRestoreBoundaryLease> L)
         : State(std::make_shared<RestoreLeaseDetail::FState>(W, std::move(E), std::move(L))) {}
     template<class Callback>
-    auto PrepareComponent(const FSimulationComponentRestoreRequest& Request, const ISpeedComponent& Target,
+    auto WithComponent(const FSimulationComponentRestoreRequest* Request, const ISpeedComponent& Target,
         const PreparedWorld::FActorBinding& Binding, Callback&& Prepare)
     {
         Require(RestoreLeaseDetail::EPhase::Preparing);
@@ -132,10 +142,16 @@ class FPreparedRestoreLeaseOwner final
                 State.ComponentBinding = nullptr;
             }
         } Clear{*State};
-        State->ComponentRequest = &Request;
+        State->ComponentRequest = Request;
         State->ComponentTarget = &Target;
         State->ComponentBinding = &Binding;
         return std::forward<Callback>(Prepare)();
+    }
+    template<class Callback>
+    auto PrepareComponent(const FSimulationComponentRestoreRequest& Request, const ISpeedComponent& Target,
+        const PreparedWorld::FActorBinding& Binding, Callback&& Prepare)
+    {
+        return WithComponent(&Request, Target, Binding, std::forward<Callback>(Prepare));
     }
 public:
     FPreparedRestoreLeaseOwner(const FPreparedRestoreLeaseOwner&) = delete;

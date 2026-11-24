@@ -211,7 +211,14 @@ bool FSimulationWorld::PrepareRestoreFinalization(const FPreparedRestoreToken& T
         auto& P = *PreparedRestore;
         P.Calling = true; // BEFORE the first lease or provider callback
         if (!P.LeaseOwner->View().HoldsExactBoundary(*this, P.Publication->Envelope->Address)) { PreparedRestore.reset(); return false; }
-        for (auto& C : P.Components) if (!C->PrepareFinalization()) { PreparedRestore.reset(); return false; }
+        for (std::size_t I = 0; I < P.Components.size(); ++I)
+        {
+            const auto& Binding = P.Publication->Envelope->Actors[I];
+            const auto* Target = AdaptersByStableId.FindRef(Binding.StableId);
+            if (!Target || !P.LeaseOwner->WithComponent(nullptr, *Target, Binding,
+                [&] { return P.Components[I]->PrepareFinalization(); }))
+            { PreparedRestore.reset(); return false; }
+        }
         if (!P.Supplement->PrepareFinalization()) { PreparedRestore.reset(); return false; }
         for (std::size_t I = 0; I < P.Components.size(); ++I)
         {

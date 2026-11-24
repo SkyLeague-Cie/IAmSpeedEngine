@@ -3,6 +3,8 @@
 #include "IAmSpeed/Components/SpeedMovementComponent.h"
 #include "IAmSpeed/Components/SpeedWheeledComponent.h"
 #include "IAmSpeed/SubBodies/Sensor/SensorSubBody.h"
+#include "IAmSpeed/SubBodies/Solid/BoxSubBody.h"
+#include "IAmSpeed/SubBodies/Solid/SWheelSubBody.h"
 #include "IAmSpeed/World/Simulation/ExactRoundConfiguration.h"
 #include "IAmSpeed/World/Simulation/SimulationWorld.h"
 #include <algorithm>
@@ -215,6 +217,82 @@ FPreparedNativeKinematicFields::CaptureBoundSubBodies(const FSimulationComponent
     if (Registered != Rows.size()
         || !Request.OwnerLease.MatchesPreparingTarget(Request, Request.Address, *World, *Actor)) return {};
     return Rows;
+}
+
+std::optional<FPreparedNativeKinematicFields::FWheeledConfigurationValues>
+FPreparedNativeKinematicFields::ReadBoundWheeledConfiguration(const FPreparedRestoreLeaseView& Lease,
+    const PreparedWorld::FAddress& Address, const PreparedWorld::FActorBinding& Binding)
+{
+    const auto Owner = Lease.ResolvePreparingActor(Address, Binding);
+    if (!Owner) return {};
+    const auto& World = *Owner->World;
+    const auto ActorId = Binding.StableId;
+    const FExactRoundNativeOrigin Origin{Address.Authority, Address.WorldIncarnation, Address.TopologyVersion};
+    if (!Binding.Valid() || ActorId > (UINT64_MAX >> 16) || !Origin.Valid()
+        || !(World.ReadExactRoundOrigin() == Origin) || !World.StorageAccess.IsReservationOwner()
+        || World.GetCurrentStepFrame() != Address.Frame || World.bOrderDirty) return {};
+
+    const auto Read = [&]() -> std::optional<FWheeledConfigurationValues>
+    {
+        // Configuration hooks are read-only and cannot reenter the owner.
+        const TGuardValue<bool> Guard(Owner->Querying, true);
+        auto* Adapter = World.AdaptersByStableId.FindRef(ActorId);
+        if (!Adapter || Adapter != Owner->ComponentTarget || World.FindStableId(*Adapter) != ActorId
+            || Adapter->GetPublishedSimulationStableId() != ActorId) return {};
+        const auto* Car = Adapter->AsWheeledPhysicsComponent();
+        if (!IsValid(Car) || static_cast<const ISpeedComponent*>(Car) != Adapter || Car->IsPresentationOnly()
+            || !Car->IsRegistered() || !Car->GetUniqueID()) return {};
+        const auto& Children = Adapter->GetSubBodies();
+        const auto& Wheels = Car->USpeedWheeledComponent::GetWheelSubBodies();
+        if (Children.Num() != 5 || Wheels.Num() != 4 || !IsValid(Car->GetHitboxSubBodyForConfiguration())
+            || Children[0] != Car->GetHitboxSubBodyForConfiguration()) return {};
+
+        FWheeledConfigurationValues Values;
+        Values.ActorNativeObjectId = Car->GetUniqueID();
+        const auto Base = ReadActorConfiguration(*Adapter);
+        if (!Base) return {};
+        uint64 Hash = MixConfiguration(Base, Children.Num());
+        const auto& Endpoints = Owner->Envelope->Endpoints;
+        auto Endpoint = std::lower_bound(Endpoints.begin(), Endpoints.end(), ActorId << 16,
+            [](const PreparedWorld::FEndpointBinding& E, uint64 Key) { return E.StableId < Key; });
+        for (uint16 Slot = 0; Slot < 5; ++Slot)
+        {
+            const auto* Child = Children[Slot];
+            if (!IsValid(Child) || (Slot && Child != Wheels[Slot - 1].Get())) return {};
+            const auto Row = ReadSubBodyRow(World, *Adapter, ActorId, Slot, *Child);
+            if (!Row || !Row->IsSolidEndpoint || Endpoint == Endpoints.end()
+                || !(*Endpoint == PreparedWorld::FEndpointBinding{Row->StableId, Row->Incarnation,
+                    ActorId, Binding.Incarnation, Row->NativeObjectId})) return {};
+            Values.Slots[Slot] = *Row;
+            Hash = MixConfiguration(Hash, Row->ConfigurationHash);
+            ++Endpoint;
+        }
+        if (Hash != Binding.ConfigurationHash
+            || (Endpoint != Endpoints.end() && (Endpoint->StableId >> 16) == ActorId)) return {};
+        Values.ConfigurationHash = Hash;
+        return Values;
+    };
+    const auto Values = Read();
+    if (!Values || !Lease.ResolvePreparingActor(Address, Binding)) return {};
+    return Values;
+}
+
+std::optional<FPreparedNativeKinematicFields::FWheeledConfigurationAttestation>
+FPreparedNativeKinematicFields::BindWheeledConfiguration(const FSimulationComponentRestoreRequest& Request)
+{
+    const auto Owner = Request.OwnerLease.ResolvePreparingState(Request, Request.Address);
+    if (!Owner || !(*Owner->ComponentBinding == Request.Supplement.Binding)) return {};
+    const auto Values = ReadBoundWheeledConfiguration(Request.OwnerLease, Request.Address, Request.Supplement.Binding);
+    if (!Values) return {};
+    return FWheeledConfigurationAttestation(Request.OwnerLease, Request.Address, Request.Supplement.Binding, *Values);
+}
+
+std::optional<FPreparedNativeKinematicFields::FWheeledConfigurationValues>
+FPreparedNativeKinematicFields::FWheeledConfigurationAttestation::Reattest() const
+{
+    const auto Values = ReadBoundWheeledConfiguration(Lease, Address, Binding);
+    if (!Values || !(*Values == Bound)) return {};
+    return Values;
 }
 
 std::unique_ptr<FPreparedNativeKinematicFields> FPreparedNativeKinematicFields::Prepare(
