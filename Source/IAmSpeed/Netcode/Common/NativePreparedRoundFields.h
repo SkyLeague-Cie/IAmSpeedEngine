@@ -152,6 +152,8 @@ public:
     void ReleaseAfterPublication() noexcept;
 
 private:
+    friend class FExactRemoteRoundBuild;
+    static std::optional<PreparedWorld::FColdCarBump> ReadCarBumpSource(const FSimulationWorld&, uint64 ActorId);
     static bool MatchesParkedKickoffDriverGT(
         const ASpeedPhysicsSimulation&, uint64 ExpectedGeneration, uint64 ExpectedFirstFrame);
     struct FPlan;

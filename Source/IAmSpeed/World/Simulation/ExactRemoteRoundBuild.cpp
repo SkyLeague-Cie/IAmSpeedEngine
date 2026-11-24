@@ -67,7 +67,8 @@ std::optional<FExactRemoteRoundBuild::FReplacement> FExactRemoteRoundBuild::Buil
     const auto Native = CaptureNativeAddress(World, Current);
     const auto Roster = CaptureRoster(World, Current);
     if (!Native || !Roster || !Envelope.Address.ResumeGeneration
-        || Actors.size() > Roster->Actors.size() || !MatchesBindings(*Roster, Envelope)) return {};
+        || !Envelope.ColdCarBumps.empty() || Actors.size() > Roster->Actors.size()
+        || !MatchesBindings(*Roster, Envelope)) return {};
     Native->Stamp(Envelope.Address);
 
     std::vector<PreparedWorld::FBodyReplacement> Replacements;
@@ -76,12 +77,20 @@ std::optional<FExactRemoteRoundBuild::FReplacement> FExactRemoteRoundBuild::Buil
     {
         const auto& K = Actor.Kinematic;
         if (!K.Rotation.IsNormalized()) return {};
+        if (Actor.bColdCarBump)
+        {
+            const auto Source = FPreparedNativeRoundFields::ReadCarBumpSource(World, Actor.StableId);
+            if (!Source) return {};
+            Envelope.ColdCarBumps.push_back(*Source);
+        }
         Replacements.push_back({Actor.StableId, {
             K.Location.X, K.Location.Y, K.Location.Z, K.Velocity.X, K.Velocity.Y, K.Velocity.Z,
             K.Acceleration.X, K.Acceleration.Y, K.Acceleration.Z, K.Rotation.X, K.Rotation.Y, K.Rotation.Z, K.Rotation.W,
             K.AngularVelocity.X, K.AngularVelocity.Y, K.AngularVelocity.Z,
             K.AngularAcceleration.X, K.AngularAcceleration.Y, K.AngularAcceleration.Z}, Actor.bFrozen});
     }
+    std::sort(Envelope.ColdCarBumps.begin(), Envelope.ColdCarBumps.end(),
+        [](const auto& A, const auto& B) { return A.Actor < B.Actor; });
 
     const auto& Before = Current.World();
     const PreparedWorld::FSnapshotView Source{Before.Payload.GetData(), static_cast<std::size_t>(Before.Payload.Num()),
@@ -96,6 +105,33 @@ std::optional<FExactRemoteRoundBuild::FReplacement> FExactRemoteRoundBuild::Buil
     Result.Snapshot.Payload.Append(Built->Payload.data(), static_cast<int32>(Built->Payload.size()));
     Result.Envelope = std::make_shared<const PreparedWorld::FRestoreEnvelope>(std::move(Built->Envelope));
     return Result;
+}
+
+bool FExactRemoteRoundBuild::ValidateColdCarBumpSource(const FSimulationWorld& World,
+    const FCompletedSimulationPublication& Current, const PreparedWorld::FRestoreEnvelope& Envelope)
+{
+    if (Envelope.ColdCarBumps.empty()) return true;
+    const auto Native = CaptureNativeAddress(World, Current);
+    if (!Native || !Native->Matches(Envelope.Address) || !PreparedWorld::ValidEnvelope(Envelope)) return false;
+    for (const auto& Bump : Envelope.ColdCarBumps)
+    {
+        const auto Actual = FPreparedNativeRoundFields::ReadCarBumpSource(World, Bump.Actor);
+        if (!Actual || !(*Actual == Bump)) return false;
+    }
+    const auto& Before = Current.World();
+    const auto Parsed = PreparedWorld::ParseSnapshot(Before.Payload.GetData(), static_cast<std::size_t>(Before.Payload.Num()),
+        Before.NumFrame, Before.InputJournalHash, Before.StateHash, Envelope.Actors);
+    return Parsed && PreparedWorld::MatchesCarBumpPayloads(*Parsed, Envelope.ColdCarBumps, false);
+}
+
+bool FExactRemoteRoundBuild::MatchesColdCarBumpPublication(const FSimulationSnapshot& Snapshot,
+    const PreparedWorld::FRestoreEnvelope& Envelope)
+{
+    if (Envelope.ColdCarBumps.empty()) return true;
+    if (Snapshot.NumFrame != Envelope.Address.Next) return false;
+    const auto Parsed = PreparedWorld::ParseSnapshot(Snapshot.Payload.GetData(), static_cast<std::size_t>(Snapshot.Payload.Num()),
+        Snapshot.NumFrame, Snapshot.InputJournalHash, Snapshot.StateHash, Envelope.Actors);
+    return Parsed && PreparedWorld::MatchesCarBumpPayloads(*Parsed, Envelope.ColdCarBumps, true);
 }
 }
 

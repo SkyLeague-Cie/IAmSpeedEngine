@@ -2047,6 +2047,10 @@ bool ASpeedPhysicsSimulation::StepCanonicalFrame(const FCanonicalFrameContext& C
         PreparedPreflight->RequireClosedForSnapshot();
 		FSimulationSnapshot Snapshot = SpeedWorldSubsystem->CaptureSimulationSnapshot(
 			Context.NumFrame, InputJournal.StableHash(), bPublishPresentation||!ManagedRequestedPresentations.empty());
+        if (ExactRemoteRoundStorage && (!ActiveExactRemoteRound || !ActiveExactRemoteRound->World
+            || !ActiveExactRemoteRound->World->Envelope || !Speed::FExactRemoteRoundBuild::MatchesColdCarBumpPublication(
+                Snapshot, *ActiveExactRemoteRound->World->Envelope)))
+            throw std::runtime_error("exact neutral frame changed the sealed cold CarBump state");
 #if WITH_DEV_AUTOMATION_TESTS
     OwnedPhases.Mark(Speed::OwnedFrameAudit::ECanonicalEdge::Snapshot);
 #endif

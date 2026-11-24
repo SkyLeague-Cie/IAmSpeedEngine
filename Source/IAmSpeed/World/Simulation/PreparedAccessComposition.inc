@@ -22,6 +22,7 @@ bool FSimulationWorld::CollectPreparedAccess(std::vector<PreparedAccess::FPartic
     const auto& Envelope = *P.Publication->Envelope; const auto& Physical = *P.Publication->Physical;
     Own.ReadOnly = {Span(&Envelope, sizeof(Envelope)), Span(&Physical, sizeof(Physical)), Span(P.Storage.get(), sizeof(*P.Storage))};
     Read(Envelope.Actors); Read(Envelope.Endpoints); Read(Envelope.ActorSupplements); Read(Envelope.WorldPayload);
+    Read(Envelope.ColdCarBumps);
     for (const auto& S : Envelope.ActorSupplements) { Read(S.MechanicalExtension); Read(S.GameplayPayload); }
     Read(Physical.Bodies); Read(Physical.Dynamic); Read(Physical.Pending);
     for (const auto& B : Physical.Bodies) Read(B.MechanicPayload);

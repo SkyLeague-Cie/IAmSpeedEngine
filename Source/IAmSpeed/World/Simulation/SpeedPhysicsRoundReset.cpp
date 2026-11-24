@@ -183,6 +183,7 @@ std::optional<ESimulationBoundaryResult> ASpeedPhysicsSimulation::ServiceExactRe
         std::shared_ptr<const Speed::FExactRoundHostHold> HostHold;
         std::optional<Speed::FExactRemoteRoundBuild::FRoster> OriginalRoster;
         std::unique_ptr<Speed::FExactRemoteRoundPlan> Plan;
+        bool bCarBumpSourceValid = false;
         const auto& ContactSettings = Current->ExactRoundContactSettings();
         if (!ContactSettings) return {};
         const Speed::FScopedExactRoundContactSettings ContactScope(&*ContactSettings);
@@ -215,9 +216,11 @@ std::optional<ESimulationBoundaryResult> ASpeedPhysicsSimulation::ServiceExactRe
             }
             OriginalRoster = Speed::FExactRemoteRoundBuild::CaptureRoster(World, *Current);
             if (OriginalRoster) Plan = ExactRemoteRoundProvider->Build(World, Current);
+            bCarBumpSourceValid = Plan && Plan->Envelope &&
+                Speed::FExactRemoteRoundBuild::ValidateColdCarBumpSource(World, *Current, *Plan->Envelope);
         }
         if (!Plan) return {};
-        if (Plan->Envelope && Native->Matches(Plan->Envelope->Address)
+        if (bCarBumpSourceValid && Native->Matches(Plan->Envelope->Address)
             && Plan->Boundary == Current && Plan->Inputs.Next == CanonicalNumFrame
             && Plan->Inputs.RoundBaselines.size() == RequiredExactRemoteInputSessions
             && ReadCompletedWorldAndInputFrame() == Current)

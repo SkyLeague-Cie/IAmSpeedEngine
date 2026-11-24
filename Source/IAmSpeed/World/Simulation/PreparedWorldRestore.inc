@@ -1,6 +1,7 @@
 // Included by the DERIVED SimulationWorld.cpp only. Native source-only:
 // NOT_COMPILED / NOT_RUN / NOT_ADMITTED. No production lease or complete
 // component/global gameplay participant has been implemented or qualified.
+#include "PreparedWorldReplacement.h"
 #include <thread>
 namespace Speed
 {
@@ -75,6 +76,9 @@ std::optional<FSimulationWorld::FPreparedRestoreToken> FSimulationWorld::Prepare
         // Private immutable copy. Never retain a caller's mutable alias.
         auto Pinned = std::make_shared<const PreparedWorld::FRestoreEnvelope>(*Envelope);
         if (!PreparedWorld::ValidEnvelope(*Pinned)) return {};
+        if (!Pinned->ColdCarBumps.empty() && (!StorageAccess.IsReservationOwner()
+            || !ExactRoundWorkerGeneration || !(ReadExactRoundOrigin() == FExactRoundNativeOrigin{
+                Pinned->Address.Authority, Pinned->Address.WorldIncarnation, Pinned->Address.TopologyVersion}))) return {};
         Plan->LeaseOwner = std::unique_ptr<FPreparedRestoreLeaseOwner>(
             new FPreparedRestoreLeaseOwner(*this, Pinned, std::move(Lease)));
         // From this point the external lease already pins this world and ALL
@@ -98,7 +102,7 @@ std::optional<FSimulationWorld::FPreparedRestoreToken> FSimulationWorld::Prepare
             || PreparedRestore->Supplement->CoveredDomains() != PreparedWorld::CompleteWorldCoverage) return Fail();
         auto Parsed = PreparedWorld::Parse(Snapshot.Payload.GetData(), static_cast<std::size_t>(Snapshot.Payload.Num()),
             Pinned->Address, Pinned->Actors);
-        if (!Parsed) return Fail();
+        if (!Parsed || !PreparedWorld::MatchesCarBumpPayloads(*Parsed, Pinned->ColdCarBumps, true)) return Fail();
         for (const auto& Binding : Pinned->Actors)
         {
             ISpeedComponent* Adapter = AdaptersByStableId.FindRef(Binding.StableId);

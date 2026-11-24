@@ -62,7 +62,13 @@ class IAMSPEED_API FExactRemoteRoundBuild final
 public:
     using FRoster = FPreparedNativeKinematicFields::FRoster;
 
-    struct FActorReplacement { uint64 StableId = 0; SKinematic Kinematic; bool bFrozen = false; };
+    struct FActorReplacement
+    {
+        uint64 StableId = 0;
+        SKinematic Kinematic;
+        bool bFrozen = false;
+        bool bColdCarBump = false;
+    };
     struct FReplacement
     {
         FSimulationSnapshot Snapshot;
@@ -85,6 +91,9 @@ public:
     static std::optional<FReplacement> BuildReplacement(const FSimulationWorld&, const FCompletedSimulationPublication&,
         PreparedWorld::FRestoreEnvelope, const std::vector<FActorReplacement>&,
         const std::vector<PreparedWorld::FContactRemoval>&);
+    static bool ValidateColdCarBumpSource(const FSimulationWorld&, const FCompletedSimulationPublication&,
+        const PreparedWorld::FRestoreEnvelope&);
+    static bool MatchesColdCarBumpPublication(const FSimulationSnapshot&, const PreparedWorld::FRestoreEnvelope&);
 };
 
 // Coordinator/provider installed before worker creation. Build runs on the

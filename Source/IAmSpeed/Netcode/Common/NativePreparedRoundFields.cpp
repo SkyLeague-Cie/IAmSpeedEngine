@@ -1,5 +1,6 @@
 #include "NativePreparedRoundFields.h"
 
+#include "IAmSpeed/Base/CarBumpSnapshot.h"
 #include "IAmSpeed/Base/OriginKinematicStateValues.h"
 #include "IAmSpeed/Base/SpeedConstant.h"
 #include "IAmSpeed/Components/SpeedMovementComponent.h"
@@ -459,6 +460,29 @@ struct FPreparedNativeRoundFields::FPlan
 FPreparedNativeRoundFields::FPreparedNativeRoundFields(const FSimulationWorld& World,
     const FSimulationComponentRestoreRequest& Request) : Plan(std::make_unique<FPlan>(World, Request)) {}
 
+std::optional<PreparedWorld::FColdCarBump> FPreparedNativeRoundFields::ReadCarBumpSource(
+    const FSimulationWorld& World, uint64 ActorId)
+{
+    if (!ActorId || !World.ExactRoundWorkerGeneration || !World.StorageAccess.IsReservationOwner()) return {};
+    auto* Adapter = World.AdaptersByStableId.FindRef(ActorId);
+    const auto* Car = Adapter ? Adapter->AsWheeledPhysicsComponent() : nullptr;
+    if (!IsValid(Car) || static_cast<const ISpeedComponent*>(Car) != Adapter || Car->IsPresentationOnly()
+        || World.FindStableId(*Car) != ActorId || Car->GetPublishedSimulationStableId() != ActorId) return {};
+
+    const auto& Physics = Car->WheeledPhysicsState;
+    if (!Physics.CarBumpCooldownFrames)
+    {
+        if (!Physics.LastCarBumpVictim.IsExplicitlyNull()) return {};
+        return PreparedWorld::FColdCarBump{ActorId, 0, 0};
+    }
+    const auto* Victim = Physics.LastCarBumpVictim.Get();
+    if (!IsValid(Victim) || Victim == Car || Victim->IsPresentationOnly()) return {};
+    const uint64 VictimId = Victim->GetPublishedSimulationStableId();
+    if (!VictimId || VictimId == ActorId || World.AdaptersByStableId.FindRef(VictimId) != Victim
+        || World.FindStableId(*Victim) != VictimId) return {};
+    return PreparedWorld::FColdCarBump{ActorId, VictimId, Physics.CarBumpCooldownFrames};
+}
+
 std::unique_ptr<FPreparedNativeRoundFields> FPreparedNativeRoundFields::Prepare(USpeedMovementComponent& Target,
     const FSimulationComponentRestoreRequest& Request, const FActorTimeline& Values)
 {
@@ -475,11 +499,23 @@ std::unique_ptr<FPreparedNativeRoundFields> FPreparedNativeRoundFields::Prepare(
 std::unique_ptr<FPreparedNativeRoundFields> FPreparedNativeRoundFields::Prepare(USpeedWheeledComponent& Target,
     const FSimulationComponentRestoreRequest& Request, const FVehicleState& Values)
 {
-    const auto* World = Request.OwnerLease.ResolvePreparingWorld(Request, Request.Address);
-    if (!World || !FPreparedNativeKinematicFields::MatchesActor(*World, Request, Target)
+    const auto Owner = Request.OwnerLease.ResolvePreparingState(Request, Request.Address);
+    if (!Owner || !FPreparedNativeKinematicFields::MatchesActor(*Owner->World, Request, Target)
         || Target.BaseGameState.bHasTestVelocity || Target.bNetCorrHasTarget || Target.NetCorrAccum.bActive
         || Target.bCanonicalInputPending || Target.InputReservationV2 || Target.PreparedWheeledNetworkInput
         || !ValidTimeline(Request, Values.Timeline) || !ValidVehicle(Values)) return {};
+    const auto* World = Owner->World;
+    if (World->ExactRoundWorkerGeneration)
+    {
+        const auto ActorId = Request.Supplement.Binding.StableId;
+        const auto* Intent = PreparedWorld::FindColdCarBump(Owner->Envelope->ColdCarBumps, ActorId);
+        const auto Source = ReadCarBumpSource(*World, ActorId);
+        const auto& Payload = Request.LegacyMechanicPayload;
+        const auto Cold = Collision::EncodeCarBumpSnapshot(Values.Physics.CarBumpCooldownFrames, 0);
+        if (!Source || (Intent ? !(*Intent == *Source) : Source->SourceFrames != 0)
+            || static_cast<std::size_t>(Payload.Num()) != Cold.size()
+            || !std::equal(Cold.begin(), Cold.end(), Payload.GetData())) return {};
+    }
 
     auto Fragment = std::unique_ptr<FPreparedNativeRoundFields>(new FPreparedNativeRoundFields(*World, Request));
     auto& P = *Fragment->Plan;

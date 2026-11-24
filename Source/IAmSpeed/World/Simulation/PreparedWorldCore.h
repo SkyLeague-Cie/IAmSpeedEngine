@@ -87,6 +87,19 @@ struct FActorSupplement
     FActorBinding Binding;
     std::vector<Byte> MechanicalExtension, GameplayPayload;
 };
+struct FColdCarBump
+{
+    U64 Actor = 0, SourceVictim = 0;
+    std::uint16_t SourceFrames = 0;
+    bool operator==(const FColdCarBump& B) const noexcept
+    { return Actor == B.Actor && SourceVictim == B.SourceVictim && SourceFrames == B.SourceFrames; }
+};
+inline const FColdCarBump* FindColdCarBump(const std::vector<FColdCarBump>& Intents, U64 Actor) noexcept
+{
+    const auto I = std::lower_bound(Intents.begin(), Intents.end(), Actor,
+        [](const FColdCarBump& Entry, U64 Key) { return Entry.Actor < Key; });
+    return I != Intents.end() && I->Actor == Actor ? &*I : nullptr;
+}
 struct FRestoreEnvelope
 {
     // LOCAL preparation envelope. Endpoint NativeObjectId is resolved locally
@@ -97,6 +110,7 @@ struct FRestoreEnvelope
     std::vector<FActorSupplement> ActorSupplements; // same exact actor order
     U64 WorldSchema = 0, WorldCoverage = CompleteWorldCoverage;
     std::vector<Byte> WorldPayload;
+    std::vector<FColdCarBump> ColdCarBumps; // original F-1 values, sorted by actor
 };
 inline U64 HashSupplement(const FRestoreEnvelope& E) noexcept
 {
@@ -119,6 +133,12 @@ inline U64 HashSupplement(const FRestoreEnvelope& E) noexcept
     UInt(E.ActorSupplements.size(), 8); for (const auto& S : E.ActorSupplements)
     { Binding(S.Binding); Blob(S.MechanicalExtension); Blob(S.GameplayPayload); }
     UInt(E.WorldSchema, 8); UInt(E.WorldCoverage, 8); Blob(E.WorldPayload);
+    if (!E.ColdCarBumps.empty())
+    {
+        UInt(0x31504d5542524143ull, 8); UInt(E.ColdCarBumps.size(), 8);
+        for (const auto& B : E.ColdCarBumps)
+        { UInt(B.Actor, 8); UInt(B.SourceVictim, 8); UInt(B.SourceFrames, 2); }
+    }
     return H ? H : 1; // integrity only; not authentication
 }
 struct FLimits
@@ -203,7 +223,22 @@ inline bool ValidEnvelopeContents(const FRestoreEnvelope& E, const FLimits& Limi
 {
     if (!ValidBindings(E.Actors, E.Endpoints, Limits)
         || !E.WorldSchema || E.WorldCoverage != CompleteWorldCoverage
+        || E.ColdCarBumps.size() > E.Actors.size()
         || E.ActorSupplements.size() != E.Actors.size() || E.WorldPayload.size() > Limits.MaxPayload) return false;
+    const auto HasActor = [&E](U64 Id)
+    {
+        const auto I = std::lower_bound(E.Actors.begin(), E.Actors.end(), Id,
+            [](const FActorBinding& Entry, U64 Key) { return Entry.StableId < Key; });
+        return I != E.Actors.end() && I->StableId == Id;
+    };
+    U64 PreviousBumpActor = 0;
+    for (const auto& B : E.ColdCarBumps)
+    {
+        if (B.Actor <= PreviousBumpActor || B.Actor == B.SourceVictim || !HasActor(B.Actor)
+            || (B.SourceFrames == 0) != (B.SourceVictim == 0)
+            || (B.SourceVictim && !HasActor(B.SourceVictim))) return false;
+        PreviousBumpActor = B.Actor;
+    }
     std::size_t Bytes = E.WorldPayload.size();
     for (std::size_t I = 0; I < E.Actors.size(); ++I)
     {

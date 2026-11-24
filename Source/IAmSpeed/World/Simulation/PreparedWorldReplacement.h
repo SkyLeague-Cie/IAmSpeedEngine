@@ -1,6 +1,7 @@
 #pragma once
 
 #include "PreparedWorldCore.h"
+#include "IAmSpeed/Base/CarBumpSnapshot.h"
 
 namespace Speed::PreparedWorld
 {
@@ -25,6 +26,25 @@ struct FReplacementSnapshot
     std::vector<Byte> Payload;
     FRestoreEnvelope Envelope;
 };
+
+inline bool MatchesCarBumpPayloads(const FParsedWorld& Snapshot, const std::vector<FColdCarBump>& Intents,
+    bool Cold) noexcept
+{
+    if (Intents.empty()) return true;
+    std::size_t Found = 0;
+    for (const auto& Body : Snapshot.Bodies)
+    {
+        if (const auto* Bump = FindColdCarBump(Intents, Body.StableId))
+        {
+            const auto Expected = Collision::EncodeCarBumpSnapshot(
+                Cold ? std::uint16_t{} : Bump->SourceFrames, Cold ? U64{} : Bump->SourceVictim);
+            if (!std::equal(Expected.begin(), Expected.end(),
+                Body.MechanicPayload.begin(), Body.MechanicPayload.end())) return false;
+            ++Found;
+        }
+    }
+    return Found == Intents.size();
+}
 
 namespace ReplacementDetail
 {
@@ -61,8 +81,8 @@ public:
 };
 }
 
-// Local schema-2 edit only. Preserve canonical body order, opaque mechanical
-// bytes and every contact except the exact requested endpoint pairs.
+// Preserve body order, unselected mechanical bytes and every contact except
+// the exact requested pairs. Cold CarBump uses the same-sized IAS encoding.
 inline std::optional<FReplacementSnapshot> BuildReplacement(
     const FSnapshotView& Source, FRestoreEnvelope Envelope, const std::vector<FBodyReplacement>& Replacements,
     const std::vector<FContactRemoval>& ContactsToRemove)
@@ -75,7 +95,8 @@ inline std::optional<FReplacementSnapshot> BuildReplacement(
 
     const auto Parsed = ParseSnapshot(Source.Data, Source.Size, Source.Frame, Source.InputHash,
         Source.StateHash, Envelope.Actors, Limits);
-    if (!Parsed || !BuildContactIndexes(*Parsed, Envelope.Actors, Envelope.Endpoints, Limits)) return {};
+    if (!Parsed || !MatchesCarBumpPayloads(*Parsed, Envelope.ColdCarBumps, false)
+        || !BuildContactIndexes(*Parsed, Envelope.Actors, Envelope.Endpoints, Limits)) return {};
 
     std::map<U64, const FBodyReplacement*> PendingReplacements;
     for (const auto& Body : Replacements)
@@ -104,8 +125,17 @@ inline std::optional<FReplacementSnapshot> BuildReplacement(
         W.UInt(Body.StableId, 8);
         for (double Value : Replacement ? Replacement->Kinematic : Body.Kinematic) W.Float(Value);
         W.UInt(Replacement ? Replacement->Frozen : Body.Frozen, 1);
-        W.UInt(Body.MechanicPayload.size(), 4);
-        W.Bytes.insert(W.Bytes.end(), Body.MechanicPayload.begin(), Body.MechanicPayload.end());
+        if (FindColdCarBump(Envelope.ColdCarBumps, Body.StableId))
+        {
+            const auto Cold = Collision::EncodeCarBumpSnapshot(0, 0);
+            W.UInt(Cold.size(), 4);
+            W.Bytes.insert(W.Bytes.end(), Cold.begin(), Cold.end());
+        }
+        else
+        {
+            W.UInt(Body.MechanicPayload.size(), 4);
+            W.Bytes.insert(W.Bytes.end(), Body.MechanicPayload.begin(), Body.MechanicPayload.end());
+        }
         if (Replacement) PendingReplacements.erase(I);
     }
     if (!PendingReplacements.empty()) return {};

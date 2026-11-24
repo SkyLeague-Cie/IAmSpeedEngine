@@ -261,6 +261,90 @@ static void TestEnvelopeAndLimits()
     L = {}; L.MaxPairs = 2; CHECK(!Parse(Original.Bytes.data(), Original.Bytes.size(), Original.Envelope.Address, Original.Envelope.Actors, L));
     L.MaxPairs = 3; CHECK(Parse(Original.Bytes.data(), Original.Bytes.size(), Original.Envelope.Address, Original.Envelope.Actors, L));
 }
+static void TestColdCarBumpReplacement()
+{
+    using Speed::Collision::EncodeCarBumpSnapshot;
+    FFixture F;
+    const auto Active = EncodeCarBumpSnapshot(75, 8);
+    const auto Cold = EncodeCarBumpSnapshot(0, 0);
+    F.Values.Bodies[0].MechanicPayload.assign(Active.begin(), Active.end());
+    F.Encode();
+    auto Envelope = F.Envelope;
+    ++Envelope.Address.PublicationSerial;
+    ++Envelope.Address.ResumeGeneration;
+    Envelope.ColdCarBumps = {{7, 8, 75}};
+    const FBodyReplacement Car{7, F.Values.Bodies[0].Kinematic, F.Values.Bodies[0].Frozen};
+    const auto Build = [&](const FRestoreEnvelope& Edit)
+    {
+        const auto& A = F.Envelope.Address;
+        return BuildReplacement({F.Bytes.data(), F.Bytes.size(), A.Frame, A.InputHash, A.StateHash,
+            A.PublicationSerial}, Edit, {Car}, {});
+    };
+    const auto Before = F.ParseNow();
+    CHECK(Before && MatchesCarBumpPayloads(*Before, Envelope.ColdCarBumps, false));
+    CHECK(!MatchesCarBumpPayloads(*Before, Envelope.ColdCarBumps, true));
+    const auto Built = Build(Envelope);
+    CHECK(Built && ValidEnvelope(Built->Envelope));
+    CHECK(Built->Envelope.Address.StateHash != F.Envelope.Address.StateHash);
+    CHECK(Built->Envelope.Address.Frame == F.Envelope.Address.Frame);
+    const auto Sealed = Parse(Built->Payload.data(), Built->Payload.size(), Built->Envelope.Address, Envelope.Actors);
+    CHECK(Sealed && MatchesCarBumpPayloads(*Sealed, Built->Envelope.ColdCarBumps, true));
+    for (std::size_t I = 1; I < Before->Bodies.size(); ++I)
+        CHECK(Sealed->Bodies[I].MechanicPayload == Before->Bodies[I].MechanicPayload);
+    for (std::size_t I = 0; I < Envelope.ActorSupplements.size(); ++I)
+    {
+        CHECK(Built->Envelope.ActorSupplements[I].MechanicalExtension == Envelope.ActorSupplements[I].MechanicalExtension);
+        CHECK(Built->Envelope.ActorSupplements[I].GameplayPayload == Envelope.ActorSupplements[I].GameplayPayload);
+    }
+    auto Expected = F;
+    Expected.Values.Bodies[0].MechanicPayload.assign(Cold.begin(), Cold.end());
+    Expected.Encode();
+    CHECK(Built->Payload == Expected.Bytes);
+    auto First = Expected;
+    ++First.Envelope.Address.Frame;
+    ++First.Envelope.Address.Next;
+    First.Encode();
+    const auto FirstCold = First.ParseNow();
+    CHECK(FirstCold && FirstCold->Frame == Built->Envelope.Address.Next
+        && MatchesCarBumpPayloads(*FirstCold, Built->Envelope.ColdCarBumps, true));
+    First.Values.Bodies[0].MechanicPayload.assign(Active.begin(), Active.end());
+    First.Encode();
+    const auto FirstActive = First.ParseNow();
+    CHECK(FirstActive && !MatchesCarBumpPayloads(*FirstActive, Built->Envelope.ColdCarBumps, true));
+    CHECK(F.ParseNow()->Bodies[0].MechanicPayload == Before->Bodies[0].MechanicPayload);
+    auto FSkipped = Envelope;
+    FSkipped.ColdCarBumps.clear();
+    const auto Preserved = Build(FSkipped);
+    CHECK(Preserved && Preserved->Payload == F.Bytes);
+
+    auto Bad = Envelope;
+    Bad.ColdCarBumps[0].SourceFrames = 74;
+    CHECK(!Build(Bad));
+    Bad = Envelope;
+    Bad.ColdCarBumps[0].SourceVictim = 9;
+    CHECK(!Build(Bad));
+    Bad.ColdCarBumps[0].SourceVictim = 7;
+    CHECK(!Build(Bad));
+    Bad.ColdCarBumps[0].SourceVictim = 99;
+    CHECK(!Build(Bad));
+    Bad = Envelope;
+    Bad.ColdCarBumps.push_back(Bad.ColdCarBumps[0]);
+    CHECK(!Build(Bad));
+    Bad = Built->Envelope;
+    --Bad.ColdCarBumps[0].SourceFrames;
+    CHECK(!ValidEnvelope(Bad)); // original typed intent belongs to the seal
+    F.Values.Bodies[0].MechanicPayload[0] = 2;
+    F.Encode();
+    CHECK(!Build(Envelope));
+    F.Values.Bodies[0].MechanicPayload.assign(Active.begin(), Active.end() - 1);
+    F.Encode();
+    CHECK(!Build(Envelope));
+    F.Values.Bodies[0].MechanicPayload.assign(Cold.begin(), Cold.end());
+    F.Encode();
+    CHECK(!Build(Envelope));
+    Envelope.ColdCarBumps[0] = {7, 0, 0};
+    CHECK(Build(Envelope));
+}
 static void TestAllocationFailureAndPreparedStorageTail()
 {
     FFixture F; bool Success = false; unsigned Failures = 0;
@@ -299,6 +383,7 @@ int main()
     static_assert(PairBytes == 198 && BodyFixedBytes == 165);
     static_assert(noexcept(std::declval<std::unique_ptr<FContactIndexes>&>().swap(std::declval<std::unique_ptr<FContactIndexes>&>())));
     TestRoundTripAndIndex(); TestReplacementPreservesOriginalBytesAndRetiresOnlySelectedPairs();
+    TestColdCarBumpReplacement();
     TestMalformedBytes(); TestEnvelopeAndLimits(); TestAllocationFailureAndPreparedStorageTail();
     std::printf("PreparedWorldCore: %u checks PASS; real frozen2776-format parser/indexes, fixture bytes only; native NOT_COMPILED/RUN/ADMITTED\n", Checks);
     return 0;
