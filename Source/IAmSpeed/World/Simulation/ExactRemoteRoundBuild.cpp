@@ -14,6 +14,15 @@ std::optional<FExactRoundNativeAddress> FExactRemoteRoundBuild::CaptureNativeAdd
         Snapshot.InputJournalHash, Snapshot.PublicationSerial);
 }
 
+std::optional<FExactRoundStaticRouteWitness> FExactRemoteRoundBuild::CaptureStaticCollisionRoute(
+    const FSimulationWorld& World, const FCompletedSimulationPublication& Current)
+{
+    if (!CaptureNativeAddress(World, Current) || !Current.ContactSettings || !Current.StaticRoute)
+        return {};
+    const auto Actual = World.CaptureExactRoundStaticRoute(Current.ContactSettings->StaticCollision);
+    return Actual == Current.StaticRoute ? Actual : std::nullopt;
+}
+
 std::optional<FExactRemoteRoundBuild::FRoster> FExactRemoteRoundBuild::CaptureRoster(
     const FSimulationWorld& World, const FCompletedSimulationPublication& Current)
 {

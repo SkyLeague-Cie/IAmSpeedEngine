@@ -1727,6 +1727,15 @@ bool ASpeedPhysicsSimulation::StepCanonicalFrame(const FCanonicalFrameContext& C
     }
     const Speed::FScopedExactRoundContactSettings RoundContactScope(
         RoundContactSettings ? &*RoundContactSettings : nullptr);
+    const auto ReadStaticRoute = [&]() -> std::optional<Speed::FExactRoundStaticRouteWitness>
+    {
+        if (!RoundContactSettings) return {};
+        return SpeedWorldSubsystem->SimulationWorld.CaptureExactRoundStaticRoute(RoundContactSettings->StaticCollision);
+    };
+    const auto FrameStaticRoute = ReadStaticRoute();
+    const auto PreviousStaticRoute = ExactRemoteRoundStorage
+        ? ActiveExactRemoteRound->Previous->StaticRoute : std::nullopt;
+    if (PreviousStaticRoute && FrameStaticRoute != PreviousStaticRoute) return false;
 
 	FString BindingFailure;
 	bool bAdmitted = false;
@@ -2100,9 +2109,13 @@ bool ASpeedPhysicsSimulation::StepCanonicalFrame(const FCanonicalFrameContext& C
             if (!Speed::FCompletedSimulationPublication::CanPrepare(
                 Snapshot, CompletedPublicationSource, CapturedRegistry, Installed))
                 throw std::runtime_error("completed world/input preparation rejected");
+            const auto CompletedStaticRoute = ReadStaticRoute();
+            if (PreviousStaticRoute && CompletedStaticRoute != PreviousStaticRoute)
+                throw std::runtime_error("exact neutral static collision route changed");
             CompletedDraft.reset(new Speed::FCompletedSimulationPublication(
                 Snapshot, CompletedPublicationSource, CapturedRegistry, Installed,
-                SpeedWorldSubsystem->SimulationWorld.ReadExactRoundOrigin(), RoundContactSettings));
+                SpeedWorldSubsystem->SimulationWorld.ReadExactRoundOrigin(), RoundContactSettings,
+                FrameStaticRoute == CompletedStaticRoute ? FrameStaticRoute : std::nullopt));
         }
         const auto PublishCompletedWorldInput =
             [&](const std::shared_ptr<const Speed::Input::V2::FRegistryFrame>& Completed)

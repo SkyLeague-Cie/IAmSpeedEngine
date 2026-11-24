@@ -16,6 +16,7 @@
 #include "Misc/Parse.h"
 #include "IAmSpeed/World/Subsystem/SpeedWorldSubsystem.h"
 #include "IAmSpeed/World/Collision/StaticCollisionWorld.h"
+#include "IAmSpeed/World/Simulation/ExactRoundContactSettings.h"
 #include "IAmSpeed/World/Collision/PreparedCanonicalStaticQueryService.h"
 #include "IAmSpeed/World/Collision/CollisionResponseMask.h"
 #if WITH_DEV_AUTOMATION_TESTS
@@ -139,16 +140,20 @@ namespace
 		return QueryWorld ? QueryWorld->GetSubsystem<USpeedWorldSubsystem>() : nullptr;
 	}
 
+	Speed::EStaticCollisionBackend ReadBackendRequest()
+	{
+		return static_cast<Speed::EStaticCollisionBackend>(
+			FMath::Clamp(CVarStaticCollisionBackend.GetValueOnAnyThread(), 0, 2));
+	}
+
 	Speed::EStaticCollisionBackend SelectedBackend()
 	{
-		const int32 Requested = FMath::Clamp(
-			CVarStaticCollisionBackend.GetValueOnAnyThread(), 0, 2);
-		if (Requested == 0 &&
-			CVarCompactAuthorityEnabled.GetValueOnAnyThread() != 0)
-		{
-			return Speed::EStaticCollisionBackend::AnalyticHybrid;
-		}
-		return static_cast<Speed::EStaticCollisionBackend>(Requested);
+		if (const auto* Settings = Speed::FScopedExactRoundContactSettings::Current())
+			return Settings->StaticCollision.SelectedBackend();
+		const auto Requested = ReadBackendRequest();
+		const bool Compact = Requested == Speed::EStaticCollisionBackend::UnrealLegacy &&
+			CVarCompactAuthorityEnabled.GetValueOnAnyThread() != 0;
+		return Speed::FExactRoundStaticCollisionSettings{Requested, Compact}.SelectedBackend();
 	}
 
 	void AuditHashBytes(uint64& Hash, const void* Data, SIZE_T Size)
@@ -1641,3 +1646,9 @@ bool FIAmSpeedEmptySingleAccountingTest::RunTest(const FString& Parameters)
 }
 #endif
 } // namespace Speed::Analytic
+
+void Speed::FExactRoundContactSettings::CaptureStaticCollisionSettings() noexcept
+{
+    StaticCollision = {Analytic::ReadBackendRequest(),
+        Analytic::CVarCompactAuthorityEnabled.GetValueOnAnyThread() != 0};
+}

@@ -249,6 +249,22 @@ namespace Speed
         return false;
     }
 
+    std::optional<FExactRoundStaticRouteWitness> FSimulationWorld::CaptureExactRoundStaticRoute(
+        const FExactRoundStaticCollisionSettings& Settings) const
+    {
+        const auto Access = BorrowStorage();
+        if (!Access && !StorageAccess.IsReservationOwner()) return {};
+        const auto Backend = Settings.SelectedBackend();
+        const auto* Provider = StaticCollisionWorld.Get();
+        // Hybrid and legacy can use authored UWorld fallbacks. Only the strict
+        // route with an immutable provider identity can offer this witness.
+        if (Backend != EStaticCollisionBackend::SurfaceAnalytic || !Provider ||
+            Provider->GetBackend() != Backend || !Provider->IsReadyForPhysicsStep()) return {};
+        const auto Identity = Provider->GetImmutableQueryIdentity1075();
+        if (!Identity.IsValid()) return {};
+        return FExactRoundStaticRouteWitness{Backend, Identity.Generation};
+    }
+
     void FSimulationWorld::AdvanceExactRoundTopology() noexcept
     {
         if (!ExactRoundWorkerGeneration) return;

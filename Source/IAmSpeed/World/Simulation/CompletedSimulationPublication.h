@@ -43,6 +43,7 @@ public:
 private:
     friend class ::ASpeedPhysicsSimulation;
     friend class ::FIAmSpeedCompletedSimulationPublicationTest;
+    friend class FExactRemoteRoundBuild;
     using FFrame = Input::V2::FRegistryFrame;
     using FRegistry = Input::V2::FInputRegistryView;
     static bool CanPrepare(const FSimulationSnapshot& Snapshot,
@@ -59,10 +60,11 @@ private:
     FCompletedSimulationPublication(const FSimulationSnapshot& Snapshot,
         std::shared_ptr<const FCompletedSimulationSource> Source,
         std::shared_ptr<const FRegistry> View, std::shared_ptr<const FFrame> Installed,
-        FExactRoundNativeOrigin Origin = {}, std::optional<FExactRoundContactSettings> InContactSettings = {})
+        FExactRoundNativeOrigin Origin = {}, std::optional<FExactRoundContactSettings> InContactSettings = {},
+        std::optional<FExactRoundStaticRouteWitness> InStaticRoute = {})
         : BodySnapshot(Snapshot), OwnerSource(std::move(Source)),
           Inputs(std::move(Installed)), Registry(std::move(View)), RoundOrigin(Origin),
-          ContactSettings(std::move(InContactSettings)) {}
+          ContactSettings(std::move(InContactSettings)), StaticRoute(InStaticRoute) {}
     bool MatchesCompleted(const std::shared_ptr<const FFrame>& Completed) const noexcept
     {
         // CompleteAll transfers the exact preallocated Pending frame to Latest.
@@ -85,5 +87,6 @@ private:
     std::shared_ptr<const FRegistry> Registry;
     const FExactRoundNativeOrigin RoundOrigin;
     const std::optional<FExactRoundContactSettings> ContactSettings;
+    const std::optional<FExactRoundStaticRouteWitness> StaticRoute;
 };
 }

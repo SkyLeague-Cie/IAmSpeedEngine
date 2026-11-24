@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ExactRoundVehicleContactSettings.h"
+#include "IAmSpeed/World/Collision/StaticCollisionRoute.h"
 #include <optional>
 
 class ASpeedPhysicsSimulation;
@@ -11,7 +12,7 @@ namespace Speed
 // Subbody-specific values still belong to the native round roster.
 struct FExactRoundContactSettings final
 {
-    static constexpr std::uint64_t HashSchema = 4;
+    static constexpr std::uint64_t HashSchema = 5;
 
     std::optional<float> SphereBoxRestitution;
     std::optional<float> SphereBoxFriction;
@@ -27,6 +28,7 @@ struct FExactRoundContactSettings final
     FExactRoundBoxContactSettings BoxContact;
     FExactRoundWheelGroundContactSettings WheelGroundContact;
     FExactRoundSuspensionSettings Suspension;
+    FExactRoundStaticCollisionSettings StaticCollision;
 
     bool operator==(const FExactRoundContactSettings&) const = default;
 
@@ -53,6 +55,8 @@ struct FExactRoundContactSettings final
         BoxContact.AppendHash(Writer);
         Suspension.AppendHash(Writer);
         WheelGroundContact.AppendHash(Writer);
+        Writer.Unsigned(static_cast<std::uint8_t>(StaticCollision.RequestedBackend));
+        Writer.Boolean(StaticCollision.CompactAuthority);
         return Writer.Hash();
     }
 
@@ -64,6 +68,7 @@ private:
     void CaptureBoxContactSettings() noexcept;
     void CaptureWheelGroundContactSettings() noexcept;
     void CaptureSuspensionSettings() noexcept;
+    void CaptureStaticCollisionSettings() noexcept;
 };
 
 // Response and projection are synchronous on the canonical owner. Keep

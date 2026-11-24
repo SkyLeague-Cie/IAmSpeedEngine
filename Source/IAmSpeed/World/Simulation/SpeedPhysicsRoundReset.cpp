@@ -190,7 +190,8 @@ std::optional<ESimulationBoundaryResult> ASpeedPhysicsSimulation::ServiceExactRe
             World.RoundBuildBoundary = Current.get();
             ON_SCOPE_EXIT { World.RoundBuildBoundary = nullptr; };
             Native = Speed::FExactRemoteRoundBuild::CaptureNativeAddress(World, *Current);
-            if (!Native || Native->StateVersion != SnapshotBuffer.PublishedSerial())
+            if (!Native || Native->StateVersion != SnapshotBuffer.PublishedSerial()
+                || (Current->StaticRoute && !Speed::FExactRemoteRoundBuild::CaptureStaticCollisionRoute(World, *Current)))
             {
                 Refusal = ERefusal::NativeAddressChanged;
                 return {};

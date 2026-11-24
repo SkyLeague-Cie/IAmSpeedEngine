@@ -70,6 +70,9 @@ public:
     };
 
     static std::optional<FRoster> CaptureRoster(const FSimulationWorld&, const FCompletedSimulationPublication&);
+    // Compare the completed strict route with its provider under the original reservation.
+    static std::optional<FExactRoundStaticRouteWitness> CaptureStaticCollisionRoute(
+        const FSimulationWorld&, const FCompletedSimulationPublication&);
     static std::optional<FExactRoundNativeAddress> CaptureNativeAddress(
         const FSimulationWorld&, const FCompletedSimulationPublication&) noexcept;
     // Keep game actor incarnations/schemas and take configuration hashes and

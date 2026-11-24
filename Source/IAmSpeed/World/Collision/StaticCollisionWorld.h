@@ -2,6 +2,7 @@
 
 #include "IAmSpeed/World/Analytic/AnalyticWorldQuery.h"
 #include "StaticQueryBatch.h"
+#include "StaticCollisionRoute.h"
 #include "OrdinaryC2DiagnosticScene.h"
 #include <atomic>
 
@@ -12,13 +13,6 @@ namespace Speed
 class FPreparedWorldSnapshot;
 class FPreparedCanonicalStaticQueryService;
 class FPreparedNativeFrameConsumer;
-
-enum class EStaticCollisionBackend : uint8
-{
-	UnrealLegacy = 0,
-	AnalyticHybrid,
-	SurfaceAnalytic,
-};
 
 class IAMSPEED_API IStaticCollisionWorld
 {
