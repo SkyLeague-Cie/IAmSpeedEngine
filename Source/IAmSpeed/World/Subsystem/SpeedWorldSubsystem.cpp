@@ -3,6 +3,7 @@
 // USpeedWorldSubsystem.cpp
 
 #include "SpeedWorldSubsystem.h"
+#include "Misc/ScopeTryLock.h"
 #include "IAmSpeed/Netcode/presentation-client/PresentationClientWorld.h"
 #include "IAmSpeed/World/Analytic/SpeedAnalyticContactComponent.h"
 #include "HAL/CriticalSection.h"
@@ -344,6 +345,68 @@ void USpeedWorldSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 		return;
 	}
 	BuildAnalyticWorldFromLoadedSources();
+}
+
+bool USpeedWorldSubsystem::BindExactRemoteRoundStorageOwner(ASpeedPhysicsSimulation& Driver, uint64 Generation)
+{
+    if (!IsInGameThread() || !Generation || Driver.GetWorld() != GetWorld()
+        || ExactRoundStorageGeneration.Load()) return false;
+    ExactRoundStorageDriver = &Driver;
+    ExactRoundStorageGeneration.Store(Generation);
+    return true;
+}
+
+bool USpeedWorldSubsystem::RecordExactRemoteRoundStorageJoin(ASpeedPhysicsSimulation& Driver, uint64 Generation)
+{
+    if (!IsInGameThread() || !Generation || ExactRoundStorageGeneration.Load() != Generation
+        || !ExactRoundStorageDriver.HasSameIndexAndSerialNumber(TWeakObjectPtr<ASpeedPhysicsSimulation>(&Driver))
+        || !Driver.InputOwnersRetiredAfterJoin(Generation))
+        return false;
+    bExactRoundStorageJoined = true;
+    return true;
+}
+
+bool USpeedWorldSubsystem::JoinExactRemoteRoundBeforeStorageMutationGT()
+{
+    const uint64 Generation = ExactRoundStorageGeneration.Load();
+    if (!Generation) return true;
+    if (!IsInGameThread()) return false;
+    if (bExactRoundStorageRetired.Load()) return true;
+    if (!bExactRoundStorageJoined)
+    {
+        // BeginDestroy is a last-chance check. GC cannot wait for an owner
+        // which may still be inside a UObject query.
+        if (IsGarbageCollecting()) return false;
+        auto* Driver = ExactRoundStorageDriver.GetEvenIfUnreachable();
+        if (!Driver || Driver->GetWorld() != GetWorld() || Driver->HasAnyFlags(RF_BeginDestroyed)
+            || !Driver->JoinExactRemoteRoundBeforeStorageTeardown(Generation)
+            || !RecordExactRemoteRoundStorageJoin(*Driver, Generation)) return false;
+    }
+    // Joining above is the only wait. Do not retain a registry lock or world
+    // borrow across it. Drop every cached body/contact row before UE removal.
+    FScopeTryLock Lock(&PendingCS);
+    if (!Lock.IsLocked() || !SimulationWorld.RetireExactRoundStorageAfterJoin()) return false;
+    PendingOps.Reset();
+    bExactRoundStorageRetired.Store(true);
+    return true;
+}
+
+bool USpeedWorldSubsystem::RequireExactRemoteRoundStorageTeardown(const UActorComponent& Component)
+{
+    const auto* World = Component.IsTemplate() ? nullptr : Component.GetWorld();
+    auto* Subsystem = World ? World->GetSubsystem<USpeedWorldSubsystem>() : nullptr;
+    if (!Subsystem || !Subsystem->ExactRoundStorageGeneration.Load()) return false;
+    if (!Subsystem->JoinExactRemoteRoundBeforeStorageMutationGT())
+        UE_LOG(LogTemp, Fatal, TEXT("Exact round storage teardown refused before original worker and registry retirement (%s)"),
+            *Component.GetName());
+    return true;
+}
+
+void USpeedWorldSubsystem::Deinitialize()
+{
+    if (!JoinExactRemoteRoundBeforeStorageMutationGT())
+        UE_LOG(LogTemp, Fatal, TEXT("Exact round world teardown refused before original worker and registry retirement"));
+    Super::Deinitialize();
 }
 
 TWeakObjectPtr<UPrimitiveComponent> USpeedWorldSubsystem::FindAnalyticSourceComponent(
@@ -1316,6 +1379,7 @@ void USpeedWorldSubsystem::RegisterSpeedComponent(ISpeedComponent* Comp)
     if (SimulationWorld.StorageAccess.IsReservationOwner())
         throw std::logic_error("Cannot register an adapter from round preparation");
     FScopeLock Lock(&PendingCS);
+    if (bExactRoundStorageRetired.Load()) return;
     PendingOps.Add({ true, Comp });
 }
 
@@ -1324,6 +1388,12 @@ void USpeedWorldSubsystem::UnregisterSpeedComponent(ISpeedComponent* Comp)
     if (!Comp) return;
     if (SimulationWorld.StorageAccess.IsReservationOwner())
         throw std::logic_error("Cannot unregister an adapter from round preparation");
+    if (ExactRoundStorageGeneration.Load())
+    {
+        if (!JoinExactRemoteRoundBeforeStorageMutationGT())
+            UE_LOG(LogTemp, Fatal, TEXT("Exact round adapter removal refused before original worker and registry retirement"));
+        return;
+    }
     FScopeLock Lock(&PendingCS);
     PendingOps.Add({ false, Comp });
 }

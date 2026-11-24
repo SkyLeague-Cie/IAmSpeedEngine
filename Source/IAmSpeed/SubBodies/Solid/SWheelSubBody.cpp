@@ -1828,6 +1828,7 @@ float USWheelSubBody::GetRollAngle() const
 
 void USWheelSubBody::SetChaosWheel(UChaosVehicleWheel* InChaosWheel)
 {
+    if (ParentComponent && ChaosWheel && ChaosWheel != InChaosWheel) RequireExactRoundStorageTeardown();
     ChaosWheel = InChaosWheel;
     if (ChaosWheel && SuspensionMaxRaiseOverride >= 0.0f
         && SuspensionMaxDropOverride >= 0.0f)
@@ -1839,6 +1840,7 @@ void USWheelSubBody::SetChaosWheel(UChaosVehicleWheel* InChaosWheel)
 
 void USWheelSubBody::SetWheelSim(Chaos::FSimpleWheelSim* InPWheel)
 {
+    if (ParentComponent && PWheel && PWheel != InPWheel) RequireExactRoundStorageTeardown();
 	PWheel = InPWheel;
 	if (!PWheel)
 	{
@@ -1850,6 +1852,7 @@ void USWheelSubBody::SetWheelSim(Chaos::FSimpleWheelSim* InPWheel)
 
 void USWheelSubBody::SetSuspensionSim(Chaos::FSimpleSuspensionSim* InPSuspension)
 {
+    if (ParentComponent && PSuspension && PSuspension != InPSuspension) RequireExactRoundStorageTeardown();
     PSuspension = InPSuspension;
 	// Print parameters for debug
 	// UE_LOG(WheelSubBodyLog, Warning, TEXT("WheelSubBody %d Suspension parameters: MaxLength= %.2f, SpringRate= %.2f, CompressionDamping= %.2f, ReboundDamping= %.2f"),

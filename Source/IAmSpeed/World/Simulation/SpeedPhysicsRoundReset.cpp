@@ -62,7 +62,10 @@ bool ASpeedPhysicsSimulation::ConfigureExactRemoteRoundReset(std::shared_ptr<Spe
     check(IsInGameThread());
     if (!Provider || ExactRemoteRoundProvider || !RequiredExactRemoteInputSessions
         || GetNetMode() != NM_DedicatedServer || SimulationWorker || InputSessionRegistry
+        || (bExecutionModeInitialized && !IsOwnedWorkerExecutionMode())
         || bInputOwnerRetired.Load() || bOwnedWorkerTerminal.Load()) return false;
+    auto* Subsystem = GetSpeedWorldSubsystem(GetWorld());
+    if (!Subsystem || !Subsystem->BindExactRemoteRoundStorageOwner(*this, InputWorkerGeneration)) return false;
     ExactRemoteRoundProvider = std::move(Provider);
     return true;
 }
@@ -70,8 +73,11 @@ bool ASpeedPhysicsSimulation::ConfigureExactRemoteRoundReset(std::shared_ptr<Spe
 bool ASpeedPhysicsSimulation::JoinExactRemoteRoundBeforeStorageTeardown(uint64 ExpectedWorkerGeneration)
 {
     if (!IsInGameThread() || !ExactRemoteRoundProvider || !ExpectedWorkerGeneration
-        || ExpectedWorkerGeneration != InputWorkerGeneration || !IsOwnedWorkerExecutionMode()) return false;
-    return JoinOwnedSimulationForInputTeardown() && InputOwnersRetiredAfterJoin(ExpectedWorkerGeneration);
+        || ExpectedWorkerGeneration != InputWorkerGeneration) return false;
+    if (!InputOwnersRetiredAfterJoin(ExpectedWorkerGeneration)
+        && (IsGarbageCollecting() || !JoinOwnedSimulationForInputTeardown())) return false;
+    auto* Subsystem = GetSpeedWorldSubsystem(GetWorld());
+    return !Subsystem || Subsystem->RecordExactRemoteRoundStorageJoin(*this, ExpectedWorkerGeneration);
 }
 
 std::shared_ptr<const Speed::FExactRemoteRoundCommit> ASpeedPhysicsSimulation::ReadExactRemoteRoundCommit() const

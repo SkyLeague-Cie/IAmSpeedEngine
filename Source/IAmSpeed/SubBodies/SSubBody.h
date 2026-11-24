@@ -48,6 +48,11 @@ class IAMSPEED_API USSubBody : public UShapeComponent
 	
 public:
     void OnRegister() override;
+    void DestroyComponent(bool bPromoteChildren = false) override;
+    void OnComponentDestroyed(bool bDestroyingHierarchy) override;
+    void BeginDestroy() override;
+    void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
+    void DetachFromComponent(const FDetachmentTransformRules&) override;
 #if !UE_BUILD_SHIPPING
     /** Read-only, same-run owner-state witness; no UObject or array-header copy. */
     virtual void AppendEpisodeStateForTesting(TArray<uint8>& Out) const
@@ -179,6 +184,12 @@ public:
     static int32 SubBodyPriority(USSubBody::ESubBodyType T);
     static USSubBody* PickResolver(USSubBody* A, USSubBody* B);
 protected:
+    // Derived lifecycle hooks must call this before touching native storage
+    // or delegates if they do their own work before Super.
+    void RequireExactRoundStorageTeardown() const;
+    void OnUnregister() override;
+    void OnDestroyPhysicsState() override;
+    void OnAsyncDestroyPhysicsStateBegin_GameThread(TSet<UObject*>& OutRootedObjects) override;
     /** Clear transient exclusions, retaining bounded scratch and permanent-list order. */
     void ResetIgnoredComponents();
     friend class FIAmSpeedSubBodyIgnoredScratchTest;

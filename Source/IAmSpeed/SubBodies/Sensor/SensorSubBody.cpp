@@ -112,6 +112,7 @@ UPrimitiveComponent* USensorSubBody::GetFirstOverlappingComponent() const
 
 void USensorSubBody::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+    RequireExactRoundStorageTeardown();
 	UnbindDelegates();
 	Super::EndPlay(EndPlayReason);
 }
@@ -135,6 +136,7 @@ void USensorSubBody::BindDelegates()
 
 void USensorSubBody::UnbindDelegates()
 {
+    RequireExactRoundStorageTeardown();
     if (ContinuousOverlapHandle.IsValid())
     {
         ContinuousOverlapHandle.Reset();

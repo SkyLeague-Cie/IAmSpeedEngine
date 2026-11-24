@@ -477,6 +477,8 @@ bool ASpeedPhysicsSimulation::IsReplayStartupHeld(uint64 Token)const
 
 void ASpeedPhysicsSimulation::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+    if (ExactRemoteRoundProvider && !JoinExactRemoteRoundBeforeStorageTeardown(InputWorkerGeneration))
+        UE_LOG(LogTemp, Fatal, TEXT("Exact round driver ended before its original worker retirement was proved"));
     if(!ReplayStartupHolds.IsEmpty())ReplayStartupHolds.Remove(ReplayStartupKeyFor(this));
     NativeFrameStartupHolds.Remove(ReplayStartupKeyFor(this));
 	bPresentationBindingClosed = true;
@@ -503,6 +505,13 @@ void ASpeedPhysicsSimulation::EndPlay(const EEndPlayReason::Type EndPlayReason)
 	if (GetActiveExecutionMode() != ESimulationExecutionMode::UnrealAsyncCallback) PresentationRetiredAfterJoin->Store(true);
 	bAsyncPhysicsTickEnabled = false;
 	Super::EndPlay(EndPlayReason);
+}
+
+void ASpeedPhysicsSimulation::BeginDestroy()
+{
+    if (ExactRemoteRoundProvider && !JoinExactRemoteRoundBeforeStorageTeardown(InputWorkerGeneration))
+        UE_LOG(LogTemp, Fatal, TEXT("Exact round driver destruction refused before original worker retirement"));
+    Super::BeginDestroy();
 }
 
 void ASpeedPhysicsSimulation::Tick(const float DeltaSeconds)
@@ -990,7 +999,9 @@ bool ASpeedPhysicsSimulation::JoinOwnedSimulationForInputTeardown()
 {
 	check(IsInGameThread());
 	// An async callback (or absent driver) cannot grant an owned-thread fence.
-	if (GetActiveExecutionMode() != ESimulationExecutionMode::IAmSpeedThread) return false;
+    const bool bExactBeforePlay = ExactRemoteRoundProvider && !HasActorBegunPlay()
+        && !bExecutionModeInitialized && !SimulationWorker && !InputSessionRegistry;
+	if (GetActiveExecutionMode() != ESimulationExecutionMode::IAmSpeedThread && !bExactBeforePlay) return false;
     if (ExactRemoteRoundProvider) ExactRemoteRoundFence.Close();
 	bInputOwnerRetired.Store(true);
 	PublishedCompletedWorldInput.store({}, std::memory_order_seq_cst);

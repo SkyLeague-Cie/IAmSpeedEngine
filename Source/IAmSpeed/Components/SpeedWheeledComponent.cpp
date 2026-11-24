@@ -534,6 +534,7 @@ void USpeedWheeledComponent::SetOwner(AActor* NewOwner)
 	{
 		return;
 	}
+    if (GetPublishedSimulationStableId()) USpeedWorldSubsystem::RequireExactRemoteRoundStorageTeardown(*this);
 	SpeedCarOwner = Cast<ASpeedCar>(NewOwner);
 	ResolveFixedCenterOfMassFromConfiguration();
 	SetPhysRotation(NewOwner->GetActorRotation().Quaternion());
@@ -691,6 +692,7 @@ void USpeedWheeledComponent::BindWheelSimulationPointers(
 
 void USpeedWheeledComponent::ClearWheelSimulationPointers()
 {
+    if (GetPublishedSimulationStableId()) USpeedWorldSubsystem::RequireExactRemoteRoundStorageTeardown(*this);
 	for (USWheelSubBody* WheelSubBody : WheelSubBodies)
 	{
 		if (!WheelSubBody)
@@ -878,6 +880,7 @@ void USpeedWheeledComponent::OnCreatePhysicsState()
 	if (Speed::Netcode::PresentationClient::SuppressesLocalPhysics(GetWorld())) return;
 	if (Speed::ReplayIsolation::IsInertReplayWorld(GetWorld()))
 	{ Speed::ReplayIsolation::FailInertReplayBootstrap(*GetWorld(),TEXT("unexpected IAS wheeled physics-state creation in inert replay")); return; }
+    if (GetPublishedSimulationStableId()) USpeedWorldSubsystem::RequireExactRemoteRoundStorageTeardown(*this);
 	// =========> START OVERLOAD Chaos prediction here
 	UPawnMovementComponent::OnCreatePhysicsState();
 
@@ -1026,6 +1029,11 @@ bool USpeedWheeledComponent::RetireSpeedWorldAdapterBeforeTeardown()
 void USpeedWheeledComponent::JoinInputWorkerBeforeStorageDestruction()
 {
 	if (bSpeedWorldAdapterRetiredForTeardown) return;
+    if (USpeedWorldSubsystem::RequireExactRemoteRoundStorageTeardown(*this))
+    {
+        bSpeedWorldAdapterRetiredForTeardown = true;
+        return;
+    }
 	if (!HasProducedInputAuthority() && !HasLegacyRemoteInputAuthority()) return;
 	check(IsInGameThread());
 	if (UWorld* World = GetWorld())
@@ -1108,8 +1116,10 @@ void USpeedWheeledComponent::JoinInputWorkerBeforeStorageDestruction()
 
 void USpeedWheeledComponent::OnDestroyPhysicsState()
 {
+    const bool bExactTeardown = USpeedWorldSubsystem::RequireExactRemoteRoundStorageTeardown(*this);
+    if (bExactTeardown) bSpeedWorldAdapterRetiredForTeardown = true;
 	bResumeAfterPhysicsRecreation = false;
-	if (!bWheeledEndPlayTeardown && HasBegunPlay()
+	if (!bExactTeardown && !bWheeledEndPlayTeardown && HasBegunPlay()
 		&& (!GetOwner() || !GetOwner()->IsActorBeingDestroyed()))
 		if (UWorld* World = GetWorld())
 			for (TActorIterator<ASpeedPhysicsSimulation> It(World); It; ++It)
@@ -1192,6 +1202,7 @@ USWheelSubBody* USpeedWheeledComponent::CreateWheelSubBody(const int& WheelIndex
 
 void USpeedWheeledComponent::SetSubBodies(const TArray<USSubBody*>& NewSubBodies)
 {
+    if (GetPublishedSimulationStableId()) USpeedWorldSubsystem::RequireExactRemoteRoundStorageTeardown(*this);
     if(RequestedInputBodyGeneration==MAX_uint64)RequestedInputBodyGeneration=0;
     else if(RequestedInputBodyGeneration)++RequestedInputBodyGeneration;
 	SubBodies = NewSubBodies;
@@ -1424,6 +1435,8 @@ void USpeedWheeledComponent::DemoedBy(ASpeedCar* otherCar)
 
 void USpeedWheeledComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+    if (USpeedWorldSubsystem::RequireExactRemoteRoundStorageTeardown(*this))
+        bSpeedWorldAdapterRetiredForTeardown = true;
 	bWheeledEndPlayTeardown = true;
 	JoinInputWorkerBeforeStorageDestruction();
 	ASpeedPhysicsSimulation* RetirementDriver = nullptr;

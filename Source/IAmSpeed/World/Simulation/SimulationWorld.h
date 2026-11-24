@@ -258,6 +258,7 @@ namespace Speed
             if (IsRestoreBoundaryReserved()) std::terminate();
         }
         FWorldBorrowGate StorageAccess;
+        bool RetireExactRoundStorageAfterJoin();
         const FCompletedSimulationPublication* RoundBuildBoundary = nullptr;
 #if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
         friend struct FBodyContactPairReadOnlyTestFixture;

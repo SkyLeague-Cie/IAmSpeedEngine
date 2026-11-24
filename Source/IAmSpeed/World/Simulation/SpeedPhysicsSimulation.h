@@ -101,6 +101,7 @@ public:
 
 	void BeginPlay() override;
 	void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
+    void BeginDestroy() override;
 	void Tick(float DeltaSeconds) override;
 	void AsyncPhysicsTickActor(float DeltaTime, float SimTime) override final;
 	void Simulate(const float& DeltaTime, const float& SimTime);

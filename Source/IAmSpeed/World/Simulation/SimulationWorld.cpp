@@ -180,6 +180,29 @@ namespace Speed
 		return true;
 	}
 
+    bool FSimulationWorld::RetireExactRoundStorageAfterJoin()
+    {
+        const FWorldBorrowGate::FReservation Reservation(StorageAccess);
+        if (!Reservation.Holds(StorageAccess) || IsRestoreBoundaryReserved() || RoundBuildBoundary)
+            return false;
+        const FWorldBorrowGate::FBorrow Owner(Reservation);
+        if (!Owner) return false;
+
+        for (auto* Adapter : Adapters)
+            if (Adapter) Adapter->PublishedSimulationStableId.Store(0);
+        Adapters.Reset();
+        StableIds.Reset();
+        AdaptersByStableId.Reset();
+        bOrderDirty = true;
+        RebuildOrderedAdapters();
+        ContactStorage->DynamicContactPairs.Reset();
+        ContactStorage->PendingRollingContactPairs.Reset();
+        ContactStorage->DynamicContactPairIndices.Reset();
+        ContactStorage->PendingRollingContactPairIndices.Reset();
+        ContactStorage->DynamicContactPairKeysByBody.Reset();
+        return true;
+    }
+
 	bool FSimulationWorld::RemoveAdapter(ISpeedComponent& Adapter)
 	{
 		const auto Access = BorrowStorage();

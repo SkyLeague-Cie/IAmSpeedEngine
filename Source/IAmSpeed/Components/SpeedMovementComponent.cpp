@@ -89,6 +89,7 @@ void USpeedMovementComponent::SetOwner(AActor* NewOwner)
 	{
 		return;
 	}
+    if (GetPublishedSimulationStableId()) USpeedWorldSubsystem::RequireExactRemoteRoundStorageTeardown(*this);
 
 	SetPhysRotation(NewOwner->GetActorRotation().Quaternion());
 	SetPhysLocation(NewOwner->GetActorLocation());
@@ -112,6 +113,7 @@ void USpeedMovementComponent::OnCreatePhysicsState()
 	if (Speed::Netcode::PresentationClient::SuppressesLocalPhysics(GetWorld())) return;
 	if (Speed::ReplayIsolation::IsInertReplayWorld(GetWorld()))
 	{ Speed::ReplayIsolation::FailInertReplayBootstrap(*GetWorld(),TEXT("unexpected IAS movement physics-state creation in inert replay")); return; }
+    if (GetPublishedSimulationStableId()) USpeedWorldSubsystem::RequireExactRemoteRoundStorageTeardown(*this);
 	Super::OnCreatePhysicsState();
 
 	UWorld* World = GetWorld();
@@ -159,6 +161,7 @@ bool USpeedMovementComponent::ShouldCreatePhysicsState() const
 
 void USpeedMovementComponent::OnDestroyPhysicsState()
 {
+    USpeedWorldSubsystem::RequireExactRemoteRoundStorageTeardown(*this);
 	Super::OnDestroyPhysicsState();
 	if (SNetworkPhysicsComponent)
 	{
@@ -458,6 +461,7 @@ unsigned int USpeedMovementComponent::NbFramesSinceCanMove() const
 
 void USpeedMovementComponent::SetSubBodies(const TArray<USSubBody*>& NewSubBodies)
 {
+    if (GetPublishedSimulationStableId()) USpeedWorldSubsystem::RequireExactRemoteRoundStorageTeardown(*this);
 	SubBodies = NewSubBodies;
 }
 
@@ -646,6 +650,7 @@ void USpeedMovementComponent::BeginPlay()
 
 void USpeedMovementComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+    USpeedWorldSubsystem::RequireExactRemoteRoundStorageTeardown(*this);
 	if (IsValid(SNetworkPhysicsComponent) && SNetworkPhysicsComponent->IsRegistered())
 	{
 		SNetworkPhysicsComponent->UnregisterComponent();
