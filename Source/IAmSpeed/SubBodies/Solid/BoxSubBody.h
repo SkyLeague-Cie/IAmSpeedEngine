@@ -25,6 +25,7 @@ class IAMSPEED_API UBoxSubBody : public USolidSubBody, public IBoxSweeper, publi
 {
     GENERATED_UCLASS_BODY()
     friend class Speed::PreparedExecution::FComponentSweepScope;
+    friend class Speed::FPreparedNativeRoundFields;
 #if WITH_DEV_AUTOMATION_TESTS
     friend class FIAmSpeedSweeperCandidatesTest;
 #endif

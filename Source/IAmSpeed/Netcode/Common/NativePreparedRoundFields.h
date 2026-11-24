@@ -117,6 +117,10 @@ public:
         const FSimulationComponentRestoreRequest&, const PreparedWorld::FEndpointBinding&);
     static std::unique_ptr<FPreparedNativeRoundFields> PrepareClearSolidContacts(
         const FSimulationComponentRestoreRequest&, const PreparedWorld::FEndpointBinding&);
+    // Replaces the contact clear for the exact wheeled hitbox at slot 0.
+    // The solid pose is separate. A hit-count map with backing is refused.
+    static std::unique_ptr<FPreparedNativeRoundFields> PrepareColdWheeledHitbox(
+        const FSimulationComponentRestoreRequest&, const PreparedWorld::FEndpointBinding&);
     // Use the native sensor's row from the reauthenticated roster. The reset
     // clears transient overlap/hit state without broadcasting overlap events.
     static std::unique_ptr<FPreparedNativeRoundFields> PrepareClearSensorOverlaps(USensorSubBody&,

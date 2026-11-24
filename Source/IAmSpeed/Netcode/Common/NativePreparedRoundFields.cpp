@@ -5,6 +5,7 @@
 #include "IAmSpeed/Components/SpeedMovementComponent.h"
 #include "IAmSpeed/Components/SpeedWheeledComponent.h"
 #include "IAmSpeed/SubBodies/Sensor/SensorSubBody.h"
+#include "IAmSpeed/SubBodies/Solid/BoxSubBody.h"
 #include "IAmSpeed/World/Simulation/SimulationWorld.h"
 #include "IAmSpeed/World/Simulation/SpeedPhysicsSimulation.h"
 #include "IAmSpeed/World/Subsystem/SpeedWorldSubsystem.h"
@@ -267,6 +268,20 @@ struct FPreparedNativeRoundFields::FPlan
         std::vector<FTarget> Ordered;
         std::vector<FSetCell> SetCells;
     };
+    struct FArrayBacking
+    {
+        const void* Data = nullptr;
+        std::size_t Bytes = 0;
+        int32 Num = 0, Max = 0;
+        bool operator==(const FArrayBacking&) const = default;
+    };
+    struct FColdHitbox
+    {
+        const USpeedWheeledComponent* Actor;
+        const UBoxSubBody* Box;
+        PreparedWorld::FEndpointBinding Binding;
+        std::array<FArrayBacking, 8> Backings;
+    };
 
     const FSimulationWorld* const World;
     const PreparedWorld::FAddress Address;
@@ -275,6 +290,7 @@ struct FPreparedNativeRoundFields::FPlan
     PreparedAccess::FParticipantAccess Access;
     std::vector<std::function<void()>> Exchanges;
     std::optional<FKeptSensorOverlaps> KeptSensor;
+    std::optional<FColdHitbox> ColdHitbox;
 
     FPlan(const FSimulationWorld& InWorld, const FSimulationComponentRestoreRequest& Request)
         : World(&InWorld), Address(Request.Address), Lease(Request.OwnerLease)
@@ -301,6 +317,16 @@ struct FPreparedNativeRoundFields::FPlan
         if (Live.GetAllocatedSize()) Access.ReadOnly.push_back(Range(Live.GetData(), Live.GetAllocatedSize()));
         if (Value.GetAllocatedSize()) Access.ReadOnly.push_back(Range(Value.GetData(), Value.GetAllocatedSize()));
         Stage(Live, std::move(Value));
+    }
+
+    template<class T>
+    bool StageColdBoxArray(TArray<T>& Live)
+    {
+        TArray<T> Empty;
+        Empty.Reserve(Live.Max());
+        if (Empty.Max() != Live.Max() || Empty.GetAllocatedSize() != Live.GetAllocatedSize()) return false;
+        StageArray(Live, std::move(Empty));
+        return true;
     }
 
     template<class T>
@@ -345,7 +371,7 @@ struct FPreparedNativeRoundFields::FPlan
 
     // The original round has already reauthenticated the adapter and its
     // registered slots. Match those records without running adapter hooks.
-    bool MatchesNativeOverlapSlot(const USSubBody& Body, uint64 StableId, uint32 NativeObjectId,
+    bool MatchesNativeSubBodySlot(const USSubBody& Body, uint64 StableId, uint32 NativeObjectId,
         uint64 Incarnation) const noexcept
     {
         const uint64 ActorId = StableId >> 16;
@@ -367,7 +393,7 @@ struct FPreparedNativeRoundFields::FPlan
         const auto* Body = World->SolidSubBodiesByStableId.FindRef(Binding.StableId);
         return Body && Binding.ActorIncarnation && (Binding.StableId >> 16) == Binding.Actor
             && Token.Get() == Body
-            && MatchesNativeOverlapSlot(*Body, Binding.StableId, Binding.NativeObjectId, Binding.Incarnation);
+            && MatchesNativeSubBodySlot(*Body, Binding.StableId, Binding.NativeObjectId, Binding.Incarnation);
     }
 
     bool ValidateKeptSensor() const noexcept
@@ -375,7 +401,7 @@ struct FPreparedNativeRoundFields::FPlan
         if (!KeptSensor) return true;
         const auto& Keep = *KeptSensor;
         const auto& Sensor = *Keep.Sensor;
-        if (!MatchesNativeOverlapSlot(Sensor, Keep.SensorStableId, Keep.SensorNativeObjectId, Keep.SensorIncarnation)
+        if (!MatchesNativeSubBodySlot(Sensor, Keep.SensorStableId, Keep.SensorNativeObjectId, Keep.SensorIncarnation)
             || !HasBoundedOverlaps(Sensor) || Sensor.OverlapsOrdered.GetData() != Keep.OrderedData
             || static_cast<std::size_t>(Sensor.OverlapsOrdered.Num()) != Keep.Ordered.size()) return false;
         for (std::size_t Index = 0; Index < Keep.Ordered.size(); ++Index)
@@ -395,6 +421,38 @@ struct FPreparedNativeRoundFields::FPlan
                 return false;
         }
         return Index == Keep.SetCells.size();
+    }
+
+    template<class T>
+    static FArrayBacking ReadBacking(const TArray<T>& Array)
+    {
+        return {Array.GetData(), Array.GetAllocatedSize(), Array.Num(), Array.Max()};
+    }
+
+    static std::array<FArrayBacking, 8> ReadHitboxBackings(const UBoxSubBody& Box)
+    {
+        return {ReadBacking(Box.CurrentGroundContactsWS), ReadBacking(Box.PreviousFrameGroundContactsWS),
+            ReadBacking(Box.CurrentGroundNormalsWS), ReadBacking(Box.PrevGroundContactsLS),
+            ReadBacking(Box.LatchedEdgeContactsLS), ReadBacking(Box.PrevLambdaN),
+            ReadBacking(Box.IgnoredComponents), ReadBacking(Box.AlwaysIgnoredComponents)};
+    }
+
+    bool ValidateColdHitbox() const noexcept
+    {
+        if (!ColdHitbox) return true;
+        const FExactRoundNativeOrigin Origin{Address.Authority, Address.WorldIncarnation, Address.TopologyVersion};
+        const auto& [Actor, Box, Binding, Backings] = *ColdHitbox;
+        if (!Origin.Valid() || !(World->ReadExactRoundOrigin() == Origin) || !World->StorageAccess.IsReservationOwner()
+            || World->AdaptersByStableId.FindRef(Binding.Actor) != Actor
+            || World->SolidSubBodiesByStableId.FindRef(Binding.StableId) != Box
+            || !MatchesNativeSubBodySlot(*Box, Binding.StableId, Binding.NativeObjectId, Binding.Incarnation))
+            return false;
+
+        const auto& Children = Actor->USpeedWheeledComponent::GetSubBodies();
+        return !Children.IsEmpty() && Children[0] == Box && Actor->GetHitboxSubBodyForConfiguration() == Box
+            && Box->GetSubBodyType() == USSubBody::ESubBodyType::Hitbox
+            && Box->HitCountThisFrame.IsEmpty() && Box->HitCountThisFrame.GetAllocatedSize() == 0
+            && Backings == ReadHitboxBackings(*Box);
     }
 };
 
@@ -472,6 +530,8 @@ std::unique_ptr<FPreparedNativeRoundFields> FPreparedNativeRoundFields::PrepareC
 {
     const auto* World = Request.OwnerLease.ResolvePreparingWorld(Request, Request.Address);
     if (!World || !FPreparedNativeKinematicFields::MatchesSolid(*World, Request, Target, Endpoint)) return {};
+    if (World->ExactRoundWorkerGeneration && (Endpoint.StableId & MAX_uint16) == 0
+        && Cast<UBoxSubBody>(&Target) && Target.GetParentComponent()->AsWheeledPhysicsComponent()) return {};
     auto Fragment = std::unique_ptr<FPreparedNativeRoundFields>(new FPreparedNativeRoundFields(*World, Request));
     Fragment->StageClearContacts(Target);
     return Fragment;
@@ -483,6 +543,72 @@ std::unique_ptr<FPreparedNativeRoundFields> FPreparedNativeRoundFields::PrepareC
     const auto* World = Request.OwnerLease.ResolvePreparingWorld(Request, Request.Address);
     auto* Target = World ? FPreparedNativeKinematicFields::ResolveBoundSolid(*World, Request, Endpoint) : nullptr;
     return Target ? PrepareClearSolidContacts(*Target, Request, Endpoint) : nullptr;
+}
+
+std::unique_ptr<FPreparedNativeRoundFields> FPreparedNativeRoundFields::PrepareColdWheeledHitbox(
+    const FSimulationComponentRestoreRequest& Request, const PreparedWorld::FEndpointBinding& Endpoint)
+{
+    const auto* World = Request.OwnerLease.ResolvePreparingWorld(Request, Request.Address);
+    const auto ActorId = Request.Supplement.Binding.StableId;
+    if (!World || !ActorId || ActorId > (UINT64_MAX >> 16) || Endpoint.StableId != (ActorId << 16)) return {};
+    auto* Box = Cast<UBoxSubBody>(FPreparedNativeKinematicFields::ResolveBoundSolid(*World, Request, Endpoint));
+    if (!Box) return {};
+    auto* Parent = Box->GetParentComponent();
+    const auto* Actor = Parent->AsWheeledPhysicsComponent();
+    if (!Actor || static_cast<const ISpeedComponent*>(Actor) != Parent) return {};
+
+    auto Fragment = std::unique_ptr<FPreparedNativeRoundFields>(new FPreparedNativeRoundFields(*World, Request));
+    auto& P = *Fragment->Plan;
+    P.ColdHitbox.emplace(FPlan::FColdHitbox{Actor, Box, Endpoint, FPlan::ReadHitboxBackings(*Box)});
+    // An empty count alone does not establish absence of sparse-map storage.
+    // The hit-count map takes no part in the exchange until its backing can be declared.
+    if (!P.ValidateColdHitbox()
+        || static_cast<std::size_t>(Box->AlwaysIgnoredComponents.Num()) > PreparedWorld::FLimits{}.MaxEndpoints)
+        return {};
+    P.Access.ReadOnly.push_back(Range(&*P.ColdHitbox, sizeof(*P.ColdHitbox)));
+    P.Access.ReadOnly.push_back(Range(&Box->HitCountThisFrame, sizeof(Box->HitCountThisFrame)));
+    P.Access.ReadOnly.push_back(Range(&Box->AlwaysIgnoredComponents, sizeof(Box->AlwaysIgnoredComponents)));
+    const auto& AlwaysIgnored = P.ColdHitbox->Backings.back();
+    if (AlwaysIgnored.Bytes) P.Access.ReadOnly.push_back(Range(AlwaysIgnored.Data, AlwaysIgnored.Bytes));
+
+    Fragment->StageClearContacts(*Box);
+    if (!P.StageColdBoxArray(Box->CurrentGroundContactsWS) || !P.StageColdBoxArray(Box->PreviousFrameGroundContactsWS)
+        || !P.StageColdBoxArray(Box->CurrentGroundNormalsWS) || !P.StageColdBoxArray(Box->PrevGroundContactsLS)
+        || !P.StageColdBoxArray(Box->LatchedEdgeContactsLS) || !P.StageColdBoxArray(Box->PrevLambdaN))
+        return {};
+    constexpr int32 NoContactFrame = INDEX_NONE;
+    P.Stage(Box->bEdgeSupportLatched, false);
+    P.Stage(Box->EdgeSupportLatchFrame, NoContactFrame);
+    P.Stage(Box->bRoofSurfaceTraversalLatched, false);
+    P.Stage(Box->LastRoofSurfaceContactFrame, NoContactFrame);
+    P.Stage(Box->RoofSurfaceComp, {});
+    P.Stage(Box->CompositeGroundNormal, FVector::UpVector);
+    P.Stage(Box->bGroundContactStable, false);
+    P.Stage(Box->LastResolvedGroundHitFrame, NoContactFrame);
+    P.Stage(Box->bHasGroundContact, false);
+    P.Stage(Box->bFreshEdgeRecoverCandidate, false);
+    P.Stage(Box->StableTime, 0.0f);
+    P.Stage(Box->bGroundHitFromSweep, false);
+    P.Stage(Box->bGroundPlaneValid, false);
+    P.Stage(Box->GroundPlanePointWS, FVector::ZeroVector);
+    P.Stage(Box->GroundPlaneN, FVector::UpVector);
+    P.Stage(Box->GroundPlaneD, 0.0f);
+    P.Stage(Box->GroundComp, {});
+    P.Stage(Box->EstablishedSupportSourceId, uint64{0});
+    P.Stage(Box->EstablishedSupportSurfaceId, uint64{0});
+    P.Stage(Box->FreshSupportClampUntilFrame, NoContactFrame);
+    P.Stage(Box->FreshSupportClampN, FVector::UpVector);
+    P.Stage(Box->FreshSupportClampComp, {});
+    P.Stage(Box->PrevGroundNormal, FVector::UpVector);
+    P.Stage(Box->bHadGroundContactPrevFrame, false);
+    P.Stage(Box->PrevContactNormal, FVector::UpVector);
+    P.Stage(Box->bHadContactPrevFrame, false);
+    P.Stage(Box->LastWallOrGutterFrame, NoContactFrame);
+    P.Stage(Box->LastWallOrGutterN, FVector::ZeroVector);
+    P.Stage(Box->LastWallOrGutterUpDot, 0.0f);
+    P.Stage(Box->LastResolvedSphereHit, SHitResult{});
+    P.Stage(Box->LastResolvedSphereHitFrame, NoContactFrame);
+    return Fragment;
 }
 
 std::unique_ptr<FPreparedNativeRoundFields> FPreparedNativeRoundFields::PrepareClearSensorOverlaps(USensorSubBody& Target,
@@ -616,7 +742,7 @@ std::unique_ptr<FPreparedNativeRoundFields> FPreparedNativeRoundFields::PrepareK
 
     auto Fragment = std::unique_ptr<FPreparedNativeRoundFields>(new FPreparedNativeRoundFields(World, Request));
     auto& P = *Fragment->Plan;
-    if (!P.MatchesNativeOverlapSlot(*Sensor, Row.StableId, Row.NativeObjectId, Row.Incarnation)) return {};
+    if (!P.MatchesNativeSubBodySlot(*Sensor, Row.StableId, Row.NativeObjectId, Row.Incarnation)) return {};
     auto& Keep = P.KeptSensor.emplace();
     Keep.Sensor = Sensor;
     Keep.SensorStableId = Row.StableId;
@@ -696,7 +822,7 @@ FPreparedNativeRoundFields::~FPreparedNativeRoundFields() noexcept
 bool FPreparedNativeRoundFields::AppendPreparedAccess(std::vector<PreparedAccess::FParticipantAccess>& Out) const
 {
     if ((Plan->Phase != FPlan::EPhase::Prepared && Plan->Phase != FPlan::EPhase::Ready) || !Plan->HoldsBoundary()
-        || !Plan->ValidateKeptSensor()) return false;
+        || !Plan->ValidateKeptSensor() || !Plan->ValidateColdHitbox()) return false;
     Out.push_back(Plan->Access);
     return true;
 }
@@ -704,7 +830,7 @@ bool FPreparedNativeRoundFields::AppendPreparedAccess(std::vector<PreparedAccess
 bool FPreparedNativeRoundFields::PrepareFinalization() noexcept
 {
     if ((Plan->Phase != FPlan::EPhase::Prepared && Plan->Phase != FPlan::EPhase::Ready) || !Plan->HoldsBoundary()
-        || !Plan->ValidateKeptSensor()) return false;
+        || !Plan->ValidateKeptSensor() || !Plan->ValidateColdHitbox()) return false;
     Plan->Phase = FPlan::EPhase::Ready;
     return true;
 }
