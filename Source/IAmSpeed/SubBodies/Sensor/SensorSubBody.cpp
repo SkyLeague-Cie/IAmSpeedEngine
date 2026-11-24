@@ -70,6 +70,9 @@ void USensorSubBody::VisitNativeOverlapTargetTokens(TFunctionRef<void(const FWea
 }
 void USensorSubBody::PostPhysicsUpdate()
 {
+    using namespace Speed::ExactNeutralDispatchDetail;
+    const FCallbackScope MaskRecursiveBroadcast;
+    const auto* Post = FSubBodyPostScope::ClaimSensorPost(*this);
     // 1) EndOverlap: any previously overlapping component not touched this frame
     for (int32 i = OverlapsOrdered.Num() - 1; i >= 0; --i)
     {
@@ -92,6 +95,7 @@ void USensorSubBody::PostPhysicsUpdate()
         {
             if (TouchedThisFrame.Contains(C))
             {
+                const FSelectionScope Dispatch(Post, *this, *C);
                 DispatchContinuousOverlapOnOwner(*C);
             }
         }
@@ -103,6 +107,8 @@ void USensorSubBody::PostPhysicsUpdate()
 
 void USensorSubBody::DispatchContinuousOverlapOnOwner(UPrimitiveComponent& Other)
 {
+    const Speed::ExactNeutralDispatchDetail::FCallbackScope Dispatch(
+        Speed::EExactNeutralDispatch::SensorContinuousOverlap, static_cast<const USSubBody*>(this), &Other);
     OnContinuousOverlap.Broadcast(this, &Other);
 }
 

@@ -687,6 +687,9 @@ void ISpeedComponent::RemoveExternalSubBodies(const TArray<USSubBody*>& ExtSubBo
 
 void ISpeedComponent::PostPhysicsUpdate(const float& delta)
 {
+    using namespace Speed::ExactNeutralDispatchDetail;
+    const FCallbackScope MaskRecursiveBroadcast;
+    const auto* ActorPost = FSelectionScope::ClaimActorPost(*this);
 	ON_SCOPE_EXIT { SetStaticCollisionWorldForFrame(nullptr); };
 	// reset accelerations after physics update so that they can be set again during the next tick
 	SetPhysAcceleration(FVector::ZeroVector);
@@ -697,6 +700,7 @@ void ISpeedComponent::PostPhysicsUpdate(const float& delta)
     {
         if (SubBody)
         {
+            const FSubBodyPostScope Post(ActorPost && SubBody->GetParentComponent() == this ? ActorPost : nullptr, *SubBody);
             SubBody->PostPhysicsUpdate();
         }
 	}

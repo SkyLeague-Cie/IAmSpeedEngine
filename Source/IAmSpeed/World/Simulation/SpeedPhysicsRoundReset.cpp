@@ -47,6 +47,7 @@ namespace Speed::ExactNeutralDispatchDetail
 {
 thread_local const FFrameScope* FFrameScope::Current = nullptr;
 thread_local const FSelectionScope* FSelectionScope::Current = nullptr;
+thread_local FSubBodyPostScope* FSubBodyPostScope::Current = nullptr;
 thread_local const FCallbackScope* FCallbackScope::Current = nullptr;
 }
 
@@ -315,7 +316,8 @@ bool ASpeedPhysicsSimulation::IsCurrentExactNeutralDispatch(const Speed::FWorldB
     if (!Callback || !Callback->bActive || Callback->Selection != FSelectionScope::Current
         || Callback->Selection->Frame != FFrameScope::Current || IsInGameThread()) return false;
 
-    const bool bSensor = Kind == Speed::EExactNeutralDispatch::SensorBeginOverlap;
+    const bool bSensor = Kind == Speed::EExactNeutralDispatch::SensorBeginOverlap
+        || Kind == Speed::EExactNeutralDispatch::SensorContinuousOverlap;
     if ((bSensor && (!Sensor || Actor)) || (!bSensor && (!Actor || Sensor))) return false;
     const void* Producer = bSensor ? static_cast<const void*>(Sensor) : static_cast<const void*>(Actor);
     const auto& Selection = *Callback->Selection;
