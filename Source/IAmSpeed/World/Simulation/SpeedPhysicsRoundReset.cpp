@@ -24,7 +24,8 @@ public:
     { return HoldsExactBoundary(World, Address) && Protection->ProtectsEscapedMutableViews(); }
     bool AppendPreparedAccess(std::vector<Speed::PreparedAccess::FParticipantAccess>& Out) const override
     {
-        if (!ProtectsEscapedMutableViews() || !Protection->AppendPreparedAccess(Out)) return false;
+        const auto Before = Out.size();
+        if (!ProtectsEscapedMutableViews() || !Protection->AppendPreparedAccess(Out) || Out.size() <= Before) return false;
         const auto Span = [](const auto& Value)
         { return Speed::PreparedAccess::FSpan{reinterpret_cast<std::uintptr_t>(&Value), sizeof(Value)}; };
         Speed::PreparedAccess::FParticipantAccess Access;
@@ -130,10 +131,12 @@ std::optional<ESimulationBoundaryResult> ASpeedPhysicsSimulation::ServiceExactRe
             return {};
         }
         std::unique_ptr<Speed::FExactRemoteRoundPlan> Plan;
+        std::optional<Speed::FExactRemoteRoundBuild::FRoster> OriginalRoster;
         {
             World.RoundBuildBoundary = Current.get();
             ON_SCOPE_EXIT { World.RoundBuildBoundary = nullptr; };
-            Plan = ExactRemoteRoundProvider->Build(World, Current);
+            OriginalRoster = Speed::FExactRemoteRoundBuild::CaptureRoster(World, *Current);
+            if (OriginalRoster) Plan = ExactRemoteRoundProvider->Build(World, Current);
         }
         if (!Plan) return {};
         if (Plan->Envelope && Plan->Lease && Plan->Boundary == Current && Plan->Inputs.Next == CanonicalNumFrame
@@ -150,8 +153,11 @@ std::optional<ESimulationBoundaryResult> ASpeedPhysicsSimulation::ServiceExactRe
                         && Current->Source()->WorkerGeneration() == InputWorkerGeneration
                         && Current->World().NumFrame + 1 == CanonicalNumFrame;
                 });
-            ActiveExactRemoteRound = Speed::ExactRemoteRound::Commit(
-                World, *InputSessionRegistry, std::move(*Plan), PublishedExactRemoteRound);
+            const auto RetainedRoster = Speed::FPreparedNativeKinematicFields::CaptureRoster(
+                World, Plan->Envelope->Address, *Plan->Lease);
+            if (RetainedRoster && *RetainedRoster == *OriginalRoster)
+                ActiveExactRemoteRound = Speed::ExactRemoteRound::Commit(
+                    World, *InputSessionRegistry, std::move(*Plan), PublishedExactRemoteRound);
             if (ActiveExactRemoteRound)
             {
                 PublishedCompletedWorldInput.store({}, std::memory_order_seq_cst);

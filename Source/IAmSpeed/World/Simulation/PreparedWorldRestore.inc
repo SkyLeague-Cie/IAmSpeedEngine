@@ -76,7 +76,7 @@ std::optional<FSimulationWorld::FPreparedRestoreToken> FSimulationWorld::Prepare
         auto Pinned = std::make_shared<const PreparedWorld::FRestoreEnvelope>(*Envelope);
         if (!PreparedWorld::ValidEnvelope(*Pinned)) return {};
         Plan->LeaseOwner = std::unique_ptr<FPreparedRestoreLeaseOwner>(
-            new FPreparedRestoreLeaseOwner(*this, Pinned->Address, std::move(Lease)));
+            new FPreparedRestoreLeaseOwner(*this, Pinned, std::move(Lease)));
         // From this point the external lease already pins this world and ALL
         // native/config/lifecycle identities and excludes every mutation lane.
         // Install reservation BEFORE invoking component preparation callbacks.
@@ -176,9 +176,11 @@ std::optional<FSimulationWorld::FPreparedRestoreToken> FSimulationWorld::Prepare
             const FSimulationComponentRestoreRequest Request{Publication->Envelope->Address,
                 Publication->Envelope->ActorSupplements[I], K, State->Frozen,
                 TConstArrayView<uint8>(State->MechanicPayload.data(), static_cast<int32>(State->MechanicPayload.size())), PreparedRestore->LeaseOwner->View()};
-            auto Component = PreparedRestore->LeaseOwner->PrepareComponent(Request, [&]
+            auto* Target = AdaptersByStableId.FindRef(Binding.StableId);
+            if (!Target) return Fail();
+            auto Component = PreparedRestore->LeaseOwner->PrepareComponent(Request, *Target, Binding, [&]
             {
-                return AdaptersByStableId.FindRef(Binding.StableId)->PrepareCompleteSimulationRestore(Request);
+                return Target->PrepareCompleteSimulationRestore(Request);
             });
             if (!Component) return Fail(); // ALL frozen production adapters take this default rejection
             PreparedRestore->Components.push_back(std::move(Component));

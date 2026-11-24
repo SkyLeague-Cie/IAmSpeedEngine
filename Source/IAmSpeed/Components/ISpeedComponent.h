@@ -449,6 +449,7 @@ private:
 #endif
 	friend class Speed::FSimulationWorld;
     friend struct Speed::FCommonComponentValueAccess;
+    friend class Speed::FPreparedNativeRoundFields;
 	TAtomic<uint64> PublishedSimulationStableId = 0;
 	// Borrowed only during the world's canonical step; no historical/cache state.
 	const Speed::IStaticCollisionWorld* StaticRestingWorld = nullptr;

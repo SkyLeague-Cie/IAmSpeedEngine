@@ -16,6 +16,11 @@ class FPreparedNativeKinematicFields
 public:
     static const FSimulationWorld* Resolve(const FSimulationComponentRestoreRequest& R, const PreparedWorld::FAddress& At)
     { return R.OwnerLease.ResolvePreparingWorld(R, At); }
+    static bool MatchesTarget(const FSimulationComponentRestoreRequest& R, const FSimulationWorld& W,
+        const ISpeedComponent& Target)
+    { return R.OwnerLease.MatchesPreparingTarget(R, R.Address, W, Target); }
+    static bool MatchesEndpoint(const FSimulationComponentRestoreRequest& R, const PreparedWorld::FEndpointBinding& Endpoint)
+    { return R.OwnerLease.MatchesPreparingEndpoint(R, R.Address, Endpoint); }
 };
 }
 
@@ -65,7 +70,7 @@ class FTestLease final : public ISimulationRestoreBoundaryLease
     FSimulationWorld* World; FAddress Expected; FCounters& Counters;
     std::thread::id Worker = std::this_thread::get_id(); bool Done = false;
 public:
-    bool Protect = true, Valid = true, Ranges = true;
+    bool Protect = true, Valid = true, Ranges = true, EmptyRanges = false;
     std::function<void()> OnQuery, OnProtect, OnAccess, OnAbort, OnRelease, OnDestruction;
     mutable bool SawReservation = false;
     FPreparedRestoreLeaseView RecursiveProbe;
@@ -80,6 +85,7 @@ public:
     {
         if (OnAccess) OnAccess();
         if (!Ranges) return ISimulationRestoreBoundaryLease::AppendPreparedAccess(Out);
+        if (EmptyRanges) return true;
         const auto S = [](const void* P, std::size_t N) { return PreparedAccess::FSpan{reinterpret_cast<std::uintptr_t>(P), N}; };
         Out.push_back({reinterpret_cast<std::uintptr_t>(this), {S(&Counters, sizeof(Counters)), S(&Done, sizeof(Done)), S(&SawReservation, sizeof(SawReservation)), S(&RecursiveProbeRefused, sizeof(RecursiveProbeRefused))},
             {S(&Expected, sizeof(Expected)), S(&World, sizeof(World)), S(&Worker, sizeof(Worker))}}); return true;
@@ -312,13 +318,30 @@ static void TestFragmentWorldResolutionDuringExactRequest()
     {
         ++Calls;
         CHECK(FFactory::Resolve(R, R.Address) == &F.World);
+        CHECK(FFactory::MatchesTarget(R, F.World, F.Components[0]));
+        CHECK(!FFactory::MatchesTarget(R, F.World, F.Components[1]));
+        ISpeedComponent OldTarget;
+        OldTarget.StableId = F.Components[0].StableId;
+        CHECK(!FFactory::MatchesTarget(R, F.World, OldTarget));
+        const auto& Endpoint = F.Envelope->Endpoints.front();
+        CHECK(Endpoint.Actor == R.Supplement.Binding.StableId);
+        CHECK(FFactory::MatchesEndpoint(R, Endpoint));
+        auto OldEndpoint = Endpoint;
+        ++OldEndpoint.Incarnation;
+        CHECK(!FFactory::MatchesEndpoint(R, OldEndpoint));
+        CHECK(!FFactory::MatchesEndpoint(R, F.Envelope->Endpoints.back()));
         const auto Copy = R;
         CHECK(!FFactory::Resolve(Copy, Copy.Address));
+        CHECK(!FFactory::MatchesTarget(Copy, F.World, F.Components[0]));
+        CHECK(!FFactory::MatchesEndpoint(Copy, Endpoint));
         auto WrongAddress = R.Address;
         ++WrongAddress.WorldIncarnation;
         CHECK(!FFactory::Resolve(R, WrongAddress));
         bool ForeignGranted = true;
-        std::thread Foreign([&] { ForeignGranted = FFactory::Resolve(R, R.Address) != nullptr; });
+        std::thread Foreign([&] {
+            ForeignGranted = FFactory::Resolve(R, R.Address) != nullptr
+                || FFactory::MatchesTarget(R, F.World, F.Components[0]) || FFactory::MatchesEndpoint(R, Endpoint);
+        });
         Foreign.join();
         CHECK(!ForeignGranted);
         unsigned Reentries = 0;
@@ -338,8 +361,22 @@ static void TestFragmentWorldResolutionDuringExactRequest()
     const FSimulationComponentRestoreRequest Later{F.Envelope->Address, F.Envelope->ActorSupplements[0],
         K, false, TConstArrayView<uint8>(nullptr, 0), F.Components[0].SavedLease};
     CHECK(Later.OwnerLease.IsExactAddress(Later.Address) && !FFactory::Resolve(Later, Later.Address));
+    CHECK(!FFactory::MatchesTarget(Later, F.World, F.Components[0]));
+    CHECK(!FFactory::MatchesEndpoint(Later, F.Envelope->Endpoints.front()));
     CHECK(F.World.AbortPreparedRestore(*T));
     CHECK(!FFactory::Resolve(Later, Later.Address) && F.Untouched());
+
+    auto Unprotected = std::make_unique<FTestLease>(F.World, F.Envelope->Address, F.LeaseCounters);
+    Unprotected->Protect = false;
+    CHECK(!F.World.PrepareSnapshotRestore(F.Snapshot, F.Envelope, std::move(Unprotected),
+        std::make_unique<FTestSupplement>(F.Envelope->Address, F.SupplementCounters)));
+    CHECK(Calls == 1 && F.Untouched());
+    F.Components[0].OnPrepare = [&](const FSimulationComponentRestoreRequest&) { ++Calls; };
+    auto Unlisted = std::make_unique<FTestLease>(F.World, F.Envelope->Address, F.LeaseCounters);
+    Unlisted->EmptyRanges = true;
+    CHECK(!F.World.PrepareSnapshotRestore(F.Snapshot, F.Envelope, std::move(Unlisted),
+        std::make_unique<FTestSupplement>(F.Envelope->Address, F.SupplementCounters)));
+    CHECK(Calls == 2 && F.Untouched());
 }
 
 static void TestCompositionAndLeaseExpiry()

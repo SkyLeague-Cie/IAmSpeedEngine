@@ -211,6 +211,7 @@ namespace Speed
 		OrderedAdapters = Adapters;
 		Bodies.Reset(OrderedAdapters.Num());
 		StableSubBodyIds.Reset();
+		SubBodiesByStableId.Reset();
 		SubBodyNativeObjectIds.Reset();
 		SolidSubBodiesByStableId.Reset();
 		ProjectionSpheres.Empty();
@@ -235,6 +236,7 @@ namespace Speed
 					{
 						const uint64 SubBodyId = (*StableId << 16) | static_cast<uint16>(SubBodyIndex);
 						StableSubBodyIds.Add(SubBodies[SubBodyIndex], SubBodyId);
+						SubBodiesByStableId.Add(SubBodyId, SubBodies[SubBodyIndex]);
 						SubBodyNativeObjectIds.Add(SubBodyId, SubBodies[SubBodyIndex]->GetUniqueID());
 						if (USolidSubBody* SolidSubBody = Cast<USolidSubBody>(SubBodies[SubBodyIndex]))
 						{

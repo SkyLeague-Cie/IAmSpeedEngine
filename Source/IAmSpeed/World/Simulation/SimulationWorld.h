@@ -106,6 +106,7 @@ namespace Speed
         friend class PreparedExecution::FCanonicalFramePreflight;
         friend class FHostedGTStaticWorldLease;
         friend class FPreparedNativeKinematicFields;
+        friend class FPreparedNativeRoundFields;
         friend class FExactRemoteRoundBuild;
         friend class ::ASpeedPhysicsSimulation;
         friend class ::USpeedWorldSubsystem;
@@ -264,6 +265,7 @@ namespace Speed
 		TMap<ISpeedComponent*, uint64> StableIds;
 		TMap<uint64, ISpeedComponent*> AdaptersByStableId;
 		TMap<const USSubBody*, uint64> StableSubBodyIds;
+        TMap<uint64, USSubBody*> SubBodiesByStableId;
 		TMap<uint64, uint32> SubBodyNativeObjectIds;
 		TMap<uint64, USolidSubBody*> SolidSubBodiesByStableId;
 		TArray<ISpeedComponent*> Adapters;

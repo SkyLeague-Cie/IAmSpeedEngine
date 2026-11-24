@@ -76,6 +76,11 @@ struct FEndpointBinding
 {
     U64 StableId = 0, Incarnation = 0, Actor = 0, ActorIncarnation = 0;
     U32 NativeObjectId = 0; // ONLY local lookup key; never sent as wire identity
+    bool operator==(const FEndpointBinding& B) const noexcept
+    {
+        return StableId == B.StableId && Incarnation == B.Incarnation && Actor == B.Actor
+            && ActorIncarnation == B.ActorIncarnation && NativeObjectId == B.NativeObjectId;
+    }
 };
 struct FActorSupplement
 {

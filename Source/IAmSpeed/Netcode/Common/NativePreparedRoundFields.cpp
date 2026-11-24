@@ -4,6 +4,7 @@
 #include "IAmSpeed/Components/SpeedMovementComponent.h"
 #include "IAmSpeed/Components/SpeedWheeledComponent.h"
 #include "IAmSpeed/SubBodies/Sensor/SensorSubBody.h"
+#include "IAmSpeed/World/Simulation/SimulationWorld.h"
 #include "SuspensionSystem.h"
 #include "WheelSystem.h"
 #include <functional>
@@ -188,6 +189,24 @@ void FPreparedNativeRoundFields::StageClearContacts(USSubBody& Target)
     P.StageArray(Target.IgnoredComponents, Target.AlwaysIgnoredComponents);
 }
 
+std::unique_ptr<FPreparedNativeRoundFields> FPreparedNativeRoundFields::PrepareColdCommon(ISpeedComponent& Target,
+    const FSimulationComponentRestoreRequest& Request)
+{
+    const auto* World = Request.OwnerLease.ResolvePreparingWorld(Request, Request.Address);
+    if (!World || !FPreparedNativeKinematicFields::MatchesActor(*World, Request, Target)
+        || (Target.StaticRestingWorld && Target.StaticRestingWorld != World->StaticCollisionWorld.Get())) return {};
+
+    auto Fragment = std::unique_ptr<FPreparedNativeRoundFields>(new FPreparedNativeRoundFields(*World, Request));
+    auto& P = *Fragment->Plan;
+    P.StageArray(Target.PhysicalConstraints, {});
+    P.Stage(Target.SleepState, FSimulationSleepState{});
+    P.Stage(Target.KinematicQuantizationCache, FIdentityKinematicQuantizationCache{});
+    // The following physical step supplies a fresh horizon.
+    P.Stage(Target.StaticSupportFrameHorizon, 0.0f);
+    P.Access.ReadOnly.push_back(Range(&Target.StaticRestingWorld, sizeof(Target.StaticRestingWorld)));
+    return Fragment;
+}
+
 std::unique_ptr<FPreparedNativeRoundFields> FPreparedNativeRoundFields::PrepareClearSolidContacts(USolidSubBody& Target,
     const FSimulationComponentRestoreRequest& Request, const PreparedWorld::FEndpointBinding& Endpoint)
 {
@@ -196,6 +215,14 @@ std::unique_ptr<FPreparedNativeRoundFields> FPreparedNativeRoundFields::PrepareC
     auto Fragment = std::unique_ptr<FPreparedNativeRoundFields>(new FPreparedNativeRoundFields(*World, Request));
     Fragment->StageClearContacts(Target);
     return Fragment;
+}
+
+std::unique_ptr<FPreparedNativeRoundFields> FPreparedNativeRoundFields::PrepareClearSolidContacts(
+    const FSimulationComponentRestoreRequest& Request, const PreparedWorld::FEndpointBinding& Endpoint)
+{
+    const auto* World = Request.OwnerLease.ResolvePreparingWorld(Request, Request.Address);
+    auto* Target = World ? FPreparedNativeKinematicFields::ResolveBoundSolid(*World, Request, Endpoint) : nullptr;
+    return Target ? PrepareClearSolidContacts(*Target, Request, Endpoint) : nullptr;
 }
 
 std::unique_ptr<FPreparedNativeRoundFields> FPreparedNativeRoundFields::PrepareClearSensorOverlaps(USensorSubBody& Target,
@@ -296,6 +323,22 @@ std::unique_ptr<FPreparedNativeRoundFields> FPreparedNativeRoundFields::PrepareW
     P.Stage(Target.PrimarySuspensionMiss, {});
     P.Stage(Target.bObservePrimarySuspension, false);
     return Fragment;
+}
+
+std::unique_ptr<FPreparedNativeRoundFields> FPreparedNativeRoundFields::PrepareClearSensorOverlaps(
+    const FSimulationComponentRestoreRequest& Request, const FPreparedNativeKinematicFields::FRoster::FSubBody& Row)
+{
+    const auto* World = Request.OwnerLease.ResolvePreparingWorld(Request, Request.Address);
+    auto* Target = World ? FPreparedNativeKinematicFields::ResolveBoundSensor(*World, Request, Row) : nullptr;
+    return Target ? PrepareClearSensorOverlaps(*Target, Request, Row) : nullptr;
+}
+
+std::unique_ptr<FPreparedNativeRoundFields> FPreparedNativeRoundFields::PrepareWheel(
+    const FSimulationComponentRestoreRequest& Request, const PreparedWorld::FEndpointBinding& Endpoint, const FWheelState& Values)
+{
+    const auto* World = Request.OwnerLease.ResolvePreparingWorld(Request, Request.Address);
+    auto* Target = World ? Cast<USWheelSubBody>(FPreparedNativeKinematicFields::ResolveBoundSolid(*World, Request, Endpoint)) : nullptr;
+    return Target ? PrepareWheel(*Target, Request, Endpoint, Values) : nullptr;
 }
 
 FPreparedNativeRoundFields::~FPreparedNativeRoundFields() noexcept

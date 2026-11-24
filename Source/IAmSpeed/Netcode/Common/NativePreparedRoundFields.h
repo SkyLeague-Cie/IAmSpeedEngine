@@ -56,16 +56,26 @@ public:
         const FSimulationComponentRestoreRequest&, const FActorTimeline&);
     static std::unique_ptr<FPreparedNativeRoundFields> Prepare(USpeedWheeledComponent&,
         const FSimulationComponentRestoreRequest&, const FVehicleState&);
+    // Clears derived common contact, sleep and quantization caches. The
+    // existing static geometry remains pinned by the world lease.
+    static std::unique_ptr<FPreparedNativeRoundFields> PrepareColdCommon(ISpeedComponent&,
+        const FSimulationComponentRestoreRequest&);
     // For a contact-free reset. The first new physical step reacquires hits.
     static std::unique_ptr<FPreparedNativeRoundFields> PrepareClearSolidContacts(USolidSubBody&,
+        const FSimulationComponentRestoreRequest&, const PreparedWorld::FEndpointBinding&);
+    static std::unique_ptr<FPreparedNativeRoundFields> PrepareClearSolidContacts(
         const FSimulationComponentRestoreRequest&, const PreparedWorld::FEndpointBinding&);
     // Use the native sensor's row from the reauthenticated roster. The reset
     // clears transient overlap/hit state without broadcasting overlap events.
     static std::unique_ptr<FPreparedNativeRoundFields> PrepareClearSensorOverlaps(USensorSubBody&,
         const FSimulationComponentRestoreRequest&, const FPreparedNativeKinematicFields::FRoster::FSubBody&);
+    static std::unique_ptr<FPreparedNativeRoundFields> PrepareClearSensorOverlaps(
+        const FSimulationComponentRestoreRequest&, const FPreparedNativeKinematicFields::FRoster::FSubBody&);
     // Includes cleared solid contacts. Combine with the separate solid pose,
     // and supply the matching suspension displacement in FVehicleState.
     static std::unique_ptr<FPreparedNativeRoundFields> PrepareWheel(USWheelSubBody&,
+        const FSimulationComponentRestoreRequest&, const PreparedWorld::FEndpointBinding&, const FWheelState&);
+    static std::unique_ptr<FPreparedNativeRoundFields> PrepareWheel(
         const FSimulationComponentRestoreRequest&, const PreparedWorld::FEndpointBinding&, const FWheelState&);
 
     FPreparedNativeRoundFields(const FPreparedNativeRoundFields&) = delete;

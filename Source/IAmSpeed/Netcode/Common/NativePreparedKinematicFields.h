@@ -22,16 +22,27 @@ public:
             uint64 StableId = 0, ActorStableId = 0;
             uint32 NativeObjectId = 0;
             bool IsSolidEndpoint = false;
+            bool operator==(const FSubBody& B) const noexcept
+            {
+                return StableId == B.StableId && ActorStableId == B.ActorStableId && NativeObjectId == B.NativeObjectId
+                    && IsSolidEndpoint == B.IsSolidEndpoint;
+            }
         };
         std::vector<uint64> Actors;
         std::vector<FSubBody> SubBodies;
         bool HasStaticGeometryAuthority = false;
+        bool operator==(const FRoster& B) const noexcept
+        { return Actors == B.Actors && SubBodies == B.SubBodies && HasStaticGeometryAuthority == B.HasStaticGeometryAuthority; }
     };
 
     // Values-only census of the actual registry. Capture on the original
     // owner before staging; incarnation and schema come from the game binding.
     static std::optional<FRoster> CaptureRoster(const FSimulationWorld&, const PreparedWorld::FAddress&,
         const ISimulationRestoreBoundaryLease&);
+
+    // Values of just the exact dispatch target. The request, component call
+    // scope and sealed envelope must still be current under the retained lease.
+    static std::optional<std::vector<FRoster::FSubBody>> CaptureBoundSubBodies(const FSimulationComponentRestoreRequest&);
 
     // Use the exact request by reference inside PrepareCompleteSimulationRestore.
     // The factory resolves the world without exposing a registry or world view.
@@ -41,6 +52,8 @@ public:
         const FSimulationComponentRestoreRequest&);
     static std::unique_ptr<FPreparedNativeKinematicFields> PrepareSolid(USolidSubBody& Target,
         const FSimulationComponentRestoreRequest&, const PreparedWorld::FEndpointBinding&, const SKinematic& EndpointState);
+    static std::unique_ptr<FPreparedNativeKinematicFields> PrepareSolid(const FSimulationComponentRestoreRequest&,
+        const PreparedWorld::FEndpointBinding&, const SKinematic& EndpointState);
 
     static std::unique_ptr<FPreparedNativeKinematicFields> Prepare(USpeedMovementComponent& Target,
         const FSimulationWorld&, const FSimulationComponentRestoreRequest&);
@@ -68,6 +81,10 @@ private:
         const USolidSubBody&, const PreparedWorld::FEndpointBinding&);
     static bool MatchesSensor(const FSimulationWorld&, const FSimulationComponentRestoreRequest&,
         const USensorSubBody&, const FRoster::FSubBody&);
+    static USolidSubBody* ResolveBoundSolid(const FSimulationWorld&, const FSimulationComponentRestoreRequest&,
+        const PreparedWorld::FEndpointBinding&);
+    static USensorSubBody* ResolveBoundSensor(const FSimulationWorld&, const FSimulationComponentRestoreRequest&,
+        const FRoster::FSubBody&);
     FPreparedNativeKinematicFields(const FSimulationWorld&, const FSimulationComponentRestoreRequest&,
         SKinematic& Live, bool* Frozen, const SKinematic& State);
 

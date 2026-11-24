@@ -12,7 +12,8 @@ std::optional<FExactRemoteRoundBuild::FRoster> FExactRemoteRoundBuild::CaptureRo
     if (World.Bodies.IsEmpty() || static_cast<std::size_t>(World.Bodies.Num()) > Limits.MaxBodies
         || static_cast<std::size_t>(World.StableSubBodyIds.Num()) > Limits.MaxEndpoints
         || World.Bodies.Num() != World.AdaptersByStableId.Num()
-        || World.StableSubBodyIds.Num() != World.SubBodyNativeObjectIds.Num()) return {};
+        || World.StableSubBodyIds.Num() != World.SubBodyNativeObjectIds.Num()
+        || World.StableSubBodyIds.Num() != World.SubBodiesByStableId.Num()) return {};
 
     FRoster Result;
     Result.HasStaticGeometryAuthority = World.StaticCollisionWorld.Get() != nullptr;
@@ -31,7 +32,8 @@ std::optional<FExactRemoteRoundBuild::FRoster> FExactRemoteRoundBuild::CaptureRo
         const uint64 Actor = Id >> 16;
         const uint32 NativeId = World.SubBodyNativeObjectIds.FindRef(Id);
         const auto* Solid = World.SolidSubBodiesByStableId.FindRef(Id);
-        if (!Entry.Key || !Actor || !NativeId || !World.AdaptersByStableId.FindRef(Actor)
+        if (!Entry.Key || !Actor || !NativeId || World.SubBodiesByStableId.FindRef(Id) != Entry.Key
+            || !World.AdaptersByStableId.FindRef(Actor)
             || (Solid && Solid != Entry.Key)) return {};
         if (Solid) ++Solids;
         Result.SubBodies.push_back({Id, Actor, NativeId, Solid != nullptr});

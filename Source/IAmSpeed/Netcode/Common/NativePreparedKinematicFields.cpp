@@ -28,7 +28,7 @@ bool FPreparedNativeKinematicFields::MatchesActor(const FSimulationWorld& World,
     const FSimulationComponentRestoreRequest& Request, const ISpeedComponent& Target)
 {
     const auto& Binding = Request.Supplement.Binding;
-    return Request.OwnerLease.HoldsExactBoundary(World, Request.Address) && Binding.Valid()
+    return Request.OwnerLease.MatchesPreparingTarget(Request, Request.Address, World, Target) && Binding.Valid()
         && World.AdaptersByStableId.FindRef(Binding.StableId) == &Target
         && Target.GetPublishedSimulationStableId() == Binding.StableId;
 }
@@ -38,6 +38,13 @@ std::optional<FPreparedNativeKinematicFields::FRoster> FPreparedNativeKinematicF
 {
     if (!Address.Valid() || !Lease.HoldsExactBoundary(World, Address) || !Lease.ProtectsEscapedMutableViews()
         || World.bOrderDirty || World.IsRestoreBoundaryReserved()) return {};
+
+    const PreparedWorld::FLimits Limits;
+    if (static_cast<std::size_t>(World.Bodies.Num()) > Limits.MaxBodies
+        || static_cast<std::size_t>(World.StableSubBodyIds.Num()) > Limits.MaxEndpoints
+        || World.Bodies.Num() != World.AdaptersByStableId.Num()
+        || World.StableSubBodyIds.Num() != World.SubBodiesByStableId.Num()
+        || World.StableSubBodyIds.Num() != World.SubBodyNativeObjectIds.Num()) return {};
 
     FRoster Result;
     Result.HasStaticGeometryAuthority = World.StaticCollisionWorld.Get() != nullptr;
@@ -52,7 +59,9 @@ std::optional<FPreparedNativeKinematicFields::FRoster> FPreparedNativeKinematicF
     int32 Solids = 0;
     for (const auto& Entry : World.StableSubBodyIds)
     {
-        if (!Entry.Key || !Entry.Value || !Entry.Key->GetParentComponent()) return {};
+        if (!Entry.Key || !Entry.Value || World.SubBodiesByStableId.FindRef(Entry.Value) != Entry.Key
+            || World.SubBodyNativeObjectIds.FindRef(Entry.Value) != Entry.Key->GetUniqueID()
+            || !Entry.Key->GetParentComponent()) return {};
         auto* Parent = Entry.Key->GetParentComponent();
         const uint64 Actor = World.StableIds.FindRef(Parent);
         if (!Actor || World.AdaptersByStableId.FindRef(Actor) != Parent) return {};
@@ -67,6 +76,41 @@ std::optional<FPreparedNativeKinematicFields::FRoster> FPreparedNativeKinematicF
         [](const auto& A, const auto& B) { return A.StableId < B.StableId; });
     if (!Lease.HoldsExactBoundary(World, Address) || !Lease.ProtectsEscapedMutableViews()) return {};
     return Result;
+}
+
+std::optional<std::vector<FPreparedNativeKinematicFields::FRoster::FSubBody>>
+FPreparedNativeKinematicFields::CaptureBoundSubBodies(const FSimulationComponentRestoreRequest& Request)
+{
+    const auto* World = Request.OwnerLease.ResolvePreparingWorld(Request, Request.Address);
+    const auto* Actor = Request.OwnerLease.ResolvePreparingTarget(Request, Request.Address);
+    if (!World || !Actor || !MatchesActor(*World, Request, *Actor)) return {};
+
+    const PreparedWorld::FLimits Limits;
+    const uint64 ActorId = Request.Supplement.Binding.StableId;
+    if (ActorId > (UINT64_MAX >> 16) || static_cast<std::size_t>(World->StableSubBodyIds.Num()) > Limits.MaxEndpoints
+        || World->StableSubBodyIds.Num() != World->SubBodiesByStableId.Num()) return {};
+
+    const auto& Children = Actor->GetSubBodies();
+    if (static_cast<std::size_t>(Children.Num()) > Limits.MaxEndpoints) return {};
+    std::vector<FRoster::FSubBody> Rows;
+    Rows.reserve(Children.Num());
+    for (int32 Index = 0; Index < Children.Num(); ++Index)
+    {
+        const uint64 Id = (ActorId << 16) | static_cast<uint16>(Index);
+        const auto* Child = Children[Index];
+        const auto NativeId = World->SubBodyNativeObjectIds.FindRef(Id);
+        const auto* Solid = World->SolidSubBodiesByStableId.FindRef(Id);
+        if (!Child || !NativeId || World->FindStableSubBodyId(Child) != Id || World->SubBodiesByStableId.FindRef(Id) != Child
+            || Child->GetUniqueID() != NativeId || Child->GetParentComponent() != Actor
+            || (Solid && Solid != Child) || (!Solid && !Child->IsA<USensorSubBody>())) return {};
+        Rows.push_back({Id, ActorId, NativeId, Solid != nullptr});
+    }
+    std::size_t Registered = 0;
+    for (const auto& Entry : World->StableSubBodyIds)
+        if ((Entry.Value >> 16) == ActorId) ++Registered;
+    if (Registered != Rows.size()
+        || !Request.OwnerLease.MatchesPreparingTarget(Request, Request.Address, *World, *Actor)) return {};
+    return Rows;
 }
 
 std::unique_ptr<FPreparedNativeKinematicFields> FPreparedNativeKinematicFields::Prepare(
@@ -89,6 +133,15 @@ std::unique_ptr<FPreparedNativeKinematicFields> FPreparedNativeKinematicFields::
 {
     const auto* World = Request.OwnerLease.ResolvePreparingWorld(Request, Request.Address);
     return World ? PrepareSolid(Target, *World, Request, Endpoint, EndpointState) : nullptr;
+}
+
+std::unique_ptr<FPreparedNativeKinematicFields> FPreparedNativeKinematicFields::PrepareSolid(
+    const FSimulationComponentRestoreRequest& Request, const PreparedWorld::FEndpointBinding& Endpoint,
+    const SKinematic& EndpointState)
+{
+    const auto* World = Request.OwnerLease.ResolvePreparingWorld(Request, Request.Address);
+    auto* Target = World ? ResolveBoundSolid(*World, Request, Endpoint) : nullptr;
+    return Target ? PrepareSolid(*Target, *World, Request, Endpoint, EndpointState) : nullptr;
 }
 
 std::unique_ptr<FPreparedNativeKinematicFields> FPreparedNativeKinematicFields::Prepare(
@@ -121,10 +174,12 @@ std::unique_ptr<FPreparedNativeKinematicFields> FPreparedNativeKinematicFields::
 bool FPreparedNativeKinematicFields::MatchesSolid(const FSimulationWorld& World,
     const FSimulationComponentRestoreRequest& Request, const USolidSubBody& Target, const PreparedWorld::FEndpointBinding& Endpoint)
 {
-    return Request.OwnerLease.HoldsExactBoundary(World, Request.Address) && Endpoint.StableId
+    return Request.OwnerLease.ResolvePreparingWorld(Request, Request.Address) == &World
+        && Request.OwnerLease.MatchesPreparingEndpoint(Request, Request.Address, Endpoint) && Endpoint.StableId
         && Endpoint.Incarnation && Endpoint.NativeObjectId && Endpoint.Actor == Request.Supplement.Binding.StableId
         && Endpoint.ActorIncarnation == Request.Supplement.Binding.Incarnation
         && World.SolidSubBodiesByStableId.FindRef(Endpoint.StableId) == &Target
+        && World.SubBodiesByStableId.FindRef(Endpoint.StableId) == &Target
         && World.FindStableSubBodyId(&Target) == Endpoint.StableId && Target.GetUniqueID() == Endpoint.NativeObjectId
         && Target.GetParentComponent() && MatchesActor(World, Request, *Target.GetParentComponent());
 }
@@ -133,16 +188,32 @@ bool FPreparedNativeKinematicFields::MatchesSensor(const FSimulationWorld& World
     const FSimulationComponentRestoreRequest& Request, const USensorSubBody& Target, const FRoster::FSubBody& Sensor)
 {
     const auto& Binding = Request.Supplement.Binding;
-    if (!Request.OwnerLease.HoldsExactBoundary(World, Request.Address) || !Binding.Valid()
+    if (Request.OwnerLease.ResolvePreparingWorld(Request, Request.Address) != &World || !Binding.Valid()
         || !Sensor.StableId || !Sensor.NativeObjectId || Sensor.IsSolidEndpoint
         || Sensor.ActorStableId != Binding.StableId || (Sensor.StableId >> 16) != Binding.StableId
         || World.SolidSubBodiesByStableId.Contains(Sensor.StableId)
+        || World.SubBodiesByStableId.FindRef(Sensor.StableId) != &Target
         || World.FindStableSubBodyId(&Target) != Sensor.StableId
         || World.SubBodyNativeObjectIds.FindRef(Sensor.StableId) != Sensor.NativeObjectId
         || Target.GetUniqueID() != Sensor.NativeObjectId || !Target.IsSensor()) return false;
 
     const auto* Parent = Target.GetParentComponent();
     return Parent && MatchesActor(World, Request, *Parent);
+}
+
+USolidSubBody* FPreparedNativeKinematicFields::ResolveBoundSolid(const FSimulationWorld& World,
+    const FSimulationComponentRestoreRequest& Request, const PreparedWorld::FEndpointBinding& Endpoint)
+{
+    auto* Solid = World.SolidSubBodiesByStableId.FindRef(Endpoint.StableId);
+    return Solid && MatchesSolid(World, Request, *Solid, Endpoint) ? Solid : nullptr;
+}
+
+USensorSubBody* FPreparedNativeKinematicFields::ResolveBoundSensor(const FSimulationWorld& World,
+    const FSimulationComponentRestoreRequest& Request, const FRoster::FSubBody& Row)
+{
+    if (Row.IsSolidEndpoint || Row.ActorStableId != Request.Supplement.Binding.StableId) return nullptr;
+    auto* Sensor = Cast<USensorSubBody>(World.SubBodiesByStableId.FindRef(Row.StableId));
+    return Sensor && MatchesSensor(World, Request, *Sensor, Row) ? Sensor : nullptr;
 }
 
 FPreparedNativeKinematicFields::FPreparedNativeKinematicFields(const FSimulationWorld& InWorld,
