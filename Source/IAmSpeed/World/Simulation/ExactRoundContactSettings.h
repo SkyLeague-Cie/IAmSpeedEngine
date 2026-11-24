@@ -60,7 +60,7 @@ private:
     bool CaptureSolidSettings() noexcept;
     void CaptureSphereProjectionSettings() noexcept;
     void CaptureBoxContactSettings() noexcept;
-    bool CaptureSuspensionSettings() noexcept;
+    void CaptureSuspensionSettings() noexcept;
 };
 
 // Response and projection are synchronous on the canonical owner. Keep

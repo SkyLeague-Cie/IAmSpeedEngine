@@ -65,7 +65,8 @@ std::optional<FExactRoundContactSettings> FExactRoundContactSettings::Capture() 
 #endif
 	Settings.CaptureSphereProjectionSettings();
 	Settings.CaptureBoxContactSettings();
-	if (!Settings.CaptureSuspensionSettings() || !Settings.Hash()) return {};
+	Settings.CaptureSuspensionSettings();
+	if (!Settings.Hash()) return {};
 	return Settings;
 }
 

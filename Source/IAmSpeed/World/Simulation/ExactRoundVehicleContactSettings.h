@@ -91,6 +91,7 @@ struct FExactRoundSuspensionSettings final
     float SkipOverextendedWheelContactMinCarUpDot = 0.f;
     float SkipOverextendedWheelContactMaxInwardNormalVelocity = 0.f;
     float SkipOverextendedWheelContactMaxInwardBodyNormalVelocity = 0.f;
+    bool ForceDiagnosticReads = false;
 
     bool operator==(const FExactRoundSuspensionSettings&) const = default;
 
@@ -117,6 +118,7 @@ struct FExactRoundSuspensionSettings final
         Writer.Float(SkipOverextendedWheelContactMinCarUpDot);
         Writer.Float(SkipOverextendedWheelContactMaxInwardNormalVelocity);
         Writer.Float(SkipOverextendedWheelContactMaxInwardBodyNormalVelocity);
+        Writer.Boolean(ForceDiagnosticReads);
     }
 };
 }

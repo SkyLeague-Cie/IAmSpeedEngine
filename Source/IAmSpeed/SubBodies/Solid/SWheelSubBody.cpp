@@ -155,12 +155,10 @@ static TAutoConsoleVariable<int32> CVarSkyLeagueSuspensionForceDebug(
 	TEXT("Logs per-wheel suspension force components when non-zero."),
 	ECVF_Default);
 
-bool Speed::FExactRoundContactSettings::CaptureSuspensionSettings() noexcept
+void Speed::FExactRoundContactSettings::CaptureSuspensionSettings() noexcept
 {
-#if !UE_BUILD_SHIPPING
     // Some diagnostic arguments advance Chaos suspension smoothing when evaluated.
-    if (CVarSkyLeagueSuspensionForceDebug.GetValueOnAnyThread() != 0) return false;
-#endif
+    Suspension.ForceDiagnosticReads = CVarSkyLeagueSuspensionForceDebug.GetValueOnAnyThread() != 0;
     Suspension.CompressionDampingScale = CVarSkyLeagueSuspensionCompressionDampingScale.GetValueOnAnyThread();
     Suspension.CompressionQuadraticDamping = CVarSkyLeagueSuspensionCompressionQuadraticDamping.GetValueOnAnyThread();
     Suspension.ReboundDampingScale = CVarSkyLeagueSuspensionReboundDampingScale.GetValueOnAnyThread();
@@ -182,7 +180,6 @@ bool Speed::FExactRoundContactSettings::CaptureSuspensionSettings() noexcept
     Suspension.SkipOverextendedWheelContactMinCarUpDot = CVarSkyLeagueSuspensionSkipOverextendedWheelContactMinCarUpDot.GetValueOnAnyThread();
     Suspension.SkipOverextendedWheelContactMaxInwardNormalVelocity = CVarSkyLeagueSuspensionSkipOverextendedWheelContactMaxInwardNormalVelocity.GetValueOnAnyThread();
     Suspension.SkipOverextendedWheelContactMaxInwardBodyNormalVelocity = CVarSkyLeagueSuspensionSkipOverextendedWheelContactMaxInwardBodyNormalVelocity.GetValueOnAnyThread();
-    return true;
 }
 
 namespace
@@ -191,7 +188,8 @@ namespace
 
     bool IsSuspensionForceDebugEnabled()
     {
-        return !Speed::FScopedExactRoundContactSettings::Current() &&
+        const auto* Settings = Speed::FScopedExactRoundContactSettings::Current();
+        return Settings ? Settings->Suspension.ForceDiagnosticReads :
             CVarSkyLeagueSuspensionForceDebug.GetValueOnAnyThread() != 0;
     }
 
