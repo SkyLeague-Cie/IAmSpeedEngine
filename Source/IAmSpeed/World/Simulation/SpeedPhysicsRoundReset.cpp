@@ -328,13 +328,25 @@ bool ASpeedPhysicsSimulation::IsCurrentExactNeutralDispatch(const Speed::FWorldB
         && Current.Hold->Excludes(HostGate);
 }
 
+bool ASpeedPhysicsSimulation::RejectCurrentExactNeutralPreGameplay(const Speed::FWorldBorrowGate& HostGate,
+    uint64 WorkerGeneration, uint64 Frame, const ISpeedComponent* Actor) noexcept
+{
+    return RejectCurrentExactNeutralActorDispatch(HostGate, WorkerGeneration, Frame,
+        Speed::EExactNeutralDispatch::ActorPreGameplay, Actor);
+}
+
 bool ASpeedPhysicsSimulation::RejectCurrentExactNeutralPostPhysics(const Speed::FWorldBorrowGate& HostGate,
     uint64 WorkerGeneration, uint64 Frame, const ISpeedComponent* Actor) noexcept
 {
-    if (!IsCurrentExactNeutralDispatch(HostGate, WorkerGeneration, Frame,
-        Speed::EExactNeutralDispatch::ActorPostPhysics, Actor)) return false;
+    return RejectCurrentExactNeutralActorDispatch(HostGate, WorkerGeneration, Frame,
+        Speed::EExactNeutralDispatch::ActorPostPhysics, Actor);
+}
 
-    RejectedExactNeutralFrame = Frame;
+bool ASpeedPhysicsSimulation::RejectCurrentExactNeutralActorDispatch(const Speed::FWorldBorrowGate& HostGate,
+    uint64 WorkerGeneration, uint64 Frame, Speed::EExactNeutralDispatch Kind, const ISpeedComponent* Actor) noexcept
+{
+    if (!IsCurrentExactNeutralDispatch(HostGate, WorkerGeneration, Frame, Kind, Actor)) return false;
+    if (!RejectedExactNeutralFrame) RejectedExactNeutralFrame = FExactNeutralRejection{Frame, Kind};
     return true;
 }
 
@@ -342,8 +354,11 @@ ESimulationWorkerResult ASpeedPhysicsSimulation::FinishExactRemoteRoundWork(ESim
 {
     if (RejectedExactNeutralFrame)
     {
-        UE_LOG(LogTemp, Error, TEXT("[ExactNeutralPostPhysicsRejected] Frame=%llu WorkerGeneration=%llu GlobalPublished=0 MutationPossible=1 Terminal=1"),
-            *RejectedExactNeutralFrame, InputWorkerGeneration);
+        const auto& Rejection = *RejectedExactNeutralFrame;
+        const TCHAR* Trace = Rejection.Kind == Speed::EExactNeutralDispatch::ActorPreGameplay
+            ? TEXT("ExactNeutralPreGameplayRejected") : TEXT("ExactNeutralPostPhysicsRejected");
+        UE_LOG(LogTemp, Error, TEXT("[%s] Frame=%llu WorkerGeneration=%llu GlobalPublished=0 MutationPossible=1 Terminal=1"),
+            Trace, Rejection.Frame, InputWorkerGeneration);
         ExactRemoteRoundProvider->OnRejected();
         // Preserve the original worker's terminal close and its host pins
         // through StopAndJoin, even if the enclosing pulse reports Advanced.

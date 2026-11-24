@@ -202,6 +202,10 @@ public:
     bool IsCurrentExactNeutralDispatch(const Speed::FWorldBorrowGate& HostGate,
         uint64 WorkerGeneration, uint64 Frame, Speed::EExactNeutralDispatch Kind,
         const ISpeedComponent* Actor, const USSubBody* Sensor = nullptr) const noexcept;
+    // Call from the original synchronous ActorPreGameplay callback before
+    // applying the rejected operation. A true result makes this F terminal.
+    bool RejectCurrentExactNeutralPreGameplay(const Speed::FWorldBorrowGate& HostGate,
+        uint64 WorkerGeneration, uint64 Frame, const ISpeedComponent* Actor) noexcept;
     // Call from the original synchronous ActorPostPhysics callback before
     // applying the rejected operation. A true result makes this F terminal.
     bool RejectCurrentExactNeutralPostPhysics(const Speed::FWorldBorrowGate& HostGate,
@@ -448,6 +452,8 @@ private:
 	ESimulationWorkerResult FinishExactRemoteRoundWork(ESimulationWorkerResult);
 	bool HasActiveExactRoundHostProtection() const noexcept;
     const Speed::FExactRoundHostHold* ReadExactNeutralDispatchHold(uint64 Frame, bool bResimulation) const noexcept;
+    bool RejectCurrentExactNeutralActorDispatch(const Speed::FWorldBorrowGate& HostGate,
+        uint64 WorkerGeneration, uint64 Frame, Speed::EExactNeutralDispatch Kind, const ISpeedComponent* Actor) noexcept;
 	std::shared_ptr<Speed::IExactRemoteRoundProvider> ExactRemoteRoundProvider;
 	Speed::FExactRemoteRoundFence ExactRemoteRoundFence;
 	std::unique_ptr<Speed::FWorldBorrowGate::FReservation> ExactRemoteRoundStorage; // original worker only
@@ -457,7 +463,12 @@ private:
 	std::shared_ptr<const Speed::FCompletedSimulationPublication> PublishedRoundNeutralStep;
 	std::shared_ptr<const Speed::FCompletedSimulationPublication> PendingRoundNeutralStep; // original worker only
 	std::shared_ptr<const Speed::FExactRemoteRoundCommit> ActiveExactRemoteRound; // original worker only
-    std::optional<uint64> RejectedExactNeutralFrame; // original worker only, terminal for this driver
+    struct FExactNeutralRejection
+    {
+        uint64 Frame;
+        Speed::EExactNeutralDispatch Kind;
+    };
+    std::optional<FExactNeutralRejection> RejectedExactNeutralFrame; // original worker only, terminal for this driver
 	void CloseInputSessionsOnWorker();
 	std::shared_ptr<Speed::Input::V2::FInputSessionCommands> InputSessionCommands;
 	std::unique_ptr<Speed::Input::V2::FInputSessionRegistry> InputSessionRegistry;

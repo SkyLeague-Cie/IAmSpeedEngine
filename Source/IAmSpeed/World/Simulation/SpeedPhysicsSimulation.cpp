@@ -1815,6 +1815,16 @@ bool ASpeedPhysicsSimulation::StepCanonicalFrame(const FCanonicalFrameContext& C
 #if !UE_BUILD_SHIPPING
         ParallelTimingScope.NextPhase(Speed::ParallelTiming::EFrameCostPhase::Input);
 #endif
+    const auto AbortRejectedNeutralFrame = [this, &Context, &MarkTerminal]()
+    {
+        if (!RejectedExactNeutralFrame) return false;
+        // The producer can refuse its operation after other world work ran.
+        // Retire this frame before publication and let the worker close.
+        MarkTerminal();
+        SpeedWorldSubsystem->AbortCanonicalFrame(Context.NumFrame, ECanonicalFrameAbortReason::PreparationFailed);
+        return true;
+    };
+
 	const TCHAR* ExceptionStage = TEXT("InputRegistryRead");
 	try
 	{
@@ -1974,6 +1984,7 @@ bool ASpeedPhysicsSimulation::StepCanonicalFrame(const FCanonicalFrameContext& C
 #endif
             effect.Returned();
         }
+        if (AbortRejectedNeutralFrame()) return false;
 #if WITH_DEV_AUTOMATION_TESTS
     OwnedPhases.Mark(Speed::OwnedFrameAudit::ECanonicalEdge::WorldPrepare);
 #endif
@@ -2031,15 +2042,7 @@ bool ASpeedPhysicsSimulation::StepCanonicalFrame(const FCanonicalFrameContext& C
             SpeedWorldSubsystem->Step(Context.PhysicalDeltaTime, Context.SimTime,
                 static_cast<unsigned int>(Context.NumFrame));
         }
-        if (RejectedExactNeutralFrame)
-        {
-            // A producer refused this F before its own operation. Earlier
-            // world work may have mutated state. Retire the frame before any
-            // snapshot or publication and leave teardown to the worker.
-            MarkTerminal();
-            SpeedWorldSubsystem->AbortCanonicalFrame(Context.NumFrame, ECanonicalFrameAbortReason::PreparationFailed);
-            return false;
-        }
+        if (AbortRejectedNeutralFrame()) return false;
 #if WITH_DEV_AUTOMATION_TESTS
     OwnedPhases.Mark(Speed::OwnedFrameAudit::ECanonicalEdge::WorldStep);
     if (OwnedPhases.CapturesPhysicalDetail())
