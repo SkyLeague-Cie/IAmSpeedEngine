@@ -8,6 +8,7 @@
 #include "IAmSpeed/World/Simulation/ReplayFieldArchive.h"
 #include "IAmSpeed/World/Simulation/ReplayBaseStateFields.h"
 #include "IAmSpeed/World/Simulation/CanonicalEpisodeTestingScope.h"
+#include "IAmSpeed/World/Simulation/ExactRoundContactSettings.h"
 #include "Engine/World.h"
 #include "Misc/ScopeExit.h"
 #include "IAmSpeed/IAmSpeed.h"
@@ -553,7 +554,7 @@ void USpeedMovementComponent::SetSubBodies(const TArray<USSubBody*>& NewSubBodie
 
 void USpeedMovementComponent::HandleCountdownTimer()
 {
-	if (!bEnableSimulation || CanMove() || !CountdownHasStarted())
+	if (!IsSimulationEnabledForPhysics() || CanMove() || !CountdownHasStarted())
 	{
 		return;
 	}
@@ -573,21 +574,22 @@ void USpeedMovementComponent::HandleCountdownTimer()
 
 void USpeedMovementComponent::HandleGravity()
 {
-	if (bEnableGravity && bEnableSimulation)
+	if (IsGravityEnabledForPhysics() && IsSimulationEnabledForPhysics())
 	{
-		AddPhysAcceleration(FVector(0.0f, 0.0f, GravityZ));
+		AddPhysAcceleration(FVector(0.0f, 0.0f, GravityAccelerationZForPhysics()));
 	}
 }
 
 void USpeedMovementComponent::HandleDamping(const float& delta)
 {
-	if (PhysDamping <= 0.0 || !bEnableSimulation)
+	const float Damping = MovementDampingForPhysics();
+	if (Damping <= 0.0 || !IsSimulationEnabledForPhysics())
 	{
 		return;
 	}
 
 	const FVector COMVelocity = GetPhysCOMVelocity();
-	FVector NewCOMVelocity = (1 - PhysDamping) * COMVelocity;
+	FVector NewCOMVelocity = (1 - Damping) * COMVelocity;
 	const float Speed = COMVelocity.Size();
 	if (Speed <= 1.0)
 	{
@@ -599,7 +601,7 @@ void USpeedMovementComponent::HandleDamping(const float& delta)
 
 void USpeedMovementComponent::HandleRestForce()
 {
-	if (!bEnableSimulation)
+	if (!IsSimulationEnabledForPhysics())
 	{
 		return;
 	}
@@ -634,7 +636,7 @@ void USpeedMovementComponent::GameplayTick(const float& DeltaTime, const float& 
 
 void USpeedMovementComponent::ApplyAccelKinematicsConstraint(const float& delta)
 {
-	if (!bEnableSimulation)
+	if (!IsSimulationEnabledForPhysics())
 	{
 		return;
 	}
@@ -667,19 +669,105 @@ void USpeedMovementComponent::PostGameplayTick(const float& DeltaTime, const flo
 {
 }
 
+bool USpeedMovementComponent::RetainExactRoundMovementConfiguration(uint64 WorkerGeneration, bool bAllowCapture)
+{
+    check(WorkerGeneration && Speed::FScopedExactRoundContactSettings::Current());
+    if (RetainedMovementConfiguration.WorkerGeneration == WorkerGeneration) return true;
+    if (!bAllowCapture || !GetPublishedSimulationStableId() ||
+        !FMath::IsFinite(GravityZ) || !FMath::IsFinite(PhysDamping)) return false;
+    RetainedMovementConfiguration = {WorkerGeneration, bEnableSimulation, bEnableGravity, GravityZ, PhysDamping};
+    return true;
+}
+
+const USpeedMovementComponent::FExactRoundMovementConfiguration*
+USpeedMovementComponent::ExactRoundMovementConfigurationForRead() const
+{
+    return Speed::FScopedExactRoundContactSettings::Current() && RetainedMovementConfiguration.WorkerGeneration
+        ? &RetainedMovementConfiguration : nullptr;
+}
+
+bool USpeedMovementComponent::IsSimulationEnabledForPhysics() const
+{
+    const auto* Configuration = ExactRoundMovementConfigurationForRead();
+    return Configuration ? Configuration->SimulationEnabled : bEnableSimulation;
+}
+
+bool USpeedMovementComponent::IsGravityEnabledForPhysics() const
+{
+    const auto* Configuration = ExactRoundMovementConfigurationForRead();
+    return Configuration ? Configuration->GravityEnabled : bEnableGravity;
+}
+
+float USpeedMovementComponent::GravityAccelerationZForPhysics() const
+{
+    const auto* Configuration = ExactRoundMovementConfigurationForRead();
+    return Configuration ? Configuration->GravityAccelerationZ : GravityZ;
+}
+
+float USpeedMovementComponent::MovementDampingForPhysics() const
+{
+    const auto* Configuration = ExactRoundMovementConfigurationForRead();
+    return Configuration ? Configuration->Damping : PhysDamping;
+}
+
+bool USpeedMovementComponent::AppendExactRoundMovementConfiguration(Speed::FExactRoundConfigurationWriter& Out) const
+{
+    const auto* Configuration = ExactRoundMovementConfigurationForRead();
+    return Configuration && GetPublishedSimulationStableId() &&
+        Out.Unsigned(0x4941534d4f560001ull) && Out.Boolean(Configuration->SimulationEnabled) &&
+        Out.Boolean(Configuration->GravityEnabled) && Out.Float(Configuration->GravityAccelerationZ) &&
+        Out.Float(Configuration->Damping);
+}
+
 bool USpeedMovementComponent::IsAffectedByGravity() const
 {
-	return bEnableGravity;
+    return IsGravityEnabledForPhysics();
+}
+
+FVector USpeedMovementComponent::GetNominalGravityAcceleration() const
+{
+    return IsGravityEnabledForPhysics() ? FVector(0, 0, GravityAccelerationZForPhysics()) : FVector::ZeroVector;
+}
+
+void USpeedMovementComponent::ChangeMovementConfiguration(TFunctionRef<void()> Write)
+{
+    if (IsTemplate() || (HasAnyFlags(RF_NeedInitialization) && !GetPublishedSimulationStableId()))
+    {
+        Write();
+        return;
+    }
+    if (!USpeedWorldSubsystem::TryWriteOwnedRoundConfiguration(*this, Write))
+        UE_LOG(SpeedPhysicsLog, Warning, TEXT("Movement configuration is retained by the exact round owner (%s)"), *GetName());
 }
 
 void USpeedMovementComponent::SetIsAffectedByGravity(bool value)
 {
-	bEnableGravity = value;
+    ChangeMovementConfiguration([this, value] { bEnableGravity = value; });
 }
 
 void USpeedMovementComponent::EnableGravity()
 {
-	bEnableGravity = true;
+    SetIsAffectedByGravity(true);
+}
+
+void USpeedMovementComponent::SetMovementGravityEnabled(bool bEnabled)
+{
+    SetIsAffectedByGravity(bEnabled);
+}
+
+void USpeedMovementComponent::SetMovementSimulationEnabled(bool bEnabled)
+{
+    ChangeMovementConfiguration([this, bEnabled] { bEnableSimulation = bEnabled; });
+}
+
+void USpeedMovementComponent::SetMovementGravityZ(float AccelerationZ)
+{
+    ChangeMovementConfiguration([this, AccelerationZ] { GravityZ = AccelerationZ; });
+}
+
+void USpeedMovementComponent::SetMovementDamping(float Damping)
+{
+    ChangeMovementConfiguration([this, Damping] { PhysDamping = Damping; });
 }
 
 bool USpeedMovementComponent::HasAuthority() const
@@ -772,7 +860,7 @@ void USpeedMovementComponent::StartTestWithVelocity(const FVector& InitialVeloci
 
 void USpeedMovementComponent::StartTestWithVelocityLocal(const FVector& InitialVelocity)
 {
-	if (!bEnableSimulation)
+	if (!IsSimulationEnabledForPhysics())
 	{
 		return;
 	}
@@ -781,7 +869,7 @@ void USpeedMovementComponent::StartTestWithVelocityLocal(const FVector& InitialV
 
 void USpeedMovementComponent::StartTestWithVelocityLocal(const FVector& InitialVelocity, const FVector& InitialAngularVelocity)
 {
-	if (!bEnableSimulation)
+	if (!IsSimulationEnabledForPhysics())
 	{
 		return;
 	}
@@ -810,7 +898,7 @@ bool USpeedMovementComponent::CountdownHasStarted() const
 
 void USpeedMovementComponent::StartConfrontationInSec(const float& TimeSec)
 {
-	if (!bEnableSimulation)
+	if (!IsSimulationEnabledForPhysics())
 	{
 		return;
 	}
@@ -819,7 +907,7 @@ void USpeedMovementComponent::StartConfrontationInSec(const float& TimeSec)
 
 void USpeedMovementComponent::StartConfrontationLocal(const float& TimeSec)
 {
-	if (!bEnableSimulation)
+	if (!IsSimulationEnabledForPhysics())
 	{
 		return;
 	}
@@ -848,7 +936,7 @@ void USpeedMovementComponent::StartConfrontationMulti_Implementation(const float
 
 void USpeedMovementComponent::SetCannotMove()
 {
-	if (!bEnableSimulation)
+	if (!IsSimulationEnabledForPhysics())
 	{
 		return;
 	}
@@ -857,7 +945,7 @@ void USpeedMovementComponent::SetCannotMove()
 
 void USpeedMovementComponent::SetCannotMoveLocal()
 {
-	if (!bEnableSimulation)
+	if (!IsSimulationEnabledForPhysics())
 	{
 		return;
 	}
@@ -876,7 +964,7 @@ void USpeedMovementComponent::SetCannotMoveMulti_Implementation()
 
 void USpeedMovementComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 {
-	if (HasAuthority() || !SNetworkPhysicsComponent || !bEnableSimulation)
+	if (HasAuthority() || !SNetworkPhysicsComponent || !IsSimulationEnabledForPhysics())
 	{
 		return;
 	}
@@ -1156,7 +1244,7 @@ void USpeedMovementComponent::QuantizePhysicalState()
 
 void USpeedMovementComponent::TagStateHistoryProxyRole()
 {
-	if (HasAuthority() || !bEnableSimulation)
+	if (HasAuthority() || !IsSimulationEnabledForPhysics())
 		return;
 
 	const TSharedPtr<Chaos::FBaseRewindHistory>& History = SNetworkPhysicsComponent->GetStateHistory_Internal();
@@ -1220,7 +1308,7 @@ bool USpeedMovementComponent::CanRebaseCanonicalEpisodeForTesting(
     C.NumFrame>=uint64(MAX_int32-1) || NumFrame()!=C.NumFrame+1 ||
     C.PhysicalDeltaTime!=FCanonicalFrameContext::CanonicalPhysicalDeltaTime ||
     !GetWorld() || GetWorld()->GetNetMode()!=NM_Standalone || !GetOwner() || !HasAuthority() ||
-    !bEnableSimulation || IsFrozen() || !CanMove() || bNetCorrHasTarget || BaseGameState.bHasTestVelocity ||
+    !IsSimulationEnabledForPhysics() || IsFrozen() || !CanMove() || bNetCorrHasTarget || BaseGameState.bHasTestVelocity ||
     RecordedBaseFrames.Num()!=SpeedConstants::RecordedHistorySize ||
     RecordedBaseStates.Num()!=SpeedConstants::RecordedHistorySize)return false;
  if(K.Location.ContainsNaN() || K.Velocity.ContainsNaN() || K.Acceleration.ContainsNaN() ||

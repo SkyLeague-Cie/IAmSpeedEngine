@@ -467,6 +467,8 @@ private:
 	TAtomic<uint64> PublishedSimulationStableId = 0;
     Speed::FNativePhysicsUse NativePhysicsUse;
     bool TryAdmitNativeSubBodies() const;
+    // The original canonical owner calls this after authenticating the adapter.
+    virtual bool RetainExactRoundMovementConfiguration(uint64, bool) { return true; }
 	// Borrowed only during the world's canonical step; no historical/cache state.
 	const Speed::IStaticCollisionWorld* StaticRestingWorld = nullptr;
 	float StaticSupportFrameHorizon = 0;

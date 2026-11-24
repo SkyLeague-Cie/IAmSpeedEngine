@@ -7,6 +7,7 @@
 #include "IAmSpeed/Netcode/presentation-client/PresentationClientWorld.h"
 #include "IAmSpeed/World/Analytic/SpeedAnalyticContactComponent.h"
 #include "HAL/CriticalSection.h"
+#include "IAmSpeed/World/Simulation/ExactRoundContactSettings.h"
 #include "Misc/ScopeLock.h"
 #include <atomic>
 #include <exception>
@@ -358,7 +359,13 @@ bool USpeedWorldSubsystem::TryWriteSolidContactConfiguration(
         return true;
     }
 
-    auto* World = Body.GetWorld();
+    return TryWriteOwnedRoundConfiguration(Body, Write);
+}
+
+bool USpeedWorldSubsystem::TryWriteOwnedRoundConfiguration(
+    const UActorComponent& Component, TFunctionRef<void()> Write)
+{
+    auto* World = Component.GetWorld();
     auto* Subsystem = World ? World->GetSubsystem<USpeedWorldSubsystem>() : nullptr;
     if (Subsystem)
     {
@@ -2438,6 +2445,19 @@ bool USpeedWorldSubsystem::ValidateSimulationBindings(FString& OutReason)
             effect.Returned(valid,valid); if(!valid)return false;
         }
 	}
+    if (Speed::FScopedExactRoundContactSettings::Current())
+    {
+        const auto Generation = SimulationWorld.ExactRoundWorkerGeneration;
+        const bool bAllowCapture = !SimulationWorld.StorageAccess.IsReservationOwner();
+        for (auto* Component : SimulationWorld.GetOrderedAdapters())
+        {
+            if (!Generation || !Component || !Component->RetainExactRoundMovementConfiguration(Generation, bAllowCapture))
+            {
+                OutReason = TEXT("retained movement configuration unavailable");
+                return false;
+            }
+        }
+    }
 	return true;
 }
 
