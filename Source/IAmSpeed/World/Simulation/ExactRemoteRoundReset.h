@@ -121,6 +121,8 @@ public:
         HostStorageUnavailable, ActiveHostBorrow, UntrackedHostReference
     };
     virtual void OnBoundaryRefused(EBoundaryRefusal) noexcept { OnRejected(); }
+    // Also reports terminal rejection of neutral F on the original worker,
+    // after dispatch and with retained host storage still excluded.
     virtual void OnRejected() noexcept = 0;
     // Called after the real step and immutable publication of the neutral F.
     // The host may authorize F+1 after the presentation ACKs are satisfied.

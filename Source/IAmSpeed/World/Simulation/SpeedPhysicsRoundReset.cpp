@@ -328,8 +328,27 @@ bool ASpeedPhysicsSimulation::IsCurrentExactNeutralDispatch(const Speed::FWorldB
         && Current.Hold->Excludes(HostGate);
 }
 
+bool ASpeedPhysicsSimulation::RejectCurrentExactNeutralPostPhysics(const Speed::FWorldBorrowGate& HostGate,
+    uint64 WorkerGeneration, uint64 Frame, const ISpeedComponent* Actor) noexcept
+{
+    if (!IsCurrentExactNeutralDispatch(HostGate, WorkerGeneration, Frame,
+        Speed::EExactNeutralDispatch::ActorPostPhysics, Actor)) return false;
+
+    RejectedExactNeutralFrame = Frame;
+    return true;
+}
+
 ESimulationWorkerResult ASpeedPhysicsSimulation::FinishExactRemoteRoundWork(ESimulationWorkerResult Result)
 {
+    if (RejectedExactNeutralFrame)
+    {
+        UE_LOG(LogTemp, Error, TEXT("[ExactNeutralPostPhysicsRejected] Frame=%llu WorkerGeneration=%llu GlobalPublished=0 MutationPossible=1 Terminal=1"),
+            *RejectedExactNeutralFrame, InputWorkerGeneration);
+        ExactRemoteRoundProvider->OnRejected();
+        // Preserve the original worker's terminal close and its host pins
+        // through StopAndJoin, even if the enclosing pulse reports Advanced.
+        return ESimulationWorkerResult::Failed;
+    }
     if (!ExactRemoteRoundStorage || Result != ESimulationWorkerResult::Advanced) return Result;
     auto Neutral = std::move(PendingRoundNeutralStep);
     if (!ActiveExactRemoteRound || !Neutral || !HasActiveExactRoundHostProtection()

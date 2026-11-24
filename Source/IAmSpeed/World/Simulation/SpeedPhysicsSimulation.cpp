@@ -2031,6 +2031,15 @@ bool ASpeedPhysicsSimulation::StepCanonicalFrame(const FCanonicalFrameContext& C
             SpeedWorldSubsystem->Step(Context.PhysicalDeltaTime, Context.SimTime,
                 static_cast<unsigned int>(Context.NumFrame));
         }
+        if (RejectedExactNeutralFrame)
+        {
+            // A producer refused this F before its own operation. Earlier
+            // world work may have mutated state. Retire the frame before any
+            // snapshot or publication and leave teardown to the worker.
+            MarkTerminal();
+            SpeedWorldSubsystem->AbortCanonicalFrame(Context.NumFrame, ECanonicalFrameAbortReason::PreparationFailed);
+            return false;
+        }
 #if WITH_DEV_AUTOMATION_TESTS
     OwnedPhases.Mark(Speed::OwnedFrameAudit::ECanonicalEdge::WorldStep);
     if (OwnedPhases.CapturesPhysicalDetail())

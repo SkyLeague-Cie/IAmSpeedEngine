@@ -202,6 +202,10 @@ public:
     bool IsCurrentExactNeutralDispatch(const Speed::FWorldBorrowGate& HostGate,
         uint64 WorkerGeneration, uint64 Frame, Speed::EExactNeutralDispatch Kind,
         const ISpeedComponent* Actor, const USSubBody* Sensor = nullptr) const noexcept;
+    // Call from the original synchronous ActorPostPhysics callback before
+    // applying the rejected operation. A true result makes this F terminal.
+    bool RejectCurrentExactNeutralPostPhysics(const Speed::FWorldBorrowGate& HostGate,
+        uint64 WorkerGeneration, uint64 Frame, const ISpeedComponent* Actor) noexcept;
     Speed::Input::V2::ECommandAdmission SubmitRequestedNetworkInputSession(
         const Speed::Input::V2::FBoundaryCommandDescriptor& Command,
         std::shared_ptr<Speed::Netcode::FNetworkRequestedInputService> Service);
@@ -453,6 +457,7 @@ private:
 	std::shared_ptr<const Speed::FCompletedSimulationPublication> PublishedRoundNeutralStep;
 	std::shared_ptr<const Speed::FCompletedSimulationPublication> PendingRoundNeutralStep; // original worker only
 	std::shared_ptr<const Speed::FExactRemoteRoundCommit> ActiveExactRemoteRound; // original worker only
+    std::optional<uint64> RejectedExactNeutralFrame; // original worker only, terminal for this driver
 	void CloseInputSessionsOnWorker();
 	std::shared_ptr<Speed::Input::V2::FInputSessionCommands> InputSessionCommands;
 	std::unique_ptr<Speed::Input::V2::FInputSessionRegistry> InputSessionRegistry;
