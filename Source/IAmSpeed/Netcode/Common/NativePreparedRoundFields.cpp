@@ -451,7 +451,7 @@ struct FPreparedNativeRoundFields::FPlan
         const auto& Children = Actor->USpeedWheeledComponent::GetSubBodies();
         return !Children.IsEmpty() && Children[0] == Box && Actor->GetHitboxSubBodyForConfiguration() == Box
             && Box->GetSubBodyType() == USSubBody::ESubBodyType::Hitbox
-            && Box->HitCountThisFrame.IsEmpty() && Box->HitCountThisFrame.GetAllocatedSize() == 0
+            && Box->HasColdExactRoundHitCounts()
             && Backings == ReadHitboxBackings(*Box);
     }
 };
@@ -857,7 +857,54 @@ void FPreparedNativeRoundFields::ReleaseAfterPublication() noexcept
 }
 
 #if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+#include "Components/BoxComponent.h"
 #include "Misc/AutomationTest.h"
+#include "UObject/StrongObjectPtr.h"
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FIAmSpeedExactRoundWheeledHitCountTest,
+    "IAmSpeed.Netcode.RoundReset.WheeledHitCountRetirement",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FIAmSpeedExactRoundWheeledHitCountTest::RunTest(const FString&)
+{
+    TStrongObjectPtr<UBoxSubBody> Box(NewObject<UBoxSubBody>());
+    TStrongObjectPtr<UBoxComponent> First(NewObject<UBoxComponent>());
+    TStrongObjectPtr<UBoxComponent> Second(NewObject<UBoxComponent>());
+    First->SetMobility(EComponentMobility::Static);
+    Second->SetMobility(EComponentMobility::Static);
+    const auto AcceptStaticHit = [&](UBoxComponent* Surface)
+    {
+        SHitResult Hit;
+        Hit.Component = Surface;
+        Hit.bHit = Hit.bBlockingHit = true;
+        Box->SetFutureHit(Hit);
+        Box->AcceptHit();
+    };
+    const auto* SubBody = static_cast<const USSubBody*>(Box.Get());
+    const auto Limit = Box->MaxHitsPerComponentPerFrame;
+    for (uint32 Count = 1; Count < Limit; ++Count) AcceptStaticHit(First.Get());
+    TestFalse(TEXT("The cap has not been reached on F-1"), SubBody->ComponentHasBeenIgnored(*First.Get()));
+    AcceptStaticHit(Second.Get());
+    AcceptStaticHit(First.Get());
+    TestTrue(TEXT("The cap still applies at the last accepted F-1 hit"), SubBody->ComponentHasBeenIgnored(*First.Get()));
+    TestFalse(TEXT("The second surface keeps its own count"), SubBody->ComponentHasBeenIgnored(*Second.Get()));
+    TestEqual(TEXT("A real AcceptHit populated both map entries"), Box->HitCountThisFrame.Num(), 2);
+    TestTrue(TEXT("The occupied count map owns backing"), Box->HitCountThisFrame.GetAllocatedSize() > 0);
+    TestFalse(TEXT("Round staging refuses the occupied map"), Box->HasColdExactRoundHitCounts());
+
+    Box->RetireFrameHitCounts();
+    TestTrue(TEXT("Retiring the completed step releases the count backing"), Box->HasColdExactRoundHitCounts());
+    TestTrue(TEXT("The previous contact and ignore decisions survive retirement"),
+        Box->GetHit().Component.Get() == First.Get() && SubBody->ComponentHasBeenIgnored(*First.Get()));
+
+    Box->HitCountThisFrame.Reserve(4);
+    TestTrue(TEXT("The empty fixture can still own backing"), Box->HitCountThisFrame.IsEmpty()
+        && Box->HitCountThisFrame.GetAllocatedSize() > 0);
+    TestFalse(TEXT("Staging refuses reserved backing even with zero entries"), Box->HasColdExactRoundHitCounts());
+    Box->RetireFrameHitCounts();
+    TestTrue(TEXT("Retirement also releases empty reserved backing"), Box->HasColdExactRoundHitCounts());
+    return true;
+}
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FIAmSpeedContactFreeKickoffValuesTest,
     "IAmSpeed.Netcode.RoundReset.ContactFreeKickoffValues",

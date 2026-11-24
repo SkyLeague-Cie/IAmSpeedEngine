@@ -233,6 +233,7 @@ private:
     friend class USpeedWheeledComponent;
     bool BindExactRemoteRoundStorageOwner(ASpeedPhysicsSimulation&, uint64 Generation);
     bool RecordExactRemoteRoundStorageJoin(ASpeedPhysicsSimulation&, uint64 Generation);
+    void RetireExactRoundWheeledHitCounts();
     // UE lifecycle callbacks cannot defer after failed admission. They stop
     // before touching retained storage. Returns true only for the exact route.
     static bool RequireExactRemoteRoundStorageTeardown(const UActorComponent&);

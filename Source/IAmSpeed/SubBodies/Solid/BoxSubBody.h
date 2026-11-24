@@ -28,6 +28,7 @@ class IAMSPEED_API UBoxSubBody : public USolidSubBody, public IBoxSweeper, publi
     friend class Speed::FPreparedNativeRoundFields;
 #if WITH_DEV_AUTOMATION_TESTS
     friend class FIAmSpeedSweeperCandidatesTest;
+    friend class FIAmSpeedExactRoundWheeledHitCountTest;
 #endif
 	
 public:
@@ -425,6 +426,17 @@ private:
     TWeakObjectPtr<UPrimitiveComponent> RoofSurfaceComp;
     FVector CompositeGroundNormal; // average normal from all ground contacts this frame
     TMap<TWeakObjectPtr<UPrimitiveComponent>, uint32> HitCountThisFrame;
+    bool HasColdExactRoundHitCounts() const
+    {
+        return HitCountThisFrame.IsEmpty() && HitCountThisFrame.GetAllocatedSize() == 0;
+    }
+    void RetireFrameHitCounts()
+    {
+        if (HasColdExactRoundHitCounts()) return;
+        // Destroy the old owning map rather than keeping capacity across the boundary.
+        decltype(HitCountThisFrame) Retired;
+        ::Swap(HitCountThisFrame, Retired);
+    }
     friend class USpeedWorldSubsystem;
     bool UsesPersistentFloorFrictionOnly() const;
     bool bRetainedPersistentFloorFrictionOnly = false;

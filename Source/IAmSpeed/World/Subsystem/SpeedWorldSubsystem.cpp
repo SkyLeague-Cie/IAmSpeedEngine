@@ -32,6 +32,7 @@
 #include "IAmSpeed/Actors/SpeedStaticActor.h"
 #include "IAmSpeed/Components/ISpeedComponent.h"
 #include "IAmSpeed/Components/SpeedMovementComponent.h"
+#include "IAmSpeed/Components/SpeedWheeledComponent.h"
 #include "IAmSpeed/World/Simulation/CanonicalFrameContext.h"
 #include "IAmSpeed/World/Simulation/SpeedPhysicsSimulation.h"
 #include "IAmSpeed/World/Simulation/SimulationActorDiagnostics.h"
@@ -2832,6 +2833,22 @@ void USpeedWorldSubsystem::NotifyCanonicalFramePublished(uint64 NumFrame)
 ECanonicalPublicationResult USpeedWorldSubsystem::PublishCanonicalFrame(uint64 Frame, TFunctionRef<bool()> Publish)
 {
 	return SimulationWorld.PublishCanonicalFrame(Frame, Publish);
+}
+
+void USpeedWorldSubsystem::RetireExactRoundWheeledHitCounts()
+{
+    // The exact driver still holds its canonical world borrow here. Use the
+    // registered solids and only retire the wheeled actor's slot-zero hitbox.
+    for (UBoxSubBody* Box : SimulationWorld.GetProjectionBoxes())
+    {
+        const auto Slot = SimulationWorld.FindStableSubBodyId(Box);
+        if (!Slot || (Slot & MAX_uint16) != 0) continue;
+        auto* Parent = Box->GetParentComponent();
+        const auto* Actor = Parent ? Parent->AsWheeledPhysicsComponent() : nullptr;
+        if (Actor && static_cast<const ISpeedComponent*>(Actor) == Parent &&
+            Actor->GetHitboxSubBodyForConfiguration() == Box)
+            Box->RetireFrameHitCounts();
+    }
 }
 
 bool USpeedWorldSubsystem::DispatchPostPrepareInitialPosition(const ASpeedPhysicsSimulation& host)

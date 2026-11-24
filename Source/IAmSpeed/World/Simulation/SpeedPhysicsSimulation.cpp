@@ -2333,6 +2333,10 @@ bool ASpeedPhysicsSimulation::StepCanonicalFrame(const FCanonicalFrameContext& C
         ParallelTimingScope.MarkCommitted(Snapshot.StateHash, Snapshot.InputJournalHash, ParallelWork);
 #endif
 		IAMSPEED_FRAME_PHASE(Finalize);
+        // CCD, owner callbacks and the committed frame witnesses have finished.
+        // The next boundary can prepare a reset without changing live counters.
+        if (ExactRemoteRoundProvider)
+            SpeedWorldSubsystem->RetireExactRoundWheeledHitCounts();
 		bCompletedPublicationFrameSucceeded = true;
 		return true;
 	}
