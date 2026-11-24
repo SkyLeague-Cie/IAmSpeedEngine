@@ -202,6 +202,29 @@ static void PublicationAndRetirementUseTheSameFence()
     NextRound.FinishPublication();
 }
 
+static void HostViewsStayExcludedUntilTheOriginalThreadJoins()
+{
+    using FGate = Speed::FWorldBorrowGate;
+    FGate Gate;
+    {
+        const FGate::FBorrow Reader(Gate);
+        CHECK(Reader && !FGate::FExclusion(Gate).Holds(Gate));
+    }
+    std::unique_ptr<FGate::FExclusion> Exclusion;
+    bool OwnerRefused = false;
+    std::thread Original([&] {
+        Exclusion = std::make_unique<FGate::FExclusion>(Gate);
+        OwnerRefused = Exclusion->Holds(Gate) && !FGate::FBorrow(Gate)
+            && !Gate.IsReservationOwner() && !Gate.AdmitReference();
+    });
+    Original.join();
+    CHECK(OwnerRefused && Exclusion->Holds(Gate) && !FGate::FBorrow(Gate));
+    Exclusion.reset();
+    CHECK(FGate::FBorrow(Gate));
+    CHECK(Gate.AdmitReference());
+    CHECK(Gate.HasUntrackedReference() && !FGate::FExclusion(Gate).Holds(Gate));
+}
+
 int main(int Argc,char* Argv[])
 {
     SetErrorMode(SEM_FAILCRITICALERRORS|SEM_NOGPFAULTERRORBOX|SEM_NOOPENFILEERRORBOX);
@@ -211,6 +234,7 @@ int main(int Argc,char* Argv[])
     ReserveBeforeBuildingWithAnOutstandingBorrow();
     BareLegacyReferencesStayVisibleToReservation();
     PublicationAndRetirementUseTheSameFence();
+    HostViewsStayExcludedUntilTheOriginalThreadJoins();
     std::printf("WORLD_TOKEN_GUARD ordinary combined checks=%u; full UE class/native lease NOT_COMPILED/RUN/ADMITTED\n",Checks);
     return 0;
 }

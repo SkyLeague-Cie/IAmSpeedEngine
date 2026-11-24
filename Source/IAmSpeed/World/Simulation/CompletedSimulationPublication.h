@@ -1,5 +1,6 @@
 #pragma once
 #include "SimulationFrameJournal.h"
+#include "ExactRoundNativeAddress.h"
 #include "IAmSpeed/Input/InputSessionRegistry.h"
 #include <memory>
 #include <utility>
@@ -30,6 +31,7 @@ class FCompletedSimulationPublication final
 {
 public:
     const FSimulationSnapshot& World() const noexcept { return BodySnapshot; }
+    const FExactRoundNativeOrigin& ExactRoundOrigin() const noexcept { return RoundOrigin; }
     const std::shared_ptr<const FCompletedSimulationSource>& Source() const noexcept { return OwnerSource; }
     const std::shared_ptr<const Input::V2::FRegistryFrame>& ConsumedInputs() const noexcept { return Inputs; }
     const std::shared_ptr<const Input::V2::FInputRegistryView>& RegistryAtFrame() const noexcept { return Registry; }
@@ -53,9 +55,9 @@ private:
     }
     FCompletedSimulationPublication(const FSimulationSnapshot& Snapshot,
         std::shared_ptr<const FCompletedSimulationSource> Source,
-        std::shared_ptr<const FRegistry> View, std::shared_ptr<const FFrame> Installed)
+        std::shared_ptr<const FRegistry> View, std::shared_ptr<const FFrame> Installed, FExactRoundNativeOrigin Origin = {})
         : BodySnapshot(Snapshot), OwnerSource(std::move(Source)),
-          Inputs(std::move(Installed)), Registry(std::move(View)) {}
+          Inputs(std::move(Installed)), Registry(std::move(View)), RoundOrigin(Origin) {}
     bool MatchesCompleted(const std::shared_ptr<const FFrame>& Completed) const noexcept
     {
         // CompleteAll transfers the exact preallocated Pending frame to Latest.
@@ -76,5 +78,6 @@ private:
     std::shared_ptr<const FCompletedSimulationSource> OwnerSource;
     std::shared_ptr<const FFrame> Inputs;
     std::shared_ptr<const FRegistry> Registry;
+    const FExactRoundNativeOrigin RoundOrigin;
 };
 }

@@ -19,6 +19,26 @@ class FWorldBorrowGate final
     mutable std::atomic<std::uint32_t> State{0};
 
 public:
+    // Excludes direct host views without admitting any owner re-entry. Safe to
+    // release on the GT after the original worker has joined.
+    class FExclusion final
+    {
+        const FWorldBorrowGate* Gate = nullptr;
+    public:
+        explicit FExclusion(const FWorldBorrowGate& InGate) noexcept
+        {
+            std::uint32_t Expected = 0;
+            if (InGate.State.compare_exchange_strong(Expected, Closed, std::memory_order_acq_rel)) Gate = &InGate;
+        }
+        FExclusion(const FExclusion&) = delete;
+        FExclusion& operator=(const FExclusion&) = delete;
+        ~FExclusion() noexcept
+        {
+            if (Gate) Gate->State.store(0, std::memory_order_release);
+        }
+        bool Holds(const FWorldBorrowGate& InGate) const noexcept { return Gate == &InGate; }
+    };
+
     class FReservation;
     class FBorrow final
     {

@@ -4,6 +4,7 @@
 #include "SimulationFrameJournal.h"
 #include "PreparedSimulationRestore.h"
 #include "WorldBorrowGate.h"
+#include "ExactRoundNativeAddress.h"
 #include "UObject/WeakObjectPtr.h"
 #include <memory>
 #include <optional>
@@ -177,9 +178,11 @@ namespace Speed
 		void SetStaticCollisionWorld(TUniquePtr<IStaticCollisionWorld>&& InWorld)
 		{
 			const auto Access = BorrowStorage();
-			if (!Access) throw std::logic_error("Static world mutation during round preparation");
+			if (!Access || StorageAccess.IsReservationOwner()) throw std::logic_error("Static world mutation during an exact round");
 			if (IsRestoreBoundaryReserved()) std::terminate();
+			const bool Changed = StaticCollisionWorld || InWorld;
 			StaticCollisionWorld = MoveTemp(InWorld);
+			if (Changed) AdvanceExactRoundTopology();
 		}
 		const IStaticCollisionWorld* GetStaticCollisionWorld() const
 		{
@@ -193,9 +196,11 @@ namespace Speed
 		void ResetStaticCollisionWorld()
 		{
 			const auto Access = BorrowStorage();
-			if (!Access) return;
+			if (!Access || StorageAccess.IsReservationOwner()) return;
 			if (IsRestoreBoundaryReserved()) std::terminate();
+			if (!StaticCollisionWorld) return;
 			StaticCollisionWorld.Reset();
+			AdvanceExactRoundTopology();
 		}
 		TArray<FDynamicContactPair>& GetDynamicContactPairs() { RequireContactReference(); return ContactStorage->DynamicContactPairs; }
 		const TArray<FDynamicContactPair>& GetDynamicContactPairs() const { RequireContactReference(); return ContactStorage->DynamicContactPairs; }
@@ -260,6 +265,10 @@ namespace Speed
         }
         FWorldBorrowGate StorageAccess;
         bool RetireExactRoundStorageAfterJoin();
+        bool BindExactRoundIdentity(uint64 WorkerGeneration);
+        FExactRoundNativeOrigin ReadExactRoundOrigin() const noexcept
+        { return {ExactRoundWorkerGeneration, ExactRoundWorldIncarnation, ExactRoundTopology.load(std::memory_order_acquire)}; }
+        void AdvanceExactRoundTopology() noexcept;
         uint64 ReadExactRoundSubBodyIncarnation(uint64 StableId, const USSubBody&) const;
         struct FExactSubBodySlot
         {
@@ -268,6 +277,8 @@ namespace Speed
         };
         TMap<uint64, FExactSubBodySlot> ExactRoundSubBodySlots;
         uint64 ExactRoundWorkerGeneration = 0;
+        uint64 ExactRoundWorldIncarnation = 0;
+        std::atomic<uint64> ExactRoundTopology{0};
         uint64 NextExactRoundSubBodyIncarnation = 1;
         const FCompletedSimulationPublication* RoundBuildBoundary = nullptr;
 #if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING

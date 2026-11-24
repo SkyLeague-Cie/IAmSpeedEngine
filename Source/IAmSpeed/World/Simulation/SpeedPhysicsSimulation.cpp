@@ -683,7 +683,8 @@ void ASpeedPhysicsSimulation::StartOwnedWorkerIfReady()
                 std::optional<Speed::FWorldBorrowGate::FBorrow> ReservedRoundWork;
                 if (ExactRemoteRoundStorage)
                 {
-                    if (ExactRemoteRoundFence.IsClosed() || Speed::OnePausedWork::IsActive())
+                    if (ExactRemoteRoundFence.IsClosed() || Speed::OnePausedWork::IsActive()
+                        || !HasActiveExactRoundHostProtection())
                         return ESimulationWorkerResult::Failed;
                     ReservedRoundWork.emplace(*ExactRemoteRoundStorage);
                     if (!*ReservedRoundWork) return ESimulationWorkerResult::Failed;
@@ -794,6 +795,7 @@ void ASpeedPhysicsSimulation::StopOwnedWorker()
         if (ExactRemoteRoundProvider) ExactRemoteRoundFence.Close();
 		SimulationWorker->StopAndJoin();
 		SimulationWorker.Reset();
+        ExactRemoteRoundHostHold.reset(); // terminal F: keep the game pins across real join
 	}
     if(RequestedPreparationV2)RequestedPreparationV2->CloseUnprocessedAfterNativeOwnerJoined();
     RetireLiveBoundaryRequest();
@@ -2079,7 +2081,8 @@ bool ASpeedPhysicsSimulation::StepCanonicalFrame(const FCanonicalFrameContext& C
                 Snapshot, CompletedPublicationSource, CapturedRegistry, Installed))
                 throw std::runtime_error("completed world/input preparation rejected");
             CompletedDraft.reset(new Speed::FCompletedSimulationPublication(
-                Snapshot, CompletedPublicationSource, CapturedRegistry, Installed));
+                Snapshot, CompletedPublicationSource, CapturedRegistry, Installed,
+                SpeedWorldSubsystem->SimulationWorld.ReadExactRoundOrigin()));
         }
         const auto PublishCompletedWorldInput =
             [&](const std::shared_ptr<const Speed::Input::V2::FRegistryFrame>& Completed)

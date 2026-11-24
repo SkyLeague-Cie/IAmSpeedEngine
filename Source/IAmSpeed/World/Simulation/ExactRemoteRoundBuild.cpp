@@ -2,13 +2,22 @@
 
 namespace Speed
 {
+std::optional<FExactRoundNativeAddress> FExactRemoteRoundBuild::CaptureNativeAddress(
+    const FSimulationWorld& World, const FCompletedSimulationPublication& Current) noexcept
+{
+    if (!World.StorageAccess.IsReservationOwner() || World.RoundBuildBoundary != &Current
+        || World.bOrderDirty || World.IsRestoreBoundaryReserved() || !Current.Source()
+        || Current.Source()->WorkerGeneration() != World.ExactRoundWorkerGeneration
+        || !(Current.ExactRoundOrigin() == World.ReadExactRoundOrigin())) return {};
+    const auto& Snapshot = Current.World();
+    return FExactRoundNativeAddress::FromCompleted(Current.ExactRoundOrigin(), Snapshot.NumFrame,
+        Snapshot.InputJournalHash, Snapshot.PublicationSerial);
+}
+
 std::optional<FExactRemoteRoundBuild::FRoster> FExactRemoteRoundBuild::CaptureRoster(
     const FSimulationWorld& World, const FCompletedSimulationPublication& Current)
 {
-    if (!World.StorageAccess.IsReservationOwner() || World.RoundBuildBoundary != &Current
-        || World.bOrderDirty || World.IsRestoreBoundaryReserved() || !Current.World().PublicationSerial
-        || World.Bodies.IsEmpty() || !Current.Source() || !World.ExactRoundWorkerGeneration
-        || Current.Source()->WorkerGeneration() != World.ExactRoundWorkerGeneration) return {};
+    if (!CaptureNativeAddress(World, Current) || World.Bodies.IsEmpty()) return {};
     return FPreparedNativeKinematicFields::CaptureRosterContents(World);
 }
 
@@ -46,8 +55,11 @@ std::optional<FExactRemoteRoundBuild::FReplacement> FExactRemoteRoundBuild::Buil
     PreparedWorld::FRestoreEnvelope Envelope, const std::vector<FActorReplacement>& Actors,
     const std::vector<PreparedWorld::FContactRemoval>& ContactsToRemove)
 {
+    const auto Native = CaptureNativeAddress(World, Current);
     const auto Roster = CaptureRoster(World, Current);
-    if (!Roster || Actors.size() > Roster->Actors.size() || !MatchesBindings(*Roster, Envelope)) return {};
+    if (!Native || !Roster || !Envelope.Address.ResumeGeneration
+        || Actors.size() > Roster->Actors.size() || !MatchesBindings(*Roster, Envelope)) return {};
+    Native->Stamp(Envelope.Address);
 
     std::vector<PreparedWorld::FBodyReplacement> Replacements;
     Replacements.reserve(Actors.size());

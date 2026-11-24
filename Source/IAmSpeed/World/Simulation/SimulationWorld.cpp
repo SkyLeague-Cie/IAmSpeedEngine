@@ -14,6 +14,7 @@
 
 namespace
 {
+    std::atomic<uint64> NextExactRoundWorldIncarnation{1};
 	constexpr uint32 SimulationSnapshotSchemaVersion = 2;
 
 	template <typename T>
@@ -169,7 +170,7 @@ namespace Speed
 	bool FSimulationWorld::AddAdapter(ISpeedComponent& Adapter)
 	{
 		const auto Access = BorrowStorage();
-		if (!Access || IsRestoreBoundaryReserved()) return false;
+		if (!Access || StorageAccess.IsReservationOwner() || IsRestoreBoundaryReserved()) return false;
 		if (StableIds.Contains(&Adapter)) return false;
         if (ExactRoundWorkerGeneration && NextStableId > (UINT64_MAX >> 16)) return false;
 		const uint64 StableId = NextStableId++;
@@ -207,7 +208,7 @@ namespace Speed
 	bool FSimulationWorld::RemoveAdapter(ISpeedComponent& Adapter)
 	{
 		const auto Access = BorrowStorage();
-		if (!Access || IsRestoreBoundaryReserved()) return false;
+		if (!Access || StorageAccess.IsReservationOwner() || IsRestoreBoundaryReserved()) return false;
 		const uint64 StableId = FindStableId(Adapter);
 		const int32 Removed = Adapters.Remove(&Adapter);
 		StableIds.Remove(&Adapter);
@@ -228,6 +229,32 @@ namespace Speed
         const auto* Slot = ExactRoundSubBodySlots.Find(StableId);
         if (!Slot || !Slot->Object.HasSameIndexAndSerialNumber(FWeakObjectPtr(&Body))) return 0;
         return Slot->Incarnation;
+    }
+
+    bool FSimulationWorld::BindExactRoundIdentity(uint64 WorkerGeneration)
+    {
+        if (!WorkerGeneration || ExactRoundWorkerGeneration) return false;
+        auto Next = NextExactRoundWorldIncarnation.load(std::memory_order_relaxed);
+        while (Next && Next != UINT64_MAX)
+        {
+            if (!NextExactRoundWorldIncarnation.compare_exchange_weak(Next, Next + 1,
+                std::memory_order_relaxed)) continue;
+            ExactRoundWorldIncarnation = Next;
+            ExactRoundTopology.store(1, std::memory_order_release);
+            ExactRoundWorkerGeneration = WorkerGeneration;
+            bOrderDirty = true;
+            return true;
+        }
+        return false;
+    }
+
+    void FSimulationWorld::AdvanceExactRoundTopology() noexcept
+    {
+        if (!ExactRoundWorkerGeneration) return;
+        auto Previous = ExactRoundTopology.load(std::memory_order_relaxed);
+        while (Previous && !ExactRoundTopology.compare_exchange_weak(Previous,
+            Previous == UINT64_MAX ? 0 : Previous + 1, std::memory_order_release, std::memory_order_relaxed))
+        {}
     }
 
 	void FSimulationWorld::RebuildOrderedAdapters()
@@ -289,6 +316,7 @@ namespace Speed
 				}
 			}
 		}
+		AdvanceExactRoundTopology();
 		bOrderDirty = false;
 	}
 

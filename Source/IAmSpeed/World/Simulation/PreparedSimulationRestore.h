@@ -9,8 +9,9 @@ class ISpeedComponent;
 namespace Speed
 {
 class FSimulationWorld;
-// No implementation is supplied or admitted in this tranche. The worker owner
-// must acquire this BEFORE reading any world/component/UObject address. It must
+// The worker owner must acquire the underlying protections before reading the
+// world/component/UObject addresses. The exact-round driver joins the native
+// reservation with the host's independently retained storage. A lease must
 // pin world, components, sub-bodies, configurations and static geometry, exclude
 // step/GT lifecycle/registry mutation AND consumers of escaped mutable views,
 // and own an exact monotonic topology/state version. A caller boolean, a raw

@@ -4,55 +4,90 @@
 #include "Misc/ScopeExit.h"
 #include "Misc/ScopeTryLock.h"
 
+namespace Speed
+{
+class FExactRoundHostHold final
+{
+public:
+    FExactRoundHostHold(std::shared_ptr<const IExactRemoteRoundHostProtection> InProtection,
+        const FExactRoundNativeAddress& InNative)
+        : Protection(std::move(InProtection)), Views(Protection->DirectStorageAccess()), Exclusion(Views), Native(InNative) {}
+
+    bool ExcludesViews() const noexcept { return Exclusion.Holds(Views); }
+    bool HadUntrackedView() const noexcept { return Views.HasUntrackedReference(); }
+    bool Protects() const noexcept
+    {
+        return ExcludesViews() && &Protection->DirectStorageAccess() == &Views
+            && Protection->HoldsRetainedStorage(Native);
+    }
+    bool AppendReadOnly(std::vector<PreparedAccess::FSpan>& Out) const
+    {
+        const auto Before = Out.size();
+        if (!Protects() || !Protection->AppendRetainedStorageReads(Out) || Out.size() <= Before) return false;
+        const auto Span = [](const auto& Value)
+        { return PreparedAccess::FSpan{reinterpret_cast<std::uintptr_t>(&Value), sizeof(Value)}; };
+        Out.push_back(Span(Protection));
+        Out.push_back(Span(Exclusion));
+        Out.push_back(Span(Native));
+        return true;
+    }
+
+private:
+    const std::shared_ptr<const IExactRemoteRoundHostProtection> Protection;
+    const FWorldBorrowGate& Views;
+    const FWorldBorrowGate::FExclusion Exclusion;
+    const FExactRoundNativeAddress Native;
+};
+}
+
 namespace
 {
 class FOriginalRoundRestoreLease final : public Speed::ISimulationRestoreBoundaryLease
 {
 public:
     FOriginalRoundRestoreLease(Speed::FSimulationWorld& InWorld, Speed::PreparedWorld::FAddress InAddress,
-        std::unique_ptr<Speed::ISimulationRestoreBoundaryLease> InProtection, TFunction<bool()> InCurrent)
+        std::shared_ptr<const Speed::FExactRoundHostHold> InProtection, TFunction<bool()> InCurrent)
         : World(InWorld), Address(InAddress), Protection(std::move(InProtection)), Current(std::move(InCurrent)) {}
     ~FOriginalRoundRestoreLease() override { if (!Closed) AbortBeforeFinalize(); }
 
     bool HoldsExactBoundary(const Speed::FSimulationWorld& InWorld,
         const Speed::PreparedWorld::FAddress& At) const noexcept override
     {
-        return !Closed && &InWorld == &World && At == Address && Current()
-            && Protection->HoldsExactBoundary(InWorld, At);
+        return Owner == std::this_thread::get_id() && !Closed && &InWorld == &World && At == Address
+            && Current() && Protection->Protects();
     }
     bool ProtectsEscapedMutableViews() const noexcept override
-    { return HoldsExactBoundary(World, Address) && Protection->ProtectsEscapedMutableViews(); }
+    { return HoldsExactBoundary(World, Address); }
     bool AppendPreparedAccess(std::vector<Speed::PreparedAccess::FParticipantAccess>& Out) const override
     {
-        const auto Before = Out.size();
-        if (!ProtectsEscapedMutableViews() || !Protection->AppendPreparedAccess(Out) || Out.size() <= Before) return false;
+        if (!ProtectsEscapedMutableViews()) return false;
         const auto Span = [](const auto& Value)
         { return Speed::PreparedAccess::FSpan{reinterpret_cast<std::uintptr_t>(&Value), sizeof(Value)}; };
         Speed::PreparedAccess::FParticipantAccess Access;
         Access.Participant = reinterpret_cast<std::uintptr_t>(this);
         Access.Writes = {Span(Closed)};
-        Access.ReadOnly = {Span(Address), Span(Protection), Span(Current)};
+        Access.ReadOnly = {Span(Address), Span(Protection), Span(Current), Span(Owner)};
+        if (!Protection->AppendReadOnly(Access.ReadOnly)) return false;
         Out.push_back(std::move(Access));
         return true;
     }
     void AbortBeforeFinalize() noexcept override
     {
         if (Closed) return;
-        Protection->AbortBeforeFinalize();
         Closed = true;
     }
     void ReleaseAfterPublication() noexcept override
     {
         if (!HoldsExactBoundary(World, Address)) std::terminate();
-        Protection->ReleaseAfterPublication();
         Closed = true;
     }
 
 private:
     Speed::FSimulationWorld& World;
     const Speed::PreparedWorld::FAddress Address;
-    const std::unique_ptr<Speed::ISimulationRestoreBoundaryLease> Protection;
+    const std::shared_ptr<const Speed::FExactRoundHostHold> Protection;
     const TFunction<bool()> Current;
+    const std::thread::id Owner = std::this_thread::get_id();
     bool Closed = false;
 };
 }
@@ -109,7 +144,8 @@ std::optional<ESimulationBoundaryResult> ASpeedPhysicsSimulation::ServiceExactRe
         if ((Round.Cancellation && Round.Cancellation->load(std::memory_order_acquire))
             || Speed::FExactRemoteRoundPlan::FClock::now() >= Round.Deadline) return EResult::Failed;
         if (CanonicalNumFrame == Round.Inputs->Next)
-            return InputSessionRegistry->QueryFrameReadiness(CanonicalNumFrame, RequiredExactRemoteInputSessions)
+            return HasActiveExactRoundHostProtection()
+                && InputSessionRegistry->QueryFrameReadiness(CanonicalNumFrame, RequiredExactRemoteInputSessions)
                 == Speed::Input::V2::EInputFrameReadiness::Ready ? EResult::Ready : EResult::Failed;
         if (CanonicalNumFrame != Round.Inputs->Next + 1) return EResult::Failed;
         const auto Neutral = ReadExactRemoteRoundNeutralStep();
@@ -143,38 +179,67 @@ std::optional<ESimulationBoundaryResult> ASpeedPhysicsSimulation::ServiceExactRe
             Refusal = ERefusal::RegistryOrFrameBusy;
             return {};
         }
-        std::unique_ptr<Speed::FExactRemoteRoundPlan> Plan;
+        std::optional<Speed::FExactRoundNativeAddress> Native;
+        std::shared_ptr<const Speed::FExactRoundHostHold> HostHold;
         std::optional<Speed::FExactRemoteRoundBuild::FRoster> OriginalRoster;
+        std::unique_ptr<Speed::FExactRemoteRoundPlan> Plan;
         {
             World.RoundBuildBoundary = Current.get();
             ON_SCOPE_EXIT { World.RoundBuildBoundary = nullptr; };
+            Native = Speed::FExactRemoteRoundBuild::CaptureNativeAddress(World, *Current);
+            if (!Native || Native->StateVersion != SnapshotBuffer.PublishedSerial())
+            {
+                Refusal = ERefusal::NativeAddressChanged;
+                return {};
+            }
+            auto Protection = ExactRemoteRoundProvider->RetainHostStorage(*Native, *Current);
+            if (!Protection)
+            {
+                Refusal = ERefusal::HostStorageUnavailable;
+                return {};
+            }
+            HostHold = std::make_shared<const Speed::FExactRoundHostHold>(std::move(Protection), *Native);
+            if (!HostHold->ExcludesViews())
+            {
+                Refusal = HostHold->HadUntrackedView() ? ERefusal::UntrackedHostReference : ERefusal::ActiveHostBorrow;
+                return {};
+            }
+            if (!HostHold->Protects())
+            {
+                Refusal = ERefusal::HostStorageUnavailable;
+                return {};
+            }
             OriginalRoster = Speed::FExactRemoteRoundBuild::CaptureRoster(World, *Current);
             if (OriginalRoster) Plan = ExactRemoteRoundProvider->Build(World, Current);
         }
         if (!Plan) return {};
-        if (Plan->Envelope && Plan->Lease && Plan->Boundary == Current && Plan->Inputs.Next == CanonicalNumFrame
+        if (Plan->Envelope && Native->Matches(Plan->Envelope->Address)
+            && Plan->Boundary == Current && Plan->Inputs.Next == CanonicalNumFrame
             && Plan->Inputs.RoundBaselines.size() == RequiredExactRemoteInputSessions
             && ReadCompletedWorldAndInputFrame() == Current)
         {
-            Plan->Lease = std::make_unique<FOriginalRoundRestoreLease>(World, Plan->Envelope->Address,
-                std::move(Plan->Lease), [this, Current, &World, &StorageReservation, &RegistryLock]()
+            auto Lease = std::make_unique<FOriginalRoundRestoreLease>(World, Plan->Envelope->Address,
+                HostHold, [this, Current, Native = *Native, &World, &StorageReservation, &RegistryLock]()
                 {
                     return StorageReservation->Holds(World.StorageAccess) && RegistryLock.IsLocked()
                         && SpeedWorldSubsystem->PendingOps.IsEmpty() && !SpeedWorldSubsystem->bCanonicalFrameActive
-                        && !World.bOrderDirty
+                        && !World.bOrderDirty && Native.Origin == World.ReadExactRoundOrigin()
+                        && Native.StateVersion == SnapshotBuffer.PublishedSerial()
                         && SimulationWorker && SimulationWorker->OwnsCurrentInputBoundary()
                         && Current->Source()->WorkerGeneration() == InputWorkerGeneration
                         && Current->World().NumFrame + 1 == CanonicalNumFrame;
                 });
             const auto RetainedRoster = Speed::FPreparedNativeKinematicFields::CaptureRoster(
-                World, Plan->Envelope->Address, *Plan->Lease);
+                World, Plan->Envelope->Address, *Lease);
             if (RetainedRoster && *RetainedRoster == *OriginalRoster
                 && Speed::FExactRemoteRoundBuild::MatchesBindings(*RetainedRoster, *Plan->Envelope))
                 ActiveExactRemoteRound = Speed::ExactRemoteRound::Commit(
-                    World, *InputSessionRegistry, ExactRemoteRoundFence, std::move(*Plan), PublishedExactRemoteRound);
+                    World, *InputSessionRegistry, ExactRemoteRoundFence, std::move(*Plan),
+                    std::move(Lease), PublishedExactRemoteRound);
             if (ActiveExactRemoteRound)
             {
                 ExactRemoteRoundStorage = std::move(StorageReservation);
+                ExactRemoteRoundHostHold = std::move(HostHold);
                 PublishedCompletedWorldInput.store({}, std::memory_order_seq_cst);
                 PublishedInputFrame.store({}, std::memory_order_seq_cst);
                 PublishedInputRegistry.store(ActiveExactRemoteRound->Inputs->Registry, std::memory_order_seq_cst);
@@ -187,14 +252,21 @@ std::optional<ESimulationBoundaryResult> ASpeedPhysicsSimulation::ServiceExactRe
     return {};
 }
 
+bool ASpeedPhysicsSimulation::HasActiveExactRoundHostProtection() const noexcept
+{
+    return ExactRemoteRoundHostHold && ExactRemoteRoundHostHold->Protects();
+}
+
 ESimulationWorkerResult ASpeedPhysicsSimulation::FinishExactRemoteRoundWork(ESimulationWorkerResult Result)
 {
     if (!ExactRemoteRoundStorage || Result != ESimulationWorkerResult::Advanced) return Result;
     auto Neutral = std::move(PendingRoundNeutralStep);
-    if (!ActiveExactRemoteRound || !Neutral || CanonicalNumFrame != ActiveExactRemoteRound->Inputs->Next + 1
+    if (!ActiveExactRemoteRound || !Neutral || !HasActiveExactRoundHostProtection()
+        || CanonicalNumFrame != ActiveExactRemoteRound->Inputs->Next + 1
         || !Speed::ExactRemoteRound::IsExactNeutralStep(*ActiveExactRemoteRound, *Neutral))
         return ESimulationWorkerResult::Failed;
     std::atomic_store_explicit(&PublishedRoundNeutralStep, std::move(Neutral), std::memory_order_release);
+    ExactRemoteRoundHostHold.reset();
     ExactRemoteRoundStorage.reset();
     ExactRemoteRoundFence.FinishPublication();
     return Result;

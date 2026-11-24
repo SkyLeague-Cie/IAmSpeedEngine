@@ -35,6 +35,7 @@ class FHostedGTStaticWorldLease;
 class FPreparedNativeRoundFields;
 class IExactRemoteRoundProvider;
 struct FExactRemoteRoundCommit;
+class FExactRoundHostHold;
 namespace PreparationPrefix { class FClosedSourceProducer; }
 }
 class USpeedWorldSubsystem;
@@ -434,9 +435,12 @@ private:
 	ESimulationBoundaryResult ServiceInputSessionBoundary(bool bPauseRequested);
 	std::optional<ESimulationBoundaryResult> ServiceExactRemoteRoundBoundary(bool bPauseRequested);
 	ESimulationWorkerResult FinishExactRemoteRoundWork(ESimulationWorkerResult);
+	bool HasActiveExactRoundHostProtection() const noexcept;
 	std::shared_ptr<Speed::IExactRemoteRoundProvider> ExactRemoteRoundProvider;
 	Speed::FExactRemoteRoundFence ExactRemoteRoundFence;
 	std::unique_ptr<Speed::FWorldBorrowGate::FReservation> ExactRemoteRoundStorage; // original worker only
+	// Written by the worker. The GT clears a terminal hold only after join.
+	std::shared_ptr<const Speed::FExactRoundHostHold> ExactRemoteRoundHostHold;
 	std::shared_ptr<const Speed::FExactRemoteRoundCommit> PublishedExactRemoteRound;
 	std::shared_ptr<const Speed::FCompletedSimulationPublication> PublishedRoundNeutralStep;
 	std::shared_ptr<const Speed::FCompletedSimulationPublication> PendingRoundNeutralStep; // original worker only

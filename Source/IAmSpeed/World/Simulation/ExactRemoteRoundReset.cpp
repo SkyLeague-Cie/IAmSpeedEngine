@@ -40,6 +40,7 @@ uint64 HashBaselines(const FRegistry::FGroupResumePublication& Group) noexcept
 
 std::shared_ptr<const FExactRemoteRoundCommit> Commit(
     FSimulationWorld& World, FRegistry& Registry, FExactRemoteRoundFence& Fence, FExactRemoteRoundPlan&& Plan,
+    std::unique_ptr<ISimulationRestoreBoundaryLease> Lease,
     std::shared_ptr<const FExactRemoteRoundCommit>& Publication)
 {
     const auto& Previous = Plan.Boundary;
@@ -48,19 +49,20 @@ std::shared_ptr<const FExactRemoteRoundCommit> Commit(
     {
         return Plan.Cancellation && Plan.Cancellation->load(std::memory_order_acquire);
     };
-    if (!Previous || !Plan.Envelope || !Plan.Lease || !Plan.Supplement
+    if (!Previous || !Plan.Envelope || !Lease || !Plan.Supplement
         || !Previous->World().PublicationSerial || !Previous->ConsumedInputs()
         || Previous->ConsumedInputs() != Registry.ReadLatest() || IsCancelled() || Fence.IsClosed()
         || Plan.Deadline <= Now || Plan.Deadline == FExactRemoteRoundPlan::FClock::time_point::max()
         || Plan.Inputs.RoundBaselines.empty()) return {};
 
     const auto Address = Plan.Envelope->Address;
+    const auto Native = FExactRoundNativeAddress::FromCompleted(Previous->ExactRoundOrigin(),
+        Previous->World().NumFrame, Previous->World().InputJournalHash, Previous->World().PublicationSerial);
     const auto Round = Plan.Inputs.RoundBaselines.front().Input.Generation;
     const auto Prior = std::atomic_load_explicit(&Publication, std::memory_order_acquire);
     if (!Round || (Prior && (Prior->Inputs->RoundGeneration != Round - 1
             || Prior->Previous->Source() != Previous->Source()))
-        || Address.Frame != Previous->World().NumFrame
-        || Address.PublicationSerial <= Previous->World().PublicationSerial
+        || !Native || !Native->Matches(Address)
         || Address.Next != Plan.Inputs.Next || Address.ResumeGeneration != Plan.Inputs.ResumeGeneration
         || !Previous->Source() || Plan.Inputs.WorkerGeneration != Previous->Source()->WorkerGeneration())
         return {};
@@ -80,7 +82,7 @@ std::shared_ptr<const FExactRemoteRoundCommit> Commit(
             if (!Registry.AbortGroupResume(*Input)) std::terminate();
         };
         auto Restore = World.PrepareSnapshotRestore(Plan.Replacement, std::move(Plan.Envelope),
-            std::move(Plan.Lease), std::move(Plan.Supplement));
+            std::move(Lease), std::move(Plan.Supplement));
         if (!Restore) { AbortInput(); return {}; }
         bool WorldPrepared = true;
         const auto Abort = [&]() noexcept
@@ -129,12 +131,14 @@ std::shared_ptr<const FExactRemoteRoundCommit> Commit(
 
 bool IsExactNeutralStep(const FExactRemoteRoundCommit& Commit, const FCompletedSimulationPublication& Step) noexcept
 {
-    if (!Commit.Inputs || !Commit.Previous) return false;
+    if (!Commit.Inputs || !Commit.Previous || !Commit.World || !Commit.World->Envelope) return false;
     const auto& Group = *Commit.Inputs;
     const auto& Consumed = Step.ConsumedInputs();
     if (Step.Source() != Commit.Previous->Source() || Step.World().NumFrame != Group.Next
         || Commit.Previous->World().PublicationSerial == UINT64_MAX
         || Step.World().PublicationSerial != Commit.Previous->World().PublicationSerial + 1
+        || Step.World().PublicationSerial != Commit.World->Envelope->Address.PublicationSerial
+        || !(Step.ExactRoundOrigin() == Commit.Previous->ExactRoundOrigin())
         || !Step.World().StateHash || !Step.World().InputJournalHash || !Consumed || Consumed->Frame != Group.Next
         || Step.RegistryAtFrame() != Group.Registry || Consumed->Inputs.size() != Group.Baselines.size())
         return false;

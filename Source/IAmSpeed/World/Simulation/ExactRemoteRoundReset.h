@@ -12,21 +12,36 @@
 namespace Speed
 {
 // All preparation is entered by the original owned authority worker. A game
-// supplies the complete typed snapshot, the world supplement and the native
-// lease protecting its adapters and escaped mutable views.
+// supplies the complete typed snapshot and world supplement. IAS creates
+// the native lease from the actual original worker and its reservations.
 struct FExactRemoteRoundPlan
 {
     using FClock = std::chrono::steady_clock;
     std::shared_ptr<const FCompletedSimulationPublication> Boundary;
     FSimulationSnapshot Replacement;
     std::shared_ptr<const PreparedWorld::FRestoreEnvelope> Envelope;
-    std::unique_ptr<ISimulationRestoreBoundaryLease> Lease;
     std::unique_ptr<IPreparedSimulationWorldSupplement> Supplement;
     Input::V2::FInputSessionRegistry::FGroupResumeRequest Inputs;
     FClock::time_point Deadline{};
     // A request observed here before finalization aborts both participants.
     // After commit, host cancellation closes gameplay rather than rewinding.
     std::shared_ptr<const std::atomic<bool>> Cancellation;
+};
+
+// Game-owned retention of real adapters, components, geometry and effective
+// configuration. Direct game consumers must use DirectStorageAccess's
+// scoped borrows throughout use, or mark untracked access on that same gate.
+// The game must prevent bypasses and keep these pins alive. This local object
+// must be safe to destroy on the original worker, or on the GT after join.
+class IAMSPEED_API IExactRemoteRoundHostProtection
+{
+public:
+    virtual ~IExactRemoteRoundHostProtection() = default;
+    virtual const FWorldBorrowGate& DirectStorageAccess() const noexcept = 0;
+    // Retention is independent of cancellation and must still hold through a
+    // no-fail commit and terminal join. A gameplay decision cannot revoke it.
+    virtual bool HoldsRetainedStorage(const FExactRoundNativeAddress&) const noexcept = 0;
+    virtual bool AppendRetainedStorageReads(std::vector<PreparedAccess::FSpan>&) const = 0;
 };
 
 struct FExactRemoteRoundCommit
@@ -55,13 +70,15 @@ public:
     };
 
     static std::optional<FRoster> CaptureRoster(const FSimulationWorld&, const FCompletedSimulationPublication&);
+    static std::optional<FExactRoundNativeAddress> CaptureNativeAddress(
+        const FSimulationWorld&, const FCompletedSimulationPublication&) noexcept;
     // Keep game actor incarnations/schemas and take configuration hashes and
     // solid endpoint incarnations from CaptureRoster for the exact F-1.
     static bool MatchesBindings(const FRoster&, const PreparedWorld::FRestoreEnvelope&) noexcept;
 
-    // Sets Frame, Next, InputHash, StateHash and SupplementHash. The host
-    // supplies the other address fields and full bindings/supplements.
-    // Use the returned immutable envelope to acquire the real native lease.
+    // Stamps the native address and resulting replacement hashes. The game
+    // supplies ResumeGeneration from its input reservation and the bindings
+    // and supplements. Use the resulting immutable address for the supplement.
     static std::optional<FReplacement> BuildReplacement(const FSimulationWorld&, const FCompletedSimulationPublication&,
         PreparedWorld::FRestoreEnvelope, const std::vector<FActorReplacement>&,
         const std::vector<PreparedWorld::FContactRemoval>&);
@@ -80,9 +97,17 @@ public:
     // Called with an immutable completed publication, before the world is
     // reserved. Return true only if this exact boundary is needed.
     virtual bool WantsRoundBuild(const FCompletedSimulationPublication&) const noexcept = 0;
+    // Under IAS's original worker, registry lock and native world reservation,
+    // before native adapter reads. Return retained game storage without waiting
+    // or re-entering the world. IAS itself acquires the direct-access exclusion.
+    virtual std::shared_ptr<const IExactRemoteRoundHostProtection> RetainHostStorage(
+        const FExactRoundNativeAddress&, const FCompletedSimulationPublication&) { return {}; }
     virtual std::unique_ptr<FExactRemoteRoundPlan> Build(
         const FSimulationWorld&, const std::shared_ptr<const FCompletedSimulationPublication>&) = 0;
-    enum class EBoundaryRefusal : uint8 { ActiveWorldBorrow, UntrackedWorldReference, RegistryOrFrameBusy };
+    enum class EBoundaryRefusal : uint8 {
+        ActiveWorldBorrow, UntrackedWorldReference, RegistryOrFrameBusy, NativeAddressChanged,
+        HostStorageUnavailable, ActiveHostBorrow, UntrackedHostReference
+    };
     virtual void OnBoundaryRefused(EBoundaryRefusal) noexcept { OnRejected(); }
     virtual void OnRejected() noexcept = 0;
     // Called after the real step and immutable publication of the neutral F.
@@ -98,6 +123,7 @@ namespace ExactRemoteRound
 // A null result has aborted both prepared participants without a write.
 std::shared_ptr<const FExactRemoteRoundCommit> Commit(
     FSimulationWorld&, Input::V2::FInputSessionRegistry&, FExactRemoteRoundFence&, FExactRemoteRoundPlan&&,
+    std::unique_ptr<ISimulationRestoreBoundaryLease>,
     std::shared_ptr<const FExactRemoteRoundCommit>& Publication);
 
 bool IsExactNeutralStep(const FExactRemoteRoundCommit&, const FCompletedSimulationPublication&) noexcept;

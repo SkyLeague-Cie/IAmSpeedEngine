@@ -1,5 +1,6 @@
 #include "IAmSpeed/Netcode/round-reset/ExactRemoteRoundControl.h"
 #include "IAmSpeed/World/Simulation/ExactRoundConfiguration.h"
+#include "IAmSpeed/World/Simulation/ExactRoundNativeAddress.h"
 #include <cstdlib>
 #include <iostream>
 #include <limits>
@@ -331,11 +332,41 @@ static void TestEffectiveConfigurationWriter()
     CHECK(Limit.Hash() && !Limit.Unsigned(17) && !Limit.Hash());
 }
 
+static void TestNativeAddressFromCompletedState()
+{
+    using FNative = Speed::FExactRoundNativeAddress;
+    const Speed::FExactRoundNativeOrigin Origin{13, 19, 23};
+    CHECK(!FNative::FromCompleted({}, 67, 71, 37));
+    CHECK(!FNative::FromCompleted(Origin, UINT32_MAX, 71, 37));
+    CHECK(!FNative::FromCompleted(Origin, 67, 0, 37));
+    CHECK(!FNative::FromCompleted(Origin, 67, 71, 0));
+    CHECK(!FNative::FromCompleted(Origin, 67, 71, UINT64_MAX));
+    const auto Native = Require(FNative::FromCompleted(Origin, 67, 71, 37));
+    Speed::PreparedWorld::FAddress Address;
+    Address.ResumeGeneration = 41;
+    Address.StateHash = 43;
+    Address.SupplementHash = 53;
+    Native.Stamp(Address);
+    CHECK(Address.Valid() && Native.Matches(Address));
+    CHECK(Address.StateVersion == 37 && Address.PublicationSerial == 38 && Address.Frame == 67 && Address.Next == 68);
+    CHECK(Address.ResumeGeneration == 41 && Address.StateHash == 43 && Address.SupplementHash == 53);
+    for (auto Member : {&Speed::PreparedWorld::FAddress::Authority, &Speed::PreparedWorld::FAddress::WorldIncarnation,
+        &Speed::PreparedWorld::FAddress::TopologyVersion, &Speed::PreparedWorld::FAddress::StateVersion,
+        &Speed::PreparedWorld::FAddress::PublicationSerial, &Speed::PreparedWorld::FAddress::Frame,
+        &Speed::PreparedWorld::FAddress::Next, &Speed::PreparedWorld::FAddress::InputHash})
+    {
+        auto Altered = Address;
+        ++(Altered.*Member);
+        CHECK(!Native.Matches(Altered));
+    }
+}
+
 int main()
 {
     TestWire();
     TestTwoClientCutover();
     TestFailClosed();
     TestEffectiveConfigurationWriter();
+    TestNativeAddressFromCompletedState();
     std::cout << "PASS checks=" << Checks << " scope=portable_round_control_no_sockets_no_native_application\n";
 }
