@@ -20,7 +20,7 @@ enum class ERequestedDigitalPolicy:std::uint8_t;
 class USpeedWheeledComponent;
 class USpeedMovementComponent;
 class USpeedWorldSubsystem;
-namespace Speed {class FNativeRequestedPreparationContextV2; class FExactRoundConfigurationWriter;}
+namespace Speed {class FNativeRequestedPreparationContextV2; class FExactRoundConfigurationWriter; class FPreparedNativeKinematicFields;}
 namespace Speed::Input::V2 {class FNativeRequestedBindingV2;}
 struct FSimulationWheelVisual;
 
@@ -416,6 +416,9 @@ public:
     // Lifetime-invariant adapter type, used by values-only snapshot references.
     virtual USpeedWheeledComponent* AsWheeledPhysicsComponent() { return nullptr; }
 protected:
+    // Exact-round roster only. If the solver limit depends on frame state,
+    // override with the configured base limit and attest policy in the actor extension.
+    virtual float GetExactRoundConfiguredMaxAngularSpeed() const { return GetPhysMaxAngularSpeed(); }
 #if !UE_BUILD_SHIPPING
 	/** Opt-in observer of actual reaction evaluations; no diagnostic dispatch in normal runtime. */
 	virtual void ObserveStaticRestingReaction(EStaticRestingReactionStatus Status) const {}
@@ -464,6 +467,7 @@ private:
     friend class USpeedWorldSubsystem;
     friend struct Speed::FCommonComponentValueAccess;
     friend class Speed::FPreparedNativeRoundFields;
+    friend class Speed::FPreparedNativeKinematicFields;
 	TAtomic<uint64> PublishedSimulationStableId = 0;
     Speed::FNativePhysicsUse NativePhysicsUse;
     bool TryAdmitNativeSubBodies() const;

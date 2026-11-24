@@ -96,6 +96,7 @@ private:
     friend class FExactRemoteRoundBuild;
     enum class EPhase : uint8 { Prepared, Ready, Finalized, Released, Aborted };
     static std::optional<FRoster> CaptureRosterContents(const FSimulationWorld&);
+    static uint64 ReadActorConfiguration(const ISpeedComponent&);
     static std::optional<FRoster::FSubBody> ReadSubBodyRow(
         const FSimulationWorld&, const ISpeedComponent&, uint64 ActorId, uint16 Index, const USSubBody&);
     static bool MatchesActor(const FSimulationWorld&, const FSimulationComponentRestoreRequest&, const ISpeedComponent&);

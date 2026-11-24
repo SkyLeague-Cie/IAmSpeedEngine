@@ -39,19 +39,6 @@ uint64 MixConfiguration(uint64 Hash, uint64 Value)
     return Hash;
 }
 
-uint64 ReadActorConfiguration(const ISpeedComponent& Actor)
-{
-    FExactRoundConfigurationWriter Extension;
-    if (!Actor.AppendExactRoundActorConfiguration(Extension) || !Extension.Hash()) return 0;
-    FExactRoundConfigurationWriter Native;
-    if (!Native.Unsigned(1) || !Native.Float(Actor.GetPhysMass())
-        || !WriteVector(Native, Actor.GetPhysCenterOfMassLocal())
-        || !Native.Float(Actor.GetPhysMaxSpeed()) || !Native.Float(Actor.GetPhysMaxAngularSpeed())
-        || !Native.Boolean(Actor.IsPrescribedMotion()) || !Native.Boolean(Actor.ShouldPreserveNativeVelocitiesForIntegration())
-        || !Native.Unsigned(Extension.Hash())) return 0;
-    return Native.Hash();
-}
-
 uint64 ReadEndpointConfiguration(const ISpeedComponent& Actor, uint16 Index, const USSubBody& Body)
 {
     FExactRoundConfigurationWriter Extension;
@@ -83,6 +70,19 @@ uint64 ReadEndpointConfiguration(const ISpeedComponent& Actor, uint16 Index, con
     else if (!Shape.IsLine() || !Native.Unsigned(4)) return 0;
     return Native.Unsigned(Extension.Hash()) ? Native.Hash() : 0;
 }
+}
+
+uint64 FPreparedNativeKinematicFields::ReadActorConfiguration(const ISpeedComponent& Actor)
+{
+    FExactRoundConfigurationWriter Extension;
+    if (!Actor.AppendExactRoundActorConfiguration(Extension) || !Extension.Hash()) return 0;
+    FExactRoundConfigurationWriter Native;
+    if (!Native.Unsigned(1) || !Native.Float(Actor.GetPhysMass())
+        || !WriteVector(Native, Actor.GetPhysCenterOfMassLocal())
+        || !Native.Float(Actor.GetPhysMaxSpeed()) || !Native.Float(Actor.GetExactRoundConfiguredMaxAngularSpeed())
+        || !Native.Boolean(Actor.IsPrescribedMotion()) || !Native.Boolean(Actor.ShouldPreserveNativeVelocitiesForIntegration())
+        || !Native.Unsigned(Extension.Hash())) return 0;
+    return Native.Hash();
 }
 
 bool FPreparedNativeKinematicFields::MatchesActor(const FSimulationWorld& World,
