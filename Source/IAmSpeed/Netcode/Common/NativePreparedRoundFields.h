@@ -4,6 +4,7 @@
 #include "IAmSpeed/Components/Netcode/SpeedPhysicsComponent.h"
 #include "IAmSpeed/Components/Netcode/SpeedWheeledPhysicsComponent.h"
 #include "IAmSpeed/SubBodies/Solid/SWheelSubBody.h"
+#include "IAmSpeed/World/Simulation/ExactRoundNativeAddress.h"
 #include <array>
 
 class ASpeedPhysicsSimulation;
@@ -11,6 +12,7 @@ class USpeedMovementComponent;
 
 namespace Speed
 {
+class FCompletedSimulationPublication;
 // Named native fragments for a new round. The complete actor plan combines
 // these with COM/frozen, solid poses, common caches and the game's own state.
 class IAMSPEED_API FPreparedNativeRoundFields final
@@ -75,6 +77,15 @@ public:
         std::array<FCapturedKickoffWheel, 4> Wheels;
     };
 
+    struct FCapturedRoundWheels
+    {
+        FExactRoundNativeAddress Address;
+        uint64 StateHash = 0;
+        uint64 ActorStableId = 0;
+        uint32 ActorNativeObjectId = 0;
+        std::array<FCapturedKickoffWheel, 4> Wheels;
+    };
+
     struct FContactFreeKickoff
     {
         struct FWheel { FPreparedNativeKinematicFields::FRoster::FSubBody Binding; SKinematic Pose; FWheelState State; };
@@ -88,6 +99,13 @@ public:
     static std::optional<FCapturedKickoffVehicle> CaptureKickoffVehicleGT(
         const ASpeedPhysicsSimulation&, uint64 ExpectedGeneration, uint64 ExpectedFirstFrame,
         const USpeedWheeledComponent&);
+
+    // During the provider's Build the original F-1 publication and both
+    // native and host storage are held. Pass the four CaptureRoster rows in
+    // wheel ordinal order. This capture returns values and no storage pin.
+    static std::optional<FCapturedRoundWheels> CaptureRoundWheels(
+        const FSimulationWorld&, const FCompletedSimulationPublication&, uint64 ActorStableId,
+        const std::array<FPreparedNativeKinematicFields::FRoster::FSubBody, 4>& ExpectedWheels);
 
     // Reads the movement countdown floor from the original registered
     // component during the caller's acknowledged startup park. Zero is valid.
@@ -154,6 +172,7 @@ public:
 private:
     friend class FExactRemoteRoundBuild;
     static std::optional<PreparedWorld::FColdCarBump> ReadCarBumpSource(const FSimulationWorld&, uint64 ActorId);
+    static bool ReadWheelValues(const USWheelSubBody&, FCapturedKickoffWheel&);
     static bool MatchesParkedKickoffDriverGT(
         const ASpeedPhysicsSimulation&, uint64 ExpectedGeneration, uint64 ExpectedFirstFrame);
     struct FPlan;

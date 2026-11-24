@@ -7,6 +7,7 @@
 #include "IAmSpeed/Components/SpeedWheeledComponent.h"
 #include "IAmSpeed/SubBodies/Sensor/SensorSubBody.h"
 #include "IAmSpeed/SubBodies/Solid/BoxSubBody.h"
+#include "IAmSpeed/World/Simulation/ExactRemoteRoundReset.h"
 #include "IAmSpeed/World/Simulation/SimulationWorld.h"
 #include "IAmSpeed/World/Simulation/SpeedPhysicsSimulation.h"
 #include "IAmSpeed/World/Subsystem/SpeedWorldSubsystem.h"
@@ -102,6 +103,20 @@ bool FPreparedNativeRoundFields::MatchesParkedKickoffDriverGT(
         && Driver.CanonicalNumFrame == ExpectedFirstFrame && Driver.SnapshotBuffer.PublishedSerial() == 0;
 }
 
+bool FPreparedNativeRoundFields::ReadWheelValues(const USWheelSubBody& Wheel, FCapturedKickoffWheel& Out)
+{
+    Out.Pose = Wheel.GetKinematicState();
+    Out.LocalOffset = Wheel.GetLocalOffset();
+    Out.LocalRotation = Wheel.GetLocalRotation();
+    Out.MaxSuspensionLengthCm = Wheel.MaxLength();
+    Out.SuspensionRestRaiseCm = Wheel.SuspensionRestLength();
+    // GetSpringLength advances the smoothing history on the live suspension.
+    Out.State = {FSuspensionLengthSample(*Wheel.PSuspension).LengthCm(), Wheel.GetLastDisplacement(),
+        Wheel.Omega, Wheel.RollAngle, Wheel.SteeringAngle, Wheel.bIsJumping,
+        Wheel.bJumpUnilateralSupport, Wheel.RenderData};
+    return ValidPose(Out.Pose) && ValidWheel(Out.State);
+}
+
 std::optional<uint16> FPreparedNativeRoundFields::ReadMovementMinimumFramesAtParkedStartupGT(
     const ASpeedPhysicsSimulation& Driver, uint64 ExpectedGeneration, uint64 ExpectedFirstFrame,
     uint64 ExpectedActorStableId, const USpeedMovementComponent& Target)
@@ -189,21 +204,53 @@ std::optional<FPreparedNativeRoundFields::FCapturedKickoffVehicle> FPreparedNati
             Out.Binding = {StableId, ActorId, NativeId, true};
             Out.Binding.Incarnation = World.ReadExactRoundSubBodyIncarnation(StableId, *Wheel);
             if (World.ExactRoundWorkerGeneration && !Out.Binding.Incarnation) return;
-            Out.Pose = Wheel->GetKinematicState();
-            Out.LocalOffset = Wheel->GetLocalOffset();
-            Out.LocalRotation = Wheel->GetLocalRotation();
-            Out.MaxSuspensionLengthCm = Wheel->MaxLength();
-            Out.SuspensionRestRaiseCm = Wheel->SuspensionRestLength();
-            // GetSpringLength changes the smoothing history. Copy the native
-            // unsmoothed input instead of advancing that history on the live car.
-            Out.State = {FSuspensionLengthSample(*Wheel->PSuspension).LengthCm(), Wheel->GetLastDisplacement(),
-                Wheel->Omega, Wheel->RollAngle, Wheel->SteeringAngle, Wheel->bIsJumping,
-                Wheel->bJumpUnilateralSupport, Wheel->RenderData};
-            if (!ValidPose(Out.Pose) || !ValidWheel(Out.State)) return;
+            if (!ReadWheelValues(*Wheel, Out)) return;
         }
         Result = std::move(Capture);
     });
     return Result;
+}
+
+std::optional<FPreparedNativeRoundFields::FCapturedRoundWheels> FPreparedNativeRoundFields::CaptureRoundWheels(
+    const FSimulationWorld& World, const FCompletedSimulationPublication& Current, uint64 ActorStableId,
+    const std::array<FPreparedNativeKinematicFields::FRoster::FSubBody, 4>& ExpectedWheels)
+{
+    const auto Address = FExactRemoteRoundBuild::CaptureNativeAddress(World, Current);
+    const uint64 StateHash = Current.World().StateHash;
+    if (!Address || World.GetCurrentStepFrame() != Address->Frame || !StateHash
+        || !ActorStableId || ActorStableId > (UINT64_MAX >> 16)) return {};
+
+    auto* Adapter = World.AdaptersByStableId.FindRef(ActorStableId);
+    const auto* Target = Adapter ? Adapter->AsWheeledPhysicsComponent() : nullptr;
+    if (!IsValid(Target) || static_cast<const ISpeedComponent*>(Target) != Adapter || Target->IsPresentationOnly()
+        || !Target->IsRegistered() || !IsValid(Target->GetOwner()) || !Target->GetWorld()
+        || World.FindStableId(*Target) != ActorStableId || Target->GetPublishedSimulationStableId() != ActorStableId
+        || !Target->GetUniqueID() || Target->WheelSubBodies.Num() != 4) return {};
+
+    FString Reason;
+    if (!Target->USpeedWheeledComponent::ValidateSimulationBindings(Reason)) return {};
+
+    FCapturedRoundWheels Capture{*Address, StateHash, ActorStableId, Target->GetUniqueID(), {}};
+    const auto& Children = Target->USpeedWheeledComponent::GetSubBodies();
+    for (int32 Ordinal = 0; Ordinal < 4; ++Ordinal)
+    {
+        const auto& Expected = ExpectedWheels[Ordinal];
+        const auto Slot = static_cast<uint16>(Expected.StableId & MAX_uint16);
+        const auto* Wheel = Target->WheelSubBodies[Ordinal].Get();
+        if (!IsValid(Wheel) || Wheel->GetSubBodyType() != USSubBody::ESubBodyType::Wheel
+            || Wheel->IsPresentationOnly() || !Wheel->IsRegistered() || Wheel->GetWorld() != Target->GetWorld()
+            || Wheel->GetOwner() != Target->GetOwner() || !Slot || !Children.IsValidIndex(Slot)
+            || Children[Slot] != Wheel || !Expected.IsSolidEndpoint) return {};
+        const auto Row = FPreparedNativeKinematicFields::ReadSubBodyRow(World, *Target, ActorStableId, Slot, *Wheel);
+        if (!Row || !(*Row == Expected)) return {};
+        auto& Out = Capture.Wheels[Ordinal];
+        Out.Binding = *Row;
+        if (!ReadWheelValues(*Wheel, Out) || Out.LocalOffset.ContainsNaN() || !Out.LocalRotation.IsNormalized()
+            || !FMath::IsFinite(Out.MaxSuspensionLengthCm) || !FMath::IsFinite(Out.SuspensionRestRaiseCm)) return {};
+    }
+    const auto RetainedAddress = FExactRemoteRoundBuild::CaptureNativeAddress(World, Current);
+    if (!RetainedAddress || !(*RetainedAddress == *Address)) return {};
+    return Capture;
 }
 
 std::optional<FPreparedNativeRoundFields::FContactFreeKickoff> FPreparedNativeRoundFields::ProjectContactFreeKickoff(

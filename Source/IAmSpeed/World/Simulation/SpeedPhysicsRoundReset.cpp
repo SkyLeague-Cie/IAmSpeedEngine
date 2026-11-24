@@ -197,6 +197,9 @@ std::optional<ESimulationBoundaryResult> ASpeedPhysicsSimulation::ServiceExactRe
                 Refusal = ERefusal::NativeAddressChanged;
                 return {};
             }
+            // Retention sees the address values. Native provider reads only
+            // resume once the retained host views have been excluded.
+            World.RoundBuildBoundary = nullptr;
             auto Protection = ExactRemoteRoundProvider->RetainHostStorage(*Native, *Current);
             if (!Protection)
             {
@@ -214,6 +217,7 @@ std::optional<ESimulationBoundaryResult> ASpeedPhysicsSimulation::ServiceExactRe
                 Refusal = ERefusal::HostStorageUnavailable;
                 return {};
             }
+            World.RoundBuildBoundary = Current.get();
             OriginalRoster = Speed::FExactRemoteRoundBuild::CaptureRoster(World, *Current);
             if (OriginalRoster) Plan = ExactRemoteRoundProvider->Build(World, Current);
             bCarBumpSourceValid = Plan && Plan->Envelope &&
