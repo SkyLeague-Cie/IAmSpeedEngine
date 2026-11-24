@@ -7,10 +7,12 @@ class ASpeedPhysicsSimulation;
 
 namespace Speed
 {
-// Native response policy, in the units and ranges consumed by the
-// solver. Subbody-specific values still belong to the native round roster.
+// Native response and projection policy consumed by the solver.
+// Subbody-specific values still belong to the native round roster.
 struct FExactRoundContactSettings final
 {
+    static constexpr std::uint64_t HashSchema = 2;
+
     std::optional<float> SphereBoxRestitution;
     std::optional<float> SphereBoxFriction;
     std::optional<float> SphereBoxManifoldFriction;
@@ -18,6 +20,8 @@ struct FExactRoundContactSettings final
     bool ForceCoupledImpulse = false;
     float CoupledMinNormalSpeed = 0.f;
     std::int32_t CoupledIterations = 1;
+    bool SphereBoxProjectionEnabled = true;
+    bool SphereWorldStaticProjectionEnabled = true;
 
     bool operator==(const FExactRoundContactSettings&) const = default;
 
@@ -29,7 +33,7 @@ struct FExactRoundContactSettings final
             Writer.Boolean(Value.has_value());
             if (Value) Writer.Float(*Value);
         };
-        Writer.Unsigned(0x4941534354530001ull);
+        Writer.Unsigned(0x4941534354530000ull | HashSchema);
         WriteOverride(SphereBoxRestitution);
         WriteOverride(SphereBoxFriction);
         WriteOverride(SphereBoxManifoldFriction);
@@ -37,6 +41,8 @@ struct FExactRoundContactSettings final
         Writer.Boolean(ForceCoupledImpulse);
         Writer.Float(CoupledMinNormalSpeed);
         Writer.Signed(CoupledIterations);
+        Writer.Boolean(SphereBoxProjectionEnabled);
+        Writer.Boolean(SphereWorldStaticProjectionEnabled);
         return Writer.Hash();
     }
 
@@ -44,10 +50,11 @@ private:
     friend class ::ASpeedPhysicsSimulation;
     static std::optional<FExactRoundContactSettings> Capture() noexcept;
     bool CaptureSolidSettings() noexcept;
+    void CaptureSphereProjectionSettings() noexcept;
 };
 
-// The built-in response pass is synchronous on the canonical owner. Keep its
-// reads scoped to that call, including exact preparation on the same owner.
+// Response and projection are synchronous on the canonical owner. Keep
+// their reads scoped to that call and exact preparation on the same owner.
 class FScopedExactRoundContactSettings final
 {
 public:

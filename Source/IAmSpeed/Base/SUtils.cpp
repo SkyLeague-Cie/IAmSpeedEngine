@@ -57,6 +57,7 @@ std::optional<FExactRoundContactSettings> FExactRoundContactSettings::Capture() 
 	Settings.ForceCoupledImpulse = CVarIAmSpeedCoupledContactImpulse.GetValueOnAnyThread() != 0;
 	Settings.CoupledMinNormalSpeed = FMath::Max(0.f, MinNormalSpeed);
 	Settings.CoupledIterations = FMath::Clamp(CVarIAmSpeedCoupledContactImpulseIterations.GetValueOnAnyThread(), 1, 32);
+	Settings.CaptureSphereProjectionSettings();
 	if (!Settings.Hash()) return {};
 	return Settings;
 }

@@ -24,6 +24,7 @@
 #include "IAmSpeed/Base/SpeedConstant.h"
 #include "IAmSpeed/Components/ISpeedComponent.h"
 #include "IAmSpeed/World/Subsystem/SpeedWorldSubsystem.h"
+#include "IAmSpeed/World/Simulation/ExactRoundContactSettings.h"
 #include "Configs/SubBodyConfig.h"
 #include "PhysicsEngine/BodySetup.h"
 #include "HAL/IConsoleManager.h"
@@ -285,13 +286,23 @@ void USphereSubBody::ResetForFrame(const float& Delta)
 	WheelHit = SHitResult();
 }
 
+void Speed::FExactRoundContactSettings::CaptureSphereProjectionSettings() noexcept
+{
+    SphereBoxProjectionEnabled = CVarIAmSpeedSphereBoxProjection.GetValueOnAnyThread() != 0;
+    SphereWorldStaticProjectionEnabled = CVarIAmSpeedSphereWorldProjection.GetValueOnAnyThread() != 0;
+}
+
 bool USphereSubBody::IsSphereBoxProjectionEnabled()
 {
+    if (const auto* Settings = Speed::FScopedExactRoundContactSettings::Current())
+        return Settings->SphereBoxProjectionEnabled;
 	return CVarIAmSpeedSphereBoxProjection.GetValueOnAnyThread() != 0;
 }
 
 bool USphereSubBody::IsWorldStaticProjectionEnabled()
 {
+    if (const auto* Settings = Speed::FScopedExactRoundContactSettings::Current())
+        return Settings->SphereWorldStaticProjectionEnabled;
 	return CVarIAmSpeedSphereWorldProjection.GetValueOnAnyThread() != 0;
 }
 
