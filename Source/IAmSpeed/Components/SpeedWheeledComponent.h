@@ -70,6 +70,9 @@ class IAMSPEED_API USpeedWheeledComponent : public UChaosWheeledVehicleMovementC
 	friend struct FNetworkWheeledSpeedInputState;
 
 public:
+    // Returns the calling thread's retained hull-contact drag flag, with a live fallback.
+    static bool ReadEffectiveHullContactContinuousAngularDrag() noexcept;
+
     // Read-only GT diagnostics; caller retains authenticated lease and pins.
     bool ReadCanonicalPrepareStateForGTInspection(const Speed::FPreparedNativeOwnerBinding& Binding,
         Speed::FNativePrepareGTFields& Out,Speed::Analytic::Certified::FDistanceBudget& Budget,FString& Reason) const;

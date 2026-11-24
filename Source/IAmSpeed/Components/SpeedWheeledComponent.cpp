@@ -93,6 +93,18 @@ static TAutoConsoleVariable<int32> CVarIAmSpeedHullContactContinuousAngularDrag(
 	0,
 	TEXT("Experimental: preserve small real hull-contact angular response through continuous air drag."));
 
+void Speed::FExactRoundContactSettings::CaptureHullContactAngularDragSettings() noexcept
+{
+    HullContactContinuousAngularDrag = CVarIAmSpeedHullContactContinuousAngularDrag.GetValueOnAnyThread() != 0;
+}
+
+bool USpeedWheeledComponent::ReadEffectiveHullContactContinuousAngularDrag() noexcept
+{
+    const auto* Settings = Speed::FScopedExactRoundContactSettings::Current();
+    return Settings ? Settings->HullContactContinuousAngularDrag
+        : CVarIAmSpeedHullContactContinuousAngularDrag.GetValueOnAnyThread() != 0;
+}
+
 static float SteeringInputCalibrationScale(const float Input)
 {
 	// RL steering capture calibration: preserve the signed input and apply the
@@ -3650,7 +3662,7 @@ void USpeedWheeledComponent::DampenAirAngularVelocity(const FVector& VelocityToD
 	const UBoxSubBody* ContactHitbox = GetHitboxSubBodyForConfiguration();
 	const int32 ContactFrame = ContactHitbox ? ContactHitbox->GetLastResolvedGroundHitFrame() : INDEX_NONE;
 	const int32 CurrentFrame = static_cast<int32>(NumFrame());
-	const bool bContactDragRequested = CVarIAmSpeedHullContactContinuousAngularDrag.GetValueOnAnyThread() != 0;
+	const bool bContactDragRequested = ReadEffectiveHullContactContinuousAngularDrag();
 	const bool bFreshContactFrame = ContactFrame >= 0 && ContactFrame >= CurrentFrame - 1 && ContactFrame <= CurrentFrame;
 	const bool bContinuousContactDrag = bContactDragRequested && bFreshContactFrame &&
 		ContactHitbox && ContactHitbox->HasCurrentExactPlanarContact();

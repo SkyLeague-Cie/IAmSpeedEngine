@@ -12,7 +12,7 @@ namespace Speed
 // Subbody-specific values still belong to the native round roster.
 struct FExactRoundContactSettings final
 {
-    static constexpr std::uint64_t HashSchema = 5;
+    static constexpr std::uint64_t HashSchema = 6;
 
     std::optional<float> SphereBoxRestitution;
     std::optional<float> SphereBoxFriction;
@@ -29,6 +29,7 @@ struct FExactRoundContactSettings final
     FExactRoundWheelGroundContactSettings WheelGroundContact;
     FExactRoundSuspensionSettings Suspension;
     FExactRoundStaticCollisionSettings StaticCollision;
+    bool HullContactContinuousAngularDrag = false;
 
     bool operator==(const FExactRoundContactSettings&) const = default;
 
@@ -57,6 +58,7 @@ struct FExactRoundContactSettings final
         WheelGroundContact.AppendHash(Writer);
         Writer.Unsigned(static_cast<std::uint8_t>(StaticCollision.RequestedBackend));
         Writer.Boolean(StaticCollision.CompactAuthority);
+        Writer.Boolean(HullContactContinuousAngularDrag);
         return Writer.Hash();
     }
 
@@ -69,6 +71,7 @@ private:
     void CaptureWheelGroundContactSettings() noexcept;
     void CaptureSuspensionSettings() noexcept;
     void CaptureStaticCollisionSettings() noexcept;
+    void CaptureHullContactAngularDragSettings() noexcept;
 };
 
 // Response and projection are synchronous on the canonical owner. Keep

@@ -68,6 +68,7 @@ std::optional<FExactRoundContactSettings> FExactRoundContactSettings::Capture() 
 	Settings.CaptureSuspensionSettings();
 	Settings.CaptureWheelGroundContactSettings();
 	Settings.CaptureStaticCollisionSettings();
+	Settings.CaptureHullContactAngularDragSettings();
 	if (!Settings.Hash()) return {};
 	return Settings;
 }
