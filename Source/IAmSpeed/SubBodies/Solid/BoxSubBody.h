@@ -30,6 +30,9 @@ class IAMSPEED_API UBoxSubBody : public USolidSubBody, public IBoxSweeper, publi
 #endif
 	
 public:
+    /** Appends solid and box configuration from this registered hitbox, including correction slop. */
+    bool AppendExactRoundBoxConfiguration(Speed::FExactRoundConfigurationWriter& Out) const;
+
     const USolidSubBody* GetSolidSweepBody() const override { return this; }
 #if !UE_BUILD_SHIPPING
     void AppendEpisodeStateForTesting(TArray<uint8>& Out) const override

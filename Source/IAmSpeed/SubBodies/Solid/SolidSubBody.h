@@ -7,6 +7,8 @@
 #include "IAmSpeed/Base/EpisodeStateBytesForTesting.h"
 #include "SolidSubBody.generated.h"
 
+namespace Speed { class FExactRoundConfigurationWriter; }
+
 UENUM()
 enum class EMixMode : uint8
 {
@@ -65,6 +67,9 @@ class IAMSPEED_API USolidSubBody : public USSubBody
 	GENERATED_BODY()
 	
 public:
+    /** Reads physical configuration under the exact round owner boundary. Filters use local slot indices. */
+    bool AppendExactRoundSolidConfiguration(Speed::FExactRoundConfigurationWriter& Out) const;
+
 #if !UE_BUILD_SHIPPING
     /** Read-only, same-run owner-state witness; no UObject or array-header copy. */
     void AppendEpisodeStateForTesting(TArray<uint8>& Out) const override

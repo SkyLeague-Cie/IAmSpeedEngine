@@ -26,6 +26,8 @@ static TAutoConsoleVariable<int32> CVarIAmSpeedSphereBoxNonpenetratingV2ForTesti
 
 static bool UseSphereBoxNonpenetratingV2(const bool bProductionPair)
 {
+	if (const auto* Settings = FScopedExactRoundContactSettings::Current())
+		return (bProductionPair && Settings->SphereBoxNonpenetrating) || Settings->ForceSphereBoxNonpenetratingForTesting;
 	return (bProductionPair && CVarIAmSpeedSphereBoxNonpenetratingV2.GetValueOnAnyThread() == 1)
 #if !UE_BUILD_SHIPPING
 		|| CVarIAmSpeedSphereBoxNonpenetratingV2ForTesting.GetValueOnAnyThread() == 1
@@ -57,8 +59,13 @@ std::optional<FExactRoundContactSettings> FExactRoundContactSettings::Capture() 
 	Settings.ForceCoupledImpulse = CVarIAmSpeedCoupledContactImpulse.GetValueOnAnyThread() != 0;
 	Settings.CoupledMinNormalSpeed = FMath::Max(0.f, MinNormalSpeed);
 	Settings.CoupledIterations = FMath::Clamp(CVarIAmSpeedCoupledContactImpulseIterations.GetValueOnAnyThread(), 1, 32);
+	Settings.SphereBoxNonpenetrating = CVarIAmSpeedSphereBoxNonpenetratingV2.GetValueOnAnyThread() == 1;
+#if !UE_BUILD_SHIPPING
+	Settings.ForceSphereBoxNonpenetratingForTesting = CVarIAmSpeedSphereBoxNonpenetratingV2ForTesting.GetValueOnAnyThread() == 1;
+#endif
 	Settings.CaptureSphereProjectionSettings();
-	if (!Settings.Hash()) return {};
+	Settings.CaptureBoxContactSettings();
+	if (!Settings.CaptureSuspensionSettings() || !Settings.Hash()) return {};
 	return Settings;
 }
 

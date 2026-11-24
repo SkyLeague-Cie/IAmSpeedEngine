@@ -43,6 +43,9 @@ class IAMSPEED_API USWheelSubBody : public USphereSubBody
 #endif
 	
 public:
+    /** Appends solid, sphere and suspension configuration from this registered wheel and its live setup. */
+    bool AppendExactRoundWheelConfiguration(Speed::FExactRoundConfigurationWriter& Out) const;
+
 #if !UE_BUILD_SHIPPING
     /** Read-only, same-run owner-state witness; no UObject or array-header copy. */
     void AppendEpisodeStateForTesting(TArray<uint8>& Out) const override

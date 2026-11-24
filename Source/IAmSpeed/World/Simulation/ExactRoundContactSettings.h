@@ -1,6 +1,6 @@
 #pragma once
 
-#include "ExactRoundConfiguration.h"
+#include "ExactRoundVehicleContactSettings.h"
 #include <optional>
 
 class ASpeedPhysicsSimulation;
@@ -11,7 +11,7 @@ namespace Speed
 // Subbody-specific values still belong to the native round roster.
 struct FExactRoundContactSettings final
 {
-    static constexpr std::uint64_t HashSchema = 2;
+    static constexpr std::uint64_t HashSchema = 3;
 
     std::optional<float> SphereBoxRestitution;
     std::optional<float> SphereBoxFriction;
@@ -22,6 +22,10 @@ struct FExactRoundContactSettings final
     std::int32_t CoupledIterations = 1;
     bool SphereBoxProjectionEnabled = true;
     bool SphereWorldStaticProjectionEnabled = true;
+    bool SphereBoxNonpenetrating = true;
+    bool ForceSphereBoxNonpenetratingForTesting = false;
+    FExactRoundBoxContactSettings BoxContact;
+    FExactRoundSuspensionSettings Suspension;
 
     bool operator==(const FExactRoundContactSettings&) const = default;
 
@@ -43,6 +47,10 @@ struct FExactRoundContactSettings final
         Writer.Signed(CoupledIterations);
         Writer.Boolean(SphereBoxProjectionEnabled);
         Writer.Boolean(SphereWorldStaticProjectionEnabled);
+        Writer.Boolean(SphereBoxNonpenetrating);
+        Writer.Boolean(ForceSphereBoxNonpenetratingForTesting);
+        BoxContact.AppendHash(Writer);
+        Suspension.AppendHash(Writer);
         return Writer.Hash();
     }
 
@@ -51,6 +59,8 @@ private:
     static std::optional<FExactRoundContactSettings> Capture() noexcept;
     bool CaptureSolidSettings() noexcept;
     void CaptureSphereProjectionSettings() noexcept;
+    void CaptureBoxContactSettings() noexcept;
+    bool CaptureSuspensionSettings() noexcept;
 };
 
 // Response and projection are synchronous on the canonical owner. Keep

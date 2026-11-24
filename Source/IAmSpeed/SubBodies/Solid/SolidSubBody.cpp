@@ -71,6 +71,46 @@ namespace
     }
 }
 
+bool USolidSubBody::AppendExactRoundSolidConfiguration(Speed::FExactRoundConfigurationWriter& Out) const
+{
+    // Foreign filters require a world identity before they can be encoded here.
+    constexpr int32 MaxSlots = 256;
+    constexpr int32 MaxIgnoredTypes = 32;
+    if (!ParentComponent) return false;
+    const auto& Slots = ParentComponent->GetSubBodies();
+    if (Slots.Num() > MaxSlots || AlwaysIgnoredComponents.Num() > Slots.Num() ||
+        IgnoredSubBodyTypes.Num() > MaxIgnoredTypes ||
+        !Out.Unsigned(0x494153534f4c0001ull) ||
+        !Out.Float(Mass) || !Out.Boolean(bIsMainSubBody) ||
+        !Out.Boolean(bApplyRestForce) || !Out.Boolean(EnableFakePhysics) ||
+        !Out.Boolean(bEnableConstraintOnSubBodyHit) ||
+        !Out.Float(Restitution) || !Out.Float(StaticFriction) || !Out.Float(DynamicFriction) ||
+        !Out.Float(SphereBoxRestitutionOverride) || !Out.Float(SphereBoxFrictionOverride) ||
+        !Out.Float(SphereBoxManifoldFrictionOverride) || !Out.Boolean(UsesAerialShotContactModel()) ||
+        !Out.Boolean(bUseCoupledContactImpulse) || !Out.Boolean(bUsePostNormalFrictionImpulse) ||
+        !Out.Boolean(bUsePersistentBilateralContact) ||
+        !Out.Float(CoupledContactMaxLinearSpeed) || !Out.Float(CoupledContactMaxAngularSpeed) ||
+        !Out.Float(CoupledContactMaxAbsLocalNormalY) ||
+        !Out.Float(ImpactThreshold) || !Out.Float(HitDamping) || !Out.Signed(idx)) return false;
+
+    for (const auto& InertiaRow : InvInertiaLocal.M)
+        for (const double Value : InertiaRow)
+            if (!Out.Double(Value)) return false;
+
+    if (!Out.Unsigned(AlwaysIgnoredComponents.Num())) return false;
+    for (const UPrimitiveComponent* Filter : AlwaysIgnoredComponents)
+    {
+        const int32 Slot = Slots.IndexOfByPredicate([Filter](const USSubBody* Body) { return Body == Filter; });
+        if (!Filter || !Slots.IsValidIndex(Slot) || Slots[Slot]->GetParentComponent() != ParentComponent ||
+            !Out.Unsigned(Slot)) return false;
+    }
+
+    if (!Out.Unsigned(IgnoredSubBodyTypes.Num())) return false;
+    for (const auto Type : IgnoredSubBodyTypes)
+        if (!Out.Unsigned(static_cast<uint8>(Type))) return false;
+    return true;
+}
+
 void USolidSubBody::Initialize(ISpeedComponent* InParentComponent)
 {
 	Super::Initialize(InParentComponent);
