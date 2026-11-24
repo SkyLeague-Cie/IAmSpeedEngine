@@ -19,7 +19,7 @@ def main():
     parser.add_argument('--vc',type=Path,default=Path('C:/Program Files/Microsoft Visual Studio/18/Community/VC/Tools/MSVC/14.38.33130'))
     parser.add_argument('--windows-kits',type=Path,default=Path('C:/Program Files (x86)/Windows Kits/10'))
     parser.add_argument('--sdk-version',default='10.0.22621.0')
-    parser.add_argument('--suite',choices=['all','world','registry','driving','remote','contract','presentation-client'],default='all')
+    parser.add_argument('--suite',choices=['all','world','registry','driving','remote','contract','presentation-client','round-control'],default='all')
     args=parser.parse_args()
     tests=Path(__file__).resolve().parent
     repo=tests.parents[2]
@@ -65,6 +65,7 @@ def main():
     suites=[('presentation-client',tests/'presentation-client/PresentationClientGateTests.cpp'),('contract',tests/'contract-offer/ActionContractOfferCodecTests.cpp'),('input',tests/'transport/TransportTests.cpp'),('state',tests/'transport/StateTransportTests.cpp'),
             ('consumed',tests/'consumed-command-v2/ConsumedTests.cpp'),('authority',tests/'authoritative-owner-v2/AuthoritativeOwnerTests.cpp'),
             ('envelope',tests/'state-authority-envelope-v2/StateEnvelopeTests.cpp'),('remote',tests/'remote-input/ExactRemoteInputProducerTests.cpp'),
+            ('round-control',tests/'round-reset/ExactRemoteRoundControlTests.cpp'),
             ('registry',repo/'Tests/Netcode/EmptyInputFrameTests.cpp'),
             ('world',repo/'Tests/Netcode/WorldTokenGuardTests.cpp'),('driving',tests/'DrivingActionsTests.cpp')]
     if args.suite!='all':suites=[s for s in suites if s[0]==args.suite]
