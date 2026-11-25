@@ -7,7 +7,7 @@
 bool ASpeedPhysicsSimulation::ConfigureRequestedNetworkPreparationV2(
     std::shared_ptr<const Speed::Netcode::Agreement::FHostIdentity> Host)
 {
-    if(!IsInGameThread()||SimulationWorker||InputSessionRegistry||RequestedPreparationV2||!InputWorkerGeneration
+    if(!IsInGameThread()||ReplayStartupService.IsHolding()||SimulationWorker||InputSessionRegistry||RequestedPreparationV2||!InputWorkerGeneration
         ||!NativeInputAdmissionOwner||!CompletedPublicationSource||!bPublishCompletedWorldInput
         ||bInputOwnerRetired.Load()||bOwnedWorkerTerminal.Load()||bCanonicalPublicationTerminal.Load()
         ||!Host||Host->ReadCloseFence())return false;
@@ -19,7 +19,7 @@ Speed::ERequestedPreparationAdmissionV2 ASpeedPhysicsSimulation::SubmitRequested
 {
     using E=Speed::ERequestedPreparationAdmissionV2;
     if(!IsInGameThread())return E::WrongThread;
-    if(!RequestedPreparationV2||GetActiveExecutionMode()!=ESimulationExecutionMode::IAmSpeedThread
+    if(ReplayStartupService.IsHolding()||!RequestedPreparationV2||GetActiveExecutionMode()!=ESimulationExecutionMode::IAmSpeedThread
         ||!bPublishCompletedWorldInput||!CompletedPublicationSource||bInputOwnerRetired.Load()
         ||bOwnedWorkerTerminal.Load()||bCanonicalPublicationTerminal.Load())return E::Closed;
     const auto Result=RequestedPreparationV2->Submit(std::move(Request));

@@ -9,6 +9,7 @@
 #include "ExactNeutralDispatch.h"
 #include "ExactRemoteRoundFence.h"
 #include "RollbackWorkerAudit.h"
+#include "ReplayStartupServiceGate.h"
 #include "WorldBorrowGate.h"
 #include "SimulationFrameJournal.h"
 #include "CompletedSimulationPublication.h"
@@ -284,6 +285,13 @@ public:
     uint64 TryAcquireReplayStartupHoldBeforeBeginPlay();
     bool ReleaseReplayStartupHold(uint64 Token);
     bool IsReplayStartupHeld(uint64 Token) const;
+    // Opted-in original worker has returned from its pre-F0 input service.
+    // This witness remains usable during a park and does not grant a park.
+    bool HasAcknowledgedReplayStartupService(uint64 Token, uint64 WorkerGeneration) const noexcept;
+    // Success path under this generation's acknowledged park. Does not resume
+    // simulation or give back the park. Under the opt-in, the legacy release
+    // is reserved for cancellation and keeps the startup terminal.
+    bool ReleaseReplayStartupHoldAfterService(uint64 Token, uint64 WorkerGeneration);
     // Independent native prepared-world participant: neither borrows nor
     // releases Replay's pre-frame-zero startup token. Both holds must close.
     uint64 TryAcquireNativeFrameStartupHoldBeforeBeginPlay();
@@ -437,6 +445,10 @@ private:
 
 	void RefreshExecutionMode();
 	void TransitionExecutionMode(ESimulationExecutionMode NewMode);
+    void MaybeArmReplayStartupServiceOnGT();
+    bool MayStartServiceUnderReplayHoldOnGT() const;
+    bool AllowsReplayStartupPhysicalWork() const;
+    Speed::FReplayStartupServiceGate ReplayStartupService;
 	void StartOwnedWorkerIfReady();
 	void StopOwnedWorker();
 	ESimulationExecutionMode GetActiveExecutionMode() const;

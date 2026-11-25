@@ -1,4 +1,5 @@
 #pragma once
+#include "ReplayStartupServiceGate.h"
 
 #include "CoreMinimal.h"
 #include "HAL/Runnable.h"
@@ -179,6 +180,8 @@ private:
     FCriticalSection JoinMutex; // Never acquired by CloseOnWorker.
 	void Stop() override;
 
+    // Set by the driver before Start and kept alive through this owner's join.
+    const Speed::FReplayStartupServiceGate* ReplayStartupService = nullptr;
 	FWork Work;
 	FWaitBetweenFrames WaitBetweenFrames;
 	FServiceBoundary ServiceBoundary;

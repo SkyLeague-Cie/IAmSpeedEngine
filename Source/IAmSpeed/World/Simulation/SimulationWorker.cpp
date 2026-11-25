@@ -538,7 +538,7 @@ Speed::OnePausedWork::FResult FSimulationWorker::RunOnePausedWork(
     FOnePausedWorkRequest request;request.Identity=Identity;
     {
         FScopeLock control(&BoundaryControlMutex);
-        if(!IsInGameThread()||!IsBoundaryServiceSuspended()||!bPaused.Load()||PendingOneWork.Load()||
+        if((ReplayStartupService && ReplayStartupService->BlocksPreFrameControl())||!IsInGameThread()||!IsBoundaryServiceSuspended()||!bPaused.Load()||PendingOneWork.Load()||
             OneWorkReturnFence.Load()||NextOneWorkNonce==MAX_uint64)return out;
         const uint64 oldPark=BoundarySuspendRequestSerial.Load();
         if(oldPark>=MAX_uint64-1)return out; // reserve a new post-Work ACK without wrap
@@ -805,6 +805,14 @@ uint32 FSimulationWorker::Run()
 				continue;
 			}
 
+            // While a real park is held, GT may still own the live views.
+            // Observe cancellation after the park and before boundary service.
+            if (ReplayStartupService && ReplayStartupService->IsCancelled())
+            {
+                ExitCode = 1;
+                break;
+            }
+
             if(auto* one=PendingOneWork.Load())
             {
                 // Exactly one claim, before ServiceBoundary can change inputs.
@@ -1044,6 +1052,11 @@ uint32 FSimulationWorker::Run()
 #endif
 				continue;
 			}
+            if (ReplayStartupService && !ReplayStartupService->AllowsWork())
+            {
+                WakeEvent->Wait(1);
+                continue;
+            }
 			PauseAcknowledgedEvent->Reset();
 			const ESimulationWorkerResult Result = [&]()
             {
