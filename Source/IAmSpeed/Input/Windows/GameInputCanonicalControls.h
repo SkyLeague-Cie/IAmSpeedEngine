@@ -38,6 +38,29 @@ inline std::uint16_t KeyboardUsage(std::uint32_t Scan) noexcept
 
 using FCanonicalDeviceState = V2::FCanonicalRawState;
 
+#if defined(IAMSPEED_SWITCHCAM_GAMEINPUT_TRACE) && IAMSPEED_SWITCHCAM_GAMEINPUT_TRACE
+// Snapshot the actual SDK semantic mask/axis, before canonical storage.
+inline float SampleSdkPadControl(const FDeviceState& Raw, V2::FRawControl Control, std::uint32_t& SdkCode) noexcept
+{
+    using namespace GameInput::v3;
+    if (Control.Kind == V2::ERawControlKind::PadButton)
+    {
+        static constexpr GameInputGamepadButtons Bits[] = {
+            GameInputGamepadA, GameInputGamepadB, GameInputGamepadX, GameInputGamepadY,
+            GameInputGamepadDPadUp, GameInputGamepadDPadDown, GameInputGamepadDPadLeft, GameInputGamepadDPadRight,
+            GameInputGamepadLeftShoulder, GameInputGamepadRightShoulder, GameInputGamepadLeftThumbstick,
+            GameInputGamepadRightThumbstick, GameInputGamepadMenu, GameInputGamepadView};
+        static_assert(std::size(Bits) == std::size_t(V2::EPadButton::Count));
+        SdkCode = std::uint32_t(Bits[Control.Code]);
+        return (Raw.GamepadButtons & SdkCode) ? 1.0f : 0.0f;
+    }
+    static constexpr std::uint32_t Axes[] = {2, 3, 4, 5, 0, 1};
+    static_assert(std::size(Axes) == std::size_t(V2::EPadAxis::Count));
+    SdkCode = Axes[Control.Code];
+    return Raw.Axes[SdkCode];
+}
+#endif
+
 // Complete, sorted capability/state snapshot. Unknown keyboard scan codes are
 // excluded, not guessed from glyphs. Standard pad controls use SDK semantic
 // bits (A/B/X/Y) rather than manufacturer-specific button indices.

@@ -1,4 +1,7 @@
 #pragma once
+#if defined(IAMSPEED_SWITCHCAM_GAMEINPUT_TRACE) && IAMSPEED_SWITCHCAM_GAMEINPUT_TRACE
+#include "SwitchCamGameInputTrace.h"
+#endif
 
 #include "InputFrameV2.h"
 #include "InputPresentationScope.h"
@@ -110,6 +113,12 @@ private:
                 :Desktop.PrepareReplacement(*Contract,Epoch,Frame,Producer);
             if(!Metadata)return Reject(EMappingStatus::InvalidRaw);
         }
+#if defined(IAMSPEED_SWITCHCAM_GAMEINPUT_TRACE) && IAMSPEED_SWITCHCAM_GAMEINPUT_TRACE
+        auto* Trace = Sample.Kind == ERawDeviceKind::Gamepad && Producer.Id == Epoch.Value ?
+            SwitchCamGameInputTrace::FindSession(Producer.Id) : nullptr;
+        // Only entries for SwitchCam are written, then read after finalization.
+        std::array<std::uint64_t, MaxEdges> TraceGroups;
+#endif
 		FInputFrameData Output;
 		Output.SourceSequence = Sample.Sequence; Output.ConsumptionFrame = Frame;
 		Output.Producer = Producer; Output.StreamEpoch = Epoch; Output.DeviceGeneration = Sample.Generation; Output.Reset = Reset;
@@ -145,6 +154,10 @@ private:
 					if (Output.Transitions.size() == MaxEdges) return Reject(EMappingStatus::Overflow);
 					Output.Transitions.push_back({A.Id, (NextActive & Bit) ? ETransition::Started : ETransition::Completed,
 						Values[A.Id], {TransitionSequence, TransitionOrdinal++}});
+#if defined(IAMSPEED_SWITCHCAM_GAMEINPUT_TRACE) && IAMSPEED_SWITCHCAM_GAMEINPUT_TRACE
+                    if (Trace && A.Id == Trace->Action)
+                        TraceGroups[Output.Transitions.size() - 1] = Change.AtomicGroup;
+#endif
                     if(Metadata&&Sample.Kind==ERawDeviceKind::Desktop)
                     {
                         const FInputEdgeIdentity Identity{Epoch.Value,Frame,Sample.Sequence,
@@ -176,6 +189,27 @@ private:
 		HasBaseline = true; NeedsResync = false;
 		Exhausted = Frame == std::numeric_limits<FFrameNumber>::max();
 		if (!Exhausted) ++NextFrame;
+#if defined(IAMSPEED_SWITCHCAM_GAMEINPUT_TRACE) && IAMSPEED_SWITCHCAM_GAMEINPUT_TRACE
+        if (Trace)
+        {
+            std::size_t From = 0;
+            for (std::size_t To = 0; To < Output.Transitions.size(); ++To)
+            {
+                const auto& Edge = Output.Transitions[To];
+                if (Edge.Action != Trace->Action) continue;
+                const auto& Original = BeforeFinalization.Transitions;
+                while (From < Original.size() && Original[From].Order < Edge.Order) ++From;
+                if (From == Original.size() || Edge.Order < Original[From].Order ||
+                    Edge.Action != Original[From].Action || Edge.State != Original[From].State || !TraceGroups[From])
+                {
+                    Trace->Map.RecordDrop();
+                    continue;
+                }
+                Trace->Map.Push({Epoch.Value, Frame, Sample.Sequence, TraceGroups[From], Sample.DeviceId,
+                    Sample.Generation.Value, std::uint32_t(To), Edge.State == ETransition::Started});
+            }
+        }
+#endif
 		return {EMappingStatus::Mapped, std::move(Result)};
 	}
 private:

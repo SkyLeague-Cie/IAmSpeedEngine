@@ -4,6 +4,9 @@
 #include "GameInputCanonicalControls.h"
 #include "../RawAcquisitionJournal.h"
 #include "../InputAcquisitionWorker.h"
+#if defined(IAMSPEED_SWITCHCAM_GAMEINPUT_TRACE) && IAMSPEED_SWITCHCAM_GAMEINPUT_TRACE
+#include "../SwitchCamGameInputTrace.h"
+#endif
 #include <thread>
 
 namespace Speed::Input::Windows
@@ -42,6 +45,9 @@ public:
     {
         if(DesktopRequested&&Source&&Journal&&Source->EnableDesktopPolicy(Journal->BeginAcquisition().Session))
             Desktop=Source->CreateDesktopCompanion(Journal->BeginAcquisition().Session);
+#if defined(IAMSPEED_SWITCHCAM_GAMEINPUT_TRACE) && IAMSPEED_SWITCHCAM_GAMEINPUT_TRACE
+        if (Journal) Trace = V2::SwitchCamGameInputTrace::FindSession(Journal->BeginAcquisition().Session);
+#endif
     }
 	ERawPumpResult Pump() override
 	{
@@ -122,6 +128,10 @@ public:
 			}
 			if (!Journal->Publish(Ticket, Prepared))
 			{ SinkReject = ESinkReject::JournalPublish; return false; }
+#if defined(IAMSPEED_SWITCHCAM_GAMEINPUT_TRACE) && IAMSPEED_SWITCHCAM_GAMEINPUT_TRACE
+            if (Trace && Prepared.Readings[0].Kind == V2::ERawDeviceKind::Gamepad)
+                ObserveSwitchCamBatch(Batch.Readings);
+#endif
 			Sequence += Prepared.Count; Generation = NewGeneration; LastTicket = Batch.Ticket;
 			LastState = Prepared.Readings[Prepared.Count - 1]; Neutral = false; HadData = true;
 			return true;
@@ -279,6 +289,41 @@ private:
         }
         return InstallNeutral(Ticket)?ERawPumpResult::Neutralized:ERawPumpResult::Rejected;
 	}
+#if defined(IAMSPEED_SWITCHCAM_GAMEINPUT_TRACE) && IAMSPEED_SWITCHCAM_GAMEINPUT_TRACE
+    void ObserveSwitchCamBatch(const FRawDeviceReadBatch& Batch) noexcept
+    {
+        const auto PadButtonCount = std::size_t(V2::EPadButton::Count);
+        for (std::size_t I = 0; I < Prepared.Count; ++I)
+        {
+            const auto& Reading = Prepared.Readings[I];
+            const bool Fresh = Reading.FreshBaseline || Trace->LastDevice != Reading.DeviceId ||
+                Trace->LastGeneration != Reading.Generation.Value;
+            Trace->LastDevice = Reading.DeviceId;
+            Trace->LastGeneration = Reading.Generation.Value;
+            for (std::size_t J = 0; J < Trace->ControlCount; ++J)
+            {
+                const auto Control = Trace->Controls[J];
+                const auto Index = Control.Kind == V2::ERawControlKind::PadButton ?
+                    Control.Code : PadButtonCount + Control.Code;
+                if (Index >= Reading.State.Count || !(Reading.State.Values[Index].Control == Control))
+                {
+                    Trace->Raw.RecordDrop();
+                    continue;
+                }
+                std::uint32_t SdkCode = 0;
+                const float Before = SampleSdkPadControl(Batch.States[I], Control, SdkCode);
+                const float After = Reading.State.Values[Index].Value;
+                auto& Last = Trace->Held[J];
+                if (Fresh || Before != Last.Before || After != Last.After)
+                    Trace->Raw.Push({Reading.DeviceId, Reading.Generation.Value, Reading.Sequence,
+                        Reading.TimestampMicroseconds, Control, SdkCode, Before, After, Fresh});
+                Last = {Before, After};
+            }
+        }
+    }
+
+    V2::SwitchCamGameInputTrace::FSession* Trace = nullptr;
+#endif
 	std::uint64_t DeviceIndex(const FDeviceId& Id) noexcept
 	{
 		for (std::size_t I = 0; I < DeviceCount; ++I) if (Devices[I] == Id) return I + 1;

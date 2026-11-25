@@ -1,6 +1,10 @@
 #include "IAmSpeed.h"
 #include "IAmSpeed/World/Simulation/FrameParallelExecutor.h"
 
+#if defined(IAMSPEED_SWITCHCAM_GAMEINPUT_TRACE) && IAMSPEED_SWITCHCAM_GAMEINPUT_TRACE
+#include "IAmSpeed/Input/SwitchCamGameInputTrace.h"
+#endif
+
 #if PLATFORM_LINUX && WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
 #include "Linux/LinuxPlatformApplicationMisc.h"
 #include "Misc/CommandLine.h"
@@ -39,6 +43,9 @@ void IAmSpeed::StartupModule()
 void IAmSpeed::ShutdownModule()
 {
     Speed::ShutdownFrameParallelExecutor();
+#if defined(IAMSPEED_SWITCHCAM_GAMEINPUT_TRACE) && IAMSPEED_SWITCHCAM_GAMEINPUT_TRACE
+    Speed::Input::V2::SwitchCamGameInputTrace::Stop();
+#endif
 }
 
 IMPLEMENT_MODULE(IAmSpeed, IAmSpeed)

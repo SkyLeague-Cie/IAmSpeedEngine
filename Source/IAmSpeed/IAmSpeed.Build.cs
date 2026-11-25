@@ -18,6 +18,10 @@ public class IAmSpeed : ModuleRules
 		{
 			string GameInputSdk = Path.Combine(EngineDirectory, "Plugins", "Runtime", "GameInput", "Source",
 				"GameInputWindowsLibrary", "ThirdParty");
+			if (Target.Configuration != UnrealTargetConfiguration.Shipping)
+			{
+				PrivateDefinitions.Add("IAMSPEED_SWITCHCAM_GAMEINPUT_TRACE=1");
+			}
 			PublicSystemIncludePaths.Add(GameInputSdk);
 			PublicAdditionalLibraries.Add(Path.Combine(GameInputSdk, "Binaries", "x64", "GameInput.lib"));
 		}

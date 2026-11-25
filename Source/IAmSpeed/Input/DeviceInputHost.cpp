@@ -148,6 +148,10 @@ public:
         if (Source && !Source->Close()) return false;
         Source.reset();
         if (Warm && !Warm->RetireFailedCatalogue()) return false;
+#if defined(IAMSPEED_SWITCHCAM_GAMEINPUT_TRACE) && IAMSPEED_SWITCHCAM_GAMEINPUT_TRACE
+        if (auto* Trace = SwitchCamGameInputTrace::FindSession(Producer))
+            Trace->AcquisitionClosed.store(true, std::memory_order_release);
+#endif
         Closed=true; return true;
     }
 private:
@@ -273,6 +277,9 @@ std::shared_ptr<FInputHostSession> CreateDeviceInputHost(const FDeviceInputHostC
 	if (!Host)
 	{ UE_LOG(LogTemp, Error, TEXT("Independent input host rejected: descriptor")); return {}; }
 	Host->Journal = Journal;
+#if defined(IAMSPEED_SWITCHCAM_GAMEINPUT_TRACE) && IAMSPEED_SWITCHCAM_GAMEINPUT_TRACE
+    SwitchCamGameInputTrace::RegisterSession(Identity.Id, Config.FirstFrame, *Config.Contract);
+#endif
 	if (!Config.Controls.empty())
 	{
 		Host->Controls = FControlActionReader::Create(Config.Contract, Journal, Identity, Epoch.Value, Config.Controls);
