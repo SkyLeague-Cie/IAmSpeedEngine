@@ -38,6 +38,7 @@ struct FOwnerInputSnapshot
     FActionValues Requested{}, Applied{};
     // Input contains all ordered edges, including multiple edges of one action.
     std::uint64_t CutoffSequence = 0;
+    bool LiveDevice = false;
 };
 struct FOwnerInputReceipt
 {
@@ -182,7 +183,8 @@ public:
             if (Replay && Processed != History[N % HistoryCapacity]->Snapshot->Applied)
             { LastPollFailure = EOwnerPollFailure::ReplayMismatch; return Reject(EOwnerInputStatus::ResyncRequired); }
             auto Snapshot = std::make_shared<const FOwnerInputSnapshot>(FOwnerInputSnapshot{
-                *Input, Fingerprint, Input->GetData().Values, Processed, Input->GetData().SourceSequence});
+                *Input, Fingerprint, Input->GetData().Values, Processed, Input->GetData().SourceSequence,
+                !Replay && Binding.ProducerContract == EProducerContract::Device});
             auto Receipt = std::make_shared<const FOwnerInputReceipt>(FOwnerInputReceipt{
                 Snapshot, N, N, Binding.Epoch.Value, Replay ? ReplayPass : 0, Replay});
             auto Entry = std::make_shared<const FHistoryEntry>(FHistoryEntry{Snapshot, Receipt, Filter ? std::optional<FActionValues>(Before) : std::nullopt});
