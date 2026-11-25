@@ -738,6 +738,9 @@ public:
 	// Rate at which the generic wheel-frame handbrake value falls toward 0.
 	UPROPERTY(BlueprintReadWrite, Category = Steering, EditDefaultsOnly)
 	float WheelFrameHandbrakeFallRate = 2.0f;
+	// Optional faster release on four wheels with centered steering and no drive input.
+	UPROPERTY(BlueprintReadWrite, Category = Steering, EditDefaultsOnly)
+	float WheelFrameHandbrakeNeutralFallRate = 0.0f;
 	// Below this point-speed slip, the lateral friction curve input stays at 0.
 	UPROPERTY(BlueprintReadWrite, Category = Steering, EditDefaultsOnly)
 	float LateralFrictionSlipThreshold = 5.0f;

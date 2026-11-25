@@ -107,6 +107,7 @@ bool USpeedWheeledComponent::ReadCanonicalPrepareStateForGTInspection(const Spee
     ok=out.Vector(TEXT("car.allowed_angular_velocity"),WheeledPhysicsState.AllowedAngularVelocity,budget)&&ok;
     ok=out.Scalar(TEXT("car.handbrake.WheelFrameHandbrakeRiseRate"),WheelFrameHandbrakeRiseRate,budget)&&ok;
     ok=out.Scalar(TEXT("car.handbrake.WheelFrameHandbrakeFallRate"),WheelFrameHandbrakeFallRate,budget)&&ok;
+    ok=out.Scalar(TEXT("car.handbrake.WheelFrameHandbrakeNeutralFallRate"),WheelFrameHandbrakeNeutralFallRate,budget)&&ok;
     ok=out.Scalar(TEXT("car.handbrake.WheelFrameHandbrakeValue"),WheelFrameHandbrakeValue,budget)&&ok;
     ok=out.Scalar(TEXT("car.handbrake.WheelFrameHandbrakeActiveTime"),WheelFrameHandbrakeActiveTime,budget)&&ok;
     ok=out.Scalar(TEXT("car.handbrake.LastWheelFrameHandbrakeUpdateFrame"),LastWheelFrameHandbrakeUpdateFrame,budget)&&ok;

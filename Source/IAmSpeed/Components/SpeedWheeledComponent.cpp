@@ -2481,6 +2481,7 @@ void USpeedWheeledComponent::ConfigureRocketSimGroundHandlingDefaults()
         FVector2D(0.f, 1.f), FVector2D(1400.f, .1f), FVector2D(1410.f, 0.f)};
     WheelFrameHandbrakeRiseRate = 5.0f;
     WheelFrameHandbrakeFallRate = 2.0f;
+    WheelFrameHandbrakeNeutralFallRate = 0.0f;
     WheelFrameHandbrakeLateralImpulseScale = 1.0f;
     HandbrakeLateralImpulseScaleCurve.Empty();
     HandbrakeFrontLateralFrictionFactorCurve = {FVector2D(0.f, .1f)};
@@ -4085,7 +4086,12 @@ void USpeedWheeledComponent::UpdateWheelFrameHandbrakeValue(const float& Delta)
 	const float Target = IsHandbrakingForWheelFriction() ? 1.0f : 0.0f;
 	const bool bRising = Target > WheelFrameHandbrakeValue;
 	float Rate = bRising ? WheelFrameHandbrakeRiseRate : WheelFrameHandbrakeFallRate;
-	if (bRising && RocketSimGroundHandlingVersion == 1)
+	const bool bReferenceGround = RocketSimGroundHandlingVersion == 1;
+	const bool bMayUseNeutralRelease = bReferenceGround && Target == 0.0f && WheelFrameHandbrakeNeutralFallRate > 0.0f
+		&& WheelFrameHandbrakeValue > KINDA_SMALL_NUMBER && NumWheelsOnGround() == 4
+		&& FMath::Abs(GetPhysSteeringInput()) < ThrottleDeadzone
+		&& !HasDriveInputForGroundFriction() && !HasBoostThrottleForRocketSimGroundHandling();
+	if (bReferenceGround && (bRising || bMayUseNeutralRelease))
 	{
 		const FVector CenterVelocity = GetPhysVelocityAtPoint(GetPhysCOM());
 		const double LateralSpeed = FMath::Abs(FVector::DotProduct(CenterVelocity, GetPhysRightVector()));
@@ -4094,7 +4100,7 @@ void USpeedWheeledComponent::UpdateWheelFrameHandbrakeValue(const float& Delta)
 		if (LateralSpeed > FMath::Max(LongitudinalSpeed, 5.0))
 		{
 			constexpr float LateralHandbrakeRiseRate = 12.0f;
-			Rate = LateralHandbrakeRiseRate;
+			Rate = bRising ? LateralHandbrakeRiseRate : WheelFrameHandbrakeNeutralFallRate;
 		}
 	}
 	if (Target > KINDA_SMALL_NUMBER)
