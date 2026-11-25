@@ -107,7 +107,6 @@ bool FIAmSpeedNativeCarsCamera1217::RunTest(const FString&)
  const int32 OldLane=LaneVar->GetInt(),OldMin=MinVar->GetInt(),OldWave=WaveVar->GetInt(),OldBackend=Backend->GetInt();
  ON_SCOPE_EXIT{LaneVar->Set(OldLane,ECVF_SetByCode);MinVar->Set(OldMin,ECVF_SetByCode);WaveVar->Set(OldWave,ECVF_SetByCode);Backend->Set(OldBackend,ECVF_SetByCode);};
  if(!TestTrue(TEXT("native private workers available"),EnsurePrivateFrameWorkers(FFrameParallelPolicy::MaximumLanes-1)>0))return false;
- AddExpectedMessagePlain(TEXT("[WheelSuspensionBinding] subbodies="),ELogVerbosity::Warning,EAutomationExpectedMessageFlags::Contains,CarCount*5);
  TArray<FNativeRow1217> Oracle;
  for(int32 Lanes:{1,2,4,8,12})
  {

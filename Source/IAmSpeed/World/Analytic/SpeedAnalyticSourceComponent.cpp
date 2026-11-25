@@ -4,6 +4,7 @@
 #include "Components/StaticMeshComponent.h"
 #include "Engine/StaticMesh.h"
 #include "GameFramework/Actor.h"
+#include "IAmSpeed/SubBodies/SSubBody.h"
 
 USpeedAnalyticSourceComponent::USpeedAnalyticSourceComponent()
 {
@@ -42,6 +43,8 @@ UPrimitiveComponent* USpeedAnalyticSourceComponent::ResolveAuthoredContact(
 		!Contact->GetComponentTransform().IsValid() ||
 		!Contact->GetComponentTransform().Equals(Record.ContactWorldTransform, 0.0))
 		return Fail(TEXT("Authored contact is missing, nonstatic, unregistered or moved."));
+    if (const auto* Body = Cast<USSubBody>(Contact); Body && Body->IsPresentationOnly())
+        return Fail(TEXT("A presentation-only sub-body cannot bind to an authored physical source."));
 	uint64 Blocking = 0, Overlap = 0;
 	for (uint32 Channel = 0; Channel < UE_ARRAY_COUNT(FCollisionResponseContainer::EnumArray); ++Channel)
 	{

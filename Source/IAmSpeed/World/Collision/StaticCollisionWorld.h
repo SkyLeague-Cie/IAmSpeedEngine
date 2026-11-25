@@ -2,6 +2,7 @@
 
 #include "IAmSpeed/World/Analytic/AnalyticWorldQuery.h"
 #include "StaticQueryBatch.h"
+#include "StaticCollisionRoute.h"
 #include "OrdinaryC2DiagnosticScene.h"
 #include <atomic>
 
@@ -12,13 +13,6 @@ namespace Speed
 class FPreparedWorldSnapshot;
 class FPreparedCanonicalStaticQueryService;
 class FPreparedNativeFrameConsumer;
-
-enum class EStaticCollisionBackend : uint8
-{
-	UnrealLegacy = 0,
-	AnalyticHybrid,
-	SurfaceAnalytic,
-};
 
 class IAMSPEED_API IStaticCollisionWorld
 {
@@ -47,6 +41,9 @@ public:
     virtual bool SweepPrefetchBatch1075(TConstArrayView<Analytic::FWorldQuery>,
         TArrayView<Analytic::FWorldHit>, FIndependentQueryBatchStats* = nullptr) const { return false; }
     virtual FImmutableStaticQueryIdentity1075 GetImmutableQueryIdentity1075() const { return {}; }
+    // Called only during exact worker preparation, outside the round reservation.
+    virtual std::optional<FExactRoundTensorGeometryWitness> BuildExactRoundTensorGeometryWitness() const noexcept
+    { return {}; }
 #if WITH_EDITOR && !UE_BUILD_SHIPPING
     virtual const FOrdinaryC2DiagnosticScene* TryReadOrdinaryC2DiagnosticScene(
         const Analytic::FBoundedPlane*& Landscape) const { Landscape=nullptr;return nullptr; }
@@ -133,6 +130,7 @@ public:
     Analytic::EAnalyticNumericContract GetNumericContract() const override { return WorldData.NumericContract; }
     FImmutableStaticQueryIdentity1075 GetImmutableQueryIdentity1075() const override
     { return {&WorldData, &QueryService, ImmutableQueryGeneration1075}; }
+    std::optional<FExactRoundTensorGeometryWitness> BuildExactRoundTensorGeometryWitness() const noexcept override;
     int32 GetMinimumIndependentQueryItems() const override { return MinimumIndependentQueryItems; }
     Analytic::FFacetParallelTotals GetFacetParallelTotals() const override
     {

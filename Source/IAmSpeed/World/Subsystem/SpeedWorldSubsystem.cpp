@@ -3,7 +3,11 @@
 // USpeedWorldSubsystem.cpp
 
 #include "SpeedWorldSubsystem.h"
+#include "Misc/ScopeTryLock.h"
+#include "IAmSpeed/Netcode/presentation-client/PresentationClientWorld.h"
+#include "IAmSpeed/World/Analytic/SpeedAnalyticContactComponent.h"
 #include "HAL/CriticalSection.h"
+#include "IAmSpeed/World/Simulation/ExactRoundContactSettings.h"
 #include "Misc/ScopeLock.h"
 #include <atomic>
 #include <exception>
@@ -18,7 +22,6 @@
 #include "IAmSpeed/World/Simulation/OnePausedCanonicalWork.h"
 #include "IAmSpeed/World/Collision/PreparedSweepEvidence.h"
 #include "IAmSpeed/World/Collision/PreparedIntervalStaticWorld.h"
-#include "IAmSpeed/World/Analytic/SpeedAnalyticContactComponent.h"
 #include "IAmSpeed/World/Simulation/CcdPoseAudit.h"
 #include "IAmSpeed/World/Simulation/SubBodyKinematicsTasks.h"
 #include "IAmSpeed/World/Simulation/JoinedActorKinematics1213.h"
@@ -28,6 +31,8 @@
 #include "IAmSpeed/Input/InputSessionRegistry.h"
 #include "IAmSpeed/Actors/SpeedStaticActor.h"
 #include "IAmSpeed/Components/ISpeedComponent.h"
+#include "IAmSpeed/Components/SpeedMovementComponent.h"
+#include "IAmSpeed/Components/SpeedWheeledComponent.h"
 #include "IAmSpeed/World/Simulation/CanonicalFrameContext.h"
 #include "IAmSpeed/World/Simulation/SpeedPhysicsSimulation.h"
 #include "IAmSpeed/World/Simulation/SimulationActorDiagnostics.h"
@@ -327,6 +332,7 @@ namespace
 
 void USpeedWorldSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 {
+	if (Speed::Netcode::PresentationClient::SuppressesLocalPhysics(&InWorld)) { Super::OnWorldBeginPlay(InWorld); return; }
 	if (Speed::ReplayIsolation::IsInertReplayWorld(&InWorld)) return;
 
 	Super::OnWorldBeginPlay(InWorld);
@@ -342,6 +348,107 @@ void USpeedWorldSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 		return;
 	}
 	BuildAnalyticWorldFromLoadedSources();
+}
+
+bool USpeedWorldSubsystem::TryWriteSolidContactConfiguration(
+    const USolidSubBody& Body, TFunctionRef<void()> Write)
+{
+    // Construction and archetype edits cannot touch a registered runtime body.
+    if (Body.IsTemplate() || (Body.HasAnyFlags(RF_NeedInitialization) && !Body.GetParentComponent()))
+    {
+        Write();
+        return true;
+    }
+
+    return TryWriteOwnedRoundConfiguration(Body, Write);
+}
+
+bool USpeedWorldSubsystem::TryWriteOwnedRoundConfiguration(
+    const UActorComponent& Component, TFunctionRef<void()> Write, const USolidSubBody* RetainedSlot)
+{
+    auto* World = Component.GetWorld();
+    auto* Subsystem = World ? World->GetSubsystem<USpeedWorldSubsystem>() : nullptr;
+    if (Subsystem)
+    {
+        // This lock is never held during a worker step, a host callback or a join.
+        FScopeLock Lock(&Subsystem->ExactRoundConfigurationCS);
+        if (Subsystem->ExactRoundStorageGeneration.Load() && !Subsystem->bExactRoundStorageRetired.Load() &&
+            (!RetainedSlot || RetainedSlot->bExactRoundSolidSlotRetained))
+            return false;
+        Write();
+        return true;
+    }
+
+    Write();
+    return true;
+}
+
+bool USpeedWorldSubsystem::BindExactRemoteRoundStorageOwner(ASpeedPhysicsSimulation& Driver, uint64 Generation)
+{
+    if (!IsInGameThread() || !Generation || Driver.GetWorld() != GetWorld()) return false;
+    FScopeLock Lock(&ExactRoundConfigurationCS);
+    if (ExactRoundStorageGeneration.Load() || !SimulationWorld.BindExactRoundIdentity(Generation)) return false;
+    ExactRoundStorageDriver = &Driver;
+    ExactRoundStorageGeneration.Store(Generation);
+    return true;
+}
+
+bool USpeedWorldSubsystem::RecordExactRemoteRoundStorageJoin(ASpeedPhysicsSimulation& Driver, uint64 Generation)
+{
+    if (!IsInGameThread() || !Generation || ExactRoundStorageGeneration.Load() != Generation
+        || !ExactRoundStorageDriver.HasSameIndexAndSerialNumber(TWeakObjectPtr<ASpeedPhysicsSimulation>(&Driver))
+        || !Driver.InputOwnersRetiredAfterJoin(Generation))
+        return false;
+    bExactRoundStorageJoined = true;
+    return true;
+}
+
+bool USpeedWorldSubsystem::JoinExactRemoteRoundBeforeStorageMutationGT()
+{
+    const uint64 Generation = ExactRoundStorageGeneration.Load();
+    if (!Generation) return true;
+    if (!IsInGameThread()) return false;
+    if (bExactRoundStorageRetired.Load()) return true;
+    if (!bExactRoundStorageJoined)
+    {
+        // BeginDestroy is a last-chance check. GC cannot wait for an owner
+        // which may still be inside a UObject query.
+        if (IsGarbageCollecting()) return false;
+        auto* Driver = ExactRoundStorageDriver.GetEvenIfUnreachable();
+        if (!Driver || Driver->GetWorld() != GetWorld() || Driver->HasAnyFlags(RF_BeginDestroyed)
+            || !Driver->JoinExactRemoteRoundBeforeStorageTeardown(Generation)
+            || !RecordExactRemoteRoundStorageJoin(*Driver, Generation)) return false;
+    }
+    // Joining above is the only wait. Do not retain a registry lock or world
+    // borrow across it. Drop every cached body/contact row before UE removal.
+    FScopeTryLock Lock(&PendingCS);
+    if (!Lock.IsLocked() || !SimulationWorld.RetireExactRoundStorageAfterJoin()) return false;
+    PendingOps.Reset();
+    bExactRoundStorageRetired.Store(true);
+    return true;
+}
+
+bool USpeedWorldSubsystem::RequireExactRemoteRoundStorageTeardown(const UActorComponent& Component)
+{
+    // The local seal survives unregister and does not dereference a potentially
+    // destroyed parent or infer anything from the current registry.
+    const auto* Mover = Cast<USpeedMovementComponent>(&Component);
+    const auto* Body = Cast<USSubBody>(&Component);
+    if ((Mover && Mover->IsPresentationOnly()) || (Body && Body->IsPresentationOnly())) return false;
+    const auto* World = Component.IsTemplate() ? nullptr : Component.GetWorld();
+    auto* Subsystem = World ? World->GetSubsystem<USpeedWorldSubsystem>() : nullptr;
+    if (!Subsystem || !Subsystem->ExactRoundStorageGeneration.Load()) return false;
+    if (!Subsystem->JoinExactRemoteRoundBeforeStorageMutationGT())
+        UE_LOG(LogTemp, Fatal, TEXT("Exact round storage teardown refused before original worker and registry retirement (%s)"),
+            *Component.GetName());
+    return true;
+}
+
+void USpeedWorldSubsystem::Deinitialize()
+{
+    if (!JoinExactRemoteRoundBeforeStorageMutationGT())
+        UE_LOG(LogTemp, Fatal, TEXT("Exact round world teardown refused before original worker and registry retirement"));
+    Super::Deinitialize();
 }
 
 TWeakObjectPtr<UPrimitiveComponent> USpeedWorldSubsystem::FindAnalyticSourceComponent(
@@ -377,6 +484,8 @@ void UnregisterOrdinaryC2SceneFactory(FOrdinaryC2SceneFactory Factory)
 #endif
 void USpeedWorldSubsystem::BuildAnalyticWorldFromLoadedSources()
 {
+    const auto StorageBorrow = SimulationWorld.BorrowStorage();
+    if (!StorageBorrow) return;
     if(bPreparedIntervalRouteRequested||PreparedIntervalScene)return; // A queued legacy build must never replace the dedicated snapshot.
 	UWorld* World = GetWorld();
 	if (!World)
@@ -1307,20 +1416,47 @@ bool USpeedWorldSubsystem::ShouldAcquireUnilateralRollingPair(
 
 void USpeedWorldSubsystem::RegisterSpeedComponent(ISpeedComponent* Comp)
 {
-    if (!Comp) return;
+    if (Speed::Netcode::PresentationClient::SuppressesLocalPhysics(GetWorld())) return;
+    if (!Comp || !Comp->NativePhysicsUse.TryUseNative()) return;
+    if (SimulationWorld.StorageAccess.IsReservationOwner())
+        throw std::logic_error("Cannot register an adapter from round preparation");
     FScopeLock Lock(&PendingCS);
+    if (bExactRoundStorageRetired.Load() || !Comp->TryAdmitNativeSubBodies()) return;
     PendingOps.Add({ true, Comp });
 }
 
 void USpeedWorldSubsystem::UnregisterSpeedComponent(ISpeedComponent* Comp)
 {
-    if (!Comp) return;
+    if (!Comp || Comp->IsPresentationOnly()) return;
+    if (SimulationWorld.StorageAccess.IsReservationOwner())
+        throw std::logic_error("Cannot unregister an adapter from round preparation");
+    if (ExactRoundStorageGeneration.Load())
+    {
+        if (!JoinExactRemoteRoundBeforeStorageMutationGT())
+            UE_LOG(LogTemp, Fatal, TEXT("Exact round adapter removal refused before original worker and registry retirement"));
+        return;
+    }
     FScopeLock Lock(&PendingCS);
     PendingOps.Add({ false, Comp });
 }
 
+bool USpeedWorldSubsystem::HasPhysicalRegistrationsForPresentationAdmission()
+{
+    check(IsInGameThread());
+    const auto Access = SimulationWorld.BorrowStorage();
+    if (!Access) return true;
+    FScopeLock Lock(&PendingCS);
+    return PendingOps.Num()!=0 || !SimulationWorld.GetAdapters().IsEmpty();
+}
+
 void USpeedWorldSubsystem::ApplyPendingOps()
 {
+    if (Speed::Netcode::PresentationClient::SuppressesLocalPhysics(GetWorld())) return;
+    // Keep the admitted topology across restore and the neutral physical
+    // frame. New requests remain queued for the next ordinary boundary.
+    if (SimulationWorld.StorageAccess.IsReservationOwner()) return;
+    const auto StorageBorrow = SimulationWorld.BorrowStorage();
+    if (!StorageBorrow) return;
 	FScopedGameThreadAdapterAccess Access(GetWorld());
 	if (!Access.IsValid())
 	{
@@ -1364,6 +1500,7 @@ void USpeedWorldSubsystem::RebuildSortedIfNeeded()
 
 void USpeedWorldSubsystem::AddComponent(ISpeedComponent& Comp)
 {
+    if (!Comp.NativePhysicsUse.TryUseNative() || !Comp.TryAdmitNativeSubBodies()) return;
     // Add New component to all existing ones
     for (ISpeedComponent* Component : SimulationWorld.GetAdapters())
     {
@@ -1401,6 +1538,8 @@ void USpeedWorldSubsystem::RegisterDynamicContactPair(
 	const FVector& NormalBToA,
 	const float ImpactRelativeNormalSpeed)
 {
+	const auto Access = SimulationWorld.BorrowStorage();
+	if (!Access) return;
 	unsigned int& CurrentStepFrame = SimulationWorld.GetCurrentStepFrame();
 	if (CVarIAmSpeedPersistentDynamicPairs.GetValueOnAnyThread() == 0)
 	{
@@ -1461,6 +1600,8 @@ void USpeedWorldSubsystem::ActivatePendingRollingContactPairAtTOI(
 	const USolidSubBody& BodyB,
 	const float RemainingDt)
 {
+	const auto Access = SimulationWorld.BorrowStorage();
+	if (!Access) return;
     Speed::PreparedExecution::FStepScope::RequireNativeContactPairTargets(SimulationWorld,&BodyA,&BodyB);
 	if (!AreUnilateralRollingPairsEnabled())
 	{
@@ -1487,6 +1628,8 @@ bool USpeedWorldSubsystem::IsDynamicContactPairOwnedByRollingManifold(
 	const USolidSubBody& BodyA,
 	const USolidSubBody& BodyB) const
 {
+	const auto Access = SimulationWorld.BorrowStorage();
+	if (!Access) return false;
 	const auto& DynamicContactPairs = SimulationWorld.GetDynamicContactPairs();
 	const unsigned int CurrentStepFrame = SimulationWorld.GetCurrentStepFrame();
 	if (!bLoggedRollingOwnershipState && AreUnilateralRollingPairsEnabled())
@@ -1518,6 +1661,8 @@ bool USpeedWorldSubsystem::IsDynamicContactPairOwnedByRollingManifold(
 ERollingManifoldContactState USpeedWorldSubsystem::GetRollingManifoldContactState(
 	const USolidSubBody& Body) const
 {
+	const auto Access = SimulationWorld.BorrowStorage();
+	if (!Access) return ERollingManifoldContactState::Absent;
 	if (!AreUnilateralRollingPairsEnabled())
 	{
 		return ERollingManifoldContactState::Absent;
@@ -2265,6 +2410,8 @@ void USpeedWorldSubsystem::ProjectDynamicContactPairs()
 
 bool USpeedWorldSubsystem::BeginCanonicalFrame(FString& OutReason)
 {
+    const auto Access = SimulationWorld.BorrowStorage();
+    if (!Access) { OutReason = TEXT("world reserved for round preparation"); return false; }
     if(StaticWorldPublicationDepth){OutReason=TEXT("HostedGT static World publication active");return false;}
 	if (bCanonicalFrameActive)
 	{
@@ -2286,6 +2433,8 @@ bool USpeedWorldSubsystem::BeginCanonicalFrame(FString& OutReason)
 
 bool USpeedWorldSubsystem::ValidateSimulationBindings(FString& OutReason)
 {
+    const auto Access = SimulationWorld.BorrowStorage();
+    if (!Access) { OutReason = TEXT("world reserved for round preparation"); return false; }
     Speed::PreparationPrefix::FEffectScope::VerifyStructuralBoundary();
 	ApplyPendingOps();
 	RebuildSortedIfNeeded();
@@ -2298,11 +2447,53 @@ bool USpeedWorldSubsystem::ValidateSimulationBindings(FString& OutReason)
             effect.Returned(valid,valid); if(!valid)return false;
         }
 	}
+    if (Speed::FScopedExactRoundContactSettings::Current())
+    {
+        const auto Generation = SimulationWorld.ExactRoundWorkerGeneration;
+        const bool bAllowCapture = !SimulationWorld.StorageAccess.IsReservationOwner();
+        for (auto* Component : SimulationWorld.GetOrderedAdapters())
+        {
+            if (!Generation || !Component || !Component->RetainExactRoundMovementConfiguration(Generation, bAllowCapture))
+            {
+                OutReason = TEXT("retained movement configuration unavailable");
+                return false;
+            }
+            for (auto* Body : Component->GetSubBodies())
+            {
+                if (!Body || Body->IsSensor()) continue;
+                const auto Type = Body->GetSubBodyType();
+                if (Type != USSubBody::ESubBodyType::Sphere && Type != USSubBody::ESubBodyType::Hitbox) continue;
+                auto* Box = Type == USSubBody::ESubBodyType::Hitbox ? Cast<UBoxSubBody>(Body) : nullptr;
+                USolidSubBody* Solid = Type == USSubBody::ESubBodyType::Hitbox ? static_cast<USolidSubBody*>(Box)
+                    : Cast<USphereSubBody>(Body);
+                if (!Solid || Solid->GetParentComponent() != Component ||
+                    !Component->GetPublishedSimulationStableId())
+                {
+                    OutReason = TEXT("solid slot has no registered owner");
+                    return false;
+                }
+                if (Solid->bExactRoundSolidSlotRetained) continue;
+                const uint64 SlotId = SimulationWorld.FindStableSubBodyId(Solid);
+                if (!bAllowCapture || !SlotId || SimulationWorld.SolidSubBodiesByStableId.FindRef(SlotId) != Solid)
+                {
+                    OutReason = TEXT("original solid slot configuration unavailable");
+                    return false;
+                }
+                // Assembly and pre-admission profile writes are still legal.
+                // Seal this slot before its first solver read.
+                const FScopeLock Lock(&ExactRoundConfigurationCS);
+                if (Box) Box->bRetainedPersistentFloorFrictionOnly = Box->bPersistentFloorFrictionOnly;
+                Solid->bExactRoundSolidSlotRetained = true;
+            }
+        }
+    }
 	return true;
 }
 
 bool USpeedWorldSubsystem::ServiceInputRetirementsAtBoundary()
 {
+	const auto Access = SimulationWorld.BorrowStorage();
+	if (!Access) return false;
 	for (ISpeedComponent* Component : SimulationWorld.GetAdapters())
 		if (Component && !Component->ServiceInputRetirementAtBoundary()) return false;
 	return true;
@@ -2310,6 +2501,8 @@ bool USpeedWorldSubsystem::ServiceInputRetirementsAtBoundary()
 
 bool USpeedWorldSubsystem::RetireInputProcessingOnWorker()
 {
+	const auto Access = SimulationWorld.BorrowStorage();
+	if (!Access) return false;
 	bool Retired = true;
 	for (ISpeedComponent* Component : SimulationWorld.GetAdapters())
 		if (Component && !Component->RetireInputProcessingOnWorker()) Retired = false;
@@ -2318,7 +2511,8 @@ bool USpeedWorldSubsystem::RetireInputProcessingOnWorker()
 
 bool USpeedWorldSubsystem::NeutralizeCanonicalInputs(const Speed::Input::V2::FInputRegistryView& View)
 {
-	if (bCanonicalFrameActive) return false;
+	const auto Access = SimulationWorld.BorrowStorage();
+	if (!Access || bCanonicalFrameActive) return false;
 	for (const auto& Session : View.Bindings)
 		for (const auto& Actor : Session.Actors)
 		{
@@ -2330,28 +2524,128 @@ bool USpeedWorldSubsystem::NeutralizeCanonicalInputs(const Speed::Input::V2::FIn
 	return true;
 }
 
+bool USpeedWorldSubsystem::PrepareRequestedNetworkAdmissionBoundary()
+{
+    if(bCanonicalFrameActive)return false;
+    ApplyPendingOps();RebuildSortedIfNeeded();return true;
+}
+
+bool USpeedWorldSubsystem::ValidateRequestedNetworkBinding(const Speed::Input::V2::FSessionDescriptor& Binding) const
+{
+    const auto Access = SimulationWorld.BorrowStorage();
+    if (!Access) return false;
+    if(!Binding.Network||Binding.Network->Version!=1||!Binding.Network->IsValid()||!Binding.Contract||Binding.Actors.size()!=1)return false;
+    const auto& N=*Binding.Network;const auto& Actor=Binding.Actors[0];
+    if(Actor.Id!=N.LocalComponent||Actor.Generation!=N.LocalComponentGeneration)return false;
+    const auto* Component=SimulationWorld.FindAdapterByStableId(N.LocalComponent);
+    return Component&&Component->GetPublishedSimulationStableId()==N.LocalComponent
+        &&N.LocalComponentGeneration==N.LocalComponent
+        &&Component->GetCanonicalRequestedBodyGeneration()==N.LocalBodyGeneration
+        &&Component->CanAdmitCanonicalRequestedInput()
+        &&Component->SupportsCanonicalRequestedInputs(*Binding.Contract,Binding.Processing,N.DigitalPolicy);
+}
+
+const ISpeedComponent* USpeedWorldSubsystem::ResolveRequestedPreparationMappingV2(const Speed::Input::V2::FSessionDescriptor& Binding) const
+{
+    if(bCanonicalFrameActive||!Binding.Network||Binding.Network->Version!=2||!Binding.Network->IsValid()
+        ||!Binding.Contract||Binding.Actors.size()!=1)return nullptr;
+    const auto& N=*Binding.Network;const auto& Actor=Binding.Actors[0];
+    if(Actor.Id!=N.LocalComponent||Actor.Generation!=N.LocalComponentGeneration)return nullptr;
+    const auto* Component=SimulationWorld.FindAdapterByStableId(N.LocalComponent);
+    if(!Component||Component->GetPublishedSimulationStableId()!=N.LocalComponent
+        ||N.LocalComponentGeneration!=N.LocalComponent
+        ||Component->GetCanonicalRequestedBodyGeneration()!=N.LocalBodyGeneration
+        ||!Component->CanAdmitCanonicalRequestedInput())return nullptr;
+    // The separate complete-context game comparison happens after IAS has
+    // resolved the actual host, configuration, clock and this native mapping.
+    return Component;
+}
+
+bool USpeedWorldSubsystem::ValidateRequestedNetworkBindings(const Speed::Input::V2::FInputRegistryView& View) const
+{
+    if(View.Terminal)return false;
+    for(const auto& Binding:View.Bindings)if(Binding.Network&&!ValidateRequestedNetworkBinding(Binding))return false;
+    return true;
+}
+
+bool USpeedWorldSubsystem::ClaimRequestedNetworkBindingV2(const Speed::Input::V2::FSessionDescriptor& D,const std::shared_ptr<const Speed::Input::V2::FNativeRequestedBindingV2>& B)
+{
+    if(bCanonicalFrameActive||!B||!B->OnOwner()||!D.Network||!(*D.Network==B->Mapping())
+        ||!ResolveRequestedPreparationMappingV2(D))return false;
+    auto* Component=SimulationWorld.FindAdapterByStableId(D.Network->LocalComponent);
+    return Component&&Component->ClaimCanonicalRequestedInputV2(B);
+}
+bool USpeedWorldSubsystem::RetireRequestedNetworkBindingV2(const Speed::Input::V2::FSessionDescriptor& D,const std::shared_ptr<const Speed::Input::V2::FNativeRequestedBindingV2>& B)
+{
+    if(bCanonicalFrameActive||!B||!B->OnOwner()||!D.Network||!(*D.Network==B->Mapping()))return false;
+    auto* Component=SimulationWorld.FindAdapterByStableId(D.Network->LocalComponent);
+    // A removed body has no remaining adapter input to cancel. Never remove,
+    // freeze, replace or acquire the physical body as part of stream retirement.
+    return !Component||Component->RetireCanonicalRequestedInputV2(B);
+}
+bool USpeedWorldSubsystem::ValidateRequestedNetworkBindingForFrameV2(const Speed::Input::V2::FSessionDescriptor& D,const std::shared_ptr<const Speed::Input::V2::FNativeRequestedBindingV2>& B)const
+{
+    if(!B||!B->OnOwner()||!D.Network||!(*D.Network==B->Mapping())||!B->Source()->IsOpen())return false;
+    const auto* Component=SimulationWorld.FindAdapterByStableId(D.Network->LocalComponent);
+    return Component&&Component->GetPublishedSimulationStableId()==D.Network->LocalComponent
+        &&D.Network->LocalComponentGeneration==D.Network->LocalComponent
+        &&Component->GetCanonicalRequestedBodyGeneration()==D.Network->LocalBodyGeneration
+        &&Component->OwnsCanonicalRequestedInputV2(B);
+}
+
 bool USpeedWorldSubsystem::InstallCanonicalInputs(const Speed::Input::V2::FRegistryFrame& Frame)
 {
 	if (!bCanonicalFrameActive || !Frame.Registry || Frame.Registry->Terminal) return false;
 	// Resolve every identity before the first install. Stable ids are monotonic
 	// for this world lifetime; generation equals that non-reused registration id.
-	TArray<TPair<ISpeedComponent*, std::shared_ptr<const Speed::Input::V2::FOwnerInputSnapshot>>, TInlineAllocator<16>> Installs;
+    struct FInstall
+    {
+        ISpeedComponent* Component=nullptr;
+        std::shared_ptr<const Speed::Input::V2::FOwnerInputSnapshot> Original;
+        std::shared_ptr<const Speed::Input::V2::FRequestedInputConsumption> Requested;
+        std::shared_ptr<const Speed::Input::V2::FNativeRequestedBindingV2> NativeV2;
+    };
+    TArray<FInstall,TInlineAllocator<16>> Installs;TSet<uint64> Targets;
 	for (const auto& Session : Frame.Inputs)
 	{
-		if (!Session.Snapshot || Session.Snapshot->Input.GetData().ConsumptionFrame != Frame.Frame) return false;
+        if(bool(Session.Snapshot)==bool(Session.Requested))return false;
+        if(Session.Requested)
+        {
+            const auto D=std::find_if(Frame.Registry->Bindings.begin(),Frame.Registry->Bindings.end(),[&](const auto& B)
+                {return B.Id==Session.Session&&B.Epoch==Session.Epoch;});
+            const auto& R=*Session.Requested;
+            if(D==Frame.Registry->Bindings.end()||!Session.RequestedMapping||!D->Network||!R.Request
+                ||R.Request->GetState().Frame!=Frame.Frame||R.Cutoff.SourceGeneration!=D->Network->SourceGeneration
+                ||!R.Request->GetContract()||R.Request->GetContract()->GetFingerprint()!=D->Contract->GetFingerprint()
+                ||Session.Actors!=D->Actors||Session.AlreadyAppliedAtInitialBoundary||!Session.FilterBefore
+                ||*Session.FilterBefore!=R.BeforeProcessing)return false;
+            if(D->Network->Version==2)
+            {
+                if(!Frame.NativeV2||!Frame.NativeV2->OnOwner()||Frame.NativeV2->Frame()!=Frame.Frame||!Session.NativeV2
+                    ||Frame.NativeV2->Find(Session.Session,Session.Epoch)!=Session.NativeV2
+                    ||!ValidateRequestedNetworkBindingForFrameV2(*D,Session.NativeV2))return false;
+            }
+            else if(Session.NativeV2||!ValidateRequestedNetworkBinding(*D))return false;
+            // Canonical identity and local locator must match the captured
+            // installed mapping, not a newer registry or network packet.
+            if(!(*D->Network==*Session.RequestedMapping))return false;
+        }
+        else if(Session.RequestedMapping||Session.Snapshot->Input.GetData().ConsumptionFrame!=Frame.Frame)return false;
 		for (const auto& Actor : Session.Actors)
 		{
 			ISpeedComponent* Match = nullptr;
 			for (ISpeedComponent* Component : SimulationWorld.GetOrderedAdapters())
 				if (Component && Component->GetPublishedSimulationStableId() == Actor.Id) { Match = Component; break; }
-			if (!Match || Actor.Generation != Actor.Id) return false;
-			Installs.Emplace(Match, Session.Snapshot);
+			if (!Match || Actor.Generation != Actor.Id || Targets.Contains(Actor.Id)) return false;
+            Targets.Add(Actor.Id);Installs.Add({Match,Session.Snapshot,Session.Requested,Session.NativeV2});
 		}
 	}
 	for (const auto& Install : Installs)
     {
-        Speed::PreparationPrefix::FEffectScope effect(Speed::PreparationPrefix::EEffect::InstallOwnerInput,Install.Key);
-        const bool installed=Install.Key->InstallCanonicalInput(Frame.Frame,Install.Value);
+        Speed::PreparationPrefix::FEffectScope effect(Speed::PreparationPrefix::EEffect::InstallOwnerInput,Install.Component);
+        const bool installed=Install.NativeV2?Install.Component->InstallCanonicalRequestedInputV2(Frame.Frame,Install.Requested,Install.NativeV2)
+            :Install.Requested?Install.Component->InstallCanonicalRequestedInput(Frame.Frame,Install.Requested)
+            :Install.Component->InstallCanonicalInput(Frame.Frame,Install.Original);
         effect.Returned(installed,installed);if(!installed)return false;
     }
 	return true;
@@ -2400,6 +2694,8 @@ bool USpeedWorldSubsystem::InspectBodyContactPairsForTesting(
 void USpeedWorldSubsystem::PrepareCanonicalFrame(
 	const FCanonicalFrameContext& Context)
 {
+    const auto Access = SimulationWorld.BorrowStorage();
+    if (!Access) throw std::logic_error("Canonical preparation during round preparation");
     Speed::PreparationPrefix::FEffectScope::VerifyStructuralBoundary();
 #if !UE_BUILD_SHIPPING
     const uint64 PreviousTestingFrame=TestingPreparingFrame;
@@ -2433,7 +2729,12 @@ void USpeedWorldSubsystem::PrepareCanonicalFrame(
                 Speed::PreparationPrefix::FEffectScope effect(Speed::PreparationPrefix::EEffect::PrepareOwner,Component,int32(bPrescribed));
                 Speed::PreparedExecution::FOrdinaryOwnerProbePhaseScope probes(
                     Speed::PreparedExecution::ENativeOwnerProbePhase::Prepare,*Component,Context.PhysicalDeltaTime);
-                if(!Speed::PreparedExecution::FCanonicalFramePreflight::DispatchNativePrepare(*Component,Context))Component->PrepareCanonicalFrame(Context);
+                if (!Speed::PreparedExecution::FCanonicalFramePreflight::DispatchNativePrepare(*Component, Context))
+                {
+                    const Speed::ExactNeutralDispatchDetail::FSelectionScope Dispatch(*this, Context.NumFrame,
+                        Speed::EExactNeutralDispatch::ActorPreGameplay, Component);
+                    Component->PrepareCanonicalFrame(Context);
+                }
                 probes.Returned();effect.Returned();
             }
 		}
@@ -2442,6 +2743,8 @@ void USpeedWorldSubsystem::PrepareCanonicalFrame(
 
 ECanonicalRunControlState USpeedWorldSubsystem::GetCanonicalRunControlState()
 {
+	const auto Access = SimulationWorld.BorrowStorage();
+	if (!Access) return ECanonicalRunControlState::WaitingForScenario;
 	ApplyPendingOps();
 	RebuildSortedIfNeeded();
 
@@ -2535,6 +2838,22 @@ void USpeedWorldSubsystem::NotifyCanonicalFramePublished(uint64 NumFrame)
 ECanonicalPublicationResult USpeedWorldSubsystem::PublishCanonicalFrame(uint64 Frame, TFunctionRef<bool()> Publish)
 {
 	return SimulationWorld.PublishCanonicalFrame(Frame, Publish);
+}
+
+void USpeedWorldSubsystem::RetireExactRoundWheeledHitCounts()
+{
+    // The exact driver still holds its canonical world borrow here. Use the
+    // registered solids and only retire the wheeled actor's slot-zero hitbox.
+    for (UBoxSubBody* Box : SimulationWorld.GetProjectionBoxes())
+    {
+        const auto Slot = SimulationWorld.FindStableSubBodyId(Box);
+        if (!Slot || (Slot & MAX_uint16) != 0) continue;
+        auto* Parent = Box->GetParentComponent();
+        const auto* Actor = Parent ? Parent->AsWheeledPhysicsComponent() : nullptr;
+        if (Actor && static_cast<const ISpeedComponent*>(Actor) == Parent &&
+            Actor->GetHitboxSubBodyForConfiguration() == Box)
+            Box->RetireFrameHitCounts();
+    }
 }
 
 bool USpeedWorldSubsystem::DispatchPostPrepareInitialPosition(const ASpeedPhysicsSimulation& host)
@@ -2693,6 +3012,8 @@ static void ObserveCcdPose(const USpeedWorldSubsystem* World, uint32 Frame, ECcd
 
 void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const unsigned int& Frame)
 {
+    const auto Access = SimulationWorld.BorrowStorage();
+    if (!Access) throw std::logic_error("Step requested during round preparation");
     if(StaticWorldPublicationDepth)throw std::runtime_error("HostedGT static World publication active");
     Speed::OnePausedWork::FCanonicalFrameWindowPtr window;
     const auto* currentProvider=SimulationWorld.GetStaticCollisionWorld();
@@ -3265,7 +3586,12 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
                 Frame, TimePassed, *Resolver, Hit.Hit);
 #endif
             PhysicalStep.BeginOrdinaryResponseCall(2);
-            if(!PhysicalStep.DispatchNativeResponse(2,*Resolver,Hit.Hit,SubDelta,SimTime))Resolver->ResolveCurrentHit(SubDelta, SimTime);
+            if (!PhysicalStep.DispatchNativeResponse(2, *Resolver, Hit.Hit, SubDelta, SimTime))
+            {
+                const Speed::ExactNeutralDispatchDetail::FSelectionScope Dispatch(*this, Frame,
+                    Speed::EExactNeutralDispatch::SensorBeginOverlap, Resolver);
+                Resolver->ResolveCurrentHit(SubDelta, SimTime);
+            }
             PhysicalStep.EndOrdinaryResponseCall(2);
 #if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
             Speed::CollisionMatrix042::FObserver::After(MatrixResolution042);
@@ -3402,7 +3728,12 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
         {
             Speed::PreparedExecution::FOrdinaryOwnerProbePhaseScope probes(
                 Speed::PreparedExecution::ENativeOwnerProbePhase::FinalPost,*Comp,Dt);
-            if(!PhysicalStep.DispatchNativeFinalOwner(*Comp,Dt,true))Comp->PostPhysicsUpdate(Dt);
+            if (!PhysicalStep.DispatchNativeFinalOwner(*Comp, Dt, true))
+            {
+                const Speed::ExactNeutralDispatchDetail::FSelectionScope Dispatch(*this, Frame,
+                    Speed::EExactNeutralDispatch::ActorPostPhysics, Comp);
+                Comp->PostPhysicsUpdate(Dt);
+            }
             probes.Returned();
         }
 #if !UE_BUILD_SHIPPING

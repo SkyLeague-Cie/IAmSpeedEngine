@@ -58,14 +58,16 @@ public:
 		// Freeze/Produce/Close window.
 		auto Admission = Journal->ReserveAcquisition();
 		const auto Ticket = Journal->BeginAcquisition();
+		const bool RoundResume = Journal->NeedsFreshRoundResume();
 		if (Journal->NeedsFreshResume() && !Source->RequestFreshRawReading())
 			return Neutralize(Ticket, ENeutralizeCause::FreshResumeReadRejected, ESinkReject::None);
         bool HadData=false,DesktopChosen=false,DesktopClaim=false;
         FGameInputDesktopSource::FPreparation DesktopPrepared;
         if(Desktop)
         {
-            DesktopPrepared=Desktop->Prepare(DesktopNeedsFresh||Journal->NeedsFreshResume());
-            auto Candidate=DesktopPrepared.Prepared?DesktopPrepared.Prepared->Inspect():LastDesktopPublication;
+            DesktopPrepared=Desktop->Prepare(DesktopNeedsFresh||Journal->NeedsFreshResume(),RoundResume);
+            auto Candidate=DesktopPrepared.Prepared?DesktopPrepared.Prepared->Inspect()
+                :(RoundResume?nullptr:LastDesktopPublication);
             if(DesktopPrepared.Status==FGameInputDesktopSource::EStatus::Unavailable
                 ||DesktopPrepared.Status==FGameInputDesktopSource::EStatus::Rejected)Candidate.reset();
             if(!Source->SetDesktopCandidate(Candidate,DesktopPrepared.Prepared&&DesktopPrepared.Prepared->MouseActivity()))
@@ -135,7 +137,7 @@ public:
             // publication proves activity, but is not a fresh public baseline.
             // Fetch real current SDK states after selection; never relabel it.
             const auto Decision=DesktopPrepared.Prepared?DesktopPrepared.Prepared->Inspect():LastDesktopPublication;
-            DesktopPrepared=Desktop->Prepare(true);
+            DesktopPrepared=Desktop->Prepare(true,RoundResume);
             if(!DesktopPrepared.Prepared||!DesktopPrepared.Prepared->Inspect()->RequiresLifecycleEnvelope)
             {
                 DesktopNeedsFresh=true;Source->SetDesktopCandidate({},false);

@@ -63,7 +63,7 @@ void ASpeedPhysicsSimulation::ObservePrivateInputStartup(EPrivateInputStartupObs
     const bool GlobalPaused = Speed::CanonicalFrameDriver::IsOwnedThreadPaused();
     const bool Admission = bInputSessionAdmissionRequested.Load();
     const bool Subsystem = SpeedWorldSubsystem != nullptr;
-    const bool Collision = Subsystem && SpeedWorldSubsystem->GetStaticCollisionWorld() != nullptr;
+    const bool Collision = Subsystem && SpeedWorldSubsystem->HasStaticCollisionWorld();
     const auto View = ReadInputRegistryView();
     const auto Receipt = ReadInputSessionReceipt(Entry->Command);
     const int32 ReceiptStatus = Receipt ? int32(Receipt->Status) : -1;

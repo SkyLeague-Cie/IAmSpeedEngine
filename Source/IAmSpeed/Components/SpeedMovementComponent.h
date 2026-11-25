@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 namespace Speed::Replay { class FFieldWriter; }
+namespace Speed { class FPreparedNativeKinematicFields; class FPreparedNativeRoundFields; }
 #include "GameFramework/MovementComponent.h"
 #include "ISpeedComponent.h"
 #include "Netcode/SpeedPhysicsComponent.h"
@@ -22,6 +23,8 @@ UCLASS()
 class IAMSPEED_API USpeedMovementComponent : public UMovementComponent, public ISpeedComponent
 {
 	GENERATED_BODY()
+    friend class Speed::FPreparedNativeKinematicFields;
+    friend class Speed::FPreparedNativeRoundFields;
 #if !UE_BUILD_SHIPPING
     friend struct Speed::FNativeBallMechanicalWitnessForTesting;
 #endif
@@ -51,6 +54,10 @@ public:
         Speed::FNativePrepareGTFields& Out,Speed::Analytic::Certified::FDistanceBudget& Budget,FString& Reason) const;
 
 	USpeedMovementComponent(const FObjectInitializer& ObjectInitializer);
+    /** GT, lifetime decision for this real mover and its own native sensor DSOs.
+     * Call before their first UE registration. A failed call proves nothing.
+     * A successful call is permanent and may be repeated for the same instance. */
+    bool SealPresentationOnlyBeforeRegistration();
 #if WITH_DEV_AUTOMATION_TESTS
 	/** Fixture-only control for an owned physical worker; UE keeps the underlying setter protected. */
 	void DisableAsyncPhysicsTickForTesting() { SetAsyncPhysicsTickEnabled(false); }
@@ -62,6 +69,9 @@ public:
 #endif
 	void InitNetwork();
 	/** Used to create any physics engine information for this component */
+	virtual void OnRegister() override;
+    void OnPreRegister() override;
+    void InitializeComponent() override;
 	virtual void OnCreatePhysicsState() override;
 	bool ShouldCreatePhysicsState() const override;
 	/** Used to shut down and physics engine structure for this component */
@@ -112,9 +122,19 @@ public:
 	void ApplyTestVelocity();
 
 	bool IsAffectedByGravity() const;
-	FVector GetNominalGravityAcceleration() const override { return bEnableGravity ? FVector(0, 0, GravityZ) : FVector::ZeroVector; }
+	FVector GetNominalGravityAcceleration() const override;
+	// Append the configuration consumed by the retained native owner.
+	bool AppendExactRoundMovementConfiguration(Speed::FExactRoundConfigurationWriter&) const;
+	UFUNCTION(BlueprintSetter, Category = "Base")
+	void SetMovementGravityEnabled(bool bEnabled);
 	void SetIsAffectedByGravity(bool value);
 	void EnableGravity();
+	UFUNCTION(BlueprintSetter, Category = "Base")
+	void SetMovementSimulationEnabled(bool bEnabled);
+	UFUNCTION(BlueprintSetter, Category = "Base")
+	void SetMovementGravityZ(float AccelerationZ);
+	UFUNCTION(BlueprintSetter, Category = "Base")
+	void SetMovementDamping(float Damping);
 	bool HasAuthority() const;
 	bool IsOwningClient() const;
 	bool IsRemoteClient() const;
@@ -214,17 +234,20 @@ public:
 	
 	//=========== Configuration parameters for the movement component ===========
 	// whether to enable the movement component (if false, the component will not perform any physics simulation and will not update its kinematic state)
-	UPROPERTY(BlueprintReadWrite, Category = Base, EditDefaultsOnly)
+	UPROPERTY(Category = Base, EditDefaultsOnly,
+		BlueprintSetter = SetMovementSimulationEnabled, Setter = SetMovementSimulationEnabled)
 	bool bEnableSimulation = true;
 	// Mass of the component in kg
 	UPROPERTY(BlueprintReadWrite, Category = Base, EditDefaultsOnly,
 		meta = (ClampMin = "0.0", UIMin = "0.0"))
 	float PhysMass = 100.0f;
 	// whether to apply gravity to the component
-	UPROPERTY(BlueprintReadWrite, Category = Base, EditDefaultsOnly)
+	UPROPERTY(Category = Base, EditDefaultsOnly,
+		BlueprintSetter = SetMovementGravityEnabled, Setter = SetMovementGravityEnabled)
 	bool bEnableGravity = true;
 	// gravity acceleration in cm/s^2 (negative value means gravity is pulling down)
-	UPROPERTY(BlueprintReadWrite, Category = Base, EditDefaultsOnly)
+	UPROPERTY(Category = Base, EditDefaultsOnly,
+		BlueprintSetter = SetMovementGravityZ, Setter = SetMovementGravityZ)
 	float GravityZ = -980.0f;
 	// max speed of the component in cm/s
 	UPROPERTY(BlueprintReadWrite, Category = Base, EditDefaultsOnly,
@@ -235,7 +258,8 @@ public:
 		meta = (ClampMin = "0.0", UIMin = "0.0"))
 	float PhysMaxAngularSpeed = 100.0f;
 	// damping factor of the component (0.0 means no damping, 1.0 means full damping)
-	UPROPERTY(BlueprintReadWrite, Category = Base, EditDefaultsOnly,
+	UPROPERTY(Category = Base, EditDefaultsOnly,
+		BlueprintSetter = SetMovementDamping, Setter = SetMovementDamping,
 		meta = (ClampMin = "0.0", ClampMax = "1.0", UIMin = "0.0", UIMax = "1.0"))
 	float PhysDamping = 0.0f;
 	// center of mass of the actor in local space (relative to the actor's origin)
@@ -297,6 +321,23 @@ public:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Netcode, meta = (AllowPrivateAccess = "true"))
 	TObjectPtr<UNetworkPhysicsSettingsComponent> SNetworkSettings = nullptr;
 private:
+	struct FExactRoundMovementConfiguration
+	{
+		uint64 WorkerGeneration = 0;
+		bool SimulationEnabled = false;
+		bool GravityEnabled = false;
+		float GravityAccelerationZ = 0.f;
+		float Damping = 0.f;
+	};
+	FExactRoundMovementConfiguration RetainedMovementConfiguration;
+	bool RetainExactRoundMovementConfiguration(uint64 WorkerGeneration, bool bAllowCapture) final;
+	const FExactRoundMovementConfiguration* ExactRoundMovementConfigurationForRead() const;
+	bool IsSimulationEnabledForPhysics() const;
+	bool IsGravityEnabledForPhysics() const;
+	float GravityAccelerationZForPhysics() const;
+	float MovementDampingForPhysics() const;
+	void ChangeMovementConfiguration(TFunctionRef<void()> Write);
+
 	//=========== Internal state variables for the movement component ===========
 #if !UE_BUILD_SHIPPING
 	bool bEpisodeTestingBeforeForces=false;

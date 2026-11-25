@@ -14,6 +14,12 @@ public:
     GameInputGamepadState Pad{};
     bool ValidMouse=true;
     unsigned KeyReads=0,MouseReads=0;
+    ComPtr<DesktopReading> Canonical;
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID Id,void** Out)override
+    {
+        if(Canonical&&Id==__uuidof(IUnknown))return Canonical->QueryInterface(Id,Out);
+        return FakeCom<IGameInputReading>::QueryInterface(Id,Out);
+    }
     GameInputKind STDMETHODCALLTYPE GetInputKind()override{return Kind;}
     std::uint64_t STDMETHODCALLTYPE GetTimestamp()override{return Stamp;}
     void STDMETHODCALLTYPE GetDevice(IGameInputDevice** Out)override{*Out=Device.Get();if(*Out)(*Out)->AddRef();}
@@ -45,6 +51,7 @@ public:
     std::mutex ReadGate;std::condition_variable ReadFinished;
     unsigned ReadingRunning=0;GameInputCallbackToken NextReadingToken=1;
     bool FailReadUnregister=false,FailReadRegister=false;
+    bool AliasHistoryReadings=false;
     std::atomic<bool> UnregisterWaiting{false};
     std::function<void()> DuringCurrent,BeforeReading;
     HRESULT STDMETHODCALLTYPE RegisterReadingCallback(IGameInputDevice* D,GameInputKind K,void* C,GameInputReadingCallback F,GameInputCallbackToken* T)override
@@ -64,12 +71,25 @@ public:
     HRESULT STDMETHODCALLTYPE GetNextReading(IGameInputReading* Before,GameInputKind K,IGameInputDevice* D,IGameInputReading** Out)override
     {
         ++ReadCalls;++NextCalls;std::lock_guard<std::mutex> Lock(ReadGate);*Out=nullptr;
+        ComPtr<IUnknown> Identity;
+        if(AliasHistoryReadings&&(!Before||FAILED(Before->QueryInterface(IID_PPV_ARGS(Identity.GetAddressOf())))))return E_UNEXPECTED;
         const auto& H=History[D];
-        for(std::size_t I=0;I<H.size();++I)if(H[I].Get()==Before)
+        for(std::size_t I=0;I<H.size();++I)if(H[I].Get()==Before||static_cast<IUnknown*>(H[I].Get())==Identity.Get())
         {
             if(I+1==H.size())return GAMEINPUT_E_READING_NOT_FOUND;
-            Check(bool(H[I+1]->Kind&K),"selected history preserves actual SDK kind");
-            *Out=H[I+1].Get();(*Out)->AddRef();return S_OK;
+            const auto& Next=H[I+1];
+            Check(bool(Next->Kind&K),"selected history preserves actual SDK kind");
+            if(AliasHistoryReadings)
+            {
+                ComPtr<DesktopReading> Alias;
+                Alias.Attach(new DesktopReading);
+                Alias->Canonical=Next;
+                Alias->Device=Next->Device;Alias->Kind=Next->Kind;Alias->Stamp=Next->Stamp;
+                Alias->Keys=Next->Keys;Alias->Mouse=Next->Mouse;Alias->Pad=Next->Pad;Alias->ValidMouse=Next->ValidMouse;
+                *Out=Alias.Detach();
+                return S_OK;
+            }
+            *Out=Next.Get();(*Out)->AddRef();return S_OK;
         }
         return GAMEINPUT_E_REFERENCE_READING_TOO_OLD;
     }

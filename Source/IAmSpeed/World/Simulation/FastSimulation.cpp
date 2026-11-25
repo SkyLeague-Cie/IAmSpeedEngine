@@ -275,7 +275,9 @@ ESimulationWorkerResult AFastSimulation::AdvanceSealedSimulation(
 			CanonicalNumFrame);
 		return ESimulationWorkerResult::Failed;
 	}
-	if (!RunCanonicalFrames(1u))
+	const auto FrameResult=RunCanonicalFramesWithControl(1u);
+    if(FrameResult.Control==ECanonicalFrameRunControl::NeedsOwnerBoundary)return ESimulationWorkerResult::NeedsOwnerBoundary;
+    if (FrameResult.Control!=ECanonicalFrameRunControl::Complete)
 	{
 #if !UE_BUILD_SHIPPING
         // Integer-only inspection: failed numeric context is NEVER repaired,

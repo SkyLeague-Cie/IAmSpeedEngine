@@ -22,6 +22,7 @@ class FGameInputDesktopSource final
         std::shared_ptr<FReader> Reader;
         V2::FDesktopFullObservation Observation;
         TComPtr<IUnknown> Identity;
+        TComPtr<FReading> RoundBaseline;
     };
 public:
     enum class EStatus {NoChange,Prepared,Unavailable,Rejected};
@@ -35,6 +36,7 @@ public:
         std::shared_ptr<const V2::FDesktopPublication> Publication;
         std::vector<FAccepted> Accepted;
         std::vector<std::uint64_t> Consumed;
+        std::optional<std::uint64_t> RoundArrivalFloor;
         bool Activity=false;
         FPrepared()=default;
     public:
@@ -55,20 +57,21 @@ public:
         return std::unique_ptr<FGameInputDesktopSource>(new FGameInputDesktopSource(Api,Discovery,ProducerSession));
     }
     ~FGameInputDesktopSource(){if(!Close())std::terminate();}
-    FPreparation Prepare(bool RequireFreshBaseline)
+    FPreparation Prepare(bool RequireFreshBaseline, bool RoundResume = false)
     {
         using namespace V2;
         if(!IsOwner()||Stopping||FPresentationInputScope::IsActive())return Fail(EStatus::Rejected,E_UNEXPECTED);
         auto Snapshot=Discovery->CaptureDesktop();
         if(!Snapshot)return Fail(EStatus::Rejected,Discovery->GetLastError());
         if(Snapshot->Devices.size()>FDesktopInputSource::MaxMembers)return Fail(EStatus::Rejected,E_OUTOFMEMORY);
-        if(RequireFreshBaseline)NeedsFresh=true;
+        if(RequireFreshBaseline||RoundResume)NeedsFresh=true;
         if(!SameCatalogue(*Snapshot))
         {
             if(!RefreshReaders(*Snapshot))return Fail(SetupStatus,LastError);
             Captured=*Snapshot;NeedsFresh=true;
         }
         std::vector<FQueued> Observed;
+        std::optional<std::uint64_t> RoundArrivalFloor;
         {
             std::lock_guard<std::mutex> Lock(Gate);
             if(CallbackInvalid)return Fail(EStatus::Rejected,E_UNEXPECTED);
@@ -80,12 +83,14 @@ public:
                 if(FAILED(I->Reading.As(&Identity)))return Fail(EStatus::Rejected,E_UNEXPECTED);
                 if(Seen(*I->Reader,Identity.Get()))I=Pending.erase(I);else ++I;
             }
-            Observed.assign(Pending.begin(),Pending.end());
+            if(RoundResume)RoundArrivalFloor=Arrival;
+            else Observed.assign(Pending.begin(),Pending.end());
         }
         const bool Fresh=NeedsFresh;
         if(!Fresh&&Observed.empty())return {};
         auto Result=std::unique_ptr<FPrepared>(new FPrepared);
         Result->Owner=this;Result->Registry=RegistryRevision;Result->Catalogue=*Snapshot;
+        Result->RoundArrivalFloor=RoundArrivalFloor;
         FDesktopBatch Batch;Batch.Mode=Fresh?EDesktopBatchMode::FreshBaseline:EDesktopBatchMode::Poll;
         Batch.RecoverOverflow=RecoverNotices;
         if(Fresh)
@@ -99,17 +104,21 @@ public:
                     const auto H=Api->GetCurrentReading(Kind(*R),R->Lease.Device.Get(),Reading.GetAddressOf());
                     if(H==GameInput::v3::GAMEINPUT_E_READING_NOT_FOUND)return {};
                     if(FAILED(H)||!Reading)return Fail(H==E_INVALIDARG||(SUCCEEDED(H)&&!Reading)?EStatus::Rejected:EStatus::Unavailable,FAILED(H)?H:E_UNEXPECTED);
-                    // Callbacks may arrive during the current snapshot. Their
-                    // earliest retained state, not the later current snapshot,
-                    // establishes baseline; later entries remain for next poll.
-                    std::lock_guard<std::mutex> Lock(Gate);
-                    if(CallbackInvalid)return Fail(EStatus::Rejected,E_UNEXPECTED);
-                    if(Overflow)return Fail(EStatus::Unavailable,E_BOUNDS);
-                    for(const auto& Q:Pending)if(Q.Reader==R)
-                    {Reading=Q.Reading;ObservedArrival=Q.Arrival;break;}
+                    // Ordinary fresh admission uses the earliest queued state.
+                    // A round resume uses the SDK current snapshot. Callbacks
+                    // are classified against that snapshot on the next poll.
+                    if(!RoundResume)
+                    {
+                        std::lock_guard<std::mutex> Lock(Gate);
+                        if(CallbackInvalid)return Fail(EStatus::Rejected,E_UNEXPECTED);
+                        if(Overflow)return Fail(EStatus::Unavailable,E_BOUNDS);
+                        for(const auto& Q:Pending)if(Q.Reader==R)
+                        {Reading=Q.Reading;ObservedArrival=Q.Arrival;break;}
+                    }
                 }
                 FAccepted A;const auto H=Decode(R,Reading.Get(),R->Sequence+1,A);
                 if(FAILED(H))return Fail(EStatus::Rejected,H);
+                if(RoundResume)A.RoundBaseline=Reading;
                 Batch.Observations.push_back(A.Observation);Result->Accepted.push_back(std::move(A));
                 if(ObservedArrival)Result->Consumed.push_back(ObservedArrival);
             }
@@ -119,7 +128,13 @@ public:
             for(const auto& Q:Observed)
             {
                 TComPtr<IUnknown> Identity;
-                if(FAILED(Q.Reading.As(&Identity)))return Fail(EStatus::Rejected,E_UNEXPECTED);
+                if(FAILED(Q.Reading.As(&Identity))||!Identity)return Fail(EStatus::Rejected,E_UNEXPECTED);
+                if(Q.Reader->RoundBaseline)
+                {
+                    const auto After=FollowsRoundBaseline(Q,Identity.Get());
+                    if(!After)return Fail(EStatus::Unavailable,E_BOUNDS);
+                    if(!*After){Result->Consumed.push_back(Q.Arrival);continue;}
+                }
                 bool Duplicate=Seen(*Q.Reader,Identity.Get());
                 std::uint64_t Sequence=Q.Reader->Sequence,Stamp=Q.Reader->Timestamp;
                 for(const auto& Before:Result->Accepted)if(Before.Reader==Q.Reader)
@@ -134,7 +149,13 @@ public:
                 if(FAILED(H)||A.Observation.OsTimestampUs<Stamp)return Fail(EStatus::Rejected,FAILED(H)?H:E_UNEXPECTED);
                 Batch.Observations.push_back(A.Observation);Result->Accepted.push_back(std::move(A));
             }
-            if(Batch.Observations.empty())return {};
+            if(Batch.Observations.empty())
+            {
+                // This prefix is already covered by a committed snapshot or
+                // accepted identity. There is no new publication to commit.
+                DiscardConsumed(Result->Consumed);
+                return {};
+            }
         }
         if(Fresh)std::sort(Batch.Observations.begin(),Batch.Observations.end(),
             [](const auto& A,const auto& B){return A.Source<B.Source;});
@@ -168,6 +189,7 @@ public:
             {
                 A.Reader->Sequence=A.Observation.LocalSequence;A.Reader->Timestamp=A.Observation.OsTimestampUs;
                 A.Reader->Admitted=true;
+                if(A.RoundBaseline)A.Reader->RoundBaseline=std::move(A.RoundBaseline);
                 if(!Seen(*A.Reader,A.Identity.Get()))
                 {
                     // Storage was reserved at reader creation. Erase only old
@@ -178,7 +200,10 @@ public:
             }
             for(auto I=Pending.begin();I!=Pending.end();)
             {
-                if(std::find(Prepared.Consumed.begin(),Prepared.Consumed.end(),I->Arrival)!=Prepared.Consumed.end())I=Pending.erase(I);else ++I;
+                if((Prepared.RoundArrivalFloor&&I->Arrival<=*Prepared.RoundArrivalFloor)
+                    ||std::find(Prepared.Consumed.begin(),Prepared.Consumed.end(),I->Arrival)!=Prepared.Consumed.end())
+                    I=Pending.erase(I);
+                else ++I;
             }
             NeedsFresh=false;RecoverNotices=false;Prepared.Owner=nullptr;return true;
         });
@@ -202,6 +227,7 @@ private:
         bool Registered=false,Stopped=false,Admitted=false;
         std::uint32_t MouseButtons=0;
         TComPtr<IUnknown> DeviceIdentity;
+        TComPtr<FReading> RoundBaseline;
         std::weak_ptr<FReader> Self;
         std::vector<TComPtr<IUnknown>> Seen;
     };
@@ -213,6 +239,39 @@ private:
     {return R.Source.Kind==V2::EDesktopSubsourceKind::Keyboard?GameInput::v3::GameInputKindKeyboard:GameInput::v3::GameInputKindMouse;}
     static bool Seen(const FReader& R,IUnknown* Identity)
     {for(const auto& I:R.Seen)if(I.Get()==Identity)return true;return false;}
+    void DiscardConsumed(const std::vector<std::uint64_t>& Consumed)
+    {
+        std::lock_guard<std::mutex> Lock(Gate);
+        for(auto I=Pending.begin();I!=Pending.end();)
+            if(std::find(Consumed.begin(),Consumed.end(),I->Arrival)!=Consumed.end())I=Pending.erase(I);else ++I;
+    }
+    std::optional<bool> FollowsRoundBaseline(const FQueued& Q,IUnknown* ReadingIdentity) const
+    {
+        const auto& Anchor=Q.Reader->RoundBaseline;
+        const auto Stamp=Q.Reading->GetTimestamp(), BaselineStamp=Anchor->GetTimestamp();
+        if(Stamp!=BaselineStamp)return Stamp>BaselineStamp;
+        // Distinct readings can share a timestamp. Only the SDK history can
+        // place such a reading before or after this exact retained snapshot.
+        // Callback and history interfaces can expose the same COM identity.
+        auto Cursor=Anchor;
+        TComPtr<IUnknown> CursorIdentity;
+        if(FAILED(Cursor.As(&CursorIdentity))||!CursorIdentity)return {};
+        if(CursorIdentity.Get()==ReadingIdentity)return false;
+        for(std::size_t I=0;I<QueueCapacity;++I)
+        {
+            TComPtr<FReading> Next;
+            const auto H=Api->GetNextReading(Cursor.Get(),Kind(*Q.Reader),Q.Reader->Lease.Device.Get(),Next.GetAddressOf());
+            if(H==GameInput::v3::GAMEINPUT_E_READING_NOT_FOUND)return false;
+            if(FAILED(H)||!Next||Next->GetTimestamp()<BaselineStamp)return {};
+            TComPtr<IUnknown> NextIdentity;
+            if(FAILED(Next.As(&NextIdentity))||!NextIdentity||NextIdentity==CursorIdentity)return {};
+            if(NextIdentity.Get()==ReadingIdentity)return true;
+            if(Next->GetTimestamp()>BaselineStamp)return false;
+            Cursor=std::move(Next);
+            CursorIdentity=std::move(NextIdentity);
+        }
+        return {};
+    }
     bool SameCatalogue(const FGameInputDiscovery::FDesktopSnapshot& S)const
     {
         if(S.Revision!=Captured.Revision||S.Devices.size()!=Readers.size())return false;

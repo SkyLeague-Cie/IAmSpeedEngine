@@ -173,7 +173,9 @@ ESimulationWorkerResult ARealTimeSimulation::DriveSimulation(
 #if !UE_BUILD_SHIPPING
     BeginIndependentRealTimeCoverage696();
 #endif
-    const bool bAdvanced = RunCanonicalFrames(1u);
+    const auto FrameResult=RunCanonicalFramesWithControl(1u);
+    if(FrameResult.Control==ECanonicalFrameRunControl::NeedsOwnerBoundary)return ESimulationWorkerResult::NeedsOwnerBoundary;
+    const bool bAdvanced=FrameResult.Control==ECanonicalFrameRunControl::Complete;
 #if !UE_BUILD_SHIPPING
     if (!bAdvanced) EndIndependentRealTimeCoverage696(false,TEXT("CanonicalFrameFailed"));
     else if (SpeedWorldSubsystem->InspectAdmittedCanonicalRunControlForTesting() ==
@@ -426,6 +428,13 @@ void ARealTimeSimulation::OnOwnedWorkerStarting()
 void ARealTimeSimulation::OnOwnedSimulationPaused()
 {
 	ResetFramePacing();
+}
+
+void ARealTimeSimulation::OnOwnedInputWaitEnded()
+{
+    // Input starvation is an admission wait, not physical simulation debt.
+    // Preserve the canonical frame and fixed delta; only discard wall-clock history.
+    ResetFramePacing();
 }
 
 void ARealTimeSimulation::OnOwnedSimulationResumed()

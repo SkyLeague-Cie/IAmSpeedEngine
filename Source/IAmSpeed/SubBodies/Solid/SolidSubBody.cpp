@@ -4,6 +4,8 @@
 #include "SolidSubBody.h"
 #include "IAmSpeed/Components/ISpeedComponent.h"
 #include "IAmSpeed/Base/PhysicalContactConstraint.h"
+#include "IAmSpeed/World/Simulation/ExactRoundContactSettings.h"
+#include "IAmSpeed/World/Subsystem/SpeedWorldSubsystem.h"
 #include "Configs/SubBodyConfig.h"
 #include "HAL/IConsoleManager.h"
 
@@ -14,6 +16,8 @@ static TAutoConsoleVariable<int32> CVarIAmSpeedAerialShotContactModel(
 
 bool USolidSubBody::IsAerialShotContactModelEnabled()
 {
+    if (const auto* RoundSettings = Speed::FScopedExactRoundContactSettings::Current())
+        return RoundSettings->AerialShotModel;
     return CVarIAmSpeedAerialShotContactModel.GetValueOnAnyThread() != 0;
 }
 
@@ -31,6 +35,19 @@ static TAutoConsoleVariable<float> CVarIAmSpeedSphereBoxManifoldFrictionOverride
     TEXT("p.IAmSpeed.Collision.SphereBoxManifoldFrictionOverride"),
     -1.0f,
     TEXT("Forces friction only for persistent sphere/box manifolds when >= 0. Negative values use subbody manifold overrides or ordinary sphere/box friction."));
+
+bool Speed::FExactRoundContactSettings::CaptureSolidSettings() noexcept
+{
+    const float Restitution = CVarIAmSpeedSphereBoxRestitutionOverride.GetValueOnAnyThread();
+    const float Friction = CVarIAmSpeedSphereBoxFrictionOverride.GetValueOnAnyThread();
+    const float ManifoldFriction = CVarIAmSpeedSphereBoxManifoldFrictionOverride.GetValueOnAnyThread();
+    if (!std::isfinite(Restitution) || !std::isfinite(Friction) || !std::isfinite(ManifoldFriction)) return false;
+    if (Restitution >= 0.f) SphereBoxRestitution = FMath::Clamp(Restitution, 0.f, 1.f);
+    if (Friction >= 0.f) SphereBoxFriction = Friction;
+    if (ManifoldFriction >= 0.f) SphereBoxManifoldFriction = ManifoldFriction;
+    AerialShotModel = CVarIAmSpeedAerialShotContactModel.GetValueOnAnyThread() != 0;
+    return true;
+}
 
 namespace
 {
@@ -53,6 +70,46 @@ namespace
 
         return FMath::Clamp(FallbackRestitution, 0.f, 1.f);
     }
+}
+
+bool USolidSubBody::AppendExactRoundSolidConfiguration(Speed::FExactRoundConfigurationWriter& Out) const
+{
+    // Foreign filters require a world identity before they can be encoded here.
+    constexpr int32 MaxSlots = 256;
+    constexpr int32 MaxIgnoredTypes = 32;
+    if (!ParentComponent) return false;
+    const auto& Slots = ParentComponent->GetSubBodies();
+    if (Slots.Num() > MaxSlots || AlwaysIgnoredComponents.Num() > Slots.Num() ||
+        IgnoredSubBodyTypes.Num() > MaxIgnoredTypes ||
+        !Out.Unsigned(0x494153534f4c0001ull) ||
+        !Out.Float(Mass) || !Out.Boolean(bIsMainSubBody) ||
+        !Out.Boolean(bApplyRestForce) || !Out.Boolean(EnableFakePhysics) ||
+        !Out.Boolean(bEnableConstraintOnSubBodyHit) ||
+        !Out.Float(Restitution) || !Out.Float(StaticFriction) || !Out.Float(DynamicFriction) ||
+        !Out.Float(SphereBoxRestitutionOverride) || !Out.Float(SphereBoxFrictionOverride) ||
+        !Out.Float(SphereBoxManifoldFrictionOverride) || !Out.Boolean(UsesAerialShotContactModel()) ||
+        !Out.Boolean(bUseCoupledContactImpulse) || !Out.Boolean(bUsePostNormalFrictionImpulse) ||
+        !Out.Boolean(bUsePersistentBilateralContact) ||
+        !Out.Float(CoupledContactMaxLinearSpeed) || !Out.Float(CoupledContactMaxAngularSpeed) ||
+        !Out.Float(CoupledContactMaxAbsLocalNormalY) ||
+        !Out.Float(ImpactThreshold) || !Out.Float(HitDamping) || !Out.Signed(idx)) return false;
+
+    for (const auto& InertiaRow : InvInertiaLocal.M)
+        for (const double Value : InertiaRow)
+            if (!Out.Double(Value)) return false;
+
+    if (!Out.Unsigned(AlwaysIgnoredComponents.Num())) return false;
+    for (const UPrimitiveComponent* Filter : AlwaysIgnoredComponents)
+    {
+        const int32 Slot = Slots.IndexOfByPredicate([Filter](const USSubBody* Body) { return Body == Filter; });
+        if (!Filter || !Slots.IsValidIndex(Slot) || Slots[Slot]->GetParentComponent() != ParentComponent ||
+            !Out.Unsigned(Slot)) return false;
+    }
+
+    if (!Out.Unsigned(IgnoredSubBodyTypes.Num())) return false;
+    for (const auto Type : IgnoredSubBodyTypes)
+        if (!Out.Unsigned(static_cast<uint8>(Type))) return false;
+    return true;
 }
 
 void USolidSubBody::Initialize(ISpeedComponent* InParentComponent)
@@ -85,9 +142,101 @@ void USolidSubBody::ApplyImpulse(const FVector& LinearImpulse, const FVector& Wo
 	}
 }
 
+void USolidSubBody::ChangeExactSolidSlotConfiguration(TFunctionRef<void()> Write)
+{
+    const auto Type = GetSubBodyType();
+    if ((Type != ESubBodyType::Sphere && Type != ESubBodyType::Hitbox) || IsTemplate() ||
+        (HasAnyFlags(RF_NeedInitialization) && !ParentComponent))
+    {
+        Write();
+        return;
+    }
+    if (!USpeedWorldSubsystem::TryWriteOwnedRoundConfiguration(*this, Write, this))
+        UE_LOG(LogTemp, Warning, TEXT("Solid slot configuration is retained by the exact round owner (%s)"), *GetName());
+}
+
+void USolidSubBody::SetMass(float InMass)
+{
+    ChangeExactSolidSlotConfiguration([this, InMass] { Mass = InMass; });
+}
+
+void USolidSubBody::SetIdx(int InIdx)
+{
+    ChangeExactSolidSlotConfiguration([this, InIdx] { idx = InIdx; });
+}
+
+void USolidSubBody::ChangeSolidContactConfiguration(TFunctionRef<void()> Write)
+{
+    if (!USpeedWorldSubsystem::TryWriteSolidContactConfiguration(*this, Write))
+    {
+        UE_LOG(LogTemp, Warning, TEXT("Solid contact configuration is sealed by the exact round owner (%s)"),
+            *GetName());
+    }
+}
+
 void USolidSubBody::SetSphereBoxRestitutionOverride(float InRestitution)
 {
-    SphereBoxRestitutionOverride = InRestitution < 0.f ? -1.f : FMath::Clamp(InRestitution, 0.f, 1.f);
+    ChangeSolidContactConfiguration([this, InRestitution]
+    {
+        SphereBoxRestitutionOverride = InRestitution < 0.f ? -1.f : FMath::Clamp(InRestitution, 0.f, 1.f);
+    });
+}
+
+void USolidSubBody::SetSphereBoxFrictionOverride(float InFriction)
+{
+    ChangeSolidContactConfiguration([this, InFriction]
+    {
+        SphereBoxFrictionOverride = InFriction < 0.0f ? -1.0f : InFriction;
+    });
+}
+
+void USolidSubBody::SetSphereBoxManifoldFrictionOverride(float InFriction)
+{
+    ChangeSolidContactConfiguration([this, InFriction]
+    {
+        SphereBoxManifoldFrictionOverride = InFriction < 0.0f ? -1.0f : InFriction;
+    });
+}
+
+void USolidSubBody::SetUseCoupledContactImpulse(bool bInEnabled)
+{
+    ChangeSolidContactConfiguration([this, bInEnabled]
+    {
+        bUseCoupledContactImpulse = bInEnabled;
+    });
+}
+
+void USolidSubBody::SetUsePostNormalFrictionImpulse(bool bInEnabled)
+{
+    ChangeSolidContactConfiguration([this, bInEnabled]
+    {
+        bUsePostNormalFrictionImpulse = bInEnabled;
+    });
+}
+
+void USolidSubBody::SetUsePersistentBilateralContact(bool bInEnabled)
+{
+    ChangeSolidContactConfiguration([this, bInEnabled]
+    {
+        bUsePersistentBilateralContact = bInEnabled;
+    });
+}
+
+void USolidSubBody::SetCoupledContactKinematicLimits(float MaxLinearSpeed, float MaxAngularSpeed)
+{
+    ChangeSolidContactConfiguration([this, MaxLinearSpeed, MaxAngularSpeed]
+    {
+        CoupledContactMaxLinearSpeed = MaxLinearSpeed;
+        CoupledContactMaxAngularSpeed = MaxAngularSpeed;
+    });
+}
+
+void USolidSubBody::SetCoupledContactMaxAbsLocalNormalY(float MaxAbsLocalNormalY)
+{
+    ChangeSolidContactConfiguration([this, MaxAbsLocalNormalY]
+    {
+        CoupledContactMaxAbsLocalNormalY = MaxAbsLocalNormalY;
+    });
 }
 
 void USolidSubBody::RegisterCurrentHitAsConstraint()
@@ -276,7 +425,9 @@ float USolidSubBody::ResolveSphereBoxFriction(
     const USolidSubBody& Box,
     float FallbackFriction)
 {
-    const float ForcedOverride = CVarIAmSpeedSphereBoxFrictionOverride.GetValueOnAnyThread();
+    const auto* RoundSettings = Speed::FScopedExactRoundContactSettings::Current();
+    const float ForcedOverride = RoundSettings ? RoundSettings->SphereBoxFriction.value_or(-1.f) :
+        CVarIAmSpeedSphereBoxFrictionOverride.GetValueOnAnyThread();
     if (ForcedOverride >= 0.0f)
     {
         return ForcedOverride;
@@ -295,7 +446,8 @@ float USolidSubBody::ResolveSphereBoxManifoldFriction(
     const USolidSubBody& Box,
     const float FallbackFriction)
 {
-    const float ForcedOverride =
+    const auto* RoundSettings = Speed::FScopedExactRoundContactSettings::Current();
+    const float ForcedOverride = RoundSettings ? RoundSettings->SphereBoxManifoldFriction.value_or(-1.f) :
         CVarIAmSpeedSphereBoxManifoldFrictionOverride.GetValueOnAnyThread();
     if (ForcedOverride >= 0.0f)
     {
@@ -313,7 +465,9 @@ float USolidSubBody::ResolveSphereBoxManifoldFriction(
 
 float USolidSubBody::ResolveSphereBoxRestitution(const USolidSubBody& Sphere, const USolidSubBody& Box, float FallbackRestitution)
 {
-    const float ForcedOverride = CVarIAmSpeedSphereBoxRestitutionOverride.GetValueOnAnyThread();
+    const auto* RoundSettings = Speed::FScopedExactRoundContactSettings::Current();
+    const float ForcedOverride = RoundSettings ? RoundSettings->SphereBoxRestitution.value_or(-1.f) :
+        CVarIAmSpeedSphereBoxRestitutionOverride.GetValueOnAnyThread();
     if (ForcedOverride >= 0.f)
     {
         return FMath::Clamp(ForcedOverride, 0.f, 1.f);

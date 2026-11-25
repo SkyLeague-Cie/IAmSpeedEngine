@@ -18,6 +18,7 @@ UCLASS(Abstract, ClassGroup = "Collision", editinlinenew, meta = (BlueprintSpawn
 class IAMSPEED_API USensorSubBody : public USSubBody
 {
     GENERATED_UCLASS_BODY()
+    friend class Speed::FPreparedNativeRoundFields;
 
 public:
 #if !UE_BUILD_SHIPPING
@@ -66,6 +67,8 @@ protected:
     FCollisionQueryParams BuildTraceParams() const override;
 	virtual void BindDelegates();
 	virtual void UnbindDelegates();
+    // Invoked at the continuous emission point in PostPhysicsUpdate.
+    virtual void DispatchContinuousOverlapOnOwner(UPrimitiveComponent& Other);
 protected:
     // Overlaps in strict begin order
     UPROPERTY()

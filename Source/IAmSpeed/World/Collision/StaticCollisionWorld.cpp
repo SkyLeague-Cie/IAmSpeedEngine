@@ -5,6 +5,8 @@
 #include "HAL/IConsoleManager.h"
 #include "IAmSpeed/World/Simulation/FrameParallelSettings.h"
 #include "IAmSpeed/World/Simulation/FrameSpeculationSafety1213.h"
+#include <bit>
+#include <cmath>
 #include <exception>
 #include <stdexcept>
 #if !UE_BUILD_SHIPPING
@@ -126,6 +128,134 @@ FAnalyticStaticCollisionWorld::FAnalyticStaticCollisionWorld(
         for (int32 Lane = 0; Lane < IndependentQueryLanes; ++Lane)
             IndependentQueryServices.Add(MakeUnique<Analytic::FWorldQueryService>(WorldData, 1, InMinimumFacetItems));
     }
+}
+
+namespace
+{
+class FExactRoundTensorDigest final
+{
+public:
+    // The scan admits at most 64 MiB of encoded scalar input and allocates no storage.
+    static constexpr uint32 MaxWords = 8 * 1024 * 1024;
+
+    bool Word(uint64 Value) noexcept
+    {
+        if (Words == MaxWords) return false;
+        ++Words;
+        for (unsigned Byte = 0; Byte < sizeof(Value); ++Byte)
+        {
+            Hash = (Hash ^ static_cast<uint8>(Value)) * 1099511628211ull;
+            Value >>= 8;
+        }
+        return true;
+    }
+
+    bool Integer(int32 Value) noexcept { return Word(static_cast<uint64>(Value)); }
+
+    bool Number(double Value) noexcept
+    {
+        return std::isfinite(Value) && Word(std::bit_cast<uint64>(Value));
+    }
+
+    bool Vector(const FVector3d& Value) noexcept
+    {
+        return Number(Value.X) && Number(Value.Y) && Number(Value.Z);
+    }
+
+    bool Bounds(const FBox3d& Value) noexcept
+    {
+        return Value.IsValid && Vector(Value.Min) && Vector(Value.Max);
+    }
+
+    bool Bvh(const TArray<Analytic::FTriangleBvhNode>& Nodes,
+        const TArray<int32>& Indices, int32 Items) noexcept
+    {
+        if (Items <= 0 || Nodes.IsEmpty() || Indices.Num() != Items || !Integer(Nodes.Num())) return false;
+        for (const auto& Node : Nodes)
+        {
+            if (!Bounds(Node.Bounds) || !Integer(Node.FirstIndex) || !Integer(Node.IndexCount) ||
+                !Integer(Node.LeftChild) || !Integer(Node.RightChild)) return false;
+        }
+        for (int32 Index : Indices)
+        {
+            if (Index < 0 || Index >= Items || !Integer(Index)) return false;
+        }
+        return true;
+    }
+
+    bool Approximation(const TArray<Analytic::FTensorBezierApproximationCell>& Cells,
+        const TArray<Analytic::FTriangleBvhNode>& Nodes, const TArray<int32>& Indices) noexcept
+    {
+        if (!Integer(Cells.Num())) return false;
+        for (const auto& Cell : Cells)
+        {
+            if (!Number(Cell.MinimumU) || !Number(Cell.MaximumU) || !Number(Cell.MinimumV) ||
+                !Number(Cell.MaximumV) || !Number(Cell.MaximumErrorCm)) return false;
+            for (const auto& Corner : Cell.Corners)
+                if (!Vector(Corner)) return false;
+            for (const auto Edges : Cell.PositiveConcaveEdges)
+                if (!Word(Edges)) return false;
+            for (const auto Edges : Cell.NegativeConcaveEdges)
+                if (!Word(Edges)) return false;
+        }
+        return Bvh(Nodes, Indices, Cells.Num());
+    }
+
+    uint64 Value() const noexcept { return Hash; }
+
+private:
+    uint64 Hash = 14695981039346656037ull;
+    uint32 Words = 0;
+};
+}
+
+std::optional<FExactRoundTensorGeometryWitness>
+FAnalyticStaticCollisionWorld::BuildExactRoundTensorGeometryWitness() const noexcept
+{
+    const auto Contract = GetNumericContract();
+    if (WorldData.SchemaVersion != Analytic::AnalyticWorldSchemaVersion ||
+        (Contract != Analytic::EAnalyticNumericContract::Unspecified &&
+         Contract != Analytic::EAnalyticNumericContract::Binary64NearestAllowFlush)) return {};
+
+    FExactRoundTensorDigest Digest;
+    constexpr auto Schema = FExactRoundTensorGeometryWitness::Schema;
+    if (!Digest.Word(0x49415354454e0000ull | Schema) || !Digest.Word(WorldData.SchemaVersion) ||
+        !Digest.Integer(WorldData.TensorBezierPatches.Num())) return {};
+
+    for (const auto& Patch : WorldData.TensorBezierPatches)
+    {
+        if (!Patch.bApproximationCertified || !Digest.Word(Patch.PrimitiveId) ||
+            !Digest.Bounds(Patch.Bounds) || !Digest.Number(Patch.MaximumApproximationErrorCm) ||
+            !Digest.Approximation(Patch.ApproximationCells,
+                Patch.ApproximationCellBvhNodes, Patch.ApproximationCellBvhIndices)) return {};
+    }
+
+    if (!Digest.Integer(WorldData.PiecewiseTensorBezierPatches.Num())) return {};
+    for (const auto& Patch : WorldData.PiecewiseTensorBezierPatches)
+    {
+        if (!Patch.bApproximationCertified || !Digest.Word(Patch.PrimitiveId) ||
+            !Digest.Bounds(Patch.Bounds) || !Digest.Number(Patch.MaximumApproximationErrorCm) ||
+            !Digest.Integer(Patch.Cells.Num())) return {};
+        for (const auto& Cell : Patch.Cells)
+        {
+            if (!Digest.Word(Cell.PrimitiveId) || !Digest.Bounds(Cell.Bounds) ||
+                !Digest.Number(Cell.MaximumApproximationErrorCm) ||
+                !Digest.Approximation(Cell.ApproximationCells,
+                    Cell.ApproximationCellBvhNodes, Cell.ApproximationCellBvhIndices)) return {};
+            for (const int32 Cone : Cell.InternalCornerNormalCone)
+                if (!Digest.Integer(Cone)) return {};
+        }
+        if (!Digest.Integer(Patch.InternalCornerNormalCones.Num())) return {};
+        for (const auto& Cone : Patch.InternalCornerNormalCones)
+        {
+            if (!Digest.Number(Cone.X) || !Digest.Number(Cone.Y) || !Digest.Number(Cone.Z) ||
+                !Digest.Number(Cone.W)) return {};
+        }
+        if (!Digest.Bvh(Patch.CellBvhNodes, Patch.CellBvhIndices, Patch.Cells.Num())) return {};
+    }
+
+    if (!Digest.Value()) return {};
+    return FExactRoundTensorGeometryWitness{Schema, WorldData.SchemaVersion, Digest.Value(), Contract};
 }
 
 bool FAnalyticStaticCollisionWorld::SweepIndependentBatch(

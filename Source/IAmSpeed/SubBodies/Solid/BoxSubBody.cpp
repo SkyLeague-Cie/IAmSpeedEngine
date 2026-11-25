@@ -23,6 +23,7 @@ void ObserveCallbackStage(uint32 stage,uint64 start);
 #include "IAmSpeed/World/Collision/PreparedSweepEvidence.h"
 #include "IAmSpeed/World/Collision/PreparedCanonicalStaticQueryService.h"
 #include "IAmSpeed/World/Simulation/OnePausedCanonicalWork.h"
+#include "IAmSpeed/World/Simulation/ExactRoundContactSettings.h"
 #include <stdexcept>
 #include "Engine/World.h"
 #include "PrimitiveViewRelevance.h"
@@ -98,6 +99,18 @@ TAutoConsoleVariable<int32> RoofBoxSupportRepublish(
     TEXT("p.IAmSpeed.Simulation.RoofBoxSupportRepublish"), 0,
     TEXT("Reuse matching positive support values during the Fox roof projection republication."));
 
+bool ReadRoofBoxSupportReuse()
+{
+    const auto* Settings = Speed::FScopedExactRoundContactSettings::Current();
+    return Settings ? Settings->BoxContact.RoofBoxSupportReuse : RoofBoxSupportReuse.GetValueOnAnyThread() == 1;
+}
+
+bool ReadRoofBoxSupportRepublish()
+{
+    const auto* Settings = Speed::FScopedExactRoundContactSettings::Current();
+    return Settings ? Settings->BoxContact.RoofBoxSupportRepublish : RoofBoxSupportRepublish.GetValueOnAnyThread() == 1;
+}
+
 bool RoofSupportObservationActive()
 {
     return RoofPostProfile::CallbackCurrent || RoofPostProfile::SupportCurrent;
@@ -163,8 +176,8 @@ namespace RoofPostProfile
 {
 bool SupportReuseRequested()
 {
-    return RoofBoxSupportReuse.GetValueOnAnyThread() == 1 ||
-        RoofBoxSupportRepublish.GetValueOnAnyThread() == 1;
+    return ReadRoofBoxSupportReuse() ||
+        ReadRoofBoxSupportRepublish();
 }
 }
 #endif
@@ -176,11 +189,17 @@ static TAutoConsoleVariable<float> CVarIAmSpeedBoxContactResponseTime(
  TEXT("Physical contact regularization horizon in seconds, independent of frame dt. Critical effective spring/damper CFM and positive-gap candidate closing bounds. 0 selects rigid contacts. No positional snapping or adjusted TOI."));
 
 
+bool UBoxSubBody::UsesPersistentFloorFrictionOnly() const
+{
+    return Speed::FScopedExactRoundContactSettings::Current() && HasRetainedExactSolidSlotConfiguration()
+        ? bRetainedPersistentFloorFrictionOnly : bPersistentFloorFrictionOnly;
+}
+
 float UBoxSubBody::GetStaticWorldContactFriction(const Speed::IStaticCollisionWorld* World, const FVector& Normal) const
 {
     // Only static analytical floor reactions use this policy. Pair/ball/other
     // object contacts keep the material coefficient and their existing path.
-    if (bPersistentFloorFrictionOnly && World && Normal.Z >= 0.999999 &&
+    if (UsesPersistentFloorFrictionOnly() && World && Normal.Z >= 0.999999 &&
         !HasContinuingFloorContact2778()) return 0.0f;
     return GetDynamicFriction();
 }
@@ -358,8 +377,57 @@ static TAutoConsoleVariable<float> CVarIAmSpeedGutterSlideMaxClimbBrakeDeltaCmS(
     40.0f,
     TEXT("Maximum uphill velocity removed per physics frame by the gutter climb-speed clamp, in cm/s."));
 
+void Speed::FExactRoundContactSettings::CaptureBoxContactSettings() noexcept
+{
+    BoxContact.CoupledSpeedLimits = CVarIAmSpeedCoupledContactSpeedLimits.GetValueOnAnyThread() != 0;
+    BoxContact.ContactResponseTime = CVarIAmSpeedBoxContactResponseTime.GetValueOnAnyThread();
+    BoxContact.InitialOverlapManifold = CVarIAmSpeedBoxInitialOverlapManifold.GetValueOnAnyThread() != 0;
+    BoxContact.SinglePointGroundCoupled = CVarSinglePointGroundCoupled.GetValueOnAnyThread() != 0;
+    BoxContact.RetireSeparatingOwnGroundConstraints = CVarRetireSeparatingOwnGroundConstraints.GetValueOnAnyThread() != 0;
+    BoxContact.SupportedTransitionResponse = CVarIAmSpeedBoxSupportedTransitionResponse.GetValueOnAnyThread() != 0;
+    BoxContact.DeferSupportedTransitionVelocityTransport = CVarIAmSpeedBoxDeferSupportedTransitionVelocityTransport.GetValueOnAnyThread() != 0;
+    BoxContact.RoofSlideSupportMinUpDot = CVarIAmSpeedRoofSlideSupportMinUpDot.GetValueOnAnyThread();
+    BoxContact.EdgeLatchFaceReleaseDot = CVarIAmSpeedEdgeLatchFaceReleaseDot.GetValueOnAnyThread();
+    BoxContact.FaceSupportContactEpsilonCm = CVarIAmSpeedFaceSupportContactEpsilonCm.GetValueOnAnyThread();
+    BoxContact.FaceSupportPenetrationTolCm = CVarIAmSpeedFaceSupportPenetrationTolCm.GetValueOnAnyThread();
+    BoxContact.FaceSupportSeparatingSpeedCmS = CVarIAmSpeedFaceSupportSeparatingSpeedCmS.GetValueOnAnyThread();
+    BoxContact.EdgeRecoverPenetrationTolCm = CVarIAmSpeedEdgeRecoverPenetrationTolCm.GetValueOnAnyThread();
+    BoxContact.EdgeRecoverSeparatingSpeedCmS = CVarIAmSpeedEdgeRecoverSeparatingSpeedCmS.GetValueOnAnyThread();
+    BoxContact.VertexSupportContactTolCm = CVarIAmSpeedVertexSupportContactTolCm.GetValueOnAnyThread();
+    BoxContact.VertexSupportSeparatingSpeedCmS = CVarIAmSpeedVertexSupportSeparatingSpeedCmS.GetValueOnAnyThread();
+    BoxContact.SoftWallDepenMaxNormalKillCmS = CVarIAmSpeedSoftWallDepenMaxNormalKillCmS.GetValueOnAnyThread();
+    BoxContact.GutterDepenMaxUpDeltaCmS = CVarIAmSpeedGutterDepenMaxUpDeltaCmS.GetValueOnAnyThread();
+    BoxContact.NearGutterVerticalDepenMaxNormalKillCmS = CVarIAmSpeedNearGutterVerticalDepenMaxNormalKillCmS.GetValueOnAnyThread();
+    BoxContact.GutterSlideDamping = CVarIAmSpeedGutterSlideDamping.GetValueOnAnyThread();
+    BoxContact.GutterSlideCrossDamping = CVarIAmSpeedGutterSlideCrossDamping.GetValueOnAnyThread();
+    BoxContact.GutterSlideMaxDeltaCmS = CVarIAmSpeedGutterSlideMaxDeltaCmS.GetValueOnAnyThread();
+    BoxContact.GutterSlideMinSpeedCmS = CVarIAmSpeedGutterSlideMinSpeedCmS.GetValueOnAnyThread();
+    BoxContact.GutterSlideMaxClimbSpeedCmS = CVarIAmSpeedGutterSlideMaxClimbSpeedCmS.GetValueOnAnyThread();
+    BoxContact.GutterSlideMaxClimbBrakeDeltaCmS = CVarIAmSpeedGutterSlideMaxClimbBrakeDeltaCmS.GetValueOnAnyThread();
+#if !UE_BUILD_SHIPPING
+    BoxContact.RoofBoxSupportReuse = RoofBoxSupportReuse.GetValueOnAnyThread() == 1;
+    BoxContact.RoofBoxSupportRepublish = RoofBoxSupportRepublish.GetValueOnAnyThread() == 1;
+#endif
+}
+
 namespace
 {
+    using FBoxSettings = Speed::FExactRoundBoxContactSettings;
+
+    float ReadBoxContact(float FBoxSettings::* Field,
+        const TAutoConsoleVariable<float>& Live)
+    {
+        const auto* Settings = Speed::FScopedExactRoundContactSettings::Current();
+        return Settings ? Settings->BoxContact.*Field : Live.GetValueOnAnyThread();
+    }
+
+    bool ReadBoxContact(bool FBoxSettings::* Field,
+        const TAutoConsoleVariable<int32>& Live)
+    {
+        const auto* Settings = Speed::FScopedExactRoundContactSettings::Current();
+        return Settings ? Settings->BoxContact.*Field : Live.GetValueOnAnyThread() != 0;
+    }
+
     // Stadium gutter seams can leave the roof unsupported for several 300 Hz frames.
     constexpr int32 RoofSurfaceTraversalGraceFrames = 60;
 
@@ -381,7 +449,8 @@ namespace
             return;
         }
 
-        const float Damping = CVarIAmSpeedGutterSlideDamping.GetValueOnAnyThread();
+        const float Damping = ReadBoxContact(&FBoxSettings::GutterSlideDamping,
+            CVarIAmSpeedGutterSlideDamping);
         const FVector N = SupportNormal.GetSafeNormal();
         if (N.IsNearlyZero())
         {
@@ -391,7 +460,8 @@ namespace
         const FVector V = ParentComponent->GetPhysCOMVelocity();
         const FVector VT = V - FVector::DotProduct(V, N) * N;
         const float TangentSpeed = VT.Size();
-        const float MinSpeed = FMath::Max(0.f, CVarIAmSpeedGutterSlideMinSpeedCmS.GetValueOnAnyThread());
+        const float MinSpeed = FMath::Max(0.f, ReadBoxContact(&FBoxSettings::GutterSlideMinSpeedCmS,
+            CVarIAmSpeedGutterSlideMinSpeedCmS));
         FVector DeltaV = FVector::ZeroVector;
 
         if (Damping > 0.f && TangentSpeed > MinSpeed)
@@ -399,7 +469,8 @@ namespace
             const float Alpha = FMath::Clamp(1.f - FMath::Exp(-Damping * Dt), 0.f, 1.f);
             DeltaV = -Alpha * VT;
 
-            const float MaxDelta = CVarIAmSpeedGutterSlideMaxDeltaCmS.GetValueOnAnyThread();
+            const float MaxDelta = ReadBoxContact(&FBoxSettings::GutterSlideMaxDeltaCmS,
+            CVarIAmSpeedGutterSlideMaxDeltaCmS);
             if (MaxDelta > 0.f)
             {
                 DeltaV = DeltaV.GetClampedToMaxSize(MaxDelta);
@@ -407,9 +478,11 @@ namespace
         }
 
         FVector ClimbDeltaV = FVector::ZeroVector;
-        const float MaxClimbSpeed = CVarIAmSpeedGutterSlideMaxClimbSpeedCmS.GetValueOnAnyThread();
+        const float MaxClimbSpeed = ReadBoxContact(&FBoxSettings::GutterSlideMaxClimbSpeedCmS,
+            CVarIAmSpeedGutterSlideMaxClimbSpeedCmS);
         const float MaxClimbBrakeDelta =
-            FMath::Max(0.f, CVarIAmSpeedGutterSlideMaxClimbBrakeDeltaCmS.GetValueOnAnyThread());
+            FMath::Max(0.f, ReadBoxContact(&FBoxSettings::GutterSlideMaxClimbBrakeDeltaCmS,
+            CVarIAmSpeedGutterSlideMaxClimbBrakeDeltaCmS));
         const bool bGutterSlope = N.Z > 0.20f && N.Z < 0.98f;
         float ClimbSpeed = 0.f;
         if (MaxClimbSpeed > 0.f && MaxClimbBrakeDelta > 0.f && bGutterSlope)
@@ -427,7 +500,8 @@ namespace
 
                 const FVector CrossGutter = FVector::CrossProduct(N, Uphill).GetSafeNormal();
                 const float CrossDamping =
-                    FMath::Max(0.f, CVarIAmSpeedGutterSlideCrossDamping.GetValueOnAnyThread());
+                    FMath::Max(0.f, ReadBoxContact(&FBoxSettings::GutterSlideCrossDamping,
+            CVarIAmSpeedGutterSlideCrossDamping));
                 if (!CrossGutter.IsNearlyZero() && CrossDamping > 0.f)
                 {
                     const float CrossSpeed = FVector::DotProduct(V, CrossGutter);
@@ -460,7 +534,8 @@ namespace
                 *DeltaV.ToString(),
                 *ClimbDeltaV.ToString(),
                 Damping,
-                CVarIAmSpeedGutterSlideMaxDeltaCmS.GetValueOnAnyThread(),
+                ReadBoxContact(&FBoxSettings::GutterSlideMaxDeltaCmS,
+            CVarIAmSpeedGutterSlideMaxDeltaCmS),
                 MaxClimbSpeed,
                 *V.ToString());
         }
@@ -634,6 +709,17 @@ UBoxSubBody::UBoxSubBody(const FObjectInitializer& ObjectInitializer):
 	SubBodyType = ESubBodyType::Hitbox;
     bUseEditorCompositing = true;
     BoxExtent = FVector(32.f, 32.f, 32.f);
+}
+
+bool UBoxSubBody::AppendExactRoundBoxConfiguration(Speed::FExactRoundConfigurationWriter& Out) const
+{
+    return GetSubBodyType() == ESubBodyType::Hitbox && Speed::FScopedExactRoundContactSettings::Current() &&
+        HasRetainedExactSolidSlotConfiguration() && AppendExactRoundSolidConfiguration(Out) &&
+        Out.Unsigned(0x494153424f580002ull) &&
+        Out.Double(BoxExtent.X) && Out.Double(BoxExtent.Y) && Out.Double(BoxExtent.Z) &&
+        Out.Float(MinSlopCm) && Out.Unsigned(MaxHitsPerComponentPerFrame) &&
+        Out.Boolean(UsesPersistentFloorFrictionOnly()) && Out.Boolean(bProductionNonpenetratingSphereContacts) &&
+        Out.Boolean(UsesNonclosingBoxBumpResponse());
 }
 
 void UBoxSubBody::Initialize(ISpeedComponent* InParentComponent)
@@ -889,7 +975,7 @@ bool UBoxSubBody::EvaluateStaticBoxSupport(const Speed::IStaticCollisionWorld& W
         // The projection can publish the four original witnesses again
         // when the full query and lexical context still match.
         if (BoxSupportSite == EBoxSupportSite::Republish &&
-            RoofBoxSupportRepublish.GetValueOnAnyThread() == 1 &&
+            ReadRoofBoxSupportRepublish() &&
             Query.bAuthorityOnly && Match.All() && PreviousBoxSupport.Accepted)
         {
             Speed::PreparedExecution::FNativePlanarResponseCommitScope::RequireQueriesClosed();
@@ -899,7 +985,7 @@ bool UBoxSubBody::EvaluateStaticBoxSupport(const Speed::IStaticCollisionWorld& W
             return true;
         }
         // The Check caller consumes only the Boolean.
-        if (BoxSupportSite == EBoxSupportSite::Check && RoofBoxSupportReuse.GetValueOnAnyThread() == 1 &&
+        if (BoxSupportSite == EBoxSupportSite::Check && ReadRoofBoxSupportReuse() &&
             Query.bAuthorityOnly && Match.All() && PreviousBoxSupport.Accepted)
         {
             Speed::PreparedExecution::FNativePlanarResponseCommitScope::RequireQueriesClosed();
@@ -1113,7 +1199,8 @@ bool UBoxSubBody::RefreshVariableNormalGroundSupport(const float Delta)
     // provider even though the previous-frame contact remains continuous.
     const float ProbeDistanceCm = FMath::Max(
         InitialOverlapShellCm,
-        FMath::Max(0.f, CVarIAmSpeedFaceSupportContactEpsilonCm.GetValueOnAnyThread()) +
+        FMath::Max(0.f, ReadBoxContact(&FBoxSettings::FaceSupportContactEpsilonCm,
+            CVarIAmSpeedFaceSupportContactEpsilonCm)) +
             FMath::Max(0.f, GroundHit.GeometricErrorBoundCm) +
             InitialOverlapShellCm + LinearTravelBoundCm + AngularTravelBoundCm);
     const FVector End = Start - PreviousNormal * ProbeDistanceCm;
@@ -1191,7 +1278,8 @@ bool UBoxSubBody::RequiresEstablishedStaticContactTransport() const
 		return false;
 	}
 
-	return CVarIAmSpeedBoxDeferSupportedTransitionVelocityTransport.GetValueOnAnyThread() == 0 ||
+	return !ReadBoxContact(&FBoxSettings::DeferSupportedTransitionVelocityTransport,
+            CVarIAmSpeedBoxDeferSupportedTransitionVelocityTransport) ||
 		!ParentComponent->HasCompatibleEstablishedStaticSupport(GroundHit);
 }
 
@@ -1686,7 +1774,8 @@ bool UBoxSubBody::ProjectEstablishedStaticContactImpl(
     }
     bool bVelocityProjected = false;
     const bool bDeferVelocityTransportToSubordinateSupport =
-		CVarIAmSpeedBoxDeferSupportedTransitionVelocityTransport.GetValueOnAnyThread() != 0 &&
+		ReadBoxContact(&FBoxSettings::DeferSupportedTransitionVelocityTransport,
+            CVarIAmSpeedBoxDeferSupportedTransitionVelocityTransport) &&
 		ParentComponent->HasCompatibleEstablishedStaticSupport(ProjectedHit);
     if (bProjectVelocity && NormalSpeed < 0.0f &&
 		!bDeferVelocityTransportToSubordinateSupport)
@@ -2292,7 +2381,8 @@ void UBoxSubBody::ResolveHitVsGround(const float& Dt)
     constexpr float DirectSupportUpDot = 0.97f;
     constexpr float CandidateSupportUpDot = 0.85f;
     const float RoofSlideSupportMinUpDot =
-        CVarIAmSpeedRoofSlideSupportMinUpDot.GetValueOnAnyThread();
+        ReadBoxContact(&FBoxSettings::RoofSlideSupportMinUpDot,
+            CVarIAmSpeedRoofSlideSupportMinUpDot);
 
     const bool bRoofSurfaceTraversalActive = HasRoofSurfaceTraversalSupport();
     const bool bSameRoofSurfaceComponent =
@@ -3284,7 +3374,8 @@ void UBoxSubBody::ResolveWallOrGutter(const float& Dt, const SHitResult& Hit)
         Hit.bStartPenetrating && Hit.PenetrationDepth > 0.f;
 
     const bool bSupportedStaticTransition =
-        CVarIAmSpeedBoxSupportedTransitionResponse.GetValueOnAnyThread() != 0 &&
+        ReadBoxContact(&FBoxSettings::SupportedTransitionResponse,
+            CVarIAmSpeedBoxSupportedTransitionResponse) &&
         ParentComponent->HasCompatibleEstablishedStaticSupport(Hit);
 
     const bool bSoftWall =
@@ -3509,9 +3600,11 @@ void UBoxSubBody::ResolveWallOrGutter(const float& Dt, const SHitResult& Hit)
 
                 if (bUseSoftWallResponse)
                 {
-                    float MaxNormalKill = CVarIAmSpeedSoftWallDepenMaxNormalKillCmS.GetValueOnAnyThread();
+                    float MaxNormalKill = ReadBoxContact(&FBoxSettings::SoftWallDepenMaxNormalKillCmS,
+            CVarIAmSpeedSoftWallDepenMaxNormalKillCmS);
                     const float NearVerticalMaxNormalKill =
-                        CVarIAmSpeedNearGutterVerticalDepenMaxNormalKillCmS.GetValueOnAnyThread();
+                        ReadBoxContact(&FBoxSettings::NearGutterVerticalDepenMaxNormalKillCmS,
+            CVarIAmSpeedNearGutterVerticalDepenMaxNormalKillCmS);
                     if (bIsNearGutterVerticalWall && NearVerticalMaxNormalKill > 0.f)
                     {
                         MaxNormalKill = FMath::Max(MaxNormalKill, NearVerticalMaxNormalKill);
@@ -3534,7 +3627,8 @@ void UBoxSubBody::ResolveWallOrGutter(const float& Dt, const SHitResult& Hit)
                     if (bCanInjectUpwardVelocity)
                     {
                         const float UpDelta = FVector::DotProduct(DepenVelocityDelta, FVector::UpVector);
-                        const float MaxUpDelta = CVarIAmSpeedGutterDepenMaxUpDeltaCmS.GetValueOnAnyThread();
+                        const float MaxUpDelta = ReadBoxContact(&FBoxSettings::GutterDepenMaxUpDeltaCmS,
+            CVarIAmSpeedGutterDepenMaxUpDeltaCmS);
                         if (MaxUpDelta > 0.f && UpDelta > MaxUpDelta)
                         {
                             DepenScale = FMath::Min(DepenScale, MaxUpDelta / UpDelta);
@@ -3595,7 +3689,8 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
     const FVector CenterWS = Kinematics.Location;
     const FQuat BoxRotWS = Kinematics.Rotation;
     const FVector Ext = BoxExtent;
-    const float FaceReleaseDot = FMath::Clamp(CVarIAmSpeedEdgeLatchFaceReleaseDot.GetValueOnAnyThread(), 0.0f, 1.0f);
+    const float FaceReleaseDot = FMath::Clamp(ReadBoxContact(&FBoxSettings::EdgeLatchFaceReleaseDot,
+            CVarIAmSpeedEdgeLatchFaceReleaseDot), 0.0f, 1.0f);
     const float FaceAlignmentAbs = IAmSpeedFindBestSupportFaceAlignment(N, BoxRotWS);
     const bool bNearlyFaceAligned = FaceAlignmentAbs >= FaceReleaseDot;
     const int32 CurrentFrame = ParentComponent->NumFrame();
@@ -3634,7 +3729,8 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
 
     TArray<FVector> ContactPtsWS;
     const float SupportContactEps = bNearlyFaceAligned
-        ? FMath::Max(0.5f, CVarIAmSpeedFaceSupportContactEpsilonCm.GetValueOnAnyThread())
+        ? FMath::Max(0.5f, ReadBoxContact(&FBoxSettings::FaceSupportContactEpsilonCm,
+            CVarIAmSpeedFaceSupportContactEpsilonCm))
         : 0.5f;
     BuildSupportManifoldFromNormal(N, CenterWS, BoxRotWS, Ext, ContactPtsWS, SupportContactEps);
     if (bRoofSurfaceTraversalActive && !bRoofFaceNearlyAligned)
@@ -3753,7 +3849,8 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
     }
 
     const float RoofSlideSupportMinUpDot =
-        CVarIAmSpeedRoofSlideSupportMinUpDot.GetValueOnAnyThread();
+        ReadBoxContact(&FBoxSettings::RoofSlideSupportMinUpDot,
+            CVarIAmSpeedRoofSlideSupportMinUpDot);
     const bool bUpsideDownRoofSlideSupport =
         bRoofFacingSurface &&
         (bRoofSurfaceTraversalActive ||
@@ -4124,7 +4221,8 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
                     }
                 }
             }
-            if (CVarSinglePointGroundCoupled.GetValueOnAnyThread() != 0 && NumC == 1)
+            if (ReadBoxContact(&FBoxSettings::SinglePointGroundCoupled,
+            CVarSinglePointGroundCoupled) && NumC == 1)
             {
                 // One actual contact and the existing material/restitution policy.
                 // Friction at an off-centre point alters normal velocity; solve
@@ -4146,7 +4244,8 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
                 }
             }
 
-            if (CVarRetireSeparatingOwnGroundConstraints.GetValueOnAnyThread() != 0 && NumC >= 3)
+            if (ReadBoxContact(&FBoxSettings::RetireSeparatingOwnGroundConstraints,
+            CVarRetireSeparatingOwnGroundConstraints) && NumC >= 3)
             {
                 // The owner projects impulse increments against cached point
                 // constraints. A separating point does not require that extra
@@ -4334,7 +4433,8 @@ void UBoxSubBody::ApplyPersistentSupportConstraint(const float& Dt)
     // This is key: it keeps 2+ points, so you don't pivot on the gutter edge.
     const SKinematic K = GetKinematicsFromOwner(ParentComponent->NumFrame());
     TArray<FVector> SupportPts;
-    const float FaceReleaseDot = FMath::Clamp(CVarIAmSpeedEdgeLatchFaceReleaseDot.GetValueOnAnyThread(), 0.0f, 1.0f);
+    const float FaceReleaseDot = FMath::Clamp(ReadBoxContact(&FBoxSettings::EdgeLatchFaceReleaseDot,
+            CVarIAmSpeedEdgeLatchFaceReleaseDot), 0.0f, 1.0f);
     const float FaceAlignmentAbs = IAmSpeedFindBestSupportFaceAlignment(N, K.Rotation);
     const bool bNearlyFaceAligned = FaceAlignmentAbs >= FaceReleaseDot;
 
@@ -4371,7 +4471,8 @@ void UBoxSubBody::ApplyPersistentSupportConstraint(const float& Dt)
     else
     {
         const float SupportContactEps = bNearlyFaceAligned
-            ? FMath::Max(0.75f, CVarIAmSpeedFaceSupportContactEpsilonCm.GetValueOnAnyThread())
+            ? FMath::Max(0.75f, ReadBoxContact(&FBoxSettings::FaceSupportContactEpsilonCm,
+            CVarIAmSpeedFaceSupportContactEpsilonCm))
             : 0.75f;
         BuildSupportManifoldFromNormal(
             N, K.Location, K.Rotation, BoxExtent, SupportPts, SupportContactEps
@@ -4616,7 +4717,8 @@ void UBoxSubBody::UpdatePersistentGroundContact(const float& Dt, const bool bDir
 
     const FVector N = GroundPlaneN.GetSafeNormal();
     const SKinematic K = GetKinematicsFromOwner(ParentComponent->NumFrame());
-    const float FaceReleaseDot = FMath::Clamp(CVarIAmSpeedEdgeLatchFaceReleaseDot.GetValueOnAnyThread(), 0.0f, 1.0f);
+    const float FaceReleaseDot = FMath::Clamp(ReadBoxContact(&FBoxSettings::EdgeLatchFaceReleaseDot,
+            CVarIAmSpeedEdgeLatchFaceReleaseDot), 0.0f, 1.0f);
     const float FaceAlignmentAbs = IAmSpeedFindBestSupportFaceAlignment(N, K.Rotation);
     const bool bNearlyFaceAligned = FaceAlignmentAbs >= FaceReleaseDot;
     const bool bEdgeRecoverCandidate =
@@ -4672,24 +4774,31 @@ void UBoxSubBody::UpdatePersistentGroundContact(const float& Dt, const bool bDir
     constexpr float PenTolReject = 2.5f;
     constexpr float SepVelTol = 3.0f;
     const float ActiveContactTol = bNearlyFaceAligned || bRoofSurfaceTraversalActive
-        ? FMath::Max(ContactTol, CVarIAmSpeedFaceSupportContactEpsilonCm.GetValueOnAnyThread())
+        ? FMath::Max(ContactTol, ReadBoxContact(&FBoxSettings::FaceSupportContactEpsilonCm,
+            CVarIAmSpeedFaceSupportContactEpsilonCm))
         : bVertexRecoverCandidate
-        ? FMath::Max(ContactTol, CVarIAmSpeedVertexSupportContactTolCm.GetValueOnAnyThread())
+        ? FMath::Max(ContactTol, ReadBoxContact(&FBoxSettings::VertexSupportContactTolCm,
+            CVarIAmSpeedVertexSupportContactTolCm))
         : ContactTol;
     const float ActivePenTolSupport = bNearlyFaceAligned || bRoofSurfaceTraversalActive
-        ? FMath::Max(PenTolSupport, CVarIAmSpeedFaceSupportPenetrationTolCm.GetValueOnAnyThread())
+        ? FMath::Max(PenTolSupport, ReadBoxContact(&FBoxSettings::FaceSupportPenetrationTolCm,
+            CVarIAmSpeedFaceSupportPenetrationTolCm))
         : bEdgeRecoverCandidate
-        ? FMath::Max(PenTolSupport, CVarIAmSpeedEdgeRecoverPenetrationTolCm.GetValueOnAnyThread())
+        ? FMath::Max(PenTolSupport, ReadBoxContact(&FBoxSettings::EdgeRecoverPenetrationTolCm,
+            CVarIAmSpeedEdgeRecoverPenetrationTolCm))
         : PenTolSupport;
     constexpr float RoofTraversalSeparatingSpeedTolerance = 20.f;
     const float ActiveSepVelTol = bRoofSurfaceTraversalActive
         ? FMath::Max(
             RoofTraversalSeparatingSpeedTolerance,
-            CVarIAmSpeedFaceSupportSeparatingSpeedCmS.GetValueOnAnyThread())
+            ReadBoxContact(&FBoxSettings::FaceSupportSeparatingSpeedCmS,
+            CVarIAmSpeedFaceSupportSeparatingSpeedCmS))
         : bNearlyFaceAligned
-        ? FMath::Max(SepVelTol, CVarIAmSpeedFaceSupportSeparatingSpeedCmS.GetValueOnAnyThread())
+        ? FMath::Max(SepVelTol, ReadBoxContact(&FBoxSettings::FaceSupportSeparatingSpeedCmS,
+            CVarIAmSpeedFaceSupportSeparatingSpeedCmS))
         : bEdgeRecoverCandidate
-        ? FMath::Max(SepVelTol, CVarIAmSpeedEdgeRecoverSeparatingSpeedCmS.GetValueOnAnyThread())
+        ? FMath::Max(SepVelTol, ReadBoxContact(&FBoxSettings::EdgeRecoverSeparatingSpeedCmS,
+            CVarIAmSpeedEdgeRecoverSeparatingSpeedCmS))
         : SepVelTol;
 
     // Native curved support is unilateral and finite. Its tangent plane can
@@ -4864,7 +4973,8 @@ void UBoxSubBody::UpdatePersistentGroundContact(const float& Dt, const bool bDir
     // otherwise tiny upward drift erases the single point before it can fall to
     // an edge or face.
     const float VertexSeparatingReleaseSpeed =
-        FMath::Max(0.5f, CVarIAmSpeedVertexSupportSeparatingSpeedCmS.GetValueOnAnyThread());
+        FMath::Max(0.5f, ReadBoxContact(&FBoxSettings::VertexSupportSeparatingSpeedCmS,
+            CVarIAmSpeedVertexSupportSeparatingSpeedCmS));
     const float SeparatingReleaseSpeed =
         (bNearlyFaceAligned || bRoofSurfaceTraversalActive) ? ActiveSepVelTol :
         bVertexRecoverCandidate ? VertexSeparatingReleaseSpeed :
@@ -4909,7 +5019,8 @@ void UBoxSubBody::UpdatePersistentGroundContact(const float& Dt, const bool bDir
 
     CurrentGroundContactsWS.Reset();
     const float ContactEps = bNearlyFaceAligned || bRoofSurfaceTraversalActive
-        ? FMath::Max(0.5f, CVarIAmSpeedFaceSupportContactEpsilonCm.GetValueOnAnyThread())
+        ? FMath::Max(0.5f, ReadBoxContact(&FBoxSettings::FaceSupportContactEpsilonCm,
+            CVarIAmSpeedFaceSupportContactEpsilonCm))
         : 0.5f;
 
     for (const FVector& V : Verts)
@@ -5446,11 +5557,14 @@ bool UBoxSubBody::TryResolveExactPlanarImpact(bool bNotifyImpact)
         MinimumGap = FMath::Min(MinimumGap, Gaps[Corner]);
     }
     const bool bInitialOverlapManifold = bNotifyImpact && CurrentHit.TOI == 0 && MinimumGap < -Roundoff
-        && CVarIAmSpeedBoxInitialOverlapManifold.GetValueOnAnyThread() != 0;
+        && ReadBoxContact(&FBoxSettings::InitialOverlapManifold,
+            CVarIAmSpeedBoxInitialOverlapManifold);
     FVector Points[4];
     double ContactGaps2996[4]={};
-    const bool Coupled2996=CVarIAmSpeedCoupledContactSpeedLimits.GetValueOnAnyThread()!=0;
-    double ResponseTime2996=Coupled2996 && bNotifyImpact ? FMath::Max(0.,double(CVarIAmSpeedBoxContactResponseTime.GetValueOnAnyThread())) : 0.;
+    const bool Coupled2996=ReadBoxContact(&FBoxSettings::CoupledSpeedLimits,
+            CVarIAmSpeedCoupledContactSpeedLimits);
+    double ResponseTime2996=Coupled2996 && bNotifyImpact ? FMath::Max(0.,double(ReadBoxContact(&FBoxSettings::ContactResponseTime,
+            CVarIAmSpeedBoxContactResponseTime))) : 0.;
     int32 Count = 0;
     Speed::Analytic::FWorldQuery Probe;
     Probe.Shape = Speed::Analytic::EQueryShape::Ray;
@@ -5891,7 +6005,8 @@ bool UBoxSubBody::HasRoofSurfaceTraversalSupport() const
     }
 
     const float SeparatingSpeedTolerance = FMath::Max(
-        20.0f, CVarIAmSpeedFaceSupportSeparatingSpeedCmS.GetValueOnAnyThread());
+        20.0f, ReadBoxContact(&FBoxSettings::FaceSupportSeparatingSpeedCmS,
+            CVarIAmSpeedFaceSupportSeparatingSpeedCmS));
     const float NearestPointNormalSpeed = FVector::DotProduct(K.Velocity, N);
     if (NearestPointNormalSpeed > SeparatingSpeedTolerance)
     {
@@ -5921,9 +6036,11 @@ bool UBoxSubBody::HasRoofSurfaceTraversalSupport() const
     }
 
     const float ContactTolerance = FMath::Max(
-        0.5f, CVarIAmSpeedFaceSupportContactEpsilonCm.GetValueOnAnyThread());
+        0.5f, ReadBoxContact(&FBoxSettings::FaceSupportContactEpsilonCm,
+            CVarIAmSpeedFaceSupportContactEpsilonCm));
     const float PenetrationTolerance = FMath::Max(
-        1.0f, CVarIAmSpeedFaceSupportPenetrationTolCm.GetValueOnAnyThread());
+        1.0f, ReadBoxContact(&FBoxSettings::FaceSupportPenetrationTolCm,
+            CVarIAmSpeedFaceSupportPenetrationTolCm));
     return MinDistance >= -PenetrationTolerance &&
         MinDistance <= ContactTolerance &&
         NearestPointNormalSpeed <= SeparatingSpeedTolerance;
@@ -6117,7 +6234,15 @@ float UBoxSubBody::GetSphereSeparation(
 
 void UBoxSubBody::SetBoxExtent(const FVector& InBoxExtent)
 {
-	BoxExtent = InBoxExtent.ComponentMax(FVector::ZeroVector);
+    ChangeExactSolidSlotConfiguration([this, InBoxExtent]
+    {
+        BoxExtent = InBoxExtent.ComponentMax(FVector::ZeroVector);
+    });
+}
+
+void UBoxSubBody::SetProductionNonpenetratingSphereContacts(bool bEnabled)
+{
+    ChangeExactSolidSlotConfiguration([this, bEnabled] { bProductionNonpenetratingSphereContacts = bEnabled; });
 }
 
 FCollisionShape UBoxSubBody::GetCollisionShape(float Inflation) const
@@ -6435,7 +6560,8 @@ bool UBoxSubBody::SolveEdgeSupportConstraint(
     if (bAllowTraversalTorque && !bIsInAutoRecover)
     {
         const float MaxSeparationSpeed =
-            FMath::Max(0.f, CVarIAmSpeedFaceSupportSeparatingSpeedCmS.GetValueOnAnyThread());
+            FMath::Max(0.f, ReadBoxContact(&FBoxSettings::FaceSupportSeparatingSpeedCmS,
+            CVarIAmSpeedFaceSupportSeparatingSpeedCmS));
         const float SeparationSpeed = FVector::DotProduct(ParentComponent->GetPhysCOMVelocity(), N);
         if (SeparationSpeed > MaxSeparationSpeed)
         {
