@@ -76,12 +76,30 @@ struct FEndpointBinding
 {
     U64 StableId = 0, Incarnation = 0, Actor = 0, ActorIncarnation = 0;
     U32 NativeObjectId = 0; // ONLY local lookup key; never sent as wire identity
+    bool operator==(const FEndpointBinding& B) const noexcept
+    {
+        return StableId == B.StableId && Incarnation == B.Incarnation && Actor == B.Actor
+            && ActorIncarnation == B.ActorIncarnation && NativeObjectId == B.NativeObjectId;
+    }
 };
 struct FActorSupplement
 {
     FActorBinding Binding;
     std::vector<Byte> MechanicalExtension, GameplayPayload;
 };
+struct FColdCarBump
+{
+    U64 Actor = 0, SourceVictim = 0;
+    std::uint16_t SourceFrames = 0;
+    bool operator==(const FColdCarBump& B) const noexcept
+    { return Actor == B.Actor && SourceVictim == B.SourceVictim && SourceFrames == B.SourceFrames; }
+};
+inline const FColdCarBump* FindColdCarBump(const std::vector<FColdCarBump>& Intents, U64 Actor) noexcept
+{
+    const auto I = std::lower_bound(Intents.begin(), Intents.end(), Actor,
+        [](const FColdCarBump& Entry, U64 Key) { return Entry.Actor < Key; });
+    return I != Intents.end() && I->Actor == Actor ? &*I : nullptr;
+}
 struct FRestoreEnvelope
 {
     // LOCAL preparation envelope. Endpoint NativeObjectId is resolved locally
@@ -92,6 +110,7 @@ struct FRestoreEnvelope
     std::vector<FActorSupplement> ActorSupplements; // same exact actor order
     U64 WorldSchema = 0, WorldCoverage = CompleteWorldCoverage;
     std::vector<Byte> WorldPayload;
+    std::vector<FColdCarBump> ColdCarBumps; // original F-1 values, sorted by actor
 };
 inline U64 HashSupplement(const FRestoreEnvelope& E) noexcept
 {
@@ -114,6 +133,12 @@ inline U64 HashSupplement(const FRestoreEnvelope& E) noexcept
     UInt(E.ActorSupplements.size(), 8); for (const auto& S : E.ActorSupplements)
     { Binding(S.Binding); Blob(S.MechanicalExtension); Blob(S.GameplayPayload); }
     UInt(E.WorldSchema, 8); UInt(E.WorldCoverage, 8); Blob(E.WorldPayload);
+    if (!E.ColdCarBumps.empty())
+    {
+        UInt(0x31504d5542524143ull, 8); UInt(E.ColdCarBumps.size(), 8);
+        for (const auto& B : E.ColdCarBumps)
+        { UInt(B.Actor, 8); UInt(B.SourceVictim, 8); UInt(B.SourceFrames, 2); }
+    }
     return H ? H : 1; // integrity only; not authentication
 }
 struct FLimits
@@ -187,18 +212,33 @@ inline bool ValidBindings(const std::vector<FActorBinding>& Actors,
         if (!E.StableId || !E.Incarnation || !E.Actor || !E.ActorIncarnation || !E.NativeObjectId
             || E.StableId <= Previous || !NativeIds.insert(E.NativeObjectId).second) return false;
         Previous = E.StableId;
-        bool Found = false;
-        for (const auto& B : Actors)
-            if (B.StableId == E.Actor && B.Incarnation == E.ActorIncarnation) { Found = true; break; }
-        if (!Found) return false;
+        const auto Actor = std::lower_bound(Actors.begin(), Actors.end(), E.Actor,
+            [](const FActorBinding& B, U64 Id) { return B.StableId < Id; });
+        if (Actor == Actors.end() || Actor->StableId != E.Actor || Actor->Incarnation != E.ActorIncarnation)
+            return false;
     }
     return true;
 }
-inline bool ValidEnvelope(const FRestoreEnvelope& E, const FLimits& Limits = {})
+inline bool ValidEnvelopeContents(const FRestoreEnvelope& E, const FLimits& Limits)
 {
-    if (!E.Address.Valid() || !ValidBindings(E.Actors, E.Endpoints, Limits)
+    if (!ValidBindings(E.Actors, E.Endpoints, Limits)
         || !E.WorldSchema || E.WorldCoverage != CompleteWorldCoverage
+        || E.ColdCarBumps.size() > E.Actors.size()
         || E.ActorSupplements.size() != E.Actors.size() || E.WorldPayload.size() > Limits.MaxPayload) return false;
+    const auto HasActor = [&E](U64 Id)
+    {
+        const auto I = std::lower_bound(E.Actors.begin(), E.Actors.end(), Id,
+            [](const FActorBinding& Entry, U64 Key) { return Entry.StableId < Key; });
+        return I != E.Actors.end() && I->StableId == Id;
+    };
+    U64 PreviousBumpActor = 0;
+    for (const auto& B : E.ColdCarBumps)
+    {
+        if (B.Actor <= PreviousBumpActor || B.Actor == B.SourceVictim || !HasActor(B.Actor)
+            || (B.SourceFrames == 0) != (B.SourceVictim == 0)
+            || (B.SourceVictim && !HasActor(B.SourceVictim))) return false;
+        PreviousBumpActor = B.Actor;
+    }
     std::size_t Bytes = E.WorldPayload.size();
     for (std::size_t I = 0; I < E.Actors.size(); ++I)
     {
@@ -210,26 +250,32 @@ inline bool ValidEnvelope(const FRestoreEnvelope& E, const FLimits& Limits = {})
         if (S.GameplayPayload.size() > Limits.MaxPayload - Bytes) return false;
         Bytes += S.GameplayPayload.size();
     }
-    return HashSupplement(E) == E.Address.SupplementHash;
+    return true;
 }
-inline std::optional<FParsedWorld> Parse(const Byte* Data, std::size_t Size,
-    const FAddress& Address, const std::vector<FActorBinding>& Bindings, const FLimits& Limits = {})
+inline bool ValidEnvelope(const FRestoreEnvelope& E, const FLimits& Limits = {})
 {
-    if (!Address.Valid() || !Data || Size < 32 || Size > Limits.MaxPayload
-        || HashBytes(Data, Size) != Address.StateHash || Bindings.empty() || Bindings.size() > Limits.MaxBodies) return {};
+    return E.Address.Valid() && ValidEnvelopeContents(E, Limits)
+        && HashSupplement(E) == E.Address.SupplementHash;
+}
+inline std::optional<FParsedWorld> ParseSnapshot(const Byte* Data, std::size_t Size, U64 Frame,
+    U64 InputHash, U64 StateHash, const std::vector<FActorBinding>& Bindings, const FLimits& Limits = {})
+{
+    if (Frame >= UINT32_MAX || !InputHash || !StateHash || !Data || Size < 32 || Size > Limits.MaxPayload
+        || HashBytes(Data, Size) != StateHash || Bindings.empty() || Bindings.size() > Limits.MaxBodies) return {};
     U64 Previous = 0;
     for (const auto& B : Bindings) { if (!B.Valid() || B.StableId <= Previous) return {}; Previous = B.StableId; }
-    FReader R(Data, Size); U64 V = 0, Count = 0; FParsedWorld Out; Out.StateHash = Address.StateHash;
-    if (!R.UInt(4, V) || V != Schema || !R.UInt(8, Out.Frame) || Out.Frame != Address.Frame
-        || !R.UInt(8, Out.InputHash) || Out.InputHash != Address.InputHash
+    FReader R(Data, Size); U64 V = 0, Count = 0; FParsedWorld Out; Out.StateHash = StateHash;
+    if (!R.UInt(4, V) || V != Schema || !R.UInt(8, Out.Frame) || Out.Frame != Frame
+        || !R.UInt(8, Out.InputHash) || Out.InputHash != InputHash
         || !R.UInt(4, Count) || Count != Bindings.size() || Count > R.Remaining() / BodyFixedBytes) return {};
     Out.Bodies.reserve(static_cast<std::size_t>(Count)); std::set<U64> SeenBodies;
     for (U64 I = 0; I < Count; ++I)
     {
         FBody B;
         if (!R.UInt(8, B.StableId) || !SeenBodies.insert(B.StableId).second) return {};
-        bool Known = false; for (const auto& E : Bindings) if (E.StableId == B.StableId) { Known = true; break; }
-        if (!Known) return {};
+        const auto Binding = std::lower_bound(Bindings.begin(), Bindings.end(), B.StableId,
+            [](const FActorBinding& Entry, U64 Id) { return Entry.StableId < Id; });
+        if (Binding == Bindings.end() || Binding->StableId != B.StableId) return {};
         for (auto& X : B.Kinematic) if (!R.Float(X)) return {};
         if (!R.UInt(1, V) || V > 1) return {}; B.Frozen = V != 0;
         if (!R.UInt(4, V) || V > Limits.MaxMechanicPayload || !R.Bytes(static_cast<std::size_t>(V), B.MechanicPayload)) return {};
@@ -256,6 +302,12 @@ inline std::optional<FParsedWorld> Parse(const Byte* Data, std::size_t Size,
     }
     return R.Remaining() == 0 ? std::optional<FParsedWorld>(std::move(Out)) : std::nullopt;
 }
+inline std::optional<FParsedWorld> Parse(const Byte* Data, std::size_t Size,
+    const FAddress& Address, const std::vector<FActorBinding>& Bindings, const FLimits& Limits = {})
+{
+    if (!Address.Valid()) return {};
+    return ParseSnapshot(Data, Size, Address.Frame, Address.InputHash, Address.StateHash, Bindings, Limits);
+}
 struct FContactIndexes
 {
     std::map<U64, std::size_t> Dynamic, Pending;
@@ -267,6 +319,12 @@ inline std::optional<FContactIndexes> BuildContactIndexes(const FParsedWorld& Wo
 {
     if (!ValidBindings(Actors, Endpoints, Limits) || World.Dynamic.size() > Limits.MaxPairs
         || World.Pending.size() > Limits.MaxPairs - World.Dynamic.size()) return {};
+    const auto FindEndpoint = [&Endpoints](U64 Id) -> const FEndpointBinding*
+    {
+        const auto Entry = std::lower_bound(Endpoints.begin(), Endpoints.end(), Id,
+            [](const FEndpointBinding& Endpoint, U64 Key) { return Endpoint.StableId < Key; });
+        return Entry != Endpoints.end() && Entry->StableId == Id ? &*Entry : nullptr;
+    };
     FContactIndexes Out; std::set<U64> Seen;
     for (const auto Item : {std::make_pair(&World.Dynamic, true), std::make_pair(&World.Pending, false)})
     {
@@ -275,8 +333,8 @@ inline std::optional<FContactIndexes> BuildContactIndexes(const FParsedWorld& Wo
         Keys.reserve(Item.first->size());
         for (const auto& P : *Item.first)
         {
-            const FEndpointBinding* A = nullptr; const FEndpointBinding* B = nullptr;
-            for (const auto& E : Endpoints) { if (E.StableId == P.A) A = &E; if (E.StableId == P.B) B = &E; }
+            const auto* A = FindEndpoint(P.A);
+            const auto* B = FindEndpoint(P.B);
             if (!A || !B || A == B || A->NativeObjectId == B->NativeObjectId) return {};
             const auto Low = A->NativeObjectId < B->NativeObjectId ? A->NativeObjectId : B->NativeObjectId;
             const auto High = A->NativeObjectId < B->NativeObjectId ? B->NativeObjectId : A->NativeObjectId;

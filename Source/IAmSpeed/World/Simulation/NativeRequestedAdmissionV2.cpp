@@ -6,7 +6,7 @@
 Speed::Input::V2::ECommandAdmission ASpeedPhysicsSimulation::SubmitRequestedNetworkInputSessionV2(Speed::FRequestedNetworkPreparationRequestV2 R)
 {
     using namespace Speed::Input::V2;
-    if(!NativeRequestedV2RuntimeQualified())return ECommandAdmission::Rejected;
+    if(ReplayStartupService.IsHolding()||!NativeRequestedV2RuntimeQualified())return ECommandAdmission::Rejected;
     if(!IsInGameThread()||!SupportsRequestedV2FrameControl()||!RequestedPreparationV2
         ||GetActiveExecutionMode()!=ESimulationExecutionMode::IAmSpeedThread||!bPublishCompletedWorldInput
         ||!CompletedPublicationSource||bInputOwnerRetired.Load()||bOwnedWorkerTerminal.Load()||bCanonicalPublicationTerminal.Load()
@@ -23,7 +23,7 @@ Speed::Input::V2::ECommandAdmission ASpeedPhysicsSimulation::SubmitRequestedNetw
     const Speed::Input::V2::FBoundaryCommandDescriptor& C)
 {
     using namespace Speed::Input::V2;
-    if(!NativeRequestedV2RuntimeQualified()||!IsInGameThread()||!C.NativeV2Control||!C.NativeV2Control->IsValid()
+    if(ReplayStartupService.IsHolding()||!NativeRequestedV2RuntimeQualified()||!IsInGameThread()||!C.NativeV2Control||!C.NativeV2Control->IsValid()
         ||C.Operation!=EBoundaryOperation::Detach||C.Binding.Network||C.Session!=C.NativeV2Control->Session
         ||C.Epoch!=C.NativeV2Control->Epoch||C.WorkerGeneration!=InputWorkerGeneration
         ||GetActiveExecutionMode()!=ESimulationExecutionMode::IAmSpeedThread||bInputOwnerRetired.Load()

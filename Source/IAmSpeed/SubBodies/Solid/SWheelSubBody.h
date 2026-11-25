@@ -8,6 +8,7 @@
 #include "SWheelSubBody.generated.h"
 
 namespace Speed::Analytic { struct FAnalyticPrefetchQuery1075; }
+namespace Speed { class FPreparedNativeRoundFields; }
 namespace Speed {struct FPreparedNativeOwnerBinding;struct FNativePrepareGTFields;namespace Analytic::Certified {struct FDistanceBudget;}}
 class ISpeedWheeledComponent;
 class UChaosVehicleWheel;
@@ -42,6 +43,9 @@ class IAMSPEED_API USWheelSubBody : public USphereSubBody
 #endif
 	
 public:
+    /** Appends solid, sphere and suspension configuration from this registered wheel and its live setup. */
+    bool AppendExactRoundWheelConfiguration(Speed::FExactRoundConfigurationWriter& Out) const;
+
 #if !UE_BUILD_SHIPPING
     /** Read-only, same-run owner-state witness; no UObject or array-header copy. */
     void AppendEpisodeStateForTesting(TArray<uint8>& Out) const override
@@ -145,6 +149,8 @@ public:
     void UpdatePhysicsState(const float& delta);
 
     // --- suspension methods ---
+    // Uses the calling thread's retained round policy, with the live policy outside that scope.
+    static bool ReadEffectiveJumpStateClampsNegativeForce() noexcept;
     virtual void UpdateSuspension(const float& delta);
     // sweep for suspension
     virtual void SweepSuspension(const float& delta);
@@ -233,6 +239,7 @@ public:
     void HandleTimers();
 private:
     friend class ISpeedWheeledComponent;
+    friend class Speed::FPreparedNativeRoundFields;
 
     struct FPrimarySuspensionMiss
     {

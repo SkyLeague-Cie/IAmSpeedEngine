@@ -6,6 +6,11 @@
 #include "IAmSpeed/Concurrency/AtomicSharedPtr.h"
 #include "GameFramework/Actor.h"
 #include "CanonicalFrameDriver.h"
+#include "ExactNeutralDispatch.h"
+#include "ExactRemoteRoundFence.h"
+#include "RollbackWorkerAudit.h"
+#include "ReplayStartupServiceGate.h"
+#include "WorldBorrowGate.h"
 #include "SimulationFrameJournal.h"
 #include "CompletedSimulationPublication.h"
 #include "NativeRequestedInputObservation.h"
@@ -27,10 +32,19 @@
 #include "SpeedSimulation.h"
 #include "SpeedPhysicsSimulation.generated.h"
 
-namespace Speed { class FHostedGTStaticWorldLease; namespace PreparationPrefix { class FClosedSourceProducer; } }
+namespace Speed
+{
+class FHostedGTStaticWorldLease;
+class FPreparedNativeRoundFields;
+class IExactRemoteRoundProvider;
+struct FExactRemoteRoundCommit;
+class FExactRoundHostHold;
+namespace PreparationPrefix { class FClosedSourceProducer; }
+}
 class USpeedWorldSubsystem;
 struct FCanonicalFrameContext;
 class ISpeedComponent;
+class USSubBody;
 
 struct FSimulationPresentationBinding
 {
@@ -54,6 +68,7 @@ class IAMSPEED_API ASpeedPhysicsSimulation : public ASpeedSimulation
 {
 	GENERATED_BODY()
     friend class Speed::FHostedGTStaticWorldLease;
+    friend class Speed::FPreparedNativeRoundFields;
     friend class Speed::PreparationPrefix::FClosedSourceProducer;
 #if WITH_DEV_AUTOMATION_TESTS
 	friend struct FLocalNormalCameraFixtureAccess;
@@ -91,6 +106,7 @@ public:
 
 	void BeginPlay() override;
 	void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
+    void BeginDestroy() override;
 	void Tick(float DeltaSeconds) override;
 	void AsyncPhysicsTickActor(float DeltaTime, float SimTime) override final;
 	void Simulate(const float& DeltaTime, const float& SimTime);
@@ -176,6 +192,26 @@ public:
     bool ConfigureExactRemoteInputHost(uint32 RequiredSessions);
     /** Explicit policy mode for original Device frames; no default activation or client-selected policy. */
     bool ConfigureOriginalDeviceRemoteInputHost(uint32 RequiredSessions, Speed::Input::V2::EExactRemoteAdmission Admission);
+    /** Dedicated ExactRemote only. Install after remote host configuration and before its worker starts. */
+    bool ConfigureExactRemoteRoundReset(std::shared_ptr<Speed::IExactRemoteRoundProvider>);
+    // At the entry to a GT teardown callback, before touching registered
+    // storage. A failed result never authorizes retirement of that storage.
+    bool JoinExactRemoteRoundBeforeStorageTeardown(uint64 ExpectedWorkerGeneration);
+    std::shared_ptr<const Speed::FExactRemoteRoundCommit> ReadExactRemoteRoundCommit() const;
+    std::shared_ptr<const Speed::FCompletedSimulationPublication> ReadExactRemoteRoundNeutralStep() const;
+    // Query at the synchronous callback with its zero-based canonical frame.
+    // Provide exactly one producer, the actor or the actual overlap sensor.
+    bool IsCurrentExactNeutralDispatch(const Speed::FWorldBorrowGate& HostGate,
+        uint64 WorkerGeneration, uint64 Frame, Speed::EExactNeutralDispatch Kind,
+        const ISpeedComponent* Actor, const USSubBody* Sensor = nullptr) const noexcept;
+    // Call from the original synchronous ActorPreGameplay callback before
+    // applying the rejected operation. A true result makes this F terminal.
+    bool RejectCurrentExactNeutralPreGameplay(const Speed::FWorldBorrowGate& HostGate,
+        uint64 WorkerGeneration, uint64 Frame, const ISpeedComponent* Actor) noexcept;
+    // Call from the original synchronous ActorPostPhysics callback before
+    // applying the rejected operation. A true result makes this F terminal.
+    bool RejectCurrentExactNeutralPostPhysics(const Speed::FWorldBorrowGate& HostGate,
+        uint64 WorkerGeneration, uint64 Frame, const ISpeedComponent* Actor) noexcept;
     Speed::Input::V2::ECommandAdmission SubmitRequestedNetworkInputSession(
         const Speed::Input::V2::FBoundaryCommandDescriptor& Command,
         std::shared_ptr<Speed::Netcode::FNetworkRequestedInputService> Service);
@@ -249,6 +285,13 @@ public:
     uint64 TryAcquireReplayStartupHoldBeforeBeginPlay();
     bool ReleaseReplayStartupHold(uint64 Token);
     bool IsReplayStartupHeld(uint64 Token) const;
+    // Opted-in original worker has returned from its pre-F0 input service.
+    // This witness remains usable during a park and does not grant a park.
+    bool HasAcknowledgedReplayStartupService(uint64 Token, uint64 WorkerGeneration) const noexcept;
+    // Success path under this generation's acknowledged park. Does not resume
+    // simulation or give back the park. Under the opt-in, the legacy release
+    // is reserved for cancellation and keeps the startup terminal.
+    bool ReleaseReplayStartupHoldAfterService(uint64 Token, uint64 WorkerGeneration);
     // Independent native prepared-world participant: neither borrows nor
     // releases Replay's pre-frame-zero startup token. Both holds must close.
     uint64 TryAcquireNativeFrameStartupHoldBeforeBeginPlay();
@@ -402,18 +445,45 @@ private:
 
 	void RefreshExecutionMode();
 	void TransitionExecutionMode(ESimulationExecutionMode NewMode);
+    void MaybeArmReplayStartupServiceOnGT();
+    bool MayStartServiceUnderReplayHoldOnGT() const;
+    bool AllowsReplayStartupPhysicalWork() const;
+    Speed::FReplayStartupServiceGate ReplayStartupService;
 	void StartOwnedWorkerIfReady();
 	void StopOwnedWorker();
 	ESimulationExecutionMode GetActiveExecutionMode() const;
 	float GetCanonicalPulseSimTime() const;
 	/** Applies at most one queued restore/replay transaction on the owning lane. */
 	bool ProcessPendingRollbackRequest();
+    Speed::RollbackAudit::FWindow* ReadOwnedRollbackAudit();
+    Speed::RollbackAudit::FWindow RollbackAudit;
 #if WITH_DEV_AUTOMATION_TESTS
     // Observation at the decision entry; tests may arrange bounded ingress races.
     TFunction<bool(uint64)> BeforeRollbackDecisionForTesting;
 #endif
 
 	ESimulationBoundaryResult ServiceInputSessionBoundary(bool bPauseRequested);
+	std::optional<ESimulationBoundaryResult> ServiceExactRemoteRoundBoundary(bool bPauseRequested);
+	ESimulationWorkerResult FinishExactRemoteRoundWork(ESimulationWorkerResult);
+	bool HasActiveExactRoundHostProtection() const noexcept;
+    const Speed::FExactRoundHostHold* ReadExactNeutralDispatchHold(uint64 Frame, bool bResimulation) const noexcept;
+    bool RejectCurrentExactNeutralActorDispatch(const Speed::FWorldBorrowGate& HostGate,
+        uint64 WorkerGeneration, uint64 Frame, Speed::EExactNeutralDispatch Kind, const ISpeedComponent* Actor) noexcept;
+	std::shared_ptr<Speed::IExactRemoteRoundProvider> ExactRemoteRoundProvider;
+	Speed::FExactRemoteRoundFence ExactRemoteRoundFence;
+	std::unique_ptr<Speed::FWorldBorrowGate::FReservation> ExactRemoteRoundStorage; // original worker only
+	// Written by the worker. The GT clears a terminal hold only after join.
+	std::shared_ptr<const Speed::FExactRoundHostHold> ExactRemoteRoundHostHold;
+	std::shared_ptr<const Speed::FExactRemoteRoundCommit> PublishedExactRemoteRound;
+	std::shared_ptr<const Speed::FCompletedSimulationPublication> PublishedRoundNeutralStep;
+	std::shared_ptr<const Speed::FCompletedSimulationPublication> PendingRoundNeutralStep; // original worker only
+	std::shared_ptr<const Speed::FExactRemoteRoundCommit> ActiveExactRemoteRound; // original worker only
+    struct FExactNeutralRejection
+    {
+        uint64 Frame;
+        Speed::EExactNeutralDispatch Kind;
+    };
+    std::optional<FExactNeutralRejection> RejectedExactNeutralFrame; // original worker only, terminal for this driver
 	void CloseInputSessionsOnWorker();
 	std::shared_ptr<Speed::Input::V2::FInputSessionCommands> InputSessionCommands;
 	std::unique_ptr<Speed::Input::V2::FInputSessionRegistry> InputSessionRegistry;

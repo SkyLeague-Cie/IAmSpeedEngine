@@ -6,7 +6,9 @@
 namespace Speed::Netcode
 {
 namespace V2 = Speed::Input::V2;
-enum class ERemoteSubmission { Accepted, Duplicate, Conflict, Invalid, Closed, Stale, TooFar };
+enum class ERemoteSubmission { Accepted, Duplicate, Conflict, Invalid, Closed, Stale, TooFar, WrongRound };
+
+class FExactRemoteInputIngress;
 
 // Candidate portable V2 producer. It preserves original source identity, never
 // relabels itself as AI/scenario/device, and DOES NOT bypass existing ExactRemote
@@ -38,6 +40,14 @@ public:
             if (P && P->GetData().ConsumptionFrame == N) return Same(*P, Frame) ? ERemoteSubmission::Duplicate : ERemoteSubmission::Conflict;
         if (Exhausted || N < Next) return ERemoteSubmission::Stale;
         if (N - Next >= Capacity) return ERemoteSubmission::TooFar;
+        if (FirstPlayingFrame && N == *FirstPlayingFrame)
+        {
+            const auto& Baseline = N == Next ? Last : Pending[(N - 1) % Capacity];
+            const auto& Data = Frame.GetData();
+            if (!Baseline || !Data.Reset || Data.SourceSequence <= Baseline->GetData().SourceSequence
+                || Data.DeviceGeneration.Value < Baseline->GetData().DeviceGeneration.Value)
+                return ERemoteSubmission::Invalid;
+        }
         Pending[N % Capacity] = std::move(Immutable);
         return ERemoteSubmission::Accepted;
     }
@@ -104,6 +114,7 @@ public:
         if (Good)
         {
             History[Next % Capacity] = Frozen; Last = Frozen; Pending[Next % Capacity].reset();
+            if (FirstPlayingFrame && *FirstPlayingFrame == Next) FirstPlayingFrame.reset();
             Exhausted = Next == UINT64_MAX; if (!Exhausted) ++Next;
         }
         else Quarantined = true;
@@ -127,7 +138,35 @@ public:
         return V2::ELifecycleResult::Applied;
     }
 private:
+    friend class FExactRemoteInputIngress;
     static constexpr std::size_t Capacity = 64;
+    using FFrameQueue = std::array<std::shared_ptr<const V2::FInputFrame>, Capacity>;
+
+    // Called only by the actual owner while the ingress gate excludes every
+    // transport writer. The previous consumed source cursor stays monotonic.
+    bool CanInstallRoundBaseline(Input::FFrameNumber Frame, const V2::FInputFrame& F) const
+    {
+        std::lock_guard<std::mutex> Lock(Gate);
+        const auto& Data = F.GetData();
+        for (const auto& Action : Contract->GetDescription().Actions)
+            if (Action.Wiring != V2::EActionWiring::Unwired && !Action.Accepts(0)) return false;
+        return IsOwner() && !Closed && !Quarantined && !Exhausted && !Frozen
+            && LeaseSerial != UINT64_MAX && Frame == Next && Frame != UINT64_MAX
+            && Data.ConsumptionFrame == Frame && Data.Reset && Data.Transitions.empty()
+            && Last && F.IsValidFor(*Contract) && Address(F) && Continuity(F);
+    }
+
+    void InstallRoundBaseline(const std::shared_ptr<const V2::FInputFrame>& Baseline,
+        FFrameQueue& RetiredPending, FFrameQueue& RetiredHistory) noexcept
+    {
+        // All Core operations belong to the owning thread or a transport
+        // holding the outer ingress gate. The reservation retains that gate.
+        Pending.swap(RetiredPending);
+        History.swap(RetiredHistory);
+        Pending[Next % Capacity] = Baseline;
+        FirstPlayingFrame = Next + 1;
+        Paused = false;
+    }
     FExactRemoteInputProducer(std::shared_ptr<const V2::FInputActionContract> C,
         V2::FStreamEpoch E, Input::FProducerIdentity I, Input::FFrameNumber N)
         : Contract(std::move(C)), Epoch(E), Identity(I), Next(N) {}
@@ -152,6 +191,7 @@ private:
     {
         const auto& D = F.GetData(); if (!Last) return D.Reset;
         const auto& Before = Last->GetData(); if (D.SourceSequence < Before.SourceSequence) return false;
+        if (FirstPlayingFrame && D.ConsumptionFrame == *FirstPlayingFrame && !D.Reset) return false;
         if (D.Reset) return D.DeviceGeneration.Value >= Before.DeviceGeneration.Value && D.SourceSequence > Before.SourceSequence;
         if (D.DeviceGeneration.Value != Before.DeviceGeneration.Value) return false;
         if (D.SourceSequence == Before.SourceSequence)
@@ -170,8 +210,9 @@ private:
     const Input::FProducerIdentity Identity;
     mutable std::mutex Gate;
     Input::FFrameNumber Next;
+    std::optional<Input::FFrameNumber> FirstPlayingFrame;
     std::optional<std::thread::id> Owner;
-    std::array<std::shared_ptr<const V2::FInputFrame>, Capacity> Pending{}, History{};
+    FFrameQueue Pending{}, History{};
     std::shared_ptr<const V2::FInputFrame> Last, Frozen;
     V2::FInputPollCutoff Cutoff;
     std::uint64_t LeaseSerial = 0;

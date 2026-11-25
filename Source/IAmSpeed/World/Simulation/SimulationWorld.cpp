@@ -14,6 +14,7 @@
 
 namespace
 {
+    std::atomic<uint64> NextExactRoundWorldIncarnation{1};
 	constexpr uint32 SimulationSnapshotSchemaVersion = 2;
 
 	template <typename T>
@@ -118,6 +119,8 @@ namespace Speed
   const USolidSubBody& Body,uint64 PreparingFrame,FBodyContactPairInspection& Out) const
  {
   Out=FBodyContactPairInspection();Out.PreparingFrame=PreparingFrame;
+  const auto Access=BorrowStorage();
+  if(!Access)return false;
   Out.CompletedStepFrame=CurrentStepFrame;Out.QueryObjectId=Body.GetUniqueID();
   Out.DynamicTotal=ContactStorage->DynamicContactPairs.Num();Out.PendingTotal=ContactStorage->PendingRollingContactPairs.Num();
   // This test query is only useful after at least one completed core step.
@@ -166,8 +169,11 @@ namespace Speed
 
 	bool FSimulationWorld::AddAdapter(ISpeedComponent& Adapter)
 	{
-		if (IsRestoreBoundaryReserved()) return false;
+		const auto Access = BorrowStorage();
+		if (!Access || StorageAccess.IsReservationOwner() || IsRestoreBoundaryReserved()) return false;
 		if (StableIds.Contains(&Adapter)) return false;
+        if (ExactRoundWorkerGeneration && NextStableId > (UINT64_MAX >> 16)) return false;
+        if (!Adapter.NativePhysicsUse.TryUseNative() || !Adapter.TryAdmitNativeSubBodies()) return false;
 		const uint64 StableId = NextStableId++;
 		Adapters.Add(&Adapter);
 		StableIds.Add(&Adapter, StableId);
@@ -177,9 +183,33 @@ namespace Speed
 		return true;
 	}
 
+    bool FSimulationWorld::RetireExactRoundStorageAfterJoin()
+    {
+        const FWorldBorrowGate::FReservation Reservation(StorageAccess);
+        if (!Reservation.Holds(StorageAccess) || IsRestoreBoundaryReserved() || RoundBuildBoundary)
+            return false;
+        const FWorldBorrowGate::FBorrow Owner(Reservation);
+        if (!Owner) return false;
+
+        for (auto* Adapter : Adapters)
+            if (Adapter) Adapter->PublishedSimulationStableId.Store(0);
+        Adapters.Reset();
+        StableIds.Reset();
+        AdaptersByStableId.Reset();
+        bOrderDirty = true;
+        RebuildOrderedAdapters();
+        ContactStorage->DynamicContactPairs.Reset();
+        ContactStorage->PendingRollingContactPairs.Reset();
+        ContactStorage->DynamicContactPairIndices.Reset();
+        ContactStorage->PendingRollingContactPairIndices.Reset();
+        ContactStorage->DynamicContactPairKeysByBody.Reset();
+        return true;
+    }
+
 	bool FSimulationWorld::RemoveAdapter(ISpeedComponent& Adapter)
 	{
-		if (IsRestoreBoundaryReserved()) return false;
+		const auto Access = BorrowStorage();
+		if (!Access || StorageAccess.IsReservationOwner() || IsRestoreBoundaryReserved()) return false;
 		const uint64 StableId = FindStableId(Adapter);
 		const int32 Removed = Adapters.Remove(&Adapter);
 		StableIds.Remove(&Adapter);
@@ -191,19 +221,89 @@ namespace Speed
 
 	bool FSimulationWorld::ContainsAdapter(const ISpeedComponent& Adapter) const
 	{
-		return StableIds.Contains(const_cast<ISpeedComponent*>(&Adapter));
+		const auto Access = BorrowStorage();
+		return (Access || StorageAccess.IsReservationOwner()) && StableIds.Contains(const_cast<ISpeedComponent*>(&Adapter));
 	}
+
+    uint64 FSimulationWorld::ReadExactRoundSubBodyIncarnation(uint64 StableId, const USSubBody& Body) const
+    {
+        const auto* Slot = ExactRoundSubBodySlots.Find(StableId);
+        if (!Slot || !Slot->Object.HasSameIndexAndSerialNumber(FWeakObjectPtr(&Body))) return 0;
+        return Slot->Incarnation;
+    }
+
+    bool FSimulationWorld::BindExactRoundIdentity(uint64 WorkerGeneration)
+    {
+        if (!WorkerGeneration || ExactRoundWorkerGeneration) return false;
+        auto Next = NextExactRoundWorldIncarnation.load(std::memory_order_relaxed);
+        while (Next && Next != UINT64_MAX)
+        {
+            if (!NextExactRoundWorldIncarnation.compare_exchange_weak(Next, Next + 1,
+                std::memory_order_relaxed)) continue;
+            ExactRoundWorldIncarnation = Next;
+            ExactRoundTopology.store(1, std::memory_order_release);
+            ExactRoundWorkerGeneration = WorkerGeneration;
+            bOrderDirty = true;
+            return true;
+        }
+        return false;
+    }
+
+    void FSimulationWorld::PrepareExactRoundTensorGeometryWitness(const FExactRoundStaticCollisionSettings& Settings)
+    {
+        const auto Access = BorrowStorage();
+        if (!Access || StorageAccess.IsReservationOwner()) return;
+        const auto Route = CaptureExactRoundStaticRoute(Settings);
+        if (!Route || Route->ProviderGeneration == TensorGeometryWitnessGeneration) return;
+
+        TensorGeometryWitness = StaticCollisionWorld->BuildExactRoundTensorGeometryWitness();
+        TensorGeometryWitnessGeneration = Route->ProviderGeneration;
+    }
+
+    std::optional<FExactRoundStaticRouteWitness> FSimulationWorld::CaptureExactRoundStaticRoute(
+        const FExactRoundStaticCollisionSettings& Settings) const
+    {
+        const auto Access = BorrowStorage();
+        if (!Access && !StorageAccess.IsReservationOwner()) return {};
+        const auto Backend = Settings.SelectedBackend();
+        const auto* Provider = StaticCollisionWorld.Get();
+        // Hybrid and legacy can use authored UWorld fallbacks. Only the strict
+        // route with an immutable provider identity can offer this witness.
+        if (Backend != EStaticCollisionBackend::SurfaceAnalytic || !Provider ||
+            Provider->GetBackend() != Backend || !Provider->IsReadyForPhysicsStep()) return {};
+        const auto Identity = Provider->GetImmutableQueryIdentity1075();
+        if (!Identity.IsValid()) return {};
+        return FExactRoundStaticRouteWitness{Backend, Identity.Generation,
+            TensorGeometryWitnessGeneration == Identity.Generation ? TensorGeometryWitness : std::nullopt};
+    }
+
+    void FSimulationWorld::AdvanceExactRoundTopology() noexcept
+    {
+        if (!ExactRoundWorkerGeneration) return;
+        auto Previous = ExactRoundTopology.load(std::memory_order_relaxed);
+        while (Previous && !ExactRoundTopology.compare_exchange_weak(Previous,
+            Previous == UINT64_MAX ? 0 : Previous + 1, std::memory_order_release, std::memory_order_relaxed))
+        {}
+    }
 
 	void FSimulationWorld::RebuildOrderedAdapters()
 	{
+		const auto Access = BorrowStorage();
+		if (!Access) return;
 		if (IsRestoreBoundaryReserved()) std::terminate();
         if (PreparedExecution::RejectPreparedOrderMutation(PreparedExecution::Requested() && OnePausedWork::IsActive(), bOrderDirty))
             throw std::runtime_error("Prepared native dirty registry ordering refused before callbacks or table mutation");
         if (!bOrderDirty) return;
+        for (const ISpeedComponent* Adapter : Adapters)
+            if (Adapter && !Adapter->TryAdmitNativeSubBodies())
+                throw std::logic_error("Presentation-only sub-body cannot enter native simulation storage");
+        auto PreviousExactSlots = MoveTemp(ExactRoundSubBodySlots);
         Adapters.Remove(nullptr);
 		OrderedAdapters = Adapters;
 		Bodies.Reset(OrderedAdapters.Num());
 		StableSubBodyIds.Reset();
+		SubBodiesByStableId.Reset();
+		SubBodyNativeObjectIds.Reset();
 		SolidSubBodiesByStableId.Reset();
 		ProjectionSpheres.Empty();
 		ProjectionBoxes.Empty();
@@ -225,24 +325,37 @@ namespace Speed
 					}
 					if (SubBodies[SubBodyIndex] && SubBodyIndex <= MAX_uint16)
 					{
-						StableSubBodyIds.Add(
-							SubBodies[SubBodyIndex],
-							(*StableId << 16) | static_cast<uint16>(SubBodyIndex));
+						const uint64 SubBodyId = (*StableId << 16) | static_cast<uint16>(SubBodyIndex);
+						StableSubBodyIds.Add(SubBodies[SubBodyIndex], SubBodyId);
+						SubBodiesByStableId.Add(SubBodyId, SubBodies[SubBodyIndex]);
+						SubBodyNativeObjectIds.Add(SubBodyId, SubBodies[SubBodyIndex]->GetUniqueID());
+                        if (ExactRoundWorkerGeneration)
+                        {
+                            const FWeakObjectPtr Object(SubBodies[SubBodyIndex]);
+                            const auto* Previous = PreviousExactSlots.Find(SubBodyId);
+                            uint64 Incarnation = 0;
+                            if (Previous && Previous->Object.HasSameIndexAndSerialNumber(Object))
+                                Incarnation = Previous->Incarnation;
+                            else if (NextExactRoundSubBodyIncarnation && NextExactRoundSubBodyIncarnation != MAX_uint64)
+                                Incarnation = NextExactRoundSubBodyIncarnation++;
+                            ExactRoundSubBodySlots.Add(SubBodyId, {Object, Incarnation});
+                        }
 						if (USolidSubBody* SolidSubBody = Cast<USolidSubBody>(SubBodies[SubBodyIndex]))
 						{
-							SolidSubBodiesByStableId.Add(
-								(*StableId << 16) | static_cast<uint16>(SubBodyIndex),
-								SolidSubBody);
+							SolidSubBodiesByStableId.Add(SubBodyId, SolidSubBody);
 						}
 					}
 				}
 			}
 		}
+		AdvanceExactRoundTopology();
 		bOrderDirty = false;
 	}
 
 	uint64 FSimulationWorld::FindStableId(const ISpeedComponent& Adapter) const
 	{
+		const auto Access = BorrowStorage();
+		if (!Access && !StorageAccess.IsReservationOwner()) return 0;
 		const uint64* StableId = StableIds.Find(const_cast<ISpeedComponent*>(&Adapter));
 		return StableId ? *StableId : 0;
 	}
@@ -250,7 +363,8 @@ namespace Speed
 	bool FSimulationWorld::ApplyInputsForFrame(
 		const uint64 NumFrame, const SimulationBoundary::FInputJournal& Journal)
 	{
-		if (IsRestoreBoundaryReserved()) return false;
+		const auto Access = BorrowStorage();
+		if (!Access || IsRestoreBoundaryReserved()) return false;
 		if (!Journal.IsSealed()) return false;
 		bool bAllApplied = true;
 		for (const FSimulationInputCommand& Command : Journal.GetCommandsForFrame(NumFrame))
@@ -274,6 +388,8 @@ namespace Speed
 
 	void FSimulationWorld::NotifyCanonicalFramePublished(uint64 NumFrame)
 	{
+		const auto Access = BorrowStorage();
+		if (!Access) return;
 		if (IsRestoreBoundaryReserved()) std::terminate();
 		for (const FSimulationBodyRecord& Body : Bodies)
 			if (Body.Adapter) Body.Adapter->OnCanonicalFramePublished(NumFrame);
@@ -281,6 +397,8 @@ namespace Speed
 
 	void FSimulationWorld::AbortCanonicalFrame(uint64 Frame, ECanonicalFrameAbortReason Reason) noexcept
 	{
+		const auto Access = BorrowStorage();
+		if (!Access) return;
 		if (IsRestoreBoundaryReserved()) std::terminate();
 		for (const FSimulationBodyRecord& Body : Bodies)
 			if (Body.Adapter) Body.Adapter->AbortCanonicalFrame(Frame, Reason);
@@ -288,7 +406,8 @@ namespace Speed
 
 	ECanonicalPublicationResult FSimulationWorld::PublishCanonicalFrame(uint64 Frame, TFunctionRef<bool()> Publish)
 	{
-		if (IsRestoreBoundaryReserved()) return ECanonicalPublicationResult::ValidationFailed;
+		const auto Access = BorrowStorage();
+		if (!Access || IsRestoreBoundaryReserved()) return ECanonicalPublicationResult::ValidationFailed;
 		// Bodies is stable for the enclosing canonical frame. No registry lock is
 		// held across validation/publication; no GT registration enters this frame.
 		bool Valid = true;
@@ -324,6 +443,8 @@ namespace Speed
 	FSimulationSnapshot FSimulationWorld::CaptureSnapshot(
 		const uint64 NumFrame, const uint64 InputJournalHash, const bool bIncludePresentation) const
 	{
+		const auto Access = BorrowStorage();
+		if (!Access) throw std::logic_error("Read the completed publication during round preparation");
 		if (IsRestoreBoundaryReserved()) std::terminate();
 		IAMSPEED_FRAME_SCOPE(SnapshotBodies);
 		FSimulationSnapshot Snapshot;
@@ -431,7 +552,8 @@ namespace Speed
 		const FSimulationSnapshot& Snapshot,
 		const uint64 ExpectedInputJournalHash)
 	{
-		if (IsRestoreBoundaryReserved()) return false;
+		const auto Access = BorrowStorage();
+		if (!Access || IsRestoreBoundaryReserved()) return false;
 		if (bOrderDirty || Snapshot.Payload.IsEmpty() ||
 			Snapshot.InputJournalHash != ExpectedInputJournalHash ||
 			Snapshot.StateHash == 0 ||
@@ -612,28 +734,37 @@ namespace Speed
 
 	FDynamicContactPair* FSimulationWorld::FindDynamicContactPair(const uint64 PairKey)
 	{
-		if (IsRestoreBoundaryReserved()) std::terminate();
-		const int32* Index = ContactStorage->DynamicContactPairIndices.Find(PairKey);
-		return Index ? &ContactStorage->DynamicContactPairs[*Index] : nullptr;
+		return StorageAccess.ReadPointer([&]() -> FDynamicContactPair*
+		{
+			if (IsRestoreBoundaryReserved()) std::terminate();
+			const int32* Index = ContactStorage->DynamicContactPairIndices.Find(PairKey);
+			return Index ? &ContactStorage->DynamicContactPairs[*Index] : nullptr;
+		});
 	}
 
 	const FDynamicContactPair* FSimulationWorld::FindDynamicContactPair(const uint64 PairKey) const
 	{
-		const int32* Index = ContactStorage->DynamicContactPairIndices.Find(PairKey);
-		return Index ? &ContactStorage->DynamicContactPairs[*Index] : nullptr;
+		return StorageAccess.ReadPointer([&]() -> const FDynamicContactPair*
+		{
+			const int32* Index = ContactStorage->DynamicContactPairIndices.Find(PairKey);
+			return Index ? &ContactStorage->DynamicContactPairs[*Index] : nullptr;
+		});
 	}
 
 	FDynamicContactPair* FSimulationWorld::FindPendingRollingContactPair(const uint64 PairKey)
 	{
-		if (IsRestoreBoundaryReserved()) std::terminate();
-		const int32* Index = ContactStorage->PendingRollingContactPairIndices.Find(PairKey);
-		return Index ? &ContactStorage->PendingRollingContactPairs[*Index] : nullptr;
+		return StorageAccess.ReadPointer([&]() -> FDynamicContactPair*
+		{
+			if (IsRestoreBoundaryReserved()) std::terminate();
+			const int32* Index = ContactStorage->PendingRollingContactPairIndices.Find(PairKey);
+			return Index ? &ContactStorage->PendingRollingContactPairs[*Index] : nullptr;
+		});
 	}
 
 	FDynamicContactPair& FSimulationWorld::AddDynamicContactPair(
 		const uint64 PairKey, USolidSubBody& BodyA, USolidSubBody& BodyB)
 	{
-		if (IsRestoreBoundaryReserved()) std::terminate();
+		RequireContactReference();
 		if (FDynamicContactPair* Existing = FindDynamicContactPair(PairKey))
 		{
 			return *Existing;
@@ -651,7 +782,7 @@ namespace Speed
 	FDynamicContactPair& FSimulationWorld::AddPendingRollingContactPair(
 		const uint64 PairKey, USolidSubBody& BodyA, USolidSubBody& BodyB)
 	{
-		if (IsRestoreBoundaryReserved()) std::terminate();
+		RequireContactReference();
 		if (FDynamicContactPair* Existing = FindPendingRollingContactPair(PairKey))
 		{
 			return *Existing;
@@ -667,6 +798,8 @@ namespace Speed
 
 	void FSimulationWorld::RemoveDynamicContactPairAtSwap(const int32 PairIndex)
 	{
+		const auto Access = BorrowStorage();
+		if (!Access) return;
 		if (IsRestoreBoundaryReserved()) std::terminate();
 		if (!ContactStorage->DynamicContactPairs.IsValidIndex(PairIndex)) return;
 		const uint64 RemovedKey = ContactStorage->DynamicContactPairs[PairIndex].PairKey;
@@ -695,6 +828,8 @@ namespace Speed
 
 	bool FSimulationWorld::ActivatePendingRollingContactPair(const uint64 PairKey)
 	{
+		const auto Access = BorrowStorage();
+		if (!Access) return false;
 		if (IsRestoreBoundaryReserved()) std::terminate();
 		const int32* PendingIndex = ContactStorage->PendingRollingContactPairIndices.Find(PairKey);
 		if (!PendingIndex) return false;
@@ -711,6 +846,8 @@ namespace Speed
 
 	void FSimulationWorld::MergePendingRollingContactPairs()
 	{
+		const auto Access = BorrowStorage();
+		if (!Access) return;
 		if (IsRestoreBoundaryReserved()) std::terminate();
 		for (FDynamicContactPair& PendingPair : ContactStorage->PendingRollingContactPairs)
 		{
@@ -729,11 +866,14 @@ namespace Speed
 	const TSet<uint64>* FSimulationWorld::FindDynamicContactPairKeys(
 		const uint32 SubBodyId) const
 	{
-		return ContactStorage->DynamicContactPairKeysByBody.Find(SubBodyId);
+		return StorageAccess.ReadPointer([&]
+		{ return ContactStorage->DynamicContactPairKeysByBody.Find(SubBodyId); });
 	}
 
 	int32 FSimulationWorld::FindDynamicContactPairIndex(const uint64 PairKey) const
 	{
+		const auto Access = BorrowStorage();
+		if (!Access) return INDEX_NONE;
 		const int32* Index = ContactStorage->DynamicContactPairIndices.Find(PairKey);
 		return Index ? *Index : INDEX_NONE;
 	}
@@ -769,6 +909,8 @@ bool Speed::FSimulationWorld::CaptureReplayStateFields(
     TArray<FSimulationReplayStateRecord>& Out, uint64& UnsupportedStableId) const
 {
     Out.Reset(); UnsupportedStableId=0;
+    const auto Access = BorrowStorage();
+    if (!Access) return false;
     if (Bodies.IsEmpty() || Bodies.Num()>256) return false;
     TArray<FSimulationReplayStateRecord> Prepared; Prepared.Reserve(Bodies.Num());
     int64 TotalBytes=0,ObservationBytes=0;

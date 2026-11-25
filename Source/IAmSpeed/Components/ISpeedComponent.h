@@ -16,8 +16,11 @@ enum class ERequestedDigitalPolicy:std::uint8_t;
 #include "IAmSpeed/Base/Kinematic.h"
 #include "IAmSpeed/Base/KinematicQuantizationCache.h"
 #include "IAmSpeed/World/Simulation/SimulationSleepState.h"
+#include "NativePhysicsUse.h"
 class USpeedWheeledComponent;
-namespace Speed {class FNativeRequestedPreparationContextV2;}
+class USpeedMovementComponent;
+class USpeedWorldSubsystem;
+namespace Speed {class FNativeRequestedPreparationContextV2; class FExactRoundConfigurationWriter; class FPreparedNativeKinematicFields;}
 namespace Speed::Input::V2 {class FNativeRequestedBindingV2;}
 struct FSimulationWheelVisual;
 
@@ -208,6 +211,14 @@ public:
 	virtual void AbortCanonicalFrame(uint64 Frame, ECanonicalFrameAbortReason Reason) noexcept {}
 	/** Read-only identity publication; querying this never mutates the world registry. */
 	uint64 GetPublishedSimulationStableId() const { return PublishedSimulationStableId.Load(); }
+    bool IsPresentationOnly() const noexcept { return NativePhysicsUse.IsPresentationOnly(); }
+    // Called only on the reserved original exact-round boundary. Append the
+    // effective adapter configuration (including game-specific mechanics)
+    // or the effective configuration of the indicated native sub-body slot.
+    // Each writer starts empty. Include a schema tag. The readers must be
+    // bounded, avoid waiting on the game thread, and leave the world untouched.
+    virtual bool AppendExactRoundActorConfiguration(Speed::FExactRoundConfigurationWriter&) const { return false; }
+    virtual bool AppendExactRoundSubBodyConfiguration(uint16 Slot, Speed::FExactRoundConfigurationWriter&) const { return false; }
     /** Complete prepared restore is opt-in. Legacy payload validation does not
      * qualify mechanical/gameplay/caches/lifecycle state for this transaction. */
     virtual std::unique_ptr<Speed::IPreparedSimulationComponentRestore>
@@ -405,11 +416,15 @@ public:
     // Lifetime-invariant adapter type, used by values-only snapshot references.
     virtual USpeedWheeledComponent* AsWheeledPhysicsComponent() { return nullptr; }
 protected:
+    // Exact-round roster only. If the solver limit depends on frame state,
+    // override with the configured base limit and attest policy in the actor extension.
+    virtual float GetExactRoundConfiguredMaxAngularSpeed() const { return GetPhysMaxAngularSpeed(); }
 #if !UE_BUILD_SHIPPING
 	/** Opt-in observer of actual reaction evaluations; no diagnostic dispatch in normal runtime. */
 	virtual void ObserveStaticRestingReaction(EStaticRestingReactionStatus Status) const {}
 	bool bObserveStaticRestingReaction = false;
 #endif
+    static bool CanInstallOwnedSubBodies(const UObject&, const TArray<USSubBody*>&);
 	/** Quantizes in place unless the exact state/reference was already proved a no-op. */
 	void QuantizeKinematicState(SKinematic& State, const FQuat& PreviousRotation);
 	/** Opt-in support certificate; unsupported component kinds remain awake. */
@@ -448,8 +463,16 @@ private:
 	friend struct Speed::FCanonicalForeignStateForTesting;
 #endif
 	friend class Speed::FSimulationWorld;
+    friend class USpeedMovementComponent;
+    friend class USpeedWorldSubsystem;
     friend struct Speed::FCommonComponentValueAccess;
+    friend class Speed::FPreparedNativeRoundFields;
+    friend class Speed::FPreparedNativeKinematicFields;
 	TAtomic<uint64> PublishedSimulationStableId = 0;
+    Speed::FNativePhysicsUse NativePhysicsUse;
+    bool TryAdmitNativeSubBodies() const;
+    // The original canonical owner calls this after authenticating the adapter.
+    virtual bool RetainExactRoundMovementConfiguration(uint64, bool) { return true; }
 	// Borrowed only during the world's canonical step; no historical/cache state.
 	const Speed::IStaticCollisionWorld* StaticRestingWorld = nullptr;
 	float StaticSupportFrameHorizon = 0;

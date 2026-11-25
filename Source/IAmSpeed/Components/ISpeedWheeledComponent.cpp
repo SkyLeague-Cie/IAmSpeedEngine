@@ -9,6 +9,7 @@
 #include "IAmSpeed/World/Analytic/AnalyticWorldData.h"
 #include "IAmSpeed/World/Collision/PreparedPhysicalExecution.h"
 #include "IAmSpeed/World/Collision/PreparedNativeOwnerPoseMutation.h"
+#include "IAmSpeed/World/Simulation/ExactRoundContactSettings.h"
 #if !UE_BUILD_SHIPPING
 #include "HAL/PlatformTime.h"
 #include <exception>
@@ -478,9 +479,47 @@ static TAutoConsoleVariable<int32> CVarIAmSpeedCoupledPoseSupportedSurfaceContac
 	TEXT("When non-zero, principal-hitbox feasibility on an established subordinate support manifold applies at the contact point in every orientation, allowing the coupled pose to rotate instead of translating only."),
 	ECVF_Default);
 
+void Speed::FExactRoundContactSettings::CaptureWheelGroundContactSettings() noexcept
+{
+    WheelGroundContact.NormalVelocityTimeConstantOverride =
+        CVarIAmSpeedWheelContactNormalVelTimeConstant.GetValueOnAnyThread();
+    WheelGroundContact.NormalVelocityDeadzone =
+        CVarIAmSpeedWheelContactNormalVelocityDeadzone.GetValueOnAnyThread();
+    WheelGroundContact.LockedSeparatingTimeConstant =
+        CVarIAmSpeedWheelContactLockedSeparatingNormalVelTimeConstant.GetValueOnAnyThread();
+    WheelGroundContact.LockedSeparatingMaxNormalVelocity =
+        CVarIAmSpeedWheelContactLockedSeparatingMaxNormalVelocity.GetValueOnAnyThread();
+    WheelGroundContact.LockedSeparatingDamping =
+        CVarIAmSpeedWheelContactLockedSeparatingDamping.GetValueOnAnyThread() != 0;
+    WheelGroundContact.ImpulseDeadzone = CVarIAmSpeedWheelContactImpulseDeadzone.GetValueOnAnyThread();
+    WheelGroundContact.Softness = CVarIAmSpeedWheelContactSoftness.GetValueOnAnyThread();
+    WheelGroundContact.SolverMode = CVarIAmSpeedWheelContactSolverMode.GetValueOnAnyThread();
+    WheelGroundContact.RequireFinalSupport =
+        CVarIAmSpeedWheelContactRequireFinalSupport.GetValueOnAnyThread() != 0;
+}
+
+namespace
+{
+    using FWheelGroundContactSettings = Speed::FExactRoundWheelGroundContactSettings;
+
+    template<typename T>
+    T ReadWheelGroundContact(T FWheelGroundContactSettings::* Field, const TAutoConsoleVariable<T>& Live)
+    {
+        const auto* Settings = Speed::FScopedExactRoundContactSettings::Current();
+        return Settings ? Settings->WheelGroundContact.*Field : Live.GetValueOnAnyThread();
+    }
+
+    bool ReadWheelGroundContact(bool FWheelGroundContactSettings::* Field, const TAutoConsoleVariable<int32>& Live)
+    {
+        const auto* Settings = Speed::FScopedExactRoundContactSettings::Current();
+        return Settings ? Settings->WheelGroundContact.*Field : Live.GetValueOnAnyThread() != 0;
+    }
+}
+
 float ISpeedWheeledComponent::GetWheelContactNormalVelocityTimeConstantOverride()
 {
-	return CVarIAmSpeedWheelContactNormalVelTimeConstant.GetValueOnAnyThread();
+	return ReadWheelGroundContact(&FWheelGroundContactSettings::NormalVelocityTimeConstantOverride,
+		CVarIAmSpeedWheelContactNormalVelTimeConstant);
 }
 
 void ISpeedWheeledComponent::NotifyWheelOnGroundStateChanged()
@@ -510,7 +549,8 @@ float ISpeedWheeledComponent::GetWheelContactNormalVelocityTimeConstant() const
 
 float ISpeedWheeledComponent::GetWheelContactNormalVelocityDeadzone() const
 {
-	return CVarIAmSpeedWheelContactNormalVelocityDeadzone.GetValueOnAnyThread();
+	return ReadWheelGroundContact(&FWheelGroundContactSettings::NormalVelocityDeadzone,
+		CVarIAmSpeedWheelContactNormalVelocityDeadzone);
 }
 
 float ISpeedWheeledComponent::GetWheelContactMaxInwardNormalVelocityToSolve() const
@@ -552,20 +592,28 @@ void ISpeedWheeledComponent::ResolveGroupedWheelGroundContacts(const float& delt
 	const float NormalVelTimeConstant = FMath::Max(
 		GetWheelContactNormalVelocityTimeConstant(), dt);
 	const float gamma = 1.f - FMath::Exp(-dt / NormalVelTimeConstant);
-	const float LockedSeparatingNormalVelTimeConstant = FMath::Max(CVarIAmSpeedWheelContactLockedSeparatingNormalVelTimeConstant.GetValueOnAnyThread(), 1e-6f);
+	const float LockedSeparatingNormalVelTimeConstant = FMath::Max(
+		ReadWheelGroundContact(&FWheelGroundContactSettings::LockedSeparatingTimeConstant,
+		CVarIAmSpeedWheelContactLockedSeparatingNormalVelTimeConstant), 1e-6f);
 	const float LockedSeparatingGamma = 1.f - FMath::Exp(-dt / LockedSeparatingNormalVelTimeConstant);
-	const float LockedSeparatingMaxNormalVelocity = FMath::Max(CVarIAmSpeedWheelContactLockedSeparatingMaxNormalVelocity.GetValueOnAnyThread(), 0.0f);
+	const float LockedSeparatingMaxNormalVelocity = FMath::Max(
+		ReadWheelGroundContact(&FWheelGroundContactSettings::LockedSeparatingMaxNormalVelocity,
+		CVarIAmSpeedWheelContactLockedSeparatingMaxNormalVelocity), 0.0f);
 	const float MaxInwardNormalVelocityToSolve = FMath::Max(
 		GetWheelContactMaxInwardNormalVelocityToSolve(), 0.0f);
 	const bool bLockedSeparatingDampingEnabled =
-		CVarIAmSpeedWheelContactLockedSeparatingDamping.GetValueOnAnyThread() != 0;
+		ReadWheelGroundContact(&FWheelGroundContactSettings::LockedSeparatingDamping,
+			CVarIAmSpeedWheelContactLockedSeparatingDamping);
 	// --- Deadzones ---
 	const float VNDeadzone = FMath::Max(GetWheelContactNormalVelocityDeadzone(), 0.0f);
-	const float JDeadzone = FMath::Max(CVarIAmSpeedWheelContactImpulseDeadzone.GetValueOnAnyThread(), 0.0f);
+	const float JDeadzone = FMath::Max(
+		ReadWheelGroundContact(&FWheelGroundContactSettings::ImpulseDeadzone,
+		CVarIAmSpeedWheelContactImpulseDeadzone), 0.0f);
 	// (smaller are those, more network stability)
 
 	const float Softness = FMath::Max(
-		CVarIAmSpeedWheelContactSoftness.GetValueOnAnyThread(), 0.0f);
+		ReadWheelGroundContact(&FWheelGroundContactSettings::Softness,
+			CVarIAmSpeedWheelContactSoftness), 0.0f);
 
 	// Legacy solves every wheel from the same snapshot. The diagnostic coupled
 	// modes update the virtual rigid state after each impulse so later contacts
@@ -575,7 +623,8 @@ void ISpeedWheeledComponent::ResolveGroupedWheelGroundContacts(const float& delt
 	FVector CurrentV = V0;
 	FVector CurrentW = W0;
 	const int32 SolverMode = FMath::Clamp(
-		CVarIAmSpeedWheelContactSolverMode.GetValueOnAnyThread(), 0, 1);
+		ReadWheelGroundContact(&FWheelGroundContactSettings::SolverMode,
+			CVarIAmSpeedWheelContactSolverMode), 0, 1);
 	TArray<int32, TInlineAllocator<4>> ContactOrder;
 	ContactOrder.Reserve(PendingWheelGroundContacts.Num());
 // BEGIN_WHEEL_MANIFOLD1368
@@ -609,7 +658,8 @@ void ISpeedWheeledComponent::ResolveGroupedWheelGroundContacts(const float& delt
 			FMath::Abs(ContactNormal.Y) >= 0.40f &&
 			ContactNormal.Z <= -0.20f;
 		const bool bRequireFinalSupport =
-			CVarIAmSpeedWheelContactRequireFinalSupport.GetValueOnAnyThread() != 0 ||
+			ReadWheelGroundContact(&FWheelGroundContactSettings::RequireFinalSupport,
+				CVarIAmSpeedWheelContactRequireFinalSupport) ||
 			bDetachedAnalyticUpperCurveContact;
 		if (bRequireFinalSupport &&
 			(!Contact.Wheel || !Contact.Wheel->IsOnGround()))
@@ -2234,7 +2284,8 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(
 	for (const SWheelGroundContact& Contact : GetPendingWheelContacts())
 	{
 		if (Contact.Wheel &&
-			(CVarIAmSpeedWheelContactRequireFinalSupport.GetValueOnAnyThread() == 0 ||
+			(!ReadWheelGroundContact(&FWheelGroundContactSettings::RequireFinalSupport,
+				CVarIAmSpeedWheelContactRequireFinalSupport) ||
 				Contact.Wheel->IsOnGround()) &&
 			Contact.SurfaceComponent.IsValid()
 			&& Contact.SurfaceComponent->GetMobility() == EComponentMobility::Static
@@ -2763,7 +2814,8 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(
 	for (const SWheelGroundContact& Contact : GetPendingWheelContacts())
 	{
 		if (!Contact.Wheel || !Contact.SurfaceComponent.IsValid() ||
-			(CVarIAmSpeedWheelContactRequireFinalSupport.GetValueOnAnyThread() != 0 &&
+			(ReadWheelGroundContact(&FWheelGroundContactSettings::RequireFinalSupport,
+				CVarIAmSpeedWheelContactRequireFinalSupport) &&
 				!Contact.Wheel->IsOnGround()) ||
 			Contact.SurfaceComponent->GetMobility() != EComponentMobility::Static ||
 			Contact.Normal.IsNearlyZero())

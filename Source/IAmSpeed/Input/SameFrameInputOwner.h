@@ -34,6 +34,11 @@ struct FOwnerInputSnapshot
     FActionValues Requested{}, Applied{};
     // Input contains all ordered edges, including multiple edges of one action.
     std::uint64_t CutoffSequence = 0;
+    std::uint64_t RoundNeutralGeneration = 0;
+    // Authoritative lifecycle control, used only inside physical application.
+    // Input/Requested retain the original capture and are never relabeled.
+    std::shared_ptr<const FInputFrame> RoundNeutralControl;
+    const FInputFrame& ControlInput() const noexcept { return RoundNeutralControl ? *RoundNeutralControl : Input; }
 };
 struct FOwnerInputReceipt
 {
@@ -189,11 +194,24 @@ public:
             if (!Replay && !ValidateContinuity(*Input))
             { LastPollFailure = EOwnerPollFailure::Continuity; return Reject(EOwnerInputStatus::ResyncRequired); }
             const auto Before = Filter ? (Replay ? Filter->Replay : Filter->Applied) : FActionValues{};
-            const auto Processed = Process(*Input, Before);
+            const auto NeutralRound = Replay ? History[N % HistoryCapacity]->Snapshot->RoundNeutralGeneration
+                : (RoundNeutral && RoundNeutral->first == N ? RoundNeutral->second : 0);
+            const auto Processed = NeutralRound ? FActionValues{} : Process(*Input, Before);
             if (Replay && Processed != History[N % HistoryCapacity]->Snapshot->Applied)
             { LastPollFailure = EOwnerPollFailure::ReplayMismatch; return Reject(EOwnerInputStatus::ResyncRequired); }
+            std::shared_ptr<const FInputFrame> Control;
+            if (NeutralRound)
+            {
+                auto Data = Input->GetData();
+                Data.Values = {};
+                Data.ActiveMask = 0;
+                Data.Transitions.clear();
+                Control = std::make_shared<const FInputFrame>(Input->GetContract(), std::move(Data));
+                if (!Control->IsValidFor(*Binding.Contract)) return Reject(EOwnerInputStatus::ResyncRequired);
+            }
             auto Snapshot = std::make_shared<const FOwnerInputSnapshot>(FOwnerInputSnapshot{
-                *Input, Fingerprint, Input->GetData().Values, Processed, Input->GetData().SourceSequence});
+                *Input, Fingerprint, Input->GetData().Values, Processed, Input->GetData().SourceSequence,
+                NeutralRound, std::move(Control)});
             auto Receipt = std::make_shared<const FOwnerInputReceipt>(FOwnerInputReceipt{
                 Snapshot, N, N, Binding.Epoch.Value, Replay ? ReplayPass : 0, Replay});
             auto Entry = std::make_shared<const FHistoryEntry>(FHistoryEntry{Snapshot, Receipt, Filter ? std::optional<FActionValues>(Before) : std::nullopt});
@@ -241,6 +259,7 @@ public:
             History[N % HistoryCapacity] = Pending->Entry;
             Latest = Pending->Entry->Receipt;
             LastInput = Pending->Entry->Snapshot;
+            if (RoundNeutral && RoundNeutral->first == N) RoundNeutral.reset();
             RequireBaseline = false;
             Exhausted = N == UINT64_MAX;
             if (!Exhausted) NextFrame = N + 1;
@@ -373,6 +392,7 @@ public:
         if (Phase != PriorPhase || FaultSerial != PriorFault) return false;
         Source = std::move(Producer); Binding = std::move(NewBinding); Fingerprint.swap(NewFingerprint);
         History = {}; Initial.reset(); Filter = std::move(NewFilter); LastInput.reset(); Latest.reset(); ReplayReceipt.reset();
+        RoundNeutral.reset();
         NextFrame = FirstFrame; Exhausted = false; RequireBaseline = true; Phase = EOwnerInputPhase::Idle;
         return true;
     }
@@ -422,13 +442,15 @@ private:
         std::shared_ptr<const FInputFrame> Baseline;
         FFrameNumber Frame = 0;
         std::uint64_t Generation = 0, Fault = 0, Poll = 0;
+        EOwnerInputPhase PreviousPhase = EOwnerInputPhase::Paused;
+        std::uint64_t Round = 0;
         bool FinalizationReady = false, Finalized = false;
     };
     bool MatchesResume(const FResumeToken& T) const noexcept
     { return ResumePending && T.Identity && T.Identity == ResumePending->Identity; }
     bool ResumeAllowed(const FResumeToken& T) const noexcept
     { return IsOwner() && !FPresentationInputScope::IsActive() && !CallingSource && MatchesResume(T)
-        && !ResumePending->Finalized && Phase == EOwnerInputPhase::Paused && NextFrame == ResumePending->Frame
+        && !ResumePending->Finalized && Phase == ResumePending->PreviousPhase && NextFrame == ResumePending->Frame
         && FaultSerial == ResumePending->Fault && PollSerial == ResumePending->Poll; }
     struct FFilterState { FActionValues Applied{}, Replay{}; };
     struct FHistoryEntry
@@ -531,6 +553,7 @@ private:
     std::optional<FPending> Pending;
     std::array<std::shared_ptr<const FHistoryEntry>, HistoryCapacity> History{};
     std::shared_ptr<const FOwnerInputSnapshot> LastInput;
+    std::optional<std::pair<FFrameNumber, std::uint64_t>> RoundNeutral;
     std::shared_ptr<const FOwnerInputReceipt> Latest, ReplayReceipt;
     bool Replay = false, ReplayFinished = false;
     FFrameNumber ReplayNext = 0, ReplayEnd = 0;

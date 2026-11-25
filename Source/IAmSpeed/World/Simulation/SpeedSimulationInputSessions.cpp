@@ -1,5 +1,6 @@
 #include "SpeedPhysicsSimulation.h"
 #include "CanonicalFrameContext.h"
+#include "Misc/ScopeExit.h"
 #include "Misc/ScopeLock.h"
 #include "IAmSpeed/Netcode/remote-input/ExactRemoteDedicatedHost.h"
 #include "IAmSpeed/World/Subsystem/SpeedWorldSubsystem.h"
@@ -25,6 +26,8 @@ Speed::Input::V2::ECommandAdmission ASpeedPhysicsSimulation::SubmitInputSessionC
     check(IsInGameThread());
     using namespace Speed::Input::V2;
     if(Command.Binding.Network||Command.NativeV2Control)return ECommandAdmission::Rejected;
+    if (ReplayStartupService.IsHolding() && Command.Operation == EBoundaryOperation::Bind
+        && Command.Binding.Kind != EProducerContract::ExactRemote) return ECommandAdmission::Rejected;
     if (GetActiveExecutionMode() != ESimulationExecutionMode::IAmSpeedThread
         || bInputOwnerRetired.Load() || bOwnedWorkerTerminal.Load()
         || Command.WorkerGeneration != InputWorkerGeneration) return ECommandAdmission::Rejected;
@@ -91,6 +94,7 @@ bool ASpeedPhysicsSimulation::ConfigureOriginalDeviceRemoteInputHost(uint32 Requ
         || bInputSessionAdmissionRequested.Load() || bInputOwnerRetired.Load() || bOwnedWorkerTerminal.Load()) return false;
     ConfiguredRemoteInputAdmission = Admission;
     RequiredExactRemoteInputSessions = RequiredSessions;
+    MaybeArmReplayStartupServiceOnGT();
     return true;
 }
 
@@ -100,7 +104,7 @@ Speed::Input::V2::ECommandAdmission ASpeedPhysicsSimulation::SubmitRequestedNetw
 {
     check(IsInGameThread());
     using namespace Speed::Input::V2;
-    if(!Service||!Command.Binding.Network||Command.Binding.Network->Version!=1||Command.Operation!=EBoundaryOperation::Bind
+    if(ReplayStartupService.IsHolding()||!Service||!Command.Binding.Network||Command.Binding.Network->Version!=1||Command.Operation!=EBoundaryOperation::Bind
         ||GetActiveExecutionMode()!=ESimulationExecutionMode::IAmSpeedThread
         ||!bPublishCompletedWorldInput||!CompletedPublicationSource||!NativeInputAdmissionOwner
         ||bInputOwnerRetired.Load()||bOwnedWorkerTerminal.Load()||bCanonicalPublicationTerminal.Load()
@@ -144,8 +148,17 @@ std::shared_ptr<const Speed::FNativeRequestedInputObservation> ASpeedPhysicsSimu
 
 ESimulationBoundaryResult ASpeedPhysicsSimulation::ServiceInputSessionBoundary(bool bPauseRequested)
 {
-    if (!ValidateAnalyticNumericOwner()) return ESimulationBoundaryResult::Failed;
-    if (CompleteOwnedWorkerAtBoundary())
+    if (ReplayStartupService.IsCancelled() || !ValidateAnalyticNumericOwner()) return ESimulationBoundaryResult::Failed;
+    const bool bReplayStartupService = !ReplayStartupService.AllowsWork();
+    if (!bReplayStartupService && ExactRemoteRoundProvider)
+        if (const auto Round = ServiceExactRemoteRoundBoundary(bPauseRequested)) return *Round;
+    std::optional<Speed::FWorldBorrowGate::FBorrow> WorldBorrow;
+    if (SpeedWorldSubsystem)
+    {
+        WorldBorrow.emplace(SpeedWorldSubsystem->SimulationWorld.StorageAccess);
+        if (!*WorldBorrow) return ESimulationBoundaryResult::Failed;
+    }
+    if (!bReplayStartupService && CompleteOwnedWorkerAtBoundary())
     {
         bOwnedWorkerTerminal.Store(true);
         PublishedCompletedWorldInput.store({}, std::memory_order_seq_cst);
@@ -175,9 +188,12 @@ ESimulationBoundaryResult ASpeedPhysicsSimulation::ServiceInputSessionBoundary(b
             NativeCutoff=Native&&Queue.size()>32?InputSessionCommands->Records.at(Queue[31]).EnqueueOrdinal:InputSessionCommands->EnqueueOrdinal;
         }
         const auto NeutralizeV2=[this](const auto& D,const auto& B){return SpeedWorldSubsystem->RetireRequestedNetworkBindingV2(D,B);};
-        if(!InputSessionRegistry->ServiceNativeV2Retirements(NeutralizeV2))throw std::runtime_error("native V2 retirement failed");
-        ServiceRequestedNetworkPreparationV2AtBoundary();
-        ServiceRequestedNetworkBindsV2AtBoundary(NativeCutoff);
+        if (!bReplayStartupService)
+        {
+            if(!InputSessionRegistry->ServiceNativeV2Retirements(NeutralizeV2))throw std::runtime_error("native V2 retirement failed");
+            ServiceRequestedNetworkPreparationV2AtBoundary();
+            ServiceRequestedNetworkBindsV2AtBoundary(NativeCutoff);
+        }
         bool Ready = false;
         {FScopeLock Lock(&InputSessionAdmissionMutex);bPauseRequested=bPauseRequested||bOwnedSimulationPaused.Load();}
         const auto Before=InputSessionRegistry->ReadRegistry();
@@ -199,7 +215,7 @@ ESimulationBoundaryResult ASpeedPhysicsSimulation::ServiceInputSessionBoundary(b
             for (const auto& Journal : PendingInputJournals)
                 if (!InputSessionRegistry->RegisterJournalAtBoundary(Journal)) throw std::runtime_error("input journal rejected");
             PendingInputJournals.clear();
-            if(!PendingRequestedNetworkSessions.empty())
+            if(!bReplayStartupService&&!PendingRequestedNetworkSessions.empty())
             {
                 // This capability is issued only in Run->ServiceBoundary of
                 // the actual owned worker, after native world/body validation.
@@ -233,7 +249,7 @@ ESimulationBoundaryResult ASpeedPhysicsSimulation::ServiceInputSessionBoundary(b
             PendingInputObservations.clear();
             Ready = InputSessionRegistry->ServiceBoundary(CanonicalNumFrame,NativeCutoff);
         }
-        if(!InputSessionRegistry->ServiceNativeV2Claims([this](const auto& D,const auto& B){return SpeedWorldSubsystem->ClaimRequestedNetworkBindingV2(D,B);},NeutralizeV2))
+        if(!bReplayStartupService&&!InputSessionRegistry->ServiceNativeV2Claims([this](const auto& D,const auto& B){return SpeedWorldSubsystem->ClaimRequestedNetworkBindingV2(D,B);},NeutralizeV2))
             throw std::runtime_error("native V2 claim/retirement failed");
         const auto View = InputSessionRegistry->ReadRegistry();
         PublishedInputRegistry.store(View, std::memory_order_seq_cst);
@@ -253,6 +269,8 @@ ESimulationBoundaryResult ASpeedPhysicsSimulation::ServiceInputSessionBoundary(b
             else { if (bPauseRequested) I->second->Pause(); ++I; }
         }
         if (bPauseRequested) PublishedInputFrame.store(std::shared_ptr<const FRegistryFrame>{}, std::memory_order_seq_cst);
+        if (bReplayStartupService)
+            return Ready ? ESimulationBoundaryResult::Ready : ESimulationBoundaryResult::Waiting;
         if (Ready && RequiredExactRemoteInputSessions && !bPauseRequested)
         {
             const auto Admission = InputSessionRegistry->QueryFrameReadiness(CanonicalNumFrame, RequiredExactRemoteInputSessions);
@@ -301,6 +319,16 @@ ESimulationBoundaryResult ASpeedPhysicsSimulation::ServiceInputSessionBoundary(b
 
 void ASpeedPhysicsSimulation::CloseInputSessionsOnWorker()
 {
+    if (ExactRemoteRoundProvider) ExactRemoteRoundFence.Close();
+    ON_SCOPE_EXIT { ExactRemoteRoundStorage.reset(); ExactRemoteRoundFence.FinishPublication(); };
+    std::optional<Speed::FWorldBorrowGate::FBorrow> ReservedRoundClose;
+    if (ExactRemoteRoundStorage)
+    {
+        ReservedRoundClose.emplace(*ExactRemoteRoundStorage);
+        if (!*ReservedRoundClose) std::terminate();
+    }
+    ActiveExactRemoteRound.reset();
+    PendingRoundNeutralStep.reset();
     if(RequestedPreparationV2)RequestedPreparationV2->CloseOnNativeOwner();
     CloseRequestedInputPresentationsOnWorker();
     PublishedRequestedInputObservation.store({},std::memory_order_seq_cst);

@@ -3,15 +3,21 @@
 #include "CoreMinimal.h"
 #include "SimulationFrameJournal.h"
 #include "PreparedSimulationRestore.h"
+#include "WorldBorrowGate.h"
+#include "ExactRoundNativeAddress.h"
+#include "UObject/WeakObjectPtr.h"
 #include <memory>
 #include <optional>
+#include <stdexcept>
 #include <thread>
 #include "IAmSpeed/World/Collision/StaticCollisionWorld.h"
 #include "IAmSpeed/SubBodies/Solid/SolidSubBody.h"
 
 class ISpeedComponent;
-namespace Speed { class FHostedGTStaticWorldLease; }
+namespace Speed { class FHostedGTStaticWorldLease; class FPreparedNativeKinematicFields; class FExactRemoteRoundBuild; class FCompletedSimulationPublication; }
 namespace Speed::PreparedExecution { class FCanonicalFramePreflight; }
+class ASpeedPhysicsSimulation;
+class USpeedWorldSubsystem;
 enum class ECanonicalFrameAbortReason : uint8;
 enum class ECanonicalPublicationResult : uint8 { Completed, ValidationFailed, PublicationFailed, CommitInvariantFailed };
 class USSubBody;
@@ -101,6 +107,11 @@ namespace Speed
 	{
         friend class PreparedExecution::FCanonicalFramePreflight;
         friend class FHostedGTStaticWorldLease;
+        friend class FPreparedNativeKinematicFields;
+        friend class FPreparedNativeRoundFields;
+        friend class FExactRemoteRoundBuild;
+        friend class ::ASpeedPhysicsSimulation;
+        friend class ::USpeedWorldSubsystem;
 	public:
         FSimulationWorld();
         ~FSimulationWorld();
@@ -126,6 +137,10 @@ namespace Speed
         void ReleasePreparedRestoreAfterPublication(const FPreparedRestoreToken&,
             const std::shared_ptr<const FPreparedRestorePublication>& Published) noexcept;
         bool IsRestoreBoundaryReserved() const noexcept { return PreparedRestoreEntryActive || PreparedRestore != nullptr; }
+        // Retain the returned scope through the final access to every borrowed
+        // world view. External consumers still own component/lifetime fences.
+        [[nodiscard]] FWorldBorrowGate::FBorrow BorrowStorage() const noexcept
+        { return FWorldBorrowGate::FBorrow(StorageAccess); }
 #if !UE_BUILD_SHIPPING
         bool InspectBodyContactPairsForTesting(const USolidSubBody& Body,uint64 PreparingFrame,FBodyContactPairInspection& Out) const;
 #endif
@@ -138,7 +153,8 @@ namespace Speed
         /** Joined empty-registry boundary; stable identities stay monotonic. */
         bool ResetEmptyCollisionMatrixEpisodeForTesting()
         {
-            if (IsRestoreBoundaryReserved() || !Adapters.IsEmpty()) return false;
+            const auto Access = BorrowStorage();
+            if (!Access || IsRestoreBoundaryReserved() || !Adapters.IsEmpty()) return false;
             RebuildOrderedAdapters();
             if (!OrderedAdapters.IsEmpty() || !Bodies.IsEmpty()
                 || !ProjectionSpheres.IsEmpty() || !ProjectionBoxes.IsEmpty()) return false;
@@ -153,26 +169,44 @@ namespace Speed
 #endif
 		/** Rebuilds the canonical adapter/body view after queued registry changes. */
 		void RebuildOrderedAdapters();
-		const TArray<ISpeedComponent*>& GetAdapters() const { return Adapters; }
-		const TArray<ISpeedComponent*>& GetOrderedAdapters() const { return OrderedAdapters; }
+		const TArray<ISpeedComponent*>& GetAdapters() const { RequireStorageReference(); return Adapters; }
+		const TArray<ISpeedComponent*>& GetOrderedAdapters() const { RequireStorageReference(); return OrderedAdapters; }
 		/** Typed views rebuilt with the registry, preserving canonical sub-body order. */
-		const TArray<USphereSubBody*>& GetProjectionSpheres() const { return ProjectionSpheres; }
-		const TArray<UBoxSubBody*>& GetProjectionBoxes() const { return ProjectionBoxes; }
+		const TArray<USphereSubBody*>& GetProjectionSpheres() const { RequireStorageReference(); return ProjectionSpheres; }
+		const TArray<UBoxSubBody*>& GetProjectionBoxes() const { RequireStorageReference(); return ProjectionBoxes; }
 		/** Transfers ownership of the immutable static-query authority. */
 		void SetStaticCollisionWorld(TUniquePtr<IStaticCollisionWorld>&& InWorld)
 		{
-			if (IsRestoreBoundaryReserved()) std::terminate(); StaticCollisionWorld = MoveTemp(InWorld);
+			const auto Access = BorrowStorage();
+			if (!Access || StorageAccess.IsReservationOwner()) throw std::logic_error("Static world mutation during an exact round");
+			if (IsRestoreBoundaryReserved()) std::terminate();
+			const bool Changed = StaticCollisionWorld || InWorld;
+			StaticCollisionWorld = MoveTemp(InWorld);
+			if (Changed) AdvanceExactRoundTopology();
 		}
 		const IStaticCollisionWorld* GetStaticCollisionWorld() const
 		{
-			return StaticCollisionWorld.Get();
+			return StorageAccess.ReadPointer([&] { return StaticCollisionWorld.Get(); });
 		}
-		void ResetStaticCollisionWorld() { if (IsRestoreBoundaryReserved()) std::terminate(); StaticCollisionWorld.Reset(); }
-		TArray<FDynamicContactPair>& GetDynamicContactPairs() { if (IsRestoreBoundaryReserved()) std::terminate(); return ContactStorage->DynamicContactPairs; }
-		const TArray<FDynamicContactPair>& GetDynamicContactPairs() const { if (IsRestoreBoundaryReserved()) std::terminate(); return ContactStorage->DynamicContactPairs; }
-		TArray<FDynamicContactPair>& GetPendingRollingContactPairs() { if (IsRestoreBoundaryReserved()) std::terminate(); return ContactStorage->PendingRollingContactPairs; }
+		bool HasStaticCollisionWorld() const
+		{
+			const auto Access = BorrowStorage();
+			return (Access || StorageAccess.IsReservationOwner()) && StaticCollisionWorld.Get() != nullptr;
+		}
+		void ResetStaticCollisionWorld()
+		{
+			const auto Access = BorrowStorage();
+			if (!Access || StorageAccess.IsReservationOwner()) return;
+			if (IsRestoreBoundaryReserved()) std::terminate();
+			if (!StaticCollisionWorld) return;
+			StaticCollisionWorld.Reset();
+			AdvanceExactRoundTopology();
+		}
+		TArray<FDynamicContactPair>& GetDynamicContactPairs() { RequireContactReference(); return ContactStorage->DynamicContactPairs; }
+		const TArray<FDynamicContactPair>& GetDynamicContactPairs() const { RequireContactReference(); return ContactStorage->DynamicContactPairs; }
+		TArray<FDynamicContactPair>& GetPendingRollingContactPairs() { RequireContactReference(); return ContactStorage->PendingRollingContactPairs; }
 		const TArray<FDynamicContactPair>& GetPendingRollingContactPairs() const
-		{ if (IsRestoreBoundaryReserved()) std::terminate(); return ContactStorage->PendingRollingContactPairs; }
+		{ RequireContactReference(); return ContactStorage->PendingRollingContactPairs; }
 		/** Resolves an active persistent pair by its canonical key in average O(1). */
 		FDynamicContactPair* FindDynamicContactPair(uint64 PairKey);
 		const FDynamicContactPair* FindDynamicContactPair(uint64 PairKey) const;
@@ -192,14 +226,18 @@ namespace Speed
 		/** Returns the active pair keys incident to one sub-body identity. */
 		const TSet<uint64>* FindDynamicContactPairKeys(uint32 SubBodyId) const;
 		int32 FindDynamicContactPairIndex(uint64 PairKey) const;
-		unsigned int& GetCurrentStepFrame() { if (IsRestoreBoundaryReserved()) std::terminate(); return CurrentStepFrame; }
-		unsigned int GetCurrentStepFrame() const { return CurrentStepFrame; }
+		unsigned int& GetCurrentStepFrame() { RequireContactReference(); return CurrentStepFrame; }
+		unsigned int GetCurrentStepFrame() const
+		{ const auto Access = BorrowStorage(); return Access || StorageAccess.IsReservationOwner() ? CurrentStepFrame : 0; }
 		/** Returns the run-stable id used to address inputs and snapshot records. */
 		uint64 FindStableId(const ISpeedComponent& Adapter) const;
         ISpeedComponent* FindAdapterByStableId(uint64 StableId) const
         {
-            ISpeedComponent* const* Found=AdaptersByStableId.Find(StableId);
-            return Found?*Found:nullptr;
+            return StorageAccess.ReadPointer([&]
+            {
+                ISpeedComponent* const* Found = AdaptersByStableId.Find(StableId);
+                return Found ? *Found : nullptr;
+            });
         }
 		/** Latches every sealed command addressed to this exact canonical frame. */
 		bool ApplyInputsForFrame(uint64 NumFrame, const SimulationBoundary::FInputJournal& Journal);
@@ -212,15 +250,52 @@ namespace Speed
 		void AbortCanonicalFrame(uint64 Frame, ECanonicalFrameAbortReason Reason) noexcept;
 		/** Legacy local restore. This does not qualify a complete prepared network restore. */
 		bool RestoreSnapshot(const FSimulationSnapshot& Snapshot, uint64 ExpectedInputJournalHash);
-		int32 NumBodies() const { return Bodies.Num(); }
+		int32 NumBodies() const
+		{ const auto Access = BorrowStorage(); return Access || StorageAccess.IsReservationOwner() ? Bodies.Num() : 0; }
 
 	private:
+        void RequireStorageReference() const
+        {
+            if (!StorageAccess.AdmitReference()) throw std::logic_error("World reference requested during round preparation");
+        }
+        void RequireContactReference() const
+        {
+            RequireStorageReference();
+            if (IsRestoreBoundaryReserved()) std::terminate();
+        }
+        FWorldBorrowGate StorageAccess;
+        bool RetireExactRoundStorageAfterJoin();
+        bool BindExactRoundIdentity(uint64 WorkerGeneration);
+        void PrepareExactRoundTensorGeometryWitness(const FExactRoundStaticCollisionSettings&);
+        std::optional<FExactRoundStaticRouteWitness> CaptureExactRoundStaticRoute(
+            const FExactRoundStaticCollisionSettings&) const;
+        // Written only by the original publisher before reservation. A failed
+        // attestation is cached for this immutable query generation as well.
+        uint64 TensorGeometryWitnessGeneration = 0;
+        std::optional<FExactRoundTensorGeometryWitness> TensorGeometryWitness;
+        FExactRoundNativeOrigin ReadExactRoundOrigin() const noexcept
+        { return {ExactRoundWorkerGeneration, ExactRoundWorldIncarnation, ExactRoundTopology.load(std::memory_order_acquire)}; }
+        void AdvanceExactRoundTopology() noexcept;
+        uint64 ReadExactRoundSubBodyIncarnation(uint64 StableId, const USSubBody&) const;
+        struct FExactSubBodySlot
+        {
+            FWeakObjectPtr Object;
+            uint64 Incarnation = 0;
+        };
+        TMap<uint64, FExactSubBodySlot> ExactRoundSubBodySlots;
+        uint64 ExactRoundWorkerGeneration = 0;
+        uint64 ExactRoundWorldIncarnation = 0;
+        std::atomic<uint64> ExactRoundTopology{0};
+        uint64 NextExactRoundSubBodyIncarnation = 1;
+        const FCompletedSimulationPublication* RoundBuildBoundary = nullptr;
 #if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
         friend struct FBodyContactPairReadOnlyTestFixture;
 #endif
 		TMap<ISpeedComponent*, uint64> StableIds;
 		TMap<uint64, ISpeedComponent*> AdaptersByStableId;
 		TMap<const USSubBody*, uint64> StableSubBodyIds;
+        TMap<uint64, USSubBody*> SubBodiesByStableId;
+		TMap<uint64, uint32> SubBodyNativeObjectIds;
 		TMap<uint64, USolidSubBody*> SolidSubBodiesByStableId;
 		TArray<ISpeedComponent*> Adapters;
 		TArray<ISpeedComponent*> OrderedAdapters;

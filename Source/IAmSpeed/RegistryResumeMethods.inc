@@ -1,9 +1,18 @@
 public:
+    struct FGroupRoundInputBaseline
+    {
+        std::uint64_t Session = 0, Epoch = 0, Producer = 0;
+        std::vector<FSessionActor> Actors;
+        FRoundInputResume Input;
+    };
     struct FGroupResumeRequest
     {
         std::uint64_t WorkerGeneration = 0, RegistryVersion = 0, ResumeGeneration = 0;
         FFrameNumber Next = 0;
-        std::vector<FSessionOutcome> Sessions; // exact complete sorted set, phase must be Paused
+        std::vector<FSessionOutcome> Sessions; // exact complete sorted set
+        // Empty for ordinary pause/resume. A round cutover uses the exact same
+        // order and preserves each session's own epoch and producer identity.
+        std::vector<FGroupRoundInputBaseline> RoundBaselines;
     };
     struct FGroupResumeBaseline
     {
@@ -16,6 +25,7 @@ public:
     {
         FFrameNumber Next = 0;
         std::uint64_t ResumeGeneration = 0;
+        std::uint64_t RoundGeneration = 0;
         std::shared_ptr<const FInputRegistryView> Registry;
         std::vector<FGroupResumeBaseline> Baselines;
     };
@@ -64,6 +74,8 @@ public:
         if (!GroupResumeLane() || ResumeGroup || ReplayGroup || Terminal || Pending || FrozenRequestedFrame || Waiting || Replaying || Sessions.empty()
             || R.WorkerGeneration != WorkerGeneration || R.RegistryVersion != View->Version
             || !R.ResumeGeneration || R.Sessions.size() != Sessions.size()) return {};
+        const bool Round = !R.RoundBaselines.empty();
+        if (Round && R.RoundBaselines.size() != Sessions.size()) return {};
         try
         {
             // No queued command/stop can be silently overtaken. New commands
@@ -75,10 +87,19 @@ public:
             {
                 const auto& S = P.second;
                 const auto& Expected = R.Sessions[Index++];
-                if (Expected.Session != P.first || Expected.Epoch != S.Description.Epoch
-                    || Expected.Phase != ESessionPhase::Paused || S.Phase != ESessionPhase::Paused
+                if (Expected.Session != P.first || Expected.Epoch != S.Description.Epoch || Expected.Phase != S.Phase
+                    || (S.Phase != ESessionPhase::Paused && !(Round && S.Phase == ESessionPhase::Active))
                     || !S.Owner || S.Token || S.Journal || S.Description.Kind == EProducerContract::AI
                     || S.Owner->GetNextFrame() != R.Next || R.ResumeGeneration <= S.ResumeGeneration) return {};
+                if (Round)
+                {
+                    const auto& B = R.RoundBaselines[Index - 1];
+                    const auto& RoundKey = R.RoundBaselines.front().Input;
+                    if (S.Description.Kind != EProducerContract::ExactRemote || B.Session != P.first
+                        || B.Epoch != S.Description.Epoch || B.Producer != S.Description.Producer
+                        || B.Actors != S.Description.Actors || B.Input.PreviousGeneration != RoundKey.PreviousGeneration
+                        || B.Input.Generation != RoundKey.Generation) return {};
+                }
             }
             auto Plan = std::make_unique<FGroupResumePlan>();
             Plan->Identity = std::make_shared<const std::uint8_t>(std::uint8_t{0});
@@ -89,11 +110,14 @@ public:
             Plan->Failed = std::move(Failed);
             auto Publication = std::make_shared<FGroupResumePublication>();
             Publication->Next = R.Next; Publication->ResumeGeneration = R.ResumeGeneration; Publication->Registry = std::move(Next);
+            if (Round) Publication->RoundGeneration = R.RoundBaselines.front().Input.Generation;
             Publication->Baselines.reserve(Sessions.size()); Plan->Owners.reserve(Sessions.size());
+            Index = 0;
             for (auto& P : Sessions)
             {
                 auto& S = P.second;
-                auto Prepared = S.Owner->PrepareResumeAtBoundary(R.Next, R.ResumeGeneration);
+                const auto* Cutover = Round ? &R.RoundBaselines[Index++].Input : nullptr;
+                auto Prepared = S.Owner->PrepareResumeAtBoundary(R.Next, R.ResumeGeneration, Cutover);
                 if (!Prepared.Token || Prepared.Status != EOwnerInputStatus::Ready) return {};
                 // Capacity was reserved. Moves below are non-throwing. Store
                 // the token before any subsequent operation can fail.
@@ -155,6 +179,14 @@ public:
     void ReleasePreparedGroupResume(const FGroupResumeToken& T) noexcept
     {
         if (!GroupResumeLane() || !MatchesGroupResume(T) || !ResumeGroup->Published) std::terminate();
+        if (ResumeGroup->Publication->RoundGeneration)
+        {
+            for (auto& Entry : History) Entry.reset();
+            Latest.reset();
+            InitialReceipt.reset();
+            HistoricalInitial.reset();
+            LastCompletedForCapture.reset();
+        }
         for (auto& O : ResumeGroup->Owners) O.Owner->ReleasePreparedResume();
         ResumeGroup->Released = true; ResumeGroup.reset();
     }

@@ -25,6 +25,7 @@ void ObserveCallbackStage(uint32 stage,uint64 start);
 #include "IAmSpeed/Components/SpeedWheeledSteeringMath.h"
 #include "IAmSpeed/IAmSpeed.h"
 #include "IAmSpeed/World/Simulation/CanonicalFrameContext.h"
+#include "IAmSpeed/World/Simulation/ExactRoundContactSettings.h"
 #include "IAmSpeed/World/Simulation/CanonicalFrameDriver.h"
 #include "ChaosVehicleManager.h"
 #include "IAmSpeed/Base/SpeedConstant.h"
@@ -91,6 +92,18 @@ static TAutoConsoleVariable<int32> CVarIAmSpeedHullContactContinuousAngularDrag(
 	TEXT("p.IAmSpeed.Suspension.HullContactContinuousAngularDrag"),
 	0,
 	TEXT("Experimental: preserve small real hull-contact angular response through continuous air drag."));
+
+void Speed::FExactRoundContactSettings::CaptureHullContactAngularDragSettings() noexcept
+{
+    HullContactContinuousAngularDrag = CVarIAmSpeedHullContactContinuousAngularDrag.GetValueOnAnyThread() != 0;
+}
+
+bool USpeedWheeledComponent::ReadEffectiveHullContactContinuousAngularDrag() noexcept
+{
+    const auto* Settings = Speed::FScopedExactRoundContactSettings::Current();
+    return Settings ? Settings->HullContactContinuousAngularDrag
+        : CVarIAmSpeedHullContactContinuousAngularDrag.GetValueOnAnyThread() != 0;
+}
 
 static float SteeringInputCalibrationScale(const float Input)
 {
@@ -534,6 +547,7 @@ void USpeedWheeledComponent::SetOwner(AActor* NewOwner)
 	{
 		return;
 	}
+    if (GetPublishedSimulationStableId()) USpeedWorldSubsystem::RequireExactRemoteRoundStorageTeardown(*this);
 	SpeedCarOwner = Cast<ASpeedCar>(NewOwner);
 	ResolveFixedCenterOfMassFromConfiguration();
 	SetPhysRotation(NewOwner->GetActorRotation().Quaternion());
@@ -691,6 +705,7 @@ void USpeedWheeledComponent::BindWheelSimulationPointers(
 
 void USpeedWheeledComponent::ClearWheelSimulationPointers()
 {
+    if (GetPublishedSimulationStableId()) USpeedWorldSubsystem::RequireExactRemoteRoundStorageTeardown(*this);
 	for (USWheelSubBody* WheelSubBody : WheelSubBodies)
 	{
 		if (!WheelSubBody)
@@ -878,6 +893,7 @@ void USpeedWheeledComponent::OnCreatePhysicsState()
 	if (Speed::Netcode::PresentationClient::SuppressesLocalPhysics(GetWorld())) return;
 	if (Speed::ReplayIsolation::IsInertReplayWorld(GetWorld()))
 	{ Speed::ReplayIsolation::FailInertReplayBootstrap(*GetWorld(),TEXT("unexpected IAS wheeled physics-state creation in inert replay")); return; }
+    if (GetPublishedSimulationStableId()) USpeedWorldSubsystem::RequireExactRemoteRoundStorageTeardown(*this);
 	// =========> START OVERLOAD Chaos prediction here
 	UPawnMovementComponent::OnCreatePhysicsState();
 
@@ -1026,6 +1042,11 @@ bool USpeedWheeledComponent::RetireSpeedWorldAdapterBeforeTeardown()
 void USpeedWheeledComponent::JoinInputWorkerBeforeStorageDestruction()
 {
 	if (bSpeedWorldAdapterRetiredForTeardown) return;
+    if (USpeedWorldSubsystem::RequireExactRemoteRoundStorageTeardown(*this))
+    {
+        bSpeedWorldAdapterRetiredForTeardown = true;
+        return;
+    }
 	if (!HasProducedInputAuthority() && !HasLegacyRemoteInputAuthority()) return;
 	check(IsInGameThread());
 	if (UWorld* World = GetWorld())
@@ -1108,8 +1129,10 @@ void USpeedWheeledComponent::JoinInputWorkerBeforeStorageDestruction()
 
 void USpeedWheeledComponent::OnDestroyPhysicsState()
 {
+    const bool bExactTeardown = USpeedWorldSubsystem::RequireExactRemoteRoundStorageTeardown(*this);
+    if (bExactTeardown) bSpeedWorldAdapterRetiredForTeardown = true;
 	bResumeAfterPhysicsRecreation = false;
-	if (!bWheeledEndPlayTeardown && HasBegunPlay()
+	if (!bExactTeardown && !bWheeledEndPlayTeardown && HasBegunPlay()
 		&& (!GetOwner() || !GetOwner()->IsActorBeingDestroyed()))
 		if (UWorld* World = GetWorld())
 			for (TActorIterator<ASpeedPhysicsSimulation> It(World); It; ++It)
@@ -1192,6 +1215,8 @@ USWheelSubBody* USpeedWheeledComponent::CreateWheelSubBody(const int& WheelIndex
 
 void USpeedWheeledComponent::SetSubBodies(const TArray<USSubBody*>& NewSubBodies)
 {
+    if (GetPublishedSimulationStableId()) USpeedWorldSubsystem::RequireExactRemoteRoundStorageTeardown(*this);
+    if (!CanInstallOwnedSubBodies(*this, NewSubBodies)) return;
     if(RequestedInputBodyGeneration==MAX_uint64)RequestedInputBodyGeneration=0;
     else if(RequestedInputBodyGeneration)++RequestedInputBodyGeneration;
 	SubBodies = NewSubBodies;
@@ -1204,13 +1229,17 @@ unsigned int USpeedWheeledComponent::NumFrame() const
 
 uint16 USpeedWheeledComponent::GetMinNbFramesBeforeCanMove() const
 {
-	return MinNbFramesBeforeCanMove;
+    const auto* Configuration = ExactRoundWheeledConfigurationForRead();
+    return Configuration ? Configuration->MinimumFramesBeforeCanMove : MinNbFramesBeforeCanMove;
 }
 
 void USpeedWheeledComponent::SetImmediateMovementForTesting()
 {
-	TimeBeforeCanMove = 0.0f;
-	MinNbFramesBeforeCanMove = 0;
+    if (!ChangeWheeledConfiguration([this]
+        {
+            TimeBeforeCanMove = 0.0f;
+            MinNbFramesBeforeCanMove = 0;
+        })) return;
 	WheeledPhysicsState.nbFramesbeforeCanMove = 0;
 	WheeledPhysicsState.bStartCountdown = false;
 	SinceCanMoveFrame = NumFrame();
@@ -1424,6 +1453,8 @@ void USpeedWheeledComponent::DemoedBy(ASpeedCar* otherCar)
 
 void USpeedWheeledComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+    if (USpeedWorldSubsystem::RequireExactRemoteRoundStorageTeardown(*this))
+        bSpeedWorldAdapterRetiredForTeardown = true;
 	bWheeledEndPlayTeardown = true;
 	JoinInputWorkerBeforeStorageDestruction();
 	ASpeedPhysicsSimulation* RetirementDriver = nullptr;
@@ -1501,12 +1532,13 @@ void USpeedWheeledComponent::SetIsFrozen(bool bFrozen)
 
 void USpeedWheeledComponent::SetEngineFPS(const unsigned int& FPS)
 {
-	EngineFPS = FPS;
+    ChangeWheeledConfiguration([this, FPS] { EngineFPS = FPS; });
 }
 
 float USpeedWheeledComponent::GetEngineFPS() const
 {
-	return EngineFPS;
+    const auto* Configuration = ExactRoundWheeledConfigurationForRead();
+    return Configuration ? Configuration->FrameRate : EngineFPS;
 }
 
 int32 USpeedWheeledComponent::GetSinceCanMoveFrame() const
@@ -1811,7 +1843,7 @@ void USpeedWheeledComponent::UpdateFrameState()
 void USpeedWheeledComponent::UpdateNumFrame(const float& SimTime)
 {
 	const int32 CandidateFrame =
-		FMath::RoundToInt32(double(SimTime) * double(EngineFPS)) + 1;
+		FMath::RoundToInt32(double(SimTime) * double(GetEngineFPS())) + 1;
 
 	const int32 PreviousFrame = int32(BaseGameState.NumFrame);
 
@@ -1886,12 +1918,13 @@ void USpeedWheeledComponent::UpdateInputs()
 		if (!bCanonicalInputPending || !N || S.Input.GetData().ConsumptionFrame != *N
 			|| !ValidateProducedInputFrameV2(S.Input))
 		{ bInputFrameRejectedV2 = true; return; }
-		if (S.Input.GetData().Reset) ResetProducedInputState();
+		const auto& ControlInput = S.ControlInput();
+		if (ControlInput.GetData().Reset) ResetProducedInputState();
 		WheeledPhysicalInput.Throttle = static_cast<uint8>(S.Applied[Throttle]);
 		WheeledPhysicalInput.Brake = static_cast<uint8>(S.Applied[Brake]);
 		WheeledPhysicalInput.Steer = static_cast<int8>(S.Applied[Steering]);
 		SyncWheeledPhysicalInputToState();
-		bInputFrameRejectedV2 = !ApplyProducedInputFrameV2(S.Input);
+		bInputFrameRejectedV2 = !ApplyProducedInputFrameV2(ControlInput);
 		// Camera has its own already-stamped IAmSpeed queue. Consume it at this
 		// same owner input point, without polling the GT mailbox or redoing slew.
 		// Disabled generic camera keeps the old no-lock default path.
@@ -2411,9 +2444,9 @@ bool USpeedWheeledComponent::GetWheeledState(const int32& LocalFrame, FWheeledPh
 
 void USpeedWheeledComponent::HandleGravity()
 {
-	if (bEnableGravity)
+	if (IsAffectedByGravity())
 	{
-		AddPhysAcceleration(FVector(0.0f, 0.0f, GravityZ));
+		AddPhysAcceleration(FVector(0.0f, 0.0f, GravityAccelerationZForPhysics()));
 	}
 }
 
@@ -2441,13 +2474,14 @@ void USpeedWheeledComponent::PreGameplayTick(const float& DeltaTime, const float
 }
 void USpeedWheeledComponent::HandleDamping(const float& delta)
 {
-	if (PhysDamping <= 0.0)
+	const float Damping = DampingForPhysics();
+	if (Damping <= 0.0)
 	{
 		return;
 	}
 
 	const FVector COMVelocity = GetPhysCOMVelocity();
-	FVector NewCOMVelocity = (1 - PhysDamping) * COMVelocity;
+	FVector NewCOMVelocity = (1 - Damping) * COMVelocity;
 	const float Speed = COMVelocity.Size();
 	if (Speed <= 1.0f)
 	{
@@ -3628,7 +3662,7 @@ void USpeedWheeledComponent::DampenAirAngularVelocity(const FVector& VelocityToD
 	const UBoxSubBody* ContactHitbox = GetHitboxSubBodyForConfiguration();
 	const int32 ContactFrame = ContactHitbox ? ContactHitbox->GetLastResolvedGroundHitFrame() : INDEX_NONE;
 	const int32 CurrentFrame = static_cast<int32>(NumFrame());
-	const bool bContactDragRequested = CVarIAmSpeedHullContactContinuousAngularDrag.GetValueOnAnyThread() != 0;
+	const bool bContactDragRequested = ReadEffectiveHullContactContinuousAngularDrag();
 	const bool bFreshContactFrame = ContactFrame >= 0 && ContactFrame >= CurrentFrame - 1 && ContactFrame <= CurrentFrame;
 	const bool bContinuousContactDrag = bContactDragRequested && bFreshContactFrame &&
 		ContactHitbox && ContactHitbox->HasCurrentExactPlanarContact();
@@ -3757,19 +3791,104 @@ float USpeedWheeledComponent::GetMaxThrottleSpeed() const
 	return MaxThrottleSpeed;
 }
 
+bool USpeedWheeledComponent::RetainExactRoundMovementConfiguration(uint64 WorkerGeneration, bool bAllowCapture)
+{
+    check(WorkerGeneration && Speed::FScopedExactRoundContactSettings::Current());
+    if (RetainedWheeledConfiguration.WorkerGeneration == WorkerGeneration) return true;
+    if (!bAllowCapture || !GetPublishedSimulationStableId() || !FMath::IsFinite(GravityZ)
+        || !FMath::IsFinite(PhysDamping) || !FMath::IsFinite(WheelContactNormalVelocityTimeConstant)
+        || !FMath::IsFinite(EngineFPS) || EngineFPS <= 0.f) return false;
+
+    RetainedWheeledConfiguration = {WorkerGeneration, bEnableGravity, GravityZ, PhysDamping,
+        WheelContactNormalVelocityTimeConstant, EngineFPS, MinNbFramesBeforeCanMove};
+    return true;
+}
+
+const USpeedWheeledComponent::FExactRoundWheeledConfiguration*
+USpeedWheeledComponent::ExactRoundWheeledConfigurationForRead() const
+{
+    return Speed::FScopedExactRoundContactSettings::Current() && RetainedWheeledConfiguration.WorkerGeneration
+        ? &RetainedWheeledConfiguration : nullptr;
+}
+
+bool USpeedWheeledComponent::AppendExactRoundWheeledConfiguration(Speed::FExactRoundConfigurationWriter& Out) const
+{
+    if (!ExactRoundWheeledConfigurationForRead() || !GetPublishedSimulationStableId()) return false;
+    return Out.Unsigned(0x4941535741430001ull) && Out.Boolean(IsAffectedByGravity())
+        && Out.Float(GravityAccelerationZForPhysics()) && Out.Float(DampingForPhysics())
+        && Out.Float(ContactTimeConstantForPhysics()) && Out.Float(GetEngineFPS())
+        && Out.Unsigned(GetMinNbFramesBeforeCanMove());
+}
+
 bool USpeedWheeledComponent::IsAffectedByGravity() const
 {
-	return bEnableGravity;
+    const auto* Configuration = ExactRoundWheeledConfigurationForRead();
+    return Configuration ? Configuration->GravityEnabled : bEnableGravity;
+}
+
+FVector USpeedWheeledComponent::GetNominalGravityAcceleration() const
+{
+    return IsAffectedByGravity() ? FVector(0, 0, GravityAccelerationZForPhysics()) : FVector::ZeroVector;
+}
+
+float USpeedWheeledComponent::GravityAccelerationZForPhysics() const
+{
+    const auto* Configuration = ExactRoundWheeledConfigurationForRead();
+    return Configuration ? Configuration->GravityZ : GravityZ;
+}
+
+float USpeedWheeledComponent::DampingForPhysics() const
+{
+    const auto* Configuration = ExactRoundWheeledConfigurationForRead();
+    return Configuration ? Configuration->Damping : PhysDamping;
+}
+
+float USpeedWheeledComponent::ContactTimeConstantForPhysics() const
+{
+    const auto* Configuration = ExactRoundWheeledConfigurationForRead();
+    return FMath::Max(Configuration ? Configuration->ContactTimeConstant : WheelContactNormalVelocityTimeConstant, 1e-6f);
+}
+
+bool USpeedWheeledComponent::ChangeWheeledConfiguration(TFunctionRef<void()> Write)
+{
+    if (IsTemplate() || (HasAnyFlags(RF_NeedInitialization) && !GetPublishedSimulationStableId()))
+    {
+        Write();
+        return true;
+    }
+    if (USpeedWorldSubsystem::TryWriteOwnedRoundConfiguration(*this, Write)) return true;
+    UE_LOG(LogTemp, Warning, TEXT("Wheeled configuration is retained by the exact round owner (%s)"), *GetName());
+    return false;
 }
 
 void USpeedWheeledComponent::SetIsAffectedByGravity(bool value)
 {
-	bEnableGravity = value;
+    ChangeWheeledConfiguration([this, value] { bEnableGravity = value; });
 }
 
 void USpeedWheeledComponent::EnableGravity()
 {
-	bEnableGravity = true;
+    SetIsAffectedByGravity(true);
+}
+
+void USpeedWheeledComponent::SetWheeledGravityEnabled(bool bEnabled)
+{
+    SetIsAffectedByGravity(bEnabled);
+}
+
+void USpeedWheeledComponent::SetWheeledGravityZ(float AccelerationZ)
+{
+    ChangeWheeledConfiguration([this, AccelerationZ] { GravityZ = AccelerationZ; });
+}
+
+void USpeedWheeledComponent::SetWheeledDamping(float Damping)
+{
+    ChangeWheeledConfiguration([this, Damping] { PhysDamping = Damping; });
+}
+
+void USpeedWheeledComponent::SetWheeledContactTimeConstant(float Seconds)
+{
+    ChangeWheeledConfiguration([this, Seconds] { WheelContactNormalVelocityTimeConstant = Seconds; });
 }
 
 
@@ -3917,8 +4036,8 @@ void USpeedWheeledComponent::StartConfrontationLocal(const float& TimeSec)
 	}*/
 	FreezeMovement();
 	const uint32 Now = NumFrame();
-	uint16 BaseNbFrame = FMath::RoundToInt(TimeSec * EngineFPS);
-	WheeledPhysicsState.nbFramesbeforeCanMove = FMath::Max(BaseNbFrame, MinNbFramesBeforeCanMove);
+	uint16 BaseNbFrame = FMath::RoundToInt(TimeSec * GetEngineFPS());
+	WheeledPhysicsState.nbFramesbeforeCanMove = FMath::Max(BaseNbFrame, GetMinNbFramesBeforeCanMove());
 	WheeledPhysicsState.bStartCountdown = WheeledPhysicsState.nbFramesbeforeCanMove > 0;
 	SinceCanMoveFrame = INDEX_NONE;
 	if (!WheeledPhysicsState.bStartCountdown)
@@ -4133,7 +4252,7 @@ void USpeedWheeledComponent::SetGroundState()
 	if (WasInAir)
 	{
 		GEngine->AddOnScreenDebugMessage(-1, 5.0f, FColor::Blue, FString::Printf(TEXT("[%s] Time in air: %fs"), *GetRole(),
-			WheeledGameState.NbFrameSinceInAir * (1.0 / EngineFPS)));
+			WheeledGameState.NbFrameSinceInAir * (1.0 / GetEngineFPS())));
 #if !(UE_BUILD_SHIPPING)
 		// UE_LOG(SpeedPhysicsLog, Log, TEXT("[%s(%s)][GROUND LANDING] At Frame = %d, Time in air: %fs"),
 		//	*GetOwner()->GetName(), *GetRole(), NumFrame(), WheeledGameState.NbFrameSinceInAir * (1.0 / EngineFPS));
@@ -4797,7 +4916,7 @@ void USpeedWheeledComponent::HandleSteering(const float& delta)
 	const float rearRatio = 0.10f;
 
 	const float vehicleMass = Mass;
-	const float gravity = GravityZ;
+	const float gravity = GravityAccelerationZForPhysics();
 
 	// -------------------------------------
 	// Save current accelerations
@@ -4974,7 +5093,7 @@ float USpeedWheeledComponent::GetWheelContactNormalVelocityTimeConstant() const
 	const float DiagnosticOverride = GetWheelContactNormalVelocityTimeConstantOverride();
 	return DiagnosticOverride >= 0.0f
 		? DiagnosticOverride
-		: FMath::Max(WheelContactNormalVelocityTimeConstant, 1e-6f);
+		: ContactTimeConstantForPhysics();
 }
 
 bool USpeedWheeledComponent::NoSteeringAllowed() const
@@ -5248,7 +5367,7 @@ void USpeedWheeledComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 			const bool bStartupCountdownCatchup =
 				WheeledTarget.WheeledState.bStartCountdown
 				&& PastPredictedWheeledState.nbFramesbeforeCanMove <= 1
-				&& WheeledTarget.WheeledState.nbFramesbeforeCanMove > MinNbFramesBeforeCanMove;
+				&& WheeledTarget.WheeledState.nbFramesbeforeCanMove > GetMinNbFramesBeforeCanMove();
 			const int32 CorrectedFramesBeforeCanMove = bStartupCountdownCatchup
 				? int32(WheeledTarget.WheeledState.nbFramesbeforeCanMove)
 				: FMath::Max(0, int32(WheeledTarget.WheeledState.nbFramesbeforeCanMove) - WheeledNumPredictedFrames);

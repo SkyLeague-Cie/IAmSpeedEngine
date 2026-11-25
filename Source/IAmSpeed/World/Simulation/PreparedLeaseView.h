@@ -8,19 +8,28 @@
 namespace Speed
 {
 class FPreparedRestoreLeaseOwner;
+class FPreparedNativeKinematicFields;
+class FPreparedNativeRoundFields;
+struct FCommonComponentValueAccess;
+struct FSimulationComponentRestoreRequest;
 namespace RestoreLeaseDetail
 {
 enum class EPhase : unsigned char { Preparing, Ready, Finalizing, Finalized, Aborting, Releasing, Closed };
 struct FState final
 {
     const FSimulationWorld* const World;
+    const std::shared_ptr<const PreparedWorld::FRestoreEnvelope> Envelope;
     const PreparedWorld::FAddress Address;
     const std::thread::id Worker = std::this_thread::get_id();
     std::unique_ptr<ISimulationRestoreBoundaryLease> Lease;
     EPhase Phase = EPhase::Preparing;
     bool Querying = false;
-    FState(const FSimulationWorld& W, const PreparedWorld::FAddress& A,
-        std::unique_ptr<ISimulationRestoreBoundaryLease> L) : World(&W), Address(A), Lease(std::move(L)) {}
+    const FSimulationComponentRestoreRequest* ComponentRequest = nullptr;
+    const ISpeedComponent* ComponentTarget = nullptr;
+    const PreparedWorld::FActorBinding* ComponentBinding = nullptr;
+    FState(const FSimulationWorld& W, std::shared_ptr<const PreparedWorld::FRestoreEnvelope> E,
+        std::unique_ptr<ISimulationRestoreBoundaryLease> L)
+        : World(&W), Envelope(std::move(E)), Address(Envelope->Address), Lease(std::move(L)) {}
     bool Query(const FSimulationWorld* W, const PreparedWorld::FAddress* A) noexcept
     {
         // Wrong-thread queries return before reading any worker-mutated field.
@@ -42,8 +51,65 @@ struct FState final
 class FPreparedRestoreLeaseView final
 {
     friend class FPreparedRestoreLeaseOwner;
+    friend class FPreparedNativeKinematicFields;
+    friend class FPreparedNativeRoundFields;
+    friend struct FCommonComponentValueAccess;
     std::weak_ptr<RestoreLeaseDetail::FState> State;
     explicit FPreparedRestoreLeaseView(const std::shared_ptr<RestoreLeaseDetail::FState>& S) noexcept : State(S) {}
+    std::shared_ptr<RestoreLeaseDetail::FState> ResolvePreparingState(const FSimulationComponentRestoreRequest& Request,
+        const PreparedWorld::FAddress& Address) const noexcept
+    {
+        auto S = State.lock();
+        if (!S || S->Worker != std::this_thread::get_id()) return {};
+        if (S->Phase != RestoreLeaseDetail::EPhase::Preparing || S->ComponentRequest != &Request || !S->ComponentBinding
+            || !S->Query(nullptr, &Address)) return {};
+        return S;
+    }
+
+    std::shared_ptr<RestoreLeaseDetail::FState> ResolvePreparingActor(
+        const PreparedWorld::FAddress& Address, const PreparedWorld::FActorBinding& Binding) const noexcept
+    {
+        auto S = State.lock();
+        if (!S || S->Worker != std::this_thread::get_id() || S->Phase != RestoreLeaseDetail::EPhase::Preparing
+            || !S->ComponentTarget || !S->ComponentBinding || !(*S->ComponentBinding == Binding)
+            || !S->Query(nullptr, &Address)) return {};
+        return S;
+    }
+
+    // Only IAS fragment factories can resolve the native world, and only
+    // while the world is dispatching this exact synchronous request.
+    const FSimulationWorld* ResolvePreparingWorld(const FSimulationComponentRestoreRequest& Request,
+        const PreparedWorld::FAddress& Address) const noexcept
+    {
+        const auto S = ResolvePreparingState(Request, Address);
+        return S ? S->World : nullptr;
+    }
+
+    bool MatchesPreparingTarget(const FSimulationComponentRestoreRequest& Request, const PreparedWorld::FAddress& Address,
+        const FSimulationWorld& World, const ISpeedComponent& Target) const noexcept
+    {
+        const auto S = ResolvePreparingState(Request, Address);
+        return S && S->World == &World && S->ComponentTarget == &Target;
+    }
+
+    bool MatchesPreparingEndpoint(const FSimulationComponentRestoreRequest& Request,
+        const PreparedWorld::FAddress& Address, const PreparedWorld::FEndpointBinding& Endpoint) const noexcept
+    {
+        const auto S = ResolvePreparingState(Request, Address);
+        if (!S || Endpoint.Actor != S->ComponentBinding->StableId
+            || Endpoint.ActorIncarnation != S->ComponentBinding->Incarnation) return false;
+        const auto& Endpoints = S->Envelope->Endpoints;
+        const auto I = std::lower_bound(Endpoints.begin(), Endpoints.end(), Endpoint.StableId,
+            [](const PreparedWorld::FEndpointBinding& Row, uint64 Id) { return Row.StableId < Id; });
+        return I != Endpoints.end() && *I == Endpoint;
+    }
+
+    const ISpeedComponent* ResolvePreparingTarget(const FSimulationComponentRestoreRequest& Request,
+        const PreparedWorld::FAddress& Address) const noexcept
+    {
+        const auto S = ResolvePreparingState(Request, Address);
+        return S ? S->ComponentTarget : nullptr;
+    }
 public:
     FPreparedRestoreLeaseView() = default;
     bool HoldsExactBoundary(const FSimulationWorld& W, const PreparedWorld::FAddress& A) const noexcept
@@ -56,10 +122,43 @@ public:
 class FPreparedRestoreLeaseOwner final
 {
     friend class FSimulationWorld;
-    std::shared_ptr<RestoreLeaseDetail::FState> State;
-    FPreparedRestoreLeaseOwner(const FSimulationWorld& W, const PreparedWorld::FAddress& A,
+    const std::shared_ptr<RestoreLeaseDetail::FState> State;
+    FPreparedRestoreLeaseOwner(const FSimulationWorld& W, std::shared_ptr<const PreparedWorld::FRestoreEnvelope> E,
         std::unique_ptr<ISimulationRestoreBoundaryLease> L)
-        : State(std::make_shared<RestoreLeaseDetail::FState>(W, A, std::move(L))) {}
+        : State(std::make_shared<RestoreLeaseDetail::FState>(W, std::move(E), std::move(L))) {}
+    bool HoldsExactBoundary(const FSimulationWorld& World, const PreparedWorld::FAddress& Address) const noexcept
+    {
+        // The world owns State for this call. Avoid a temporary weak view and
+        // its control-block updates in the no-fail finalization tail.
+        return State->Query(&World, &Address);
+    }
+    template<class Callback>
+    auto WithComponent(const FSimulationComponentRestoreRequest* Request, const ISpeedComponent& Target,
+        const PreparedWorld::FActorBinding& Binding, Callback&& Prepare)
+    {
+        Require(RestoreLeaseDetail::EPhase::Preparing);
+        if (State->ComponentRequest || State->ComponentTarget || State->ComponentBinding) std::terminate();
+        struct FClearRequest
+        {
+            RestoreLeaseDetail::FState& State;
+            ~FClearRequest() noexcept
+            {
+                State.ComponentRequest = nullptr;
+                State.ComponentTarget = nullptr;
+                State.ComponentBinding = nullptr;
+            }
+        } Clear{*State};
+        State->ComponentRequest = Request;
+        State->ComponentTarget = &Target;
+        State->ComponentBinding = &Binding;
+        return std::forward<Callback>(Prepare)();
+    }
+    template<class Callback>
+    auto PrepareComponent(const FSimulationComponentRestoreRequest& Request, const ISpeedComponent& Target,
+        const PreparedWorld::FActorBinding& Binding, Callback&& Prepare)
+    {
+        return WithComponent(&Request, Target, Binding, std::forward<Callback>(Prepare));
+    }
 public:
     FPreparedRestoreLeaseOwner(const FPreparedRestoreLeaseOwner&) = delete;
     FPreparedRestoreLeaseOwner& operator=(const FPreparedRestoreLeaseOwner&) = delete;
@@ -71,13 +170,19 @@ public:
         { return PreparedAccess::FSpan{reinterpret_cast<std::uintptr_t>(P), N}; };
         PreparedAccess::FParticipantAccess P;
         P.Participant = reinterpret_cast<std::uintptr_t>(State.get());
-        P.Writes = {Span(&State->Phase, sizeof(State->Phase)), Span(&State->Querying, sizeof(State->Querying)), Span(&State->Lease, sizeof(State->Lease))};
-        P.ReadOnly = {Span(&State->World, sizeof(State->World)), Span(&State->Address, sizeof(State->Address)), Span(&State->Worker, sizeof(State->Worker))};
+        P.Writes = {Span(&State->Phase, sizeof(State->Phase)), Span(&State->Querying, sizeof(State->Querying)),
+            Span(&State->Lease, sizeof(State->Lease)), Span(&State->ComponentRequest, sizeof(State->ComponentRequest)),
+            Span(&State->ComponentTarget, sizeof(State->ComponentTarget)),
+            Span(&State->ComponentBinding, sizeof(State->ComponentBinding))};
+        P.ReadOnly = {Span(&State, sizeof(State)), Span(&State->World, sizeof(State->World)),
+            Span(&State->Envelope, sizeof(State->Envelope)),
+            Span(&State->Address, sizeof(State->Address)), Span(&State->Worker, sizeof(State->Worker))};
         Out.push_back(std::move(P));
+        const auto Before = Out.size();
         State->Querying = true;
         try
         {
-            const bool Result = State->Lease->AppendPreparedAccess(Out);
+            const bool Result = State->Lease->AppendPreparedAccess(Out) && Out.size() > Before;
             State->Querying = false; return Result;
         }
         catch (...) { State->Querying = false; throw; }

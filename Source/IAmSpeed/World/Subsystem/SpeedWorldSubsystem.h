@@ -99,6 +99,12 @@ class IAMSPEED_API USpeedWorldSubsystem : public UWorldSubsystem
 #endif
 public:
 	virtual void OnWorldBeginPlay(UWorld& InWorld) override;
+    void Deinitialize() override;
+    // Call before invalidating IAS-owned storage outside the native callbacks.
+    // Call before acquiring a world borrow or a lock used by the worker.
+    // For an opted-in world this joins and permanently retires the registry.
+    // An ordinary world needs no exact-round fence and returns true.
+    bool JoinExactRemoteRoundBeforeStorageMutationGT();
 	static bool AreUnilateralRollingPairsEnabled();
 	static bool ShouldAcquireUnilateralRollingPair(float RelativeNormalSpeed);
     void RegisterSpeedComponent(ISpeedComponent* Comp);
@@ -148,7 +154,11 @@ public:
 	bool ValidateSimulationBindings(FString& OutReason);
 	/** Keeps the admitted registry fixed until the canonical frame has ended. */
 	bool BeginCanonicalFrame(FString& OutReason);
-	void EndCanonicalFrame() { bCanonicalFrameActive = false; }
+	void EndCanonicalFrame()
+	{
+		const auto Access = SimulationWorld.BorrowStorage();
+		if (Access) bCanonicalFrameActive = false;
+	}
 	ECanonicalRunControlState GetCanonicalRunControlState();
 #if !UE_BUILD_SHIPPING
     /** Owner-only observer over the already admitted registry. No pending-op
@@ -168,6 +178,16 @@ public:
 	{
 		return SimulationWorld.GetStaticCollisionWorld();
 	}
+	bool HasStaticCollisionWorld() const { return SimulationWorld.HasStaticCollisionWorld(); }
+    // The visitor must leave only values or immutable publications behind.
+    // A component lifetime pin belongs to its owner independently of this scope.
+    bool VisitBorrowedSimulationWorld(TFunctionRef<void(const Speed::FSimulationWorld&)> Visit) const
+    {
+        const auto Access = SimulationWorld.BorrowStorage();
+        if (!Access) return false;
+        Visit(SimulationWorld);
+        return true;
+    }
     // Preparation publication only. It keeps physical stepping closed until
     // the typed consumer is qualified; no asset eligibility flag is changed.
     bool TryPublishPreparedIntervalWorld(const Speed::FHostedGTStaticWorldLease& Lease,
@@ -207,6 +227,25 @@ public:
     void Step(const float& Dt, const float& SimTime, const unsigned int& Frame);
 private:
     friend class ASpeedPhysicsSimulation;
+    friend class USSubBody;
+    friend class USolidSubBody;
+    friend class USpeedMovementComponent;
+    friend class USpeedWheeledComponent;
+    bool BindExactRemoteRoundStorageOwner(ASpeedPhysicsSimulation&, uint64 Generation);
+    bool RecordExactRemoteRoundStorageJoin(ASpeedPhysicsSimulation&, uint64 Generation);
+    void RetireExactRoundWheeledHitCounts();
+    // UE lifecycle callbacks cannot defer after failed admission. They stop
+    // before touching retained storage. Returns true only for the exact route.
+    static bool RequireExactRemoteRoundStorageTeardown(const UActorComponent&);
+    static bool TryWriteSolidContactConfiguration(const USolidSubBody&, TFunctionRef<void()> Write);
+    static bool TryWriteOwnedRoundConfiguration(const UActorComponent&, TFunctionRef<void()> Write,
+        const USolidSubBody* RetainedSlot = nullptr);
+    // Serializes pre-bind field writes with installation of the exact native owner.
+    FCriticalSection ExactRoundConfigurationCS;
+    TWeakObjectPtr<ASpeedPhysicsSimulation> ExactRoundStorageDriver; // GT
+    TAtomic<uint64> ExactRoundStorageGeneration{0};
+    TAtomic<bool> bExactRoundStorageRetired{false};
+    bool bExactRoundStorageJoined = false; // GT, survives destruction of the driver
     bool PrepareRequestedNetworkAdmissionBoundary();
 #if !UE_BUILD_SHIPPING
     uint64 TestingPreparingFrame=MAX_uint64;

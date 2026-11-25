@@ -1,6 +1,5 @@
-// Included by the DERIVED SimulationWorld.cpp only. Native source-only:
-// NOT_COMPILED / NOT_RUN / NOT_ADMITTED. No production lease or complete
-// component/global gameplay participant has been implemented or qualified.
+// Included only by SimulationWorld.cpp.
+#include "PreparedWorldReplacement.h"
 #include <thread>
 namespace Speed
 {
@@ -21,16 +20,28 @@ struct FSimulationWorld::FPreparedWorldRestore
     std::unique_ptr<FPreparedRestoreLeaseOwner> LeaseOwner;
     std::vector<PreparedAccess::FParticipantAccess> Access;
     std::unique_ptr<IPreparedSimulationWorldSupplement> Supplement;
-    std::vector<std::unique_ptr<IPreparedSimulationComponentRestore>> Components;
+    struct FComponent
+    {
+        const ISpeedComponent* Target;
+        std::unique_ptr<IPreparedSimulationComponentRestore> Plan;
+    };
+    std::vector<FComponent> Components;
     std::unique_ptr<FContactStorage> Storage;
     std::thread::id Worker = std::this_thread::get_id();
     bool Ready = false, Finalized = false, Released = false, Calling = false;
+    bool MatchesComponent(const FSimulationWorld& World, std::size_t Index) const
+    {
+        const auto& Binding = Publication->Envelope->Actors[Index];
+        const auto* Target = World.AdaptersByStableId.FindRef(Binding.StableId);
+        return Target && Target == Components[Index].Target && World.FindStableId(*Target) == Binding.StableId;
+    }
+
     ~FPreparedWorldRestore() noexcept
     {
         if (Released) return;
         if (Finalized) std::terminate(); // no undo exists after the no-fail tail starts
         if (LeaseOwner) LeaseOwner->BeginAbort();
-        for (auto I = Components.rbegin(); I != Components.rend(); ++I) (*I)->AbortBeforeFinalize();
+        for (auto I = Components.rbegin(); I != Components.rend(); ++I) I->Plan->AbortBeforeFinalize();
         if (Supplement) Supplement->AbortBeforeFinalize();
         if (LeaseOwner) LeaseOwner->FinishAbort();
     }
@@ -57,7 +68,8 @@ std::optional<FSimulationWorld::FPreparedRestoreToken> FSimulationWorld::Prepare
 {
     // Plans/leases must have idempotent aborting RAII destruction before commit;
     // even rejecting the arguments below must not leak a reservation or fence.
-    if (IsRestoreBoundaryReserved()) return {};
+    const auto Access = BorrowStorage();
+    if ((!Access && !StorageAccess.IsReservationOwner()) || IsRestoreBoundaryReserved()) return {};
     FPreparedRestoreEntryScope Entry(PreparedRestoreEntryActive);
     // Function parameters outlive ordinary locals: explicitly close their
     // incoming ownership while the entry gate is still active, even on reject.
@@ -74,8 +86,11 @@ std::optional<FSimulationWorld::FPreparedRestoreToken> FSimulationWorld::Prepare
         // Private immutable copy. Never retain a caller's mutable alias.
         auto Pinned = std::make_shared<const PreparedWorld::FRestoreEnvelope>(*Envelope);
         if (!PreparedWorld::ValidEnvelope(*Pinned)) return {};
+        if (!Pinned->ColdCarBumps.empty() && (!StorageAccess.IsReservationOwner()
+            || !ExactRoundWorkerGeneration || !(ReadExactRoundOrigin() == FExactRoundNativeOrigin{
+                Pinned->Address.Authority, Pinned->Address.WorldIncarnation, Pinned->Address.TopologyVersion}))) return {};
         Plan->LeaseOwner = std::unique_ptr<FPreparedRestoreLeaseOwner>(
-            new FPreparedRestoreLeaseOwner(*this, Pinned->Address, std::move(Lease)));
+            new FPreparedRestoreLeaseOwner(*this, Pinned, std::move(Lease)));
         // From this point the external lease already pins this world and ALL
         // native/config/lifecycle identities and excludes every mutation lane.
         // Install reservation BEFORE invoking component preparation callbacks.
@@ -97,7 +112,7 @@ std::optional<FSimulationWorld::FPreparedRestoreToken> FSimulationWorld::Prepare
             || PreparedRestore->Supplement->CoveredDomains() != PreparedWorld::CompleteWorldCoverage) return Fail();
         auto Parsed = PreparedWorld::Parse(Snapshot.Payload.GetData(), static_cast<std::size_t>(Snapshot.Payload.Num()),
             Pinned->Address, Pinned->Actors);
-        if (!Parsed) return Fail();
+        if (!Parsed || !PreparedWorld::MatchesCarBumpPayloads(*Parsed, Pinned->ColdCarBumps, true)) return Fail();
         for (const auto& Binding : Pinned->Actors)
         {
             ISpeedComponent* Adapter = AdaptersByStableId.FindRef(Binding.StableId);
@@ -175,10 +190,15 @@ std::optional<FSimulationWorld::FPreparedRestoreToken> FSimulationWorld::Prepare
             const FSimulationComponentRestoreRequest Request{Publication->Envelope->Address,
                 Publication->Envelope->ActorSupplements[I], K, State->Frozen,
                 TConstArrayView<uint8>(State->MechanicPayload.data(), static_cast<int32>(State->MechanicPayload.size())), PreparedRestore->LeaseOwner->View()};
-            auto Component = AdaptersByStableId.FindRef(Binding.StableId)->PrepareCompleteSimulationRestore(Request);
+            auto* Target = AdaptersByStableId.FindRef(Binding.StableId);
+            if (!Target) return Fail();
+            auto Component = PreparedRestore->LeaseOwner->PrepareComponent(Request, *Target, Binding, [&]
+            {
+                return Target->PrepareCompleteSimulationRestore(Request);
+            });
             if (!Component) return Fail(); // ALL frozen production adapters take this default rejection
-            PreparedRestore->Components.push_back(std::move(Component));
-            const auto& Stored = *PreparedRestore->Components.back();
+            PreparedRestore->Components.push_back({Target, std::move(Component)});
+            const auto& Stored = *PreparedRestore->Components.back().Plan;
             if (!(Stored.Address() == Publication->Envelope->Address) || !(Stored.Binding() == Binding)
                 || Stored.CoveredDomains() != PreparedWorld::CompleteActorCoverage) return Fail();
         }
@@ -200,12 +220,19 @@ bool FSimulationWorld::PrepareRestoreFinalization(const FPreparedRestoreToken& T
     {
         auto& P = *PreparedRestore;
         P.Calling = true; // BEFORE the first lease or provider callback
-        if (!P.LeaseOwner->View().HoldsExactBoundary(*this, P.Publication->Envelope->Address)) { PreparedRestore.reset(); return false; }
-        for (auto& C : P.Components) if (!C->PrepareFinalization()) { PreparedRestore.reset(); return false; }
+        if (!P.LeaseOwner->HoldsExactBoundary(*this, P.Publication->Envelope->Address)) { PreparedRestore.reset(); return false; }
+        for (std::size_t I = 0; I < P.Components.size(); ++I)
+        {
+            const auto& Binding = P.Publication->Envelope->Actors[I];
+            auto& Component = P.Components[I];
+            if (!P.MatchesComponent(*this, I) || !P.LeaseOwner->WithComponent(nullptr, *Component.Target, Binding,
+                [&] { return Component.Plan->PrepareFinalization(); }))
+            { PreparedRestore.reset(); return false; }
+        }
         if (!P.Supplement->PrepareFinalization()) { PreparedRestore.reset(); return false; }
         for (std::size_t I = 0; I < P.Components.size(); ++I)
         {
-            const auto& C = *P.Components[I];
+            const auto& C = *P.Components[I].Plan;
             if (!(C.Address() == P.Publication->Envelope->Address)
                 || !(C.Binding() == P.Publication->Envelope->Actors[I])
                 || C.CoveredDomains() != PreparedWorld::CompleteActorCoverage) { PreparedRestore.reset(); return false; }
@@ -213,9 +240,13 @@ bool FSimulationWorld::PrepareRestoreFinalization(const FPreparedRestoreToken& T
         if (!(P.Supplement->Address() == P.Publication->Envelope->Address)
             || P.Supplement->Schema() != P.Publication->Envelope->WorldSchema
             || P.Supplement->CoveredDomains() != PreparedWorld::CompleteWorldCoverage
-            || !P.LeaseOwner->View().HoldsExactBoundary(*this, P.Publication->Envelope->Address)) { PreparedRestore.reset(); return false; }
+            || !P.LeaseOwner->HoldsExactBoundary(*this, P.Publication->Envelope->Address)) { PreparedRestore.reset(); return false; }
         std::vector<PreparedAccess::FParticipantAccess> Current;
         if (!CollectPreparedAccess(Current) || !PreparedAccess::SameDeclarations(P.Access, Current)) { PreparedRestore.reset(); return false; }
+        // Provider callbacks above may reattest the same binding values.
+        // The registry must still resolve those values to the pinned adapter.
+        for (std::size_t I = 0; I < P.Components.size(); ++I)
+            if (!P.MatchesComponent(*this, I)) { PreparedRestore.reset(); return false; }
         P.LeaseOwner->SetReady(); P.Calling = false; P.Ready = true; return true;
     }
     catch (...) { PreparedRestore.reset(); return false; }
@@ -231,11 +262,11 @@ void FSimulationWorld::FinalizePreparedRestore(const FPreparedRestoreToken& T) n
     if (!MatchesPreparedRestore(T) || !PreparedRestore->Ready || PreparedRestore->Finalized) std::terminate();
     FPreparedRestoreEntryScope Entry(PreparedRestoreEntryActive);
     auto& P = *PreparedRestore; P.Calling = true;
-    if (!P.LeaseOwner->View().HoldsExactBoundary(*this, P.Publication->Envelope->Address)) std::terminate();
+    if (!P.LeaseOwner->HoldsExactBoundary(*this, P.Publication->Envelope->Address)) std::terminate();
     P.LeaseOwner->BeginFinalize();
     // Only opt-in prevalidated no-fail plans enter this tail. Legacy restore is
     // never called. The previous storage is retained, not destroyed, until release.
-    for (auto& C : P.Components) C->Finalize();
+    for (auto& C : P.Components) C.Plan->Finalize();
     ContactStorage.swap(P.Storage);
     CurrentStepFrame = static_cast<unsigned int>(P.Publication->Envelope->Address.Frame);
     LastPreparedRestoreGeneration = P.Publication->Envelope->Address.ResumeGeneration;
@@ -250,8 +281,11 @@ void FSimulationWorld::ReleasePreparedRestoreAfterPublication(const FPreparedRes
     FPreparedRestoreEntryScope Entry(PreparedRestoreEntryActive);
     auto& P = *PreparedRestore;
     P.Calling = true; P.LeaseOwner->BeginRelease();
-    for (auto& C : P.Components) C->ReleaseAfterPublication();
+    for (auto& C : P.Components) C.Plan->ReleaseAfterPublication();
     P.Supplement->ReleaseAfterPublication(); P.LeaseOwner->FinishRelease();
-    P.Released = true; PreparedRestore.reset();
+    P.Released = true;
+    // Participant callbacks are complete. Destroy the retained objects and
+    // their ownership allocations after release.
+    PreparedRestore.reset();
 }
 }

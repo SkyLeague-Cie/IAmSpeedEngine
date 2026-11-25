@@ -1,4 +1,6 @@
 // TEST SHIM DECLARATION, copied API/storage slices, not full native world.
+#include "IAmSpeed/World/Simulation/WorldBorrowGate.h"
+#include "IAmSpeed/World/Simulation/ExactRoundNativeAddress.h"
 namespace Speed { class FSimulationWorld {
 public:
         FSimulationWorld();
@@ -25,6 +27,11 @@ public:
         void ReleasePreparedRestoreAfterPublication(const FPreparedRestoreToken&,
             const std::shared_ptr<const FPreparedRestorePublication>& Published) noexcept;
         bool IsRestoreBoundaryReserved() const noexcept { return PreparedRestoreEntryActive || PreparedRestore != nullptr; }
+        const uint64 ExactRoundWorkerGeneration = 0;
+        FExactRoundNativeOrigin ReadExactRoundOrigin() const noexcept { return {}; }
+        FWorldBorrowGate StorageAccess;
+        [[nodiscard]] FWorldBorrowGate::FBorrow BorrowStorage() const noexcept
+        { return FWorldBorrowGate::FBorrow(StorageAccess); }
 
         struct FContactStorage
         {

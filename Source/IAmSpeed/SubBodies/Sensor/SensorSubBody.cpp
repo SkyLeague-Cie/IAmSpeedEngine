@@ -2,6 +2,7 @@
 
 
 #include "SensorSubBody.h"
+#include "IAmSpeed/World/Simulation/ExactNeutralDispatch.h"
 #include "Engine/OverlapResult.h"
 
 USensorSubBody::USensorSubBody(const FObjectInitializer& ObjectInitializer) :
@@ -56,6 +57,8 @@ void USensorSubBody::ResolveCurrentHitPrv(const float& Delta, const float& SimTi
     OverlapsOrdered.Add(Other);
     OverlapsSet.Add(Other);
 
+    const Speed::ExactNeutralDispatchDetail::FCallbackScope Dispatch(Speed::EExactNeutralDispatch::SensorBeginOverlap,
+        static_cast<const USSubBody*>(this));
     OnBeginOverlap.Broadcast(this, Other);
 }
 
@@ -67,6 +70,9 @@ void USensorSubBody::VisitNativeOverlapTargetTokens(TFunctionRef<void(const FWea
 }
 void USensorSubBody::PostPhysicsUpdate()
 {
+    using namespace Speed::ExactNeutralDispatchDetail;
+    const FCallbackScope MaskRecursiveBroadcast;
+    const auto* Post = FSubBodyPostScope::ClaimSensorPost(*this);
     // 1) EndOverlap: any previously overlapping component not touched this frame
     for (int32 i = OverlapsOrdered.Num() - 1; i >= 0; --i)
     {
@@ -89,13 +95,21 @@ void USensorSubBody::PostPhysicsUpdate()
         {
             if (TouchedThisFrame.Contains(C))
             {
-                OnContinuousOverlap.Broadcast(this, C);
+                const FSelectionScope Dispatch(Post, *this, *C);
+                DispatchContinuousOverlapOnOwner(*C);
             }
         }
     }
 
     // clear per-frame touched cache
     TouchedThisFrame.Reset();
+}
+
+void USensorSubBody::DispatchContinuousOverlapOnOwner(UPrimitiveComponent& Other)
+{
+    const Speed::ExactNeutralDispatchDetail::FCallbackScope Dispatch(
+        Speed::EExactNeutralDispatch::SensorContinuousOverlap, static_cast<const USSubBody*>(this), &Other);
+    OnContinuousOverlap.Broadcast(this, &Other);
 }
 
 UPrimitiveComponent* USensorSubBody::GetFirstOverlappingComponent() const
@@ -112,6 +126,7 @@ UPrimitiveComponent* USensorSubBody::GetFirstOverlappingComponent() const
 
 void USensorSubBody::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+    RequireExactRoundStorageTeardown();
 	UnbindDelegates();
 	Super::EndPlay(EndPlayReason);
 }
@@ -135,6 +150,7 @@ void USensorSubBody::BindDelegates()
 
 void USensorSubBody::UnbindDelegates()
 {
+    RequireExactRoundStorageTeardown();
     if (ContinuousOverlapHandle.IsValid())
     {
         ContinuousOverlapHandle.Reset();

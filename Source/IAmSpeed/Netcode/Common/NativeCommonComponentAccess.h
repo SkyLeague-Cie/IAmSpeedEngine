@@ -1,5 +1,7 @@
 #pragma once
 #include "NativeCommonCacheAccess.h"
+#include "NativeOwnedArrayExchange.h"
+#include "NativePreparedKinematicFields.h"
 #include "IAmSpeed/Components/ISpeedComponent.h"
 #include "IAmSpeed/SubBodies/SSubBody.h"
 #include "Components/PrimitiveComponent.h"
@@ -8,9 +10,9 @@
 
 namespace Speed
 {
-// Source-only partial common-field helper. NOT a complete component restore
-// provider and NOT wired into PrepareCompleteSimulationRestore. Native type,
-// resolver, actual lifetime fences and TArray exchange remain unqualified.
+// Common-field fragment only, not a complete component restore provider.
+// The caller composes base/wheel/game participants and supplies the real owner
+// lease. No factory here can mint that lease or admit a native runtime route.
 struct FCommonComponentValueAccess
 {
     struct FCapturedReference { CommonState::FReference Identity; uint32 NativeObjectId = 0; };
@@ -27,8 +29,9 @@ struct FCommonComponentValueAccess
         const ISpeedComponent& C, const FSimulationWorld& World, const ISimulationRestoreBoundaryLease& Lease,
         const PreparedWorld::FAddress& At, const PreparedWorld::FActorBinding& Actor, Resolver& Resolve)
     {
-        if (!At.Valid() || !Actor.Valid() || C.GetPublishedSimulationStableId() != Actor.StableId
+        if (!At.Valid() || !Actor.Valid()
             || !Lease.ProtectsEscapedMutableViews() || !Lease.HoldsExactBoundary(World, At)
+            || C.GetPublishedSimulationStableId() != Actor.StableId
             || !Resolve.ValidateComponentBinding(C, Actor)) return {};
         CommonState::FComponentValues O; O.Address = SourceAddress(At); O.Actor = Actor;
         O.Sleep = FCommonCacheValueAccess::Capture(C.SleepState);
@@ -59,51 +62,74 @@ struct FCommonComponentValueAccess
         float Horizon = 0;
         uint64 PublishedStableId = 0;
         ISpeedComponent* Target = nullptr;
+        const FSimulationWorld* World = nullptr;
+        PreparedWorld::FAddress Address;
+        FPreparedRestoreLeaseView OwnerLease;
         CommonState::FParticipantAccess Access;
-        bool Finalized = false, Released = false;
+        bool Ready = false, Finalized = false, Released = false;
         FPreparedCommonFields() = default;
     public:
         FPreparedCommonFields(const FPreparedCommonFields&) = delete;
         FPreparedCommonFields& operator=(const FPreparedCommonFields&) = delete;
         ~FPreparedCommonFields() noexcept { if (Finalized && !Released) std::terminate(); }
         const CommonState::FParticipantAccess& DeclaredAccess() const noexcept { return Access; }
+        bool PrepareFinalization() noexcept
+        {
+            Ready = false;
+            if (Finalized || Released || !Target || !World
+                || !OwnerLease.HoldsExactBoundary(*World, Address)) return false;
+            Ready = Target->GetPublishedSimulationStableId() == PublishedStableId;
+            return Ready;
+        }
         // Caller MUST have acquired/revalidated all participants and run
         // ValidateGlobalAccess across ALL writes vs ALL read-only config ranges.
         // No local boolean can replace the global retained native lease.
         void FinalizeTo(ISpeedComponent& C) noexcept
         {
-            if (Finalized || Released || &C != Target || C.GetPublishedSimulationStableId() != PublishedStableId) std::terminate();
-            if constexpr (!std::is_nothrow_swappable_v<TArray<FPhysicalContactConstraint>>) std::terminate();
-            else
-            {
-                using std::swap; swap(C.PhysicalConstraints, Constraints);
-                Caches.CopyTo(C.SleepState, C.KinematicQuantizationCache);
-                C.StaticRestingWorld = StaticAuthority; C.StaticSupportFrameHorizon = Horizon;
-                Finalized = true;
-            }
+            if (!Ready || Finalized || Released || &C != Target) std::terminate();
+            // The coordinator has completed ALL fallible validation. No lease,
+            // weak-object, native identity or virtual query occurs in this tail.
+            NativeState::ExchangeOwnedDefaultArrays(C.PhysicalConstraints, Constraints);
+            Caches.CopyTo(C.SleepState, C.KinematicQuantizationCache);
+            C.StaticRestingWorld = StaticAuthority; C.StaticSupportFrameHorizon = Horizon;
+            Ready = false; Finalized = true;
         }
+        void AbortBeforeFinalization() noexcept
+        { if (Finalized) std::terminate(); Ready = false; Released = true; }
         void ReleaseAfterCommonPublication() noexcept
         { if (!Finalized || Released) std::terminate(); Released = true; }
     };
+    // Same callback contract as the kinematic fragments. Values must name the
+    // same physical actor and binding as the request issued by the world.
+    template<class Resolver> static std::unique_ptr<FPreparedCommonFields> Prepare(
+        ISpeedComponent& C, const FSimulationComponentRestoreRequest& Request,
+        const CommonState::FComponentValues& Values, uint64 ParticipantIdentity, Resolver& Resolve)
+    {
+        const auto* World = Request.OwnerLease.ResolvePreparingWorld(Request, Request.Address);
+        if (!World || !(Values.Actor == Request.Supplement.Binding)
+            || !FPreparedNativeKinematicFields::MatchesActor(*World, Request, C)) return {};
+        return Prepare(C, *World, Request.OwnerLease, Request.Address, Values, ParticipantIdentity, Resolve);
+    }
+
     // ResolveOther/ResolveSubBody return typed pointers already pinned and exact
     // identity-validated under Lease; nullptr is accepted ONLY for explicit null.
     // ResolveStaticAuthority returns pointer + the entire typed immutable config
     // closure as ReadOnly spans, not one-byte placeholder pointer spans.
     // No resolver implementation is supplied or admitted by this artifact.
     template<class Resolver> static std::unique_ptr<FPreparedCommonFields> Prepare(
-        ISpeedComponent& C, const FSimulationWorld& World, const ISimulationRestoreBoundaryLease& Lease,
+        ISpeedComponent& C, const FSimulationWorld& World, FPreparedRestoreLeaseView Lease,
         const PreparedWorld::FAddress& At, const CommonState::FComponentValues& Values,
         uint64 ParticipantIdentity, Resolver& Resolve)
     {
-        if constexpr (!std::is_nothrow_swappable_v<TArray<FPhysicalContactConstraint>>) return {};
         if (!ParticipantIdentity || !At.Valid() || !CommonState::Valid(Values) || !(Values.Address == SourceAddress(At))
-            || C.GetPublishedSimulationStableId() != Values.Actor.StableId
             || !Lease.ProtectsEscapedMutableViews() || !Lease.HoldsExactBoundary(World, At)
+            || C.GetPublishedSimulationStableId() != Values.Actor.StableId
             || !Resolve.ValidateComponentBinding(C, Values.Actor)) return {};
         auto Caches = FCommonCacheValueAccess::Prepare(Values.Sleep, Values.Quantization);
         if (!Caches) return {};
         auto Plan = std::unique_ptr<FPreparedCommonFields>(new FPreparedCommonFields()); Plan->Caches = *Caches;
         Plan->PublishedStableId = Values.Actor.StableId; Plan->Horizon = Values.StaticSupportFrameHorizon; Plan->Target = &C;
+        Plan->World = &World; Plan->Address = At; Plan->OwnerLease = std::move(Lease);
         auto Authority = Resolve.ResolveStaticAuthority(Values.StaticRestingWorld);
         if (!Authority) return {};
         Plan->StaticAuthority = Authority->Pointer;
@@ -137,14 +163,28 @@ struct FCommonComponentValueAccess
         Plan->Access.Writes = {Span(&C.PhysicalConstraints, sizeof(C.PhysicalConstraints)), Span(&C.SleepState, sizeof(C.SleepState)),
             Span(&C.KinematicQuantizationCache, sizeof(C.KinematicQuantizationCache)), Span(&C.StaticRestingWorld, sizeof(C.StaticRestingWorld)),
             Span(&C.StaticSupportFrameHorizon, sizeof(C.StaticSupportFrameHorizon)), Span(&Plan->Constraints, sizeof(Plan->Constraints)),
-            Span(&Plan->Finalized, sizeof(Plan->Finalized)), Span(&Plan->Released, sizeof(Plan->Released))};
+            Span(&Plan->Ready, sizeof(Plan->Ready)), Span(&Plan->Finalized, sizeof(Plan->Finalized)), Span(&Plan->Released, sizeof(Plan->Released))};
         Plan->Access.ReadOnly.push_back(Span(&Plan->Caches, sizeof(Plan->Caches)));
         Plan->Access.ReadOnly.push_back(Span(&Plan->StaticAuthority, sizeof(Plan->StaticAuthority)));
         Plan->Access.ReadOnly.push_back(Span(&Plan->Horizon, sizeof(Plan->Horizon)));
         Plan->Access.ReadOnly.push_back(Span(&Plan->PublishedStableId, sizeof(Plan->PublishedStableId)));
         Plan->Access.ReadOnly.push_back(Span(&Plan->Target, sizeof(Plan->Target)));
-        if (!Plan->Constraints.IsEmpty()) Plan->Access.ReadOnly.push_back(
-            Span(Plan->Constraints.GetData(), sizeof(FPhysicalContactConstraint) * static_cast<std::size_t>(Plan->Constraints.Num())));
+        Plan->Access.ReadOnly.push_back(Span(&Plan->World, sizeof(Plan->World)));
+        Plan->Access.ReadOnly.push_back(Span(&Plan->Address, sizeof(Plan->Address)));
+        Plan->Access.ReadOnly.push_back(Span(&Plan->OwnerLease, sizeof(Plan->OwnerLease)));
+        // Both retained allocations survive the header exchange. Include slack
+        // and empty-but-reserved arrays; Num alone does not describe ownership.
+        const auto AppendBacking = [&](const TArray<FPhysicalContactConstraint>& Array)
+        {
+            if (Array.Num() < 0 || Array.Max() < Array.Num()) return false;
+            const auto Bytes = Array.GetAllocatedSize();
+            if (!Bytes) return Array.Max() == 0 && Array.GetData() == nullptr;
+            if (!Array.GetData() || Bytes < sizeof(FPhysicalContactConstraint) * static_cast<std::size_t>(Array.Max())) return false;
+            const auto Range = Span(Array.GetData(), Bytes);
+            if (!CommonState::ValidSpan(Range)) return false;
+            Plan->Access.ReadOnly.push_back(Range); return true;
+        };
+        if (!AppendBacking(C.PhysicalConstraints) || !AppendBacking(Plan->Constraints)) return {};
         if (!CommonState::ValidateGlobalAccess({Plan->Access})) return {};
         return Plan; // PARTIAL participant only, never claims complete actor restoration
     }

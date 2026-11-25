@@ -12,19 +12,25 @@ class IAMSPEED_API USafeNetworkPhysicsComponent : public UNetworkPhysicsComponen
 	GENERATED_BODY()
 
 public:
+    bool HasEverRegistered() const { return bEverRegistered; }
 	virtual void OnRegister() override;
 	virtual void InitializeComponent() override;
 	virtual void UninitializeComponent() override;
 	virtual void BeginDestroy() override;
 	virtual bool CallRemoteFunction(UFunction* Function, void* Parameters, FOutParmRec* OutParms, FFrame* Stack) override;
 
+protected:
+    void OnPreRegister() override;
+
 private:
+    bool IsPresentationOnlyMoverSubobject() const;
 	bool ShouldBypassNetworkPhysicsLifecycle() const;
 	void LogBypass(const TCHAR* Stage) const;
 	void LogLifecycle(const TCHAR* Stage) const;
 	void PrepareAsyncShutdown(const TCHAR* Stage);
 
 	bool bInitializedNetworkPhysicsLifecycle = false;
+    bool bEverRegistered = false;
 #if !(UE_BUILD_SHIPPING)
 	uint32 PrivateRPCTraceCallSerial = 0;
 	uint32 PrivateRPCTraceLines = 0;

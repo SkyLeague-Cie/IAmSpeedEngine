@@ -48,7 +48,7 @@ Speed::ERequestedPresentationAdmission ASpeedPhysicsSimulation::SubmitRequestedI
 {
     using namespace Speed;
     const auto Commands=RequestedPresentationCommands.load(std::memory_order_seq_cst);
-    if(!IsInGameThread()||!Commands||GetActiveExecutionMode()!=ESimulationExecutionMode::IAmSpeedThread
+    if(!IsInGameThread()||ReplayStartupService.IsHolding()||!Commands||GetActiveExecutionMode()!=ESimulationExecutionMode::IAmSpeedThread
         ||bPresentationBindingClosed||!bPublishCompletedWorldInput||bInputOwnerRetired.Load()||bOwnedWorkerTerminal.Load()
         ||bCanonicalPublicationTerminal.Load()||D.WorkerGeneration!=InputWorkerGeneration)return ERequestedPresentationAdmission::Rejected;
     const auto Result=Commands->Submit(std::move(D),std::move(P));

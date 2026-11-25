@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 #include "IAmSpeed/Concurrency/AtomicSharedPtr.h"
 namespace Speed::Replay { class FFieldWriter; }
+namespace Speed { class FPreparedNativeKinematicFields; class FPreparedNativeRoundFields; }
 #include "ChaosWheeledVehicleMovementComponent.h"
 #include "ISpeedWheeledComponent.h"
 #include "Netcode/SpeedPhysicsComponent.h"
@@ -69,6 +70,9 @@ class IAMSPEED_API USpeedWheeledComponent : public UChaosWheeledVehicleMovementC
 	friend struct FNetworkWheeledSpeedInputState;
 
 public:
+    // Returns the calling thread's retained hull-contact drag flag, with a live fallback.
+    static bool ReadEffectiveHullContactContinuousAngularDrag() noexcept;
+
     // Read-only GT diagnostics; caller retains authenticated lease and pins.
     bool ReadCanonicalPrepareStateForGTInspection(const Speed::FPreparedNativeOwnerBinding& Binding,
         Speed::FNativePrepareGTFields& Out,Speed::Analytic::Certified::FDistanceBudget& Budget,FString& Reason) const;
@@ -191,7 +195,17 @@ public:
 	void ApplyTestVelocity();
 
 	bool IsAffectedByGravity() const;
-	FVector GetNominalGravityAcceleration() const override { return bEnableGravity ? FVector(0, 0, GravityZ) : FVector::ZeroVector; }
+	FVector GetNominalGravityAcceleration() const override;
+    // Common IAS movement settings for the original registered wheeled actor.
+    bool AppendExactRoundWheeledConfiguration(Speed::FExactRoundConfigurationWriter& Out) const;
+    UFUNCTION(BlueprintSetter, Category = "Base")
+    void SetWheeledGravityEnabled(bool bEnabled);
+    UFUNCTION(BlueprintSetter, Category = "Base")
+    void SetWheeledGravityZ(float AccelerationZ);
+    UFUNCTION(BlueprintSetter, Category = "Base")
+    void SetWheeledDamping(float Damping);
+    UFUNCTION(BlueprintSetter, Category = "Physics")
+    void SetWheeledContactTimeConstant(float Seconds);
 	void SetIsAffectedByGravity(bool value);
 	void EnableGravity();
 	bool HasAuthority() const;
@@ -515,10 +529,12 @@ public:
 		meta = (ClampMin = "0.0", UIMin = "0.0"))
 	float PhysMass = 1000.0f;
 	// whether to apply gravity to the component
-	UPROPERTY(BlueprintReadWrite, Category = Base, EditDefaultsOnly)
+	UPROPERTY(Category = Base, EditDefaultsOnly,
+		BlueprintSetter = SetWheeledGravityEnabled, Setter = SetWheeledGravityEnabled)
 	bool bEnableGravity = true;
 	// gravity acceleration in cm/s^2 (negative value means gravity is pulling down)
-	UPROPERTY(BlueprintReadWrite, Category = Base, EditDefaultsOnly)
+	UPROPERTY(Category = Base, EditDefaultsOnly,
+		BlueprintSetter = SetWheeledGravityZ, Setter = SetWheeledGravityZ)
 	float GravityZ = -980.0f;
 	// max speed of the component in cm/s
 	UPROPERTY(BlueprintReadWrite, Category = Base, EditDefaultsOnly,
@@ -529,7 +545,8 @@ public:
 		meta = (ClampMin = "0.0", UIMin = "0.0"))
 	float PhysMaxAngularSpeed = 4.f;
 	// damping factor of the component (0.0 means no damping, 1.0 means full damping)
-	UPROPERTY(BlueprintReadWrite, Category = Base, EditDefaultsOnly,
+	UPROPERTY(Category = Base, EditDefaultsOnly,
+		BlueprintSetter = SetWheeledDamping, Setter = SetWheeledDamping,
 		meta = (ClampMin = "0.0", ClampMax = "1.0", UIMin = "0.0", UIMax = "1.0"))
 	float PhysDamping = 0.0f;
 	// center of mass of the actor in local space (relative to the actor's origin)
@@ -544,7 +561,8 @@ public:
 	FVector GroundFriction = FVector(510.0, 6120.0, 0.0);
 	// Response time, in seconds, used to absorb inward normal velocity on a new
 	// wheel contact. Vehicle presets may tune it independently of physics rate.
-	UPROPERTY(BlueprintReadWrite, Category = Physics, EditDefaultsOnly,
+	UPROPERTY(Category = Physics, EditDefaultsOnly,
+		BlueprintSetter = SetWheeledContactTimeConstant, Setter = SetWheeledContactTimeConstant,
 		meta = (ClampMin = "0.000001", UIMin = "0.000001", Units = "s"))
 	float WheelContactNormalVelocityTimeConstant = 0.0075f;
 	// Ground angular damping coefficient to dampen angular velocity when car is on the ground (in %)
@@ -834,6 +852,24 @@ public:
 	/** Names of the Wheel Subodies*/
 	static const TArray<FName> WheelNames;
 private:
+    struct FExactRoundWheeledConfiguration
+    {
+        uint64 WorkerGeneration = 0;
+        bool GravityEnabled = false;
+        float GravityZ = 0.f;
+        float Damping = 0.f;
+        float ContactTimeConstant = 0.f;
+        float FrameRate = 0.f;
+        uint16 MinimumFramesBeforeCanMove = 0;
+    };
+    FExactRoundWheeledConfiguration RetainedWheeledConfiguration;
+    bool RetainExactRoundMovementConfiguration(uint64 WorkerGeneration, bool bAllowCapture) final;
+    const FExactRoundWheeledConfiguration* ExactRoundWheeledConfigurationForRead() const;
+    float GravityAccelerationZForPhysics() const;
+    float DampingForPhysics() const;
+    float ContactTimeConstantForPhysics() const;
+    bool ChangeWheeledConfiguration(TFunctionRef<void()> Write);
+
 	USpeedSimulation* SkySimulation = nullptr;
 	ASpeedCar* SpeedCarOwner = nullptr;
 	virtual TUniquePtr<Chaos::FSimpleWheeledVehicle> CreatePhysicsVehicle() override
@@ -911,6 +947,8 @@ private:
 
 
 	//=========== Internal state variables for the movement component ===========
+    friend class Speed::FPreparedNativeKinematicFields;
+    friend class Speed::FPreparedNativeRoundFields;
 	SBaseGameState BaseGameState; // current game state of the component
 	FBasePhysicsState BasePhysicsState; // current physics state of the component (replicated on network)
 	FWheeledGameState WheeledGameState; // current wheeled game state of the component

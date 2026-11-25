@@ -8,6 +8,7 @@
 #include <cmath>
 #include "IAmSpeed/World/Collision/PreparedPhysicalExecution.h"
 #include "IAmSpeed/World/Analytic/YawFloorBoxSweepBounds.h"
+#include "IAmSpeed/World/Simulation/ExactRoundContactSettings.h"
 
 using namespace Speed;
 
@@ -25,6 +26,8 @@ static TAutoConsoleVariable<int32> CVarIAmSpeedSphereBoxNonpenetratingV2ForTesti
 
 static bool UseSphereBoxNonpenetratingV2(const bool bProductionPair)
 {
+	if (const auto* Settings = FScopedExactRoundContactSettings::Current())
+		return (bProductionPair && Settings->SphereBoxNonpenetrating) || Settings->ForceSphereBoxNonpenetratingForTesting;
 	return (bProductionPair && CVarIAmSpeedSphereBoxNonpenetratingV2.GetValueOnAnyThread() == 1)
 #if !UE_BUILD_SHIPPING
 		|| CVarIAmSpeedSphereBoxNonpenetratingV2ForTesting.GetValueOnAnyThread() == 1
@@ -47,6 +50,28 @@ static TAutoConsoleVariable<float> CVarIAmSpeedCoupledContactImpulseMinNormalSpe
 	TEXT("p.IAmSpeed.Collision.CoupledContactImpulseMinNormalSpeed"),
 	100.0f,
 	TEXT("Minimum approaching normal speed for per-subbody coupled impulse opt-ins. The global diagnostic override still forces the solver at every speed."));
+
+std::optional<FExactRoundContactSettings> FExactRoundContactSettings::Capture() noexcept
+{
+	FExactRoundContactSettings Settings;
+	const float MinNormalSpeed = CVarIAmSpeedCoupledContactImpulseMinNormalSpeed.GetValueOnAnyThread();
+	if (!std::isfinite(MinNormalSpeed) || !Settings.CaptureSolidSettings()) return {};
+	Settings.ForceCoupledImpulse = CVarIAmSpeedCoupledContactImpulse.GetValueOnAnyThread() != 0;
+	Settings.CoupledMinNormalSpeed = FMath::Max(0.f, MinNormalSpeed);
+	Settings.CoupledIterations = FMath::Clamp(CVarIAmSpeedCoupledContactImpulseIterations.GetValueOnAnyThread(), 1, 32);
+	Settings.SphereBoxNonpenetrating = CVarIAmSpeedSphereBoxNonpenetratingV2.GetValueOnAnyThread() == 1;
+#if !UE_BUILD_SHIPPING
+	Settings.ForceSphereBoxNonpenetratingForTesting = CVarIAmSpeedSphereBoxNonpenetratingV2ForTesting.GetValueOnAnyThread() == 1;
+#endif
+	Settings.CaptureSphereProjectionSettings();
+	Settings.CaptureBoxContactSettings();
+	Settings.CaptureSuspensionSettings();
+	Settings.CaptureWheelGroundContactSettings();
+	Settings.CaptureStaticCollisionSettings();
+	Settings.CaptureHullContactAngularDragSettings();
+	if (!Settings.Hash()) return {};
+	return Settings;
+}
 
 SSphere::SSphere(const FVector& InCenter, const float& InRadius, const FVector& Velocity, const FVector& Acceleration) :
 	Center(InCenter), Radius(InRadius), Vel(Velocity), Accel(Acceleration)
@@ -1867,7 +1892,8 @@ bool SImpulseSolver::ComputeCollisionImpulse(
 	if (vRelN >= 0.f)
 		return false;
 
-	const bool bForceCoupledContactImpulse =
+	const auto* RoundSettings = FScopedExactRoundContactSettings::Current();
+	const bool bForceCoupledContactImpulse = RoundSettings ? RoundSettings->ForceCoupledImpulse :
 		CVarIAmSpeedCoupledContactImpulse.GetValueOnAnyThread() != 0;
 	if (bUsePostNormalFrictionImpulse)
 	{
@@ -1927,7 +1953,7 @@ bool SImpulseSolver::ComputeCollisionImpulse(
 		return !OutImpulseA.IsNearlyZero();
 	}
 
-	const float CoupledMinNormalSpeed = FMath::Max(
+	const float CoupledMinNormalSpeed = RoundSettings ? RoundSettings->CoupledMinNormalSpeed : FMath::Max(
 		0.0f,
 		CVarIAmSpeedCoupledContactImpulseMinNormalSpeed.GetValueOnAnyThread());
 	if (bForceCoupledContactImpulse ||
@@ -1961,7 +1987,7 @@ bool SImpulseSolver::ComputeCollisionImpulse(
 		const float ClampedFriction = FMath::Max(0.f, Friction);
 		FVector AccumulatedImpulse = FVector::ZeroVector;
 		float AccumulatedNormalImpulse = 0.f;
-		const int32 Iterations = FMath::Clamp(
+		const int32 Iterations = RoundSettings ? RoundSettings->CoupledIterations : FMath::Clamp(
 			CVarIAmSpeedCoupledContactImpulseIterations.GetValueOnAnyThread(),
 			1, 32);
 

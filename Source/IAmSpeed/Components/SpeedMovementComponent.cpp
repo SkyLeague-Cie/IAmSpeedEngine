@@ -8,6 +8,8 @@
 #include "IAmSpeed/World/Simulation/ReplayFieldArchive.h"
 #include "IAmSpeed/World/Simulation/ReplayBaseStateFields.h"
 #include "IAmSpeed/World/Simulation/CanonicalEpisodeTestingScope.h"
+#include "IAmSpeed/World/Simulation/ExactRoundContactSettings.h"
+#include "IAmSpeed/World/Simulation/ExactNeutralDispatch.h"
 #include "Engine/World.h"
 #include "Misc/ScopeExit.h"
 #include "IAmSpeed/IAmSpeed.h"
@@ -17,6 +19,7 @@
 #include "PhysicsEngine/PhysicsSettings.h"
 #include "IAmSpeed/Base/SpeedConstant.h"
 #include "IAmSpeed/SubBodies/Solid/SolidSubBody.h"
+#include "IAmSpeed/SubBodies/Sensor/SensorSubBody.h"
 #include "IAmSpeed/World/Subsystem/SpeedWorldSubsystem.h"
 #include "IAmSpeed/Components/SafeNetworkPhysicsComponent.h"
 #include "UObject/UnrealType.h"
@@ -84,11 +87,14 @@ USpeedMovementComponent::USpeedMovementComponent(const FObjectInitializer& Objec
 
 void USpeedMovementComponent::SetOwner(AActor* NewOwner)
 {
+    if (IsPresentationOnly()) return;
 	if (Speed::Netcode::PresentationClient::SuppressesLocalPhysics(GetWorld())) return;
 	if (NewOwner == nullptr)
 	{
 		return;
 	}
+    if (!NativePhysicsUse.TryUseNative()) return;
+    if (GetPublishedSimulationStableId()) USpeedWorldSubsystem::RequireExactRemoteRoundStorageTeardown(*this);
 
 	SetPhysRotation(NewOwner->GetActorRotation().Quaternion());
 	SetPhysLocation(NewOwner->GetActorLocation());
@@ -101,17 +107,97 @@ void USpeedMovementComponent::SetOwner(AActor* NewOwner)
 	UpdateSubBodiesKinematics();
 }
 
+bool USpeedMovementComponent::SealPresentationOnlyBeforeRegistration()
+{
+    if (!IsInGameThread() || IsGarbageCollecting()) return false;
+    if (IsPresentationOnly()) return true;
+    if (IsTemplate() || !GetOwner() || IsRegistered() || IsPhysicsStateCreated() || UpdatedComponent ||
+        IsPreRegistering() || IsPreRegistered() ||
+        IsBeingDestroyed() || HasAnyFlags(RF_BeginDestroyed | RF_FinishDestroyed) ||
+        GetPublishedSimulationStableId() || &GetSubBodies() != &SubBodies) return false;
+
+    auto* NetworkPhysics = Cast<USafeNetworkPhysicsComponent>(SNetworkPhysicsComponent.Get());
+    if (!NetworkPhysics || NetworkPhysics->GetOuter() != this || NetworkPhysics->IsTemplate()
+        || NetworkPhysics->HasEverRegistered() || NetworkPhysics->IsBeingDestroyed()
+        || NetworkPhysics->IsRegistered() || NetworkPhysics->IsPhysicsStateCreated()
+        || NetworkPhysics->IsPreRegistering() || NetworkPhysics->IsPreRegistered()
+        || !SNetworkSettings || SNetworkSettings->GetOuter() != this || SNetworkSettings->IsTemplate()
+        || SNetworkSettings->IsRegistered() || SNetworkSettings->IsPhysicsStateCreated()
+        || SNetworkSettings->IsPreRegistering() || SNetworkSettings->IsPreRegistered()
+        || SNetworkSettings->IsBeingDestroyed())
+        return false;
+
+    TArray<UObject*> Defaults;
+    GetDefaultSubobjects(Defaults);
+    int32 SensorCount = 0;
+    for (UObject* Default : Defaults)
+    {
+        auto* Body = Cast<USSubBody>(Default);
+        if (!Body) continue;
+        if (!Body->IsA<USensorSubBody>() || !SubBodies.Contains(Body) || Body->IsTemplate() ||
+            Body->GetOuter() != this || Body->GetOwner() != GetOwner() ||
+            Body->IsRegistered() || Body->IsPhysicsStateCreated() || Body->IsBeingDestroyed() ||
+            Body->IsPreRegistering() || Body->IsPreRegistered() ||
+            Body->HasAnyFlags(RF_BeginDestroyed | RF_FinishDestroyed) || Body->GetParentComponent() ||
+            Body->GetCollisionEnabled() != ECollisionEnabled::NoCollision || Body->GetGenerateOverlapEvents())
+            return false;
+        ++SensorCount;
+    }
+    if (!SensorCount || SensorCount != SubBodies.Num() || !SolidSubBodies.IsEmpty()) return false;
+
+    {
+        if (!NativePhysicsUse.TryBeginPresentationSeal()) return false;
+        int32 Staged = 0;
+        bool bSealed = false;
+        ON_SCOPE_EXIT
+        {
+            for (int32 Index = 0; Index < Staged; ++Index)
+                SubBodies[Index]->NativePhysicsUse.FinishPresentationSeal(bSealed);
+            NativePhysicsUse.FinishPresentationSeal(bSealed);
+        };
+        for (USSubBody* Body : SubBodies)
+        {
+            if (!Body || !Defaults.Contains(Body) || !Body->NativePhysicsUse.TryBeginPresentationSeal())
+                return false;
+            ++Staged;
+        }
+        bSealed = true;
+    }
+
+    NetworkPhysics->bAutoRegister = false;
+    NetworkPhysics->SetAutoActivate(false);
+    NetworkPhysics->SetIsReplicated(false);
+    SNetworkSettings->bAutoRegister = false;
+    return true;
+}
+
+void USpeedMovementComponent::OnPreRegister()
+{
+    NativePhysicsUse.TryUseNative();
+    Super::OnPreRegister();
+}
+
 void USpeedMovementComponent::OnRegister()
 {
+    NativePhysicsUse.TryUseNative(); // A registration that later unregisters still seals the ordinary path.
+    if (IsPresentationOnly()) { UActorComponent::OnRegister(); return; }
     if (Speed::Netcode::PresentationClient::SuppressesLocalPhysics(GetWorld())) { UActorComponent::OnRegister(); return; }
     Super::OnRegister();
 }
 
+void USpeedMovementComponent::InitializeComponent()
+{
+    if (IsPresentationOnly()) { UActorComponent::InitializeComponent(); return; }
+    Super::InitializeComponent();
+}
+
 void USpeedMovementComponent::OnCreatePhysicsState()
 {
+    if (IsPresentationOnly()) return;
 	if (Speed::Netcode::PresentationClient::SuppressesLocalPhysics(GetWorld())) return;
 	if (Speed::ReplayIsolation::IsInertReplayWorld(GetWorld()))
 	{ Speed::ReplayIsolation::FailInertReplayBootstrap(*GetWorld(),TEXT("unexpected IAS movement physics-state creation in inert replay")); return; }
+    if (GetPublishedSimulationStableId()) USpeedWorldSubsystem::RequireExactRemoteRoundStorageTeardown(*this);
 	Super::OnCreatePhysicsState();
 
 	UWorld* World = GetWorld();
@@ -136,6 +222,7 @@ void USpeedMovementComponent::OnCreatePhysicsState()
 
 bool USpeedMovementComponent::ShouldCreatePhysicsState() const
 {
+    if (IsPresentationOnly()) return false;
 	if (Speed::Netcode::PresentationClient::SuppressesLocalPhysics(GetWorld())) return false;
 	if (Speed::ReplayIsolation::IsInertReplayWorld(GetWorld())) return false;
 	if (!IsRegistered() || IsBeingDestroyed())
@@ -159,6 +246,8 @@ bool USpeedMovementComponent::ShouldCreatePhysicsState() const
 
 void USpeedMovementComponent::OnDestroyPhysicsState()
 {
+    USpeedWorldSubsystem::RequireExactRemoteRoundStorageTeardown(*this);
+    if (IsPresentationOnly()) { UActorComponent::OnDestroyPhysicsState(); return; }
 	Super::OnDestroyPhysicsState();
 	if (SNetworkPhysicsComponent)
 	{
@@ -305,7 +394,7 @@ void USpeedMovementComponent::ApplyTestVelocity()
 
 void USpeedMovementComponent::AsyncPhysicsTickComponent(float DeltaTime, float SimTime)
 {
-	if (Speed::CanonicalFrameDriver::IsEnabled())
+	if (IsPresentationOnly() || Speed::CanonicalFrameDriver::IsEnabled())
 	{
 		return;
 	}
@@ -370,7 +459,11 @@ void USpeedMovementComponent::PreparePhysicsFrame(
 	{
 		HandleGravity();
 	}
-	PreGameplayTick(DeltaTime, SimTime);
+    {
+        const Speed::ExactNeutralDispatchDetail::FCallbackScope Dispatch(Speed::EExactNeutralDispatch::ActorPreGameplay,
+            static_cast<const ISpeedComponent*>(this));
+        PreGameplayTick(DeltaTime, SimTime);
+    }
 	HandleRestForce(); // Handle rest force before gameplay tick so that the component can be at rest at the beginning of the tick if it should be
 
 	// Handle gameplay forces (e.g. from player input or AI)
@@ -458,12 +551,15 @@ unsigned int USpeedMovementComponent::NbFramesSinceCanMove() const
 
 void USpeedMovementComponent::SetSubBodies(const TArray<USSubBody*>& NewSubBodies)
 {
+    if (IsPresentationOnly()) return;
+    if (GetPublishedSimulationStableId()) USpeedWorldSubsystem::RequireExactRemoteRoundStorageTeardown(*this);
+    if (!CanInstallOwnedSubBodies(*this, NewSubBodies)) return;
 	SubBodies = NewSubBodies;
 }
 
 void USpeedMovementComponent::HandleCountdownTimer()
 {
-	if (!bEnableSimulation || CanMove() || !CountdownHasStarted())
+	if (!IsSimulationEnabledForPhysics() || CanMove() || !CountdownHasStarted())
 	{
 		return;
 	}
@@ -483,21 +579,22 @@ void USpeedMovementComponent::HandleCountdownTimer()
 
 void USpeedMovementComponent::HandleGravity()
 {
-	if (bEnableGravity && bEnableSimulation)
+	if (IsGravityEnabledForPhysics() && IsSimulationEnabledForPhysics())
 	{
-		AddPhysAcceleration(FVector(0.0f, 0.0f, GravityZ));
+		AddPhysAcceleration(FVector(0.0f, 0.0f, GravityAccelerationZForPhysics()));
 	}
 }
 
 void USpeedMovementComponent::HandleDamping(const float& delta)
 {
-	if (PhysDamping <= 0.0 || !bEnableSimulation)
+	const float Damping = MovementDampingForPhysics();
+	if (Damping <= 0.0 || !IsSimulationEnabledForPhysics())
 	{
 		return;
 	}
 
 	const FVector COMVelocity = GetPhysCOMVelocity();
-	FVector NewCOMVelocity = (1 - PhysDamping) * COMVelocity;
+	FVector NewCOMVelocity = (1 - Damping) * COMVelocity;
 	const float Speed = COMVelocity.Size();
 	if (Speed <= 1.0)
 	{
@@ -509,7 +606,7 @@ void USpeedMovementComponent::HandleDamping(const float& delta)
 
 void USpeedMovementComponent::HandleRestForce()
 {
-	if (!bEnableSimulation)
+	if (!IsSimulationEnabledForPhysics())
 	{
 		return;
 	}
@@ -544,7 +641,7 @@ void USpeedMovementComponent::GameplayTick(const float& DeltaTime, const float& 
 
 void USpeedMovementComponent::ApplyAccelKinematicsConstraint(const float& delta)
 {
-	if (!bEnableSimulation)
+	if (!IsSimulationEnabledForPhysics())
 	{
 		return;
 	}
@@ -577,19 +674,105 @@ void USpeedMovementComponent::PostGameplayTick(const float& DeltaTime, const flo
 {
 }
 
+bool USpeedMovementComponent::RetainExactRoundMovementConfiguration(uint64 WorkerGeneration, bool bAllowCapture)
+{
+    check(WorkerGeneration && Speed::FScopedExactRoundContactSettings::Current());
+    if (RetainedMovementConfiguration.WorkerGeneration == WorkerGeneration) return true;
+    if (!bAllowCapture || !GetPublishedSimulationStableId() ||
+        !FMath::IsFinite(GravityZ) || !FMath::IsFinite(PhysDamping)) return false;
+    RetainedMovementConfiguration = {WorkerGeneration, bEnableSimulation, bEnableGravity, GravityZ, PhysDamping};
+    return true;
+}
+
+const USpeedMovementComponent::FExactRoundMovementConfiguration*
+USpeedMovementComponent::ExactRoundMovementConfigurationForRead() const
+{
+    return Speed::FScopedExactRoundContactSettings::Current() && RetainedMovementConfiguration.WorkerGeneration
+        ? &RetainedMovementConfiguration : nullptr;
+}
+
+bool USpeedMovementComponent::IsSimulationEnabledForPhysics() const
+{
+    const auto* Configuration = ExactRoundMovementConfigurationForRead();
+    return Configuration ? Configuration->SimulationEnabled : bEnableSimulation;
+}
+
+bool USpeedMovementComponent::IsGravityEnabledForPhysics() const
+{
+    const auto* Configuration = ExactRoundMovementConfigurationForRead();
+    return Configuration ? Configuration->GravityEnabled : bEnableGravity;
+}
+
+float USpeedMovementComponent::GravityAccelerationZForPhysics() const
+{
+    const auto* Configuration = ExactRoundMovementConfigurationForRead();
+    return Configuration ? Configuration->GravityAccelerationZ : GravityZ;
+}
+
+float USpeedMovementComponent::MovementDampingForPhysics() const
+{
+    const auto* Configuration = ExactRoundMovementConfigurationForRead();
+    return Configuration ? Configuration->Damping : PhysDamping;
+}
+
+bool USpeedMovementComponent::AppendExactRoundMovementConfiguration(Speed::FExactRoundConfigurationWriter& Out) const
+{
+    const auto* Configuration = ExactRoundMovementConfigurationForRead();
+    return Configuration && GetPublishedSimulationStableId() &&
+        Out.Unsigned(0x4941534d4f560001ull) && Out.Boolean(Configuration->SimulationEnabled) &&
+        Out.Boolean(Configuration->GravityEnabled) && Out.Float(Configuration->GravityAccelerationZ) &&
+        Out.Float(Configuration->Damping);
+}
+
 bool USpeedMovementComponent::IsAffectedByGravity() const
 {
-	return bEnableGravity;
+    return IsGravityEnabledForPhysics();
+}
+
+FVector USpeedMovementComponent::GetNominalGravityAcceleration() const
+{
+    return IsGravityEnabledForPhysics() ? FVector(0, 0, GravityAccelerationZForPhysics()) : FVector::ZeroVector;
+}
+
+void USpeedMovementComponent::ChangeMovementConfiguration(TFunctionRef<void()> Write)
+{
+    if (IsTemplate() || (HasAnyFlags(RF_NeedInitialization) && !GetPublishedSimulationStableId()))
+    {
+        Write();
+        return;
+    }
+    if (!USpeedWorldSubsystem::TryWriteOwnedRoundConfiguration(*this, Write))
+        UE_LOG(SpeedPhysicsLog, Warning, TEXT("Movement configuration is retained by the exact round owner (%s)"), *GetName());
 }
 
 void USpeedMovementComponent::SetIsAffectedByGravity(bool value)
 {
-	bEnableGravity = value;
+    ChangeMovementConfiguration([this, value] { bEnableGravity = value; });
 }
 
 void USpeedMovementComponent::EnableGravity()
 {
-	bEnableGravity = true;
+    SetIsAffectedByGravity(true);
+}
+
+void USpeedMovementComponent::SetMovementGravityEnabled(bool bEnabled)
+{
+    SetIsAffectedByGravity(bEnabled);
+}
+
+void USpeedMovementComponent::SetMovementSimulationEnabled(bool bEnabled)
+{
+    ChangeMovementConfiguration([this, bEnabled] { bEnableSimulation = bEnabled; });
+}
+
+void USpeedMovementComponent::SetMovementGravityZ(float AccelerationZ)
+{
+    ChangeMovementConfiguration([this, AccelerationZ] { GravityZ = AccelerationZ; });
+}
+
+void USpeedMovementComponent::SetMovementDamping(float Damping)
+{
+    ChangeMovementConfiguration([this, Damping] { PhysDamping = Damping; });
 }
 
 bool USpeedMovementComponent::HasAuthority() const
@@ -626,6 +809,7 @@ FString USpeedMovementComponent::GetRole() const
 
 void USpeedMovementComponent::BeginPlay()
 {
+    if (IsPresentationOnly()) { UActorComponent::BeginPlay(); return; }
 	if (Speed::Netcode::PresentationClient::SuppressesLocalPhysics(GetWorld())) { UActorComponent::BeginPlay(); return; }
 	Super::BeginPlay();
 
@@ -646,6 +830,8 @@ void USpeedMovementComponent::BeginPlay()
 
 void USpeedMovementComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+    USpeedWorldSubsystem::RequireExactRemoteRoundStorageTeardown(*this);
+    if (IsPresentationOnly()) { UActorComponent::EndPlay(EndPlayReason); return; }
 	if (IsValid(SNetworkPhysicsComponent) && SNetworkPhysicsComponent->IsRegistered())
 	{
 		SNetworkPhysicsComponent->UnregisterComponent();
@@ -679,7 +865,7 @@ void USpeedMovementComponent::StartTestWithVelocity(const FVector& InitialVeloci
 
 void USpeedMovementComponent::StartTestWithVelocityLocal(const FVector& InitialVelocity)
 {
-	if (!bEnableSimulation)
+	if (!IsSimulationEnabledForPhysics())
 	{
 		return;
 	}
@@ -688,7 +874,7 @@ void USpeedMovementComponent::StartTestWithVelocityLocal(const FVector& InitialV
 
 void USpeedMovementComponent::StartTestWithVelocityLocal(const FVector& InitialVelocity, const FVector& InitialAngularVelocity)
 {
-	if (!bEnableSimulation)
+	if (!IsSimulationEnabledForPhysics())
 	{
 		return;
 	}
@@ -717,7 +903,7 @@ bool USpeedMovementComponent::CountdownHasStarted() const
 
 void USpeedMovementComponent::StartConfrontationInSec(const float& TimeSec)
 {
-	if (!bEnableSimulation)
+	if (!IsSimulationEnabledForPhysics())
 	{
 		return;
 	}
@@ -726,7 +912,7 @@ void USpeedMovementComponent::StartConfrontationInSec(const float& TimeSec)
 
 void USpeedMovementComponent::StartConfrontationLocal(const float& TimeSec)
 {
-	if (!bEnableSimulation)
+	if (!IsSimulationEnabledForPhysics())
 	{
 		return;
 	}
@@ -755,7 +941,7 @@ void USpeedMovementComponent::StartConfrontationMulti_Implementation(const float
 
 void USpeedMovementComponent::SetCannotMove()
 {
-	if (!bEnableSimulation)
+	if (!IsSimulationEnabledForPhysics())
 	{
 		return;
 	}
@@ -764,7 +950,7 @@ void USpeedMovementComponent::SetCannotMove()
 
 void USpeedMovementComponent::SetCannotMoveLocal()
 {
-	if (!bEnableSimulation)
+	if (!IsSimulationEnabledForPhysics())
 	{
 		return;
 	}
@@ -783,7 +969,7 @@ void USpeedMovementComponent::SetCannotMoveMulti_Implementation()
 
 void USpeedMovementComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 {
-	if (HasAuthority() || !SNetworkPhysicsComponent || !bEnableSimulation)
+	if (HasAuthority() || !SNetworkPhysicsComponent || !IsSimulationEnabledForPhysics())
 	{
 		return;
 	}
@@ -1063,7 +1249,7 @@ void USpeedMovementComponent::QuantizePhysicalState()
 
 void USpeedMovementComponent::TagStateHistoryProxyRole()
 {
-	if (HasAuthority() || !bEnableSimulation)
+	if (HasAuthority() || !IsSimulationEnabledForPhysics())
 		return;
 
 	const TSharedPtr<Chaos::FBaseRewindHistory>& History = SNetworkPhysicsComponent->GetStateHistory_Internal();
@@ -1127,7 +1313,7 @@ bool USpeedMovementComponent::CanRebaseCanonicalEpisodeForTesting(
     C.NumFrame>=uint64(MAX_int32-1) || NumFrame()!=C.NumFrame+1 ||
     C.PhysicalDeltaTime!=FCanonicalFrameContext::CanonicalPhysicalDeltaTime ||
     !GetWorld() || GetWorld()->GetNetMode()!=NM_Standalone || !GetOwner() || !HasAuthority() ||
-    !bEnableSimulation || IsFrozen() || !CanMove() || bNetCorrHasTarget || BaseGameState.bHasTestVelocity ||
+    !IsSimulationEnabledForPhysics() || IsFrozen() || !CanMove() || bNetCorrHasTarget || BaseGameState.bHasTestVelocity ||
     RecordedBaseFrames.Num()!=SpeedConstants::RecordedHistorySize ||
     RecordedBaseStates.Num()!=SpeedConstants::RecordedHistorySize)return false;
  if(K.Location.ContainsNaN() || K.Velocity.ContainsNaN() || K.Acceleration.ContainsNaN() ||

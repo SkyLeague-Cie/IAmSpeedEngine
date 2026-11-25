@@ -8,6 +8,22 @@
 #include <functional>
 #include <thread>
 
+// Exercise the real private gate from a shim for the native friend factory.
+namespace Speed
+{
+class FPreparedNativeKinematicFields
+{
+public:
+    static const FSimulationWorld* Resolve(const FSimulationComponentRestoreRequest& R, const PreparedWorld::FAddress& At)
+    { return R.OwnerLease.ResolvePreparingWorld(R, At); }
+    static bool MatchesTarget(const FSimulationComponentRestoreRequest& R, const FSimulationWorld& W,
+        const ISpeedComponent& Target)
+    { return R.OwnerLease.MatchesPreparingTarget(R, R.Address, W, Target); }
+    static bool MatchesEndpoint(const FSimulationComponentRestoreRequest& R, const PreparedWorld::FEndpointBinding& Endpoint)
+    { return R.OwnerLease.MatchesPreparingEndpoint(R, R.Address, Endpoint); }
+};
+}
+
 class ISpeedComponent
 {
 public:
@@ -54,7 +70,7 @@ class FTestLease final : public ISimulationRestoreBoundaryLease
     FSimulationWorld* World; FAddress Expected; FCounters& Counters;
     std::thread::id Worker = std::this_thread::get_id(); bool Done = false;
 public:
-    bool Protect = true, Valid = true, Ranges = true;
+    bool Protect = true, Valid = true, Ranges = true, EmptyRanges = false;
     std::function<void()> OnQuery, OnProtect, OnAccess, OnAbort, OnRelease, OnDestruction;
     mutable bool SawReservation = false;
     FPreparedRestoreLeaseView RecursiveProbe;
@@ -69,6 +85,7 @@ public:
     {
         if (OnAccess) OnAccess();
         if (!Ranges) return ISimulationRestoreBoundaryLease::AppendPreparedAccess(Out);
+        if (EmptyRanges) return true;
         const auto S = [](const void* P, std::size_t N) { return PreparedAccess::FSpan{reinterpret_cast<std::uintptr_t>(P), N}; };
         Out.push_back({reinterpret_cast<std::uintptr_t>(this), {S(&Counters, sizeof(Counters)), S(&Done, sizeof(Done)), S(&SawReservation, sizeof(SawReservation)), S(&RecursiveProbeRefused, sizeof(RecursiveProbeRefused))},
             {S(&Expected, sizeof(Expected)), S(&World, sizeof(World)), S(&Worker, sizeof(Worker))}}); return true;
@@ -129,10 +146,16 @@ public:
     std::array<uint64, 4> CommonConfiguration{}, WheelConfiguration{}, SubbodyConfiguration{};
     std::uintptr_t ExtraWrite = 0;
     FPreparedRestoreLeaseView SavedLease;
+    std::function<void(const FSimulationComponentRestoreRequest&)> OnPrepare;
     std::function<void()> Reenter;
     std::function<void()> OnCleanup;
     std::unique_ptr<IPreparedSimulationComponentRestore> PrepareCompleteSimulationRestore(const FSimulationComponentRestoreRequest& R) override
-    { if (Refuse || !R.OwnerLease.IsExactAddress(R.Address)) return {}; SavedLease = R.OwnerLease; return std::make_unique<FTestComponentPlan>(R, *this); }
+    {
+        if (Refuse || !R.OwnerLease.IsExactAddress(R.Address)) return {};
+        SavedLease = R.OwnerLease;
+        if (OnPrepare) OnPrepare(R);
+        return std::make_unique<FTestComponentPlan>(R, *this);
+    }
 };
 FTestComponentPlan::FTestComponentPlan(const FSimulationComponentRestoreRequest& R, FTestComponent& C)
     : At(R.Address), Actor(R.Supplement.Binding), Component(C), State(R.Kinematic), Frozen(R.bFrozen), OwnerLease(R.OwnerLease) {}
@@ -284,6 +307,78 @@ static void TestActualPlanControlFlowUnderShim()
     CHECK(Complete && Failures > 50);
     std::printf("actual plan INC under ORDINARY SHIMS: %u failure budgets; full UE/native world remains NOT_COMPILED/RUN/ADMITTED\n", Failures);
 }
+static void TestFragmentWorldResolutionDuringExactRequest()
+{
+    FWorldFixture F;
+    using FFactory = Speed::FPreparedNativeKinematicFields;
+    auto Lease = std::make_unique<FTestLease>(F.World, F.Envelope->Address, F.LeaseCounters);
+    auto* NativeLease = Lease.get();
+    unsigned Calls = 0;
+    F.Components[0].OnPrepare = [&](const FSimulationComponentRestoreRequest& R)
+    {
+        ++Calls;
+        CHECK(FFactory::Resolve(R, R.Address) == &F.World);
+        CHECK(FFactory::MatchesTarget(R, F.World, F.Components[0]));
+        CHECK(!FFactory::MatchesTarget(R, F.World, F.Components[1]));
+        ISpeedComponent OldTarget;
+        OldTarget.StableId = F.Components[0].StableId;
+        CHECK(!FFactory::MatchesTarget(R, F.World, OldTarget));
+        const auto& Endpoint = F.Envelope->Endpoints.front();
+        CHECK(Endpoint.Actor == R.Supplement.Binding.StableId);
+        CHECK(FFactory::MatchesEndpoint(R, Endpoint));
+        auto OldEndpoint = Endpoint;
+        ++OldEndpoint.Incarnation;
+        CHECK(!FFactory::MatchesEndpoint(R, OldEndpoint));
+        CHECK(!FFactory::MatchesEndpoint(R, F.Envelope->Endpoints.back()));
+        const auto Copy = R;
+        CHECK(!FFactory::Resolve(Copy, Copy.Address));
+        CHECK(!FFactory::MatchesTarget(Copy, F.World, F.Components[0]));
+        CHECK(!FFactory::MatchesEndpoint(Copy, Endpoint));
+        auto WrongAddress = R.Address;
+        ++WrongAddress.WorldIncarnation;
+        CHECK(!FFactory::Resolve(R, WrongAddress));
+        bool ForeignGranted = true;
+        std::thread Foreign([&] {
+            ForeignGranted = FFactory::Resolve(R, R.Address) != nullptr
+                || FFactory::MatchesTarget(R, F.World, F.Components[0]) || FFactory::MatchesEndpoint(R, Endpoint);
+        });
+        Foreign.join();
+        CHECK(!ForeignGranted);
+        unsigned Reentries = 0;
+        NativeLease->OnQuery = [&]
+        {
+            ++Reentries;
+            CHECK(!FFactory::Resolve(R, R.Address));
+        };
+        CHECK(FFactory::Resolve(R, R.Address) == &F.World);
+        NativeLease->OnQuery = {};
+        CHECK(Reentries == 1);
+    };
+    auto T = F.World.PrepareSnapshotRestore(F.Snapshot, F.Envelope, std::move(Lease),
+        std::make_unique<FTestSupplement>(F.Envelope->Address, F.SupplementCounters));
+    CHECK(T && Calls == 1 && F.Untouched());
+    const SKinematic K;
+    const FSimulationComponentRestoreRequest Later{F.Envelope->Address, F.Envelope->ActorSupplements[0],
+        K, false, TConstArrayView<uint8>(nullptr, 0), F.Components[0].SavedLease};
+    CHECK(Later.OwnerLease.IsExactAddress(Later.Address) && !FFactory::Resolve(Later, Later.Address));
+    CHECK(!FFactory::MatchesTarget(Later, F.World, F.Components[0]));
+    CHECK(!FFactory::MatchesEndpoint(Later, F.Envelope->Endpoints.front()));
+    CHECK(F.World.AbortPreparedRestore(*T));
+    CHECK(!FFactory::Resolve(Later, Later.Address) && F.Untouched());
+
+    auto Unprotected = std::make_unique<FTestLease>(F.World, F.Envelope->Address, F.LeaseCounters);
+    Unprotected->Protect = false;
+    CHECK(!F.World.PrepareSnapshotRestore(F.Snapshot, F.Envelope, std::move(Unprotected),
+        std::make_unique<FTestSupplement>(F.Envelope->Address, F.SupplementCounters)));
+    CHECK(Calls == 1 && F.Untouched());
+    F.Components[0].OnPrepare = [&](const FSimulationComponentRestoreRequest&) { ++Calls; };
+    auto Unlisted = std::make_unique<FTestLease>(F.World, F.Envelope->Address, F.LeaseCounters);
+    Unlisted->EmptyRanges = true;
+    CHECK(!F.World.PrepareSnapshotRestore(F.Snapshot, F.Envelope, std::move(Unlisted),
+        std::make_unique<FTestSupplement>(F.Envelope->Address, F.SupplementCounters)));
+    CHECK(Calls == 2 && F.Untouched());
+}
+
 static void TestCompositionAndLeaseExpiry()
 {
     FPreparedRestoreLeaseView Empty;
@@ -369,6 +464,91 @@ static void TestCompositionAndLeaseExpiry()
         CHECK(F.Untouched() && F.LeaseCounters.Abort == 1);
     }
 }
+static void TestWorldControlAccessAndAdapterIdentity()
+{
+    // Inject only a conflicting declaration. No fixture writes to owner cells.
+    using FWorld = FSimulationWorld;
+    struct FControlCell
+    {
+        const void* (*Address)(const FWorld&);
+        bool WrittenByWorld;
+    };
+    const FControlCell Cells[] = {
+        {[](const FWorld& W) -> const void* { return &W.PreparedRestore; }, true},
+        {[](const FWorld& W) -> const void* { return &W.PreparedRestore->Storage; }, true},
+        {[](const FWorld& W) -> const void* { return &W.PreparedRestore->Identity; }, false},
+        {[](const FWorld& W) -> const void* { return &W.PreparedRestore->Worker; }, false},
+        {[](const FWorld& W) -> const void* { return &W.PreparedRestore->Components; }, false},
+        {[](const FWorld& W) -> const void* { return &W.PreparedRestore->Components.back(); }, false},
+        {[](const FWorld& W) -> const void* { return &W.PreparedRestore->Supplement; }, false},
+        {[](const FWorld& W) -> const void* { return &W.PreparedRestore->LeaseOwner; }, false},
+        {[](const FWorld& W) -> const void* { return W.PreparedRestore->LeaseOwner.get(); }, false},
+        {[](const FWorld& W) -> const void* { return &W.PreparedRestore->Publication; }, false},
+        {[](const FWorld& W) -> const void* { return &W.PreparedRestore->Publication->Envelope; }, false},
+        {[](const FWorld& W) -> const void* { return &W.PreparedRestore->Publication->Physical; }, false},
+    };
+    for (const auto& Cell : Cells)
+    {
+        FWorldFixture F;
+        auto Lease = std::make_unique<FTestLease>(F.World, F.Envelope->Address, F.LeaseCounters);
+        Lease->OnAccess = [&]()
+        {
+            F.Components[0].ExtraWrite = reinterpret_cast<std::uintptr_t>(Cell.Address(F.World));
+        };
+        CHECK(!F.World.PrepareSnapshotRestore(F.Snapshot, F.Envelope, std::move(Lease),
+            std::make_unique<FTestSupplement>(F.Envelope->Address, F.SupplementCounters)));
+        CHECK(F.Untouched() && !F.World.IsRestoreBoundaryReserved());
+    }
+    {
+        FWorldFixture F;
+        auto Token = F.Prepare();
+        CHECK(Token);
+        const auto& Plan = *F.World.PreparedRestore;
+        const auto Contains = [](const auto& Ranges, std::uintptr_t Address)
+        {
+            return std::any_of(Ranges.begin(), Ranges.end(), [&](const auto& Range)
+            {
+                return PreparedAccess::Overlap(Range, {Address, 1});
+            });
+        };
+        for (const auto& Cell : Cells)
+        {
+            const auto Address = reinterpret_cast<std::uintptr_t>(Cell.Address(F.World));
+            CHECK(Contains(Plan.Access.front().Writes, Address) == Cell.WrittenByWorld);
+            CHECK(std::any_of(Plan.Access.begin(), Plan.Access.end(), [&](const auto& Participant)
+            {
+                return Contains(Participant.ReadOnly, Address);
+            }) != Cell.WrittenByWorld);
+        }
+        CHECK(std::any_of(Plan.Access.front().ReadOnly.begin(), Plan.Access.front().ReadOnly.end(), [&](const auto& Range)
+        {
+            return Range.Begin == reinterpret_cast<std::uintptr_t>(Plan.Components.data())
+                && Range.Bytes == Plan.Components.size() * sizeof(Plan.Components.front());
+        }));
+        CHECK(F.World.AbortPreparedRestore(*Token));
+    }
+    for (bool ReplaceDuringPreparation : {false, true})
+    {
+        FWorldFixture F;
+        ISpeedComponent Replacement;
+        Replacement.StableId = F.Components[0].StableId;
+        auto Token = F.Prepare();
+        CHECK(Token);
+        const auto Replace = [&]()
+        {
+            // Only the shim can edit the registry with the boundary held.
+            F.World.AdaptersByStableId.Add(Replacement.StableId, &Replacement);
+        };
+        if (ReplaceDuringPreparation)
+            F.Components[2].Reenter = Replace;
+        else
+            Replace();
+        CHECK(!F.World.PrepareRestoreFinalization(*Token));
+        CHECK(F.Untouched() && !F.World.IsRestoreBoundaryReserved());
+        CHECK(F.LeaseCounters.Abort == 1 && F.SupplementCounters.Abort == 1);
+    }
+}
+
 static void TestLeaseCallbackAndCleanupReentry()
 {
     // Real transaction INC and owner view code; these participants remain
@@ -474,7 +654,8 @@ static void TestLeaseCallbackAndCleanupReentry()
 }
 int RebasedWorldShimRegressionMain()
 {
-    FrozenCoreTestsMain(); TestActualPlanControlFlowUnderShim(); TestCompositionAndLeaseExpiry(); TestLeaseCallbackAndCleanupReentry();
+    FrozenCoreTestsMain(); TestActualPlanControlFlowUnderShim(); TestFragmentWorldResolutionDuringExactRequest();
+    TestCompositionAndLeaseExpiry(); TestWorldControlAccessAndAdapterIdentity(); TestLeaseCallbackAndCleanupReentry();
     std::printf("PreparedWorld combined ordinary checks: %u PASS; SHIM fence/actors are fixture-only, zero native qualification\n", Checks);
     return 0; // Test main may be included under another entry point.
 }

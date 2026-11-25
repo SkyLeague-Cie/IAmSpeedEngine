@@ -7,6 +7,8 @@
 #include "IAmSpeed/Base/EpisodeStateBytesForTesting.h"
 #include "SolidSubBody.generated.h"
 
+namespace Speed { class FExactRoundConfigurationWriter; }
+
 UENUM()
 enum class EMixMode : uint8
 {
@@ -65,6 +67,9 @@ class IAMSPEED_API USolidSubBody : public USSubBody
 	GENERATED_BODY()
 	
 public:
+    /** Reads physical configuration under the exact round owner boundary. Filters use local slot indices. */
+    bool AppendExactRoundSolidConfiguration(Speed::FExactRoundConfigurationWriter& Out) const;
+
 #if !UE_BUILD_SHIPPING
     /** Read-only, same-run owner-state witness; no UObject or array-header copy. */
     void AppendEpisodeStateForTesting(TArray<uint8>& Out) const override
@@ -99,13 +104,13 @@ public:
 	/** New mechanical obstacle path only; false preserves ordinary response. */
 	static bool ResolvePrescribedContact(USolidSubBody& A,USolidSubBody& B,const SHitResult& Hit,double Penetration);
 	float GetMass() const { return Mass; }
-	void SetMass(float InMass) { Mass = InMass; }
+	void SetMass(float InMass);
 	virtual FMatrix ComputeWorldInvInertiaTensor() const;
     // Exact cached configuration, independent of a future consumed pose.
     // Reading this cache grants no response/impulse or reconstruction policy.
     const FMatrix& GetCachedLocalInvInertiaTensor() const { return InvInertiaLocal; }
 	int Idx() const { return idx; }
-	void SetIdx(int InIdx) { idx = InIdx; }
+	void SetIdx(int InIdx);
 	bool IsMainSubBody() const { return bIsMainSubBody; }
 	bool IsFakePhysicsEnabled() const { return EnableFakePhysics; }
 	float GetRestitution() const { return Restitution; }
@@ -135,39 +140,21 @@ public:
 	float GetDynamicFriction() const { return DynamicFriction; }
 	float GetImpactThreshold() const { return ImpactThreshold; }
 	float GetHitDamping() const { return HitDamping; }
-	UFUNCTION(BlueprintCallable, Category = "Physics")
+	// Runtime exact-round owners retain the admitted contact configuration.
+	UFUNCTION(BlueprintSetter, Category = "Physics")
 	void SetSphereBoxRestitutionOverride(float InRestitution);
-	void SetSphereBoxFrictionOverride(float InFriction)
-	{
-		SphereBoxFrictionOverride = InFriction < 0.0f ? -1.0f : InFriction;
-	}
-	void SetSphereBoxManifoldFrictionOverride(float InFriction)
-	{
-		SphereBoxManifoldFrictionOverride = InFriction < 0.0f ? -1.0f : InFriction;
-	}
-	void SetUseCoupledContactImpulse(bool bInEnabled)
-	{
-		bUseCoupledContactImpulse = bInEnabled;
-	}
-	void SetUsePostNormalFrictionImpulse(bool bInEnabled)
-	{
-		bUsePostNormalFrictionImpulse = bInEnabled;
-	}
-	void SetUsePersistentBilateralContact(bool bInEnabled)
-	{
-		bUsePersistentBilateralContact = bInEnabled;
-	}
-	void SetCoupledContactKinematicLimits(
-		float MaxLinearSpeed,
-		float MaxAngularSpeed)
-	{
-		CoupledContactMaxLinearSpeed = MaxLinearSpeed;
-		CoupledContactMaxAngularSpeed = MaxAngularSpeed;
-	}
-	void SetCoupledContactMaxAbsLocalNormalY(float MaxAbsLocalNormalY)
-	{
-		CoupledContactMaxAbsLocalNormalY = MaxAbsLocalNormalY;
-	}
+	UFUNCTION(BlueprintSetter, Category = "Physics")
+	void SetSphereBoxFrictionOverride(float InFriction);
+	UFUNCTION(BlueprintSetter, Category = "Physics")
+	void SetSphereBoxManifoldFrictionOverride(float InFriction);
+	UFUNCTION(BlueprintSetter, Category = "Physics")
+	void SetUseCoupledContactImpulse(bool bInEnabled);
+	UFUNCTION(BlueprintSetter, Category = "Physics")
+	void SetUsePostNormalFrictionImpulse(bool bInEnabled);
+	UFUNCTION(BlueprintSetter, Category = "Physics")
+	void SetUsePersistentBilateralContact(bool bInEnabled);
+	void SetCoupledContactKinematicLimits(float MaxLinearSpeed, float MaxAngularSpeed);
+	void SetCoupledContactMaxAbsLocalNormalY(float MaxAbsLocalNormalY);
 
 	// Override this function to apply custom impulses on the subbody itself when a hit is resolved.
 	virtual void ApplyImpulse(const FVector& LinearImpulse, const FVector& WorldPoint);
@@ -201,6 +188,8 @@ public:
 	bool HasToApplyRestForce() const { return bApplyRestForce; }
 
 protected:
+    void ChangeExactSolidSlotConfiguration(TFunctionRef<void()> Write);
+    bool HasRetainedExactSolidSlotConfiguration() const { return bExactRoundSolidSlotRetained; }
 	virtual FMatrix InitInvInertiaTensor() const { return FMatrix::Identity; }
 	void RegisterCurrentHitAsConstraint();
 	void RegisterContactAsConstraint(
@@ -244,31 +233,37 @@ protected:
 		meta = (ClampMin = "0.0", UIMin = "0.0"))
 	float Restitution = 0.0f;
 	// Optional restitution override for sphere/box contacts. Negative values keep the normal mix rule.
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, export, Category = Physics,
+	UPROPERTY(EditAnywhere, export, Category = Physics,
+		BlueprintSetter = SetSphereBoxRestitutionOverride, Setter = SetSphereBoxRestitutionOverride,
 		meta = (ClampMin = "-1.0", UIMin = "-1.0", ClampMax = "1.0", UIMax = "1.0"))
 	float SphereBoxRestitutionOverride = -1.0f;
 	// Optional contact-specific friction. This lets a vehicle hitbox use the
 	// car/ball coefficient without changing ball/stadium contacts.
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, export, Category = Physics,
+	UPROPERTY(EditAnywhere, export, Category = Physics,
+		BlueprintSetter = SetSphereBoxFrictionOverride, Setter = SetSphereBoxFrictionOverride,
 		meta = (ClampMin = "-1.0", UIMin = "-1.0"))
 	float SphereBoxFrictionOverride = -1.0f;
 	// Optional friction used only by a persistent sphere/box manifold. It is
 	// deliberately independent from the coefficient used by discrete impacts.
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, export, Category = Physics,
+	UPROPERTY(EditAnywhere, export, Category = Physics,
+		BlueprintSetter = SetSphereBoxManifoldFrictionOverride, Setter = SetSphereBoxManifoldFrictionOverride,
 		meta = (ClampMin = "-1.0", UIMin = "-1.0"))
 	float SphereBoxManifoldFrictionOverride = -1.0f;
 	// Opts contacts involving this subbody into the coupled normal/tangent
 	// impulse solve. Kept per-body so unrelated collision families are stable.
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, export, Category = Physics)
+	UPROPERTY(EditAnywhere, export, Category = Physics,
+		BlueprintSetter = SetUseCoupledContactImpulse, Setter = SetUseCoupledContactImpulse)
 	bool bUseCoupledContactImpulse = false;
 	// Resolves the normal impulse first, then evaluates friction from the
 	// resulting point velocity. This mirrors Bullet-style sequential contacts
 	// without changing the default simultaneous/legacy solvers.
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, export, Category = Physics)
+	UPROPERTY(EditAnywhere, export, Category = Physics,
+		BlueprintSetter = SetUsePostNormalFrictionImpulse, Setter = SetUsePostNormalFrictionImpulse)
 	bool bUsePostNormalFrictionImpulse = false;
 	// Dynamic contacts between two opted-in solids are maintained by the
 	// world-level finite-mass pair solver instead of unilateral projection.
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, export, Category = Physics)
+	UPROPERTY(EditAnywhere, export, Category = Physics,
+		BlueprintSetter = SetUsePersistentBilateralContact, Setter = SetUsePersistentBilateralContact)
 	bool bUsePersistentBilateralContact = false;
 	// Optional eligibility bounds for this body's coupled contacts. Negative
 	// values disable a bound. Useful when a solver model is calibrated only for
@@ -301,4 +296,11 @@ protected:
 
 	// Index of the subbody (for logs)
 	int idx = -1;
+
+private:
+    friend class USpeedWorldSubsystem;
+    // Written by the exact worker under the same lock as supported setters.
+    // Read only by that worker or by a setter holding the lock.
+    bool bExactRoundSolidSlotRetained = false;
+    void ChangeSolidContactConfiguration(TFunctionRef<void()> Write);
 };

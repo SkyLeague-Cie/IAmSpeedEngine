@@ -4,6 +4,15 @@
 
 namespace Speed::Input::V2
 {
+// The original producer's authenticated fresh reset capture. The owner
+// retains those bytes and applies an explicitly marked neutral control for
+// this frame. Round generation is independent of the owner's stream epoch.
+struct FRoundInputResume
+{
+    std::uint64_t PreviousGeneration = 0, Generation = 0;
+    std::shared_ptr<const FInputFrame> Baseline;
+};
+
 // Optional source-side boundary protocol, distinct from a frame poll/close.
 // Old producers keep the rejecting default. Each implementation must qualify
 // these guarantees before native admission; noexcept alone is not that proof.
