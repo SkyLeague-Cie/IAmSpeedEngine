@@ -16,6 +16,7 @@
 #include "IAmSpeed/World/Analytic/AnalyticWorldQuery.h"
 #include "IAmSpeed/World/Analytic/AnalyticWorldData.h"
 #include "IAmSpeed/World/Analytic/StaticWorldQueryAudit.h"
+#include "IAmSpeed/World/Subsystem/SpeedWorldSubsystem.h"
 
 USSubBody::USSubBody(const FObjectInitializer& ObjectInitializer):
 	Super(ObjectInitializer)
@@ -30,8 +31,15 @@ USSubBody::USSubBody(const FObjectInitializer& ObjectInitializer):
     SetCollisionEnabled(ECollisionEnabled::NoCollision);
 }
 
+void USSubBody::OnPreRegister()
+{
+    NativePhysicsUse.TryUseNative();
+    Super::OnPreRegister();
+}
+
 void USSubBody::OnRegister()
 {
+    NativePhysicsUse.TryUseNative();
     // A nested native component can inherit a Blueprint-template parent
     // pointer. Resolve that exact default-subobject identity on this actor
     // before SceneComponent attempts attachment. Preserve every authored
@@ -51,8 +59,80 @@ void USSubBody::OnRegister()
     Super::OnRegister();
 }
 
+void USSubBody::SetCollisionEnabled(ECollisionEnabled::Type NewType)
+{
+    Super::SetCollisionEnabled(IsPresentationOnly() ? ECollisionEnabled::NoCollision : NewType);
+}
+
+ECollisionEnabled::Type USSubBody::GetCollisionEnabled() const
+{
+    return IsPresentationOnly() ? ECollisionEnabled::NoCollision : Super::GetCollisionEnabled();
+}
+
+bool USSubBody::ShouldCreatePhysicsState() const
+{
+    return !IsPresentationOnly() && Super::ShouldCreatePhysicsState();
+}
+
+void USSubBody::RequireExactRoundStorageTeardown() const
+{
+    USpeedWorldSubsystem::RequireExactRemoteRoundStorageTeardown(*this);
+}
+
+void USSubBody::DestroyComponent(bool bPromoteChildren)
+{
+    RequireExactRoundStorageTeardown();
+    Super::DestroyComponent(bPromoteChildren);
+}
+
+void USSubBody::OnComponentDestroyed(bool bDestroyingHierarchy)
+{
+    RequireExactRoundStorageTeardown();
+    Super::OnComponentDestroyed(bDestroyingHierarchy);
+}
+
+void USSubBody::BeginDestroy()
+{
+    RequireExactRoundStorageTeardown();
+    Super::BeginDestroy();
+}
+
+void USSubBody::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+    RequireExactRoundStorageTeardown();
+    Super::EndPlay(EndPlayReason);
+}
+
+void USSubBody::DetachFromComponent(const FDetachmentTransformRules& Rules)
+{
+    if (GetAttachParent() && ParentComponent)
+        RequireExactRoundStorageTeardown();
+    Super::DetachFromComponent(Rules);
+}
+
+void USSubBody::OnUnregister()
+{
+    RequireExactRoundStorageTeardown();
+    Super::OnUnregister();
+}
+
+void USSubBody::OnDestroyPhysicsState()
+{
+    RequireExactRoundStorageTeardown();
+    Super::OnDestroyPhysicsState();
+}
+
+void USSubBody::OnAsyncDestroyPhysicsStateBegin_GameThread(TSet<UObject*>& OutRootedObjects)
+{
+    RequireExactRoundStorageTeardown();
+    Super::OnAsyncDestroyPhysicsStateBegin_GameThread(OutRootedObjects);
+}
+
 void USSubBody::Initialize(ISpeedComponent* InParentComponent)
 {
+    if ((InParentComponent && InParentComponent->IsPresentationOnly()) || !NativePhysicsUse.TryUseNative()) return;
+    if (ParentComponent && (ParentComponent != InParentComponent || InParentComponent->GetPublishedSimulationStableId()))
+        RequireExactRoundStorageTeardown();
 	ParentComponent = InParentComponent;
     if (ParentComponent)
     {
@@ -66,7 +146,7 @@ void USSubBody::Initialize(ISpeedComponent* InParentComponent)
         
         for (USSubBody* SubBody: ParentComponent->GetSubBodies())
         {
-            if (SubBody)
+            if (SubBody && SubBody->NativePhysicsUse.TryUseNative())
             {
                 AlwaysIgnoredComponents.AddUnique(SubBody);
             }
@@ -105,9 +185,10 @@ void USSubBody::ResetIgnoredComponents()
 
 void USSubBody::AddExternalSubBodies(const TArray<USSubBody*>& SubBodies)
 {
+    if (IsPresentationOnly()) return;
     for (USSubBody* SubBody : SubBodies)
     {
-        if (SubBody && SubBody->GetParentComponent() != ParentComponent &&
+        if (SubBody && !SubBody->IsPresentationOnly() && SubBody->GetParentComponent() != ParentComponent &&
             !AlwaysIgnoredComponents.Contains(SubBody) && !SubBody->IsSensor() &&
             !(ParentComponent && ParentComponent->IsPrescribedMotion() && SubBody->GetParentComponent() && SubBody->GetParentComponent()->IsPrescribedMotion()))
         {

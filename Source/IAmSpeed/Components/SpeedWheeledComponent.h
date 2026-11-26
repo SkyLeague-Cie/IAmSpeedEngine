@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 #include "IAmSpeed/Concurrency/AtomicSharedPtr.h"
 namespace Speed::Replay { class FFieldWriter; }
+namespace Speed { class FPreparedNativeKinematicFields; class FPreparedNativeRoundFields; }
 #include "ChaosWheeledVehicleMovementComponent.h"
 #include "ISpeedWheeledComponent.h"
 #include "Netcode/SpeedPhysicsComponent.h"
@@ -14,6 +15,7 @@ namespace Speed::Replay { class FFieldWriter; }
 #include "IAmSpeed/Input/InputStream.h"
 #include "IAmSpeed/Input/InputStreamV2.h"
 #include "IAmSpeed/Input/SameFrameInputOwner.h"
+#include "IAmSpeed/Input/RequestedInputOwner.h"
 #include "IAmSpeed/Input/LegacyRemotePreSlew.h"
 
 #include "SpeedWheeledComponent.generated.h"
@@ -68,6 +70,9 @@ class IAMSPEED_API USpeedWheeledComponent : public UChaosWheeledVehicleMovementC
 	friend struct FNetworkWheeledSpeedInputState;
 
 public:
+    // Returns the calling thread's retained hull-contact drag flag, with a live fallback.
+    static bool ReadEffectiveHullContactContinuousAngularDrag() noexcept;
+
     // Read-only GT diagnostics; caller retains authenticated lease and pins.
     bool ReadCanonicalPrepareStateForGTInspection(const Speed::FPreparedNativeOwnerBinding& Binding,
         Speed::FNativePrepareGTFields& Out,Speed::Analytic::Certified::FDistanceBudget& Budget,FString& Reason) const;
@@ -135,6 +140,8 @@ public:
 	// Investigation hook for local deterministic probes that intentionally
 	// bypass the network-alignment startup countdown.
 	void SetImmediateMovementForTesting();
+    /** GT witness only: both legacy network components were excluded before registration. */
+    bool IsLegacyNetworkHistoryExcluded() const;
 	// Mass to use for physics simulation
 	float GetPhysMass() const override;
 	// Center-of-mass state and its fixed local offset from the component origin.
@@ -188,7 +195,17 @@ public:
 	void ApplyTestVelocity();
 
 	bool IsAffectedByGravity() const;
-	FVector GetNominalGravityAcceleration() const override { return bEnableGravity ? FVector(0, 0, GravityZ) : FVector::ZeroVector; }
+	FVector GetNominalGravityAcceleration() const override;
+    // Common IAS movement settings for the original registered wheeled actor.
+    bool AppendExactRoundWheeledConfiguration(Speed::FExactRoundConfigurationWriter& Out) const;
+    UFUNCTION(BlueprintSetter, Category = "Base")
+    void SetWheeledGravityEnabled(bool bEnabled);
+    UFUNCTION(BlueprintSetter, Category = "Base")
+    void SetWheeledGravityZ(float AccelerationZ);
+    UFUNCTION(BlueprintSetter, Category = "Base")
+    void SetWheeledDamping(float Damping);
+    UFUNCTION(BlueprintSetter, Category = "Physics")
+    void SetWheeledContactTimeConstant(float Seconds);
 	void SetIsAffectedByGravity(bool value);
 	void EnableGravity();
 	bool HasAuthority() const;
@@ -302,6 +319,17 @@ public:
 	bool InstallCanonicalInput(uint64 Frame,
 		std::shared_ptr<const Speed::Input::V2::FOwnerInputSnapshot> Snapshot) override;
 	const std::shared_ptr<const Speed::Input::V2::FOwnerInputSnapshot>& GetCanonicalInputSnapshot() const { return CanonicalInputSnapshot; }
+    bool SupportsCanonicalRequestedInputs(const Speed::Input::V2::FInputActionContract& Contract,
+        const Speed::Input::V2::FInputProcessingPolicy& Processing,Speed::Input::V2::ERequestedDigitalPolicy Digital) const override;
+    uint64 GetCanonicalRequestedBodyGeneration() const override final {return SubBodies.IsEmpty()?0:RequestedInputBodyGeneration;}
+    bool CanAdmitCanonicalRequestedInput() const override final;
+    bool InstallCanonicalRequestedInput(uint64 Frame,
+        std::shared_ptr<const Speed::Input::V2::FRequestedInputConsumption> Input) override final;
+    const std::shared_ptr<const Speed::Input::V2::FRequestedInputConsumption>& GetCanonicalRequestedInput() const {return CanonicalRequestedInput;}
+    bool ClaimCanonicalRequestedInputV2(std::shared_ptr<const Speed::Input::V2::FNativeRequestedBindingV2> Binding)override final;
+    bool OwnsCanonicalRequestedInputV2(const std::shared_ptr<const Speed::Input::V2::FNativeRequestedBindingV2>& Binding)const override final;
+    bool RetireCanonicalRequestedInputV2(const std::shared_ptr<const Speed::Input::V2::FNativeRequestedBindingV2>& Binding)override final;
+    bool InstallCanonicalRequestedInputV2(uint64 Frame,std::shared_ptr<const Speed::Input::V2::FRequestedInputConsumption> Input,const std::shared_ptr<const Speed::Input::V2::FNativeRequestedBindingV2>& Binding)override final;
 	bool PrepareCanonicalInputs(const FCanonicalFrameContext& Context) override;
 	void PrepareCanonicalFrame(const FCanonicalFrameContext& Context) override;
 	// Set whether the movement is currently frozen (e.g. due to the game being paused)
@@ -355,6 +383,14 @@ protected:
 	virtual bool ApplyProducedInputFrame(const Speed::Input::FInputFrame&) { return true; }
 	virtual bool ValidateProducedInputFrameV2(const Speed::Input::V2::FInputFrame&) const { return true; }
 	virtual bool ApplyProducedInputFrameV2(const Speed::Input::V2::FInputFrame& Frame);
+    /** Game adapters explicitly handle held values, optional original edges
+     * and CancelDigitalMask. Never convert forecasts into original frames. */
+    virtual bool ValidateCanonicalRequestedInput(const Speed::Input::V2::FRequestedInputConsumption& Input) const;
+    virtual bool ApplyCanonicalRequestedInput(const Speed::Input::V2::FRequestedInputConsumption& Input);
+    virtual bool ValidateCanonicalRequestedInputV2(const Speed::Input::V2::FRequestedInputConsumption&,const Speed::Input::V2::FNativeRequestedBindingV2&)const{return false;}
+    virtual bool ApplyCanonicalRequestedInputV2(const Speed::Input::V2::FRequestedInputConsumption&,const Speed::Input::V2::FNativeRequestedBindingV2&){return false;}
+    bool ApplyProducedCameraValuesV2(const Speed::Input::V2::FInputActionContract& Contract,
+        const Speed::Input::FActionValues& Values);
 	// Simulation-lane cancellation, never a synthetic gameplay release event.
 	virtual void ResetProducedInputState() {}
 	virtual bool PublishInputCancellationAtBoundary() { return true; }
@@ -493,10 +529,12 @@ public:
 		meta = (ClampMin = "0.0", UIMin = "0.0"))
 	float PhysMass = 1000.0f;
 	// whether to apply gravity to the component
-	UPROPERTY(BlueprintReadWrite, Category = Base, EditDefaultsOnly)
+	UPROPERTY(Category = Base, EditDefaultsOnly,
+		BlueprintSetter = SetWheeledGravityEnabled, Setter = SetWheeledGravityEnabled)
 	bool bEnableGravity = true;
 	// gravity acceleration in cm/s^2 (negative value means gravity is pulling down)
-	UPROPERTY(BlueprintReadWrite, Category = Base, EditDefaultsOnly)
+	UPROPERTY(Category = Base, EditDefaultsOnly,
+		BlueprintSetter = SetWheeledGravityZ, Setter = SetWheeledGravityZ)
 	float GravityZ = -980.0f;
 	// max speed of the component in cm/s
 	UPROPERTY(BlueprintReadWrite, Category = Base, EditDefaultsOnly,
@@ -507,7 +545,8 @@ public:
 		meta = (ClampMin = "0.0", UIMin = "0.0"))
 	float PhysMaxAngularSpeed = 4.f;
 	// damping factor of the component (0.0 means no damping, 1.0 means full damping)
-	UPROPERTY(BlueprintReadWrite, Category = Base, EditDefaultsOnly,
+	UPROPERTY(Category = Base, EditDefaultsOnly,
+		BlueprintSetter = SetWheeledDamping, Setter = SetWheeledDamping,
 		meta = (ClampMin = "0.0", ClampMax = "1.0", UIMin = "0.0", UIMax = "1.0"))
 	float PhysDamping = 0.0f;
 	// center of mass of the actor in local space (relative to the actor's origin)
@@ -522,7 +561,8 @@ public:
 	FVector GroundFriction = FVector(510.0, 6120.0, 0.0);
 	// Response time, in seconds, used to absorb inward normal velocity on a new
 	// wheel contact. Vehicle presets may tune it independently of physics rate.
-	UPROPERTY(BlueprintReadWrite, Category = Physics, EditDefaultsOnly,
+	UPROPERTY(Category = Physics, EditDefaultsOnly,
+		BlueprintSetter = SetWheeledContactTimeConstant, Setter = SetWheeledContactTimeConstant,
 		meta = (ClampMin = "0.000001", UIMin = "0.000001", Units = "s"))
 	float WheelContactNormalVelocityTimeConstant = 0.0075f;
 	// Ground angular damping coefficient to dampen angular velocity when car is on the ground (in %)
@@ -812,6 +852,24 @@ public:
 	/** Names of the Wheel Subodies*/
 	static const TArray<FName> WheelNames;
 private:
+    struct FExactRoundWheeledConfiguration
+    {
+        uint64 WorkerGeneration = 0;
+        bool GravityEnabled = false;
+        float GravityZ = 0.f;
+        float Damping = 0.f;
+        float ContactTimeConstant = 0.f;
+        float FrameRate = 0.f;
+        uint16 MinimumFramesBeforeCanMove = 0;
+    };
+    FExactRoundWheeledConfiguration RetainedWheeledConfiguration;
+    bool RetainExactRoundMovementConfiguration(uint64 WorkerGeneration, bool bAllowCapture) final;
+    const FExactRoundWheeledConfiguration* ExactRoundWheeledConfigurationForRead() const;
+    float GravityAccelerationZForPhysics() const;
+    float DampingForPhysics() const;
+    float ContactTimeConstantForPhysics() const;
+    bool ChangeWheeledConfiguration(TFunctionRef<void()> Write);
+
 	USpeedSimulation* SkySimulation = nullptr;
 	ASpeedCar* SpeedCarOwner = nullptr;
 	virtual TUniquePtr<Chaos::FSimpleWheeledVehicle> CreatePhysicsVehicle() override
@@ -869,6 +927,11 @@ private:
 	bool PrepareLegacyWheeledInput(uint64 Frame);
 	TOptional<uint64> PreparedCanonicalInputFrame;
 	std::shared_ptr<const Speed::Input::V2::FOwnerInputSnapshot> CanonicalInputSnapshot;
+    std::shared_ptr<const Speed::Input::V2::FRequestedInputConsumption> CanonicalRequestedInput;
+    std::shared_ptr<const Speed::Input::V2::FNativeRequestedBindingV2> CanonicalRequestedBindingV2;
+    bool bCanonicalRequestedV2Retired=false; // Owner-only neutral input; body remains simulated.
+    std::atomic<bool> bCanonicalRequestedAuthority{false};
+    uint64 RequestedInputBodyGeneration=1;
 	bool bCanonicalInputPending = false;
 	struct FCompletedWheeledInput
 	{
@@ -884,6 +947,8 @@ private:
 
 
 	//=========== Internal state variables for the movement component ===========
+    friend class Speed::FPreparedNativeKinematicFields;
+    friend class Speed::FPreparedNativeRoundFields;
 	SBaseGameState BaseGameState; // current game state of the component
 	FBasePhysicsState BasePhysicsState; // current physics state of the component (replicated on network)
 	FWheeledGameState WheeledGameState; // current wheeled game state of the component
@@ -927,6 +992,7 @@ private:
 	TArray<SWheelGroundContact> PendingWheelContacts; // array of pending wheel ground contacts to be registered at the end of the frame
 
 	// ========== Netcode variables ==========
+    bool bLegacyNetworkHistoryExcluded = false; // GT lifecycle only, default legacy path unchanged
 	UPROPERTY()
 	TObjectPtr<UNetworkPhysicsComponent> SNetworkPhysicsComponent = nullptr;
 	UPROPERTY()
@@ -955,6 +1021,8 @@ private:
 	friend class FIAmSpeedProducedWheeledInputBoundaryTest;
 	friend class FIAmSpeedProducedInputWorkerOrderTest;
 	friend class FIAmSpeedNativeCarsCamera1217;
+    friend class FIAmSpeedNativeRequestedRegistry;
+    friend class FIAmSpeedNativeRequestedPreparationV2Test;
  friend class FIAmSpeedNativeAnalyticContacts1221;
  friend class FIAmSpeedNativeAnalyticGrounded1368;
  friend class FIAmSpeedNativeAnalyticEightCars1534;

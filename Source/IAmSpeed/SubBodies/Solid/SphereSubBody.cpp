@@ -24,6 +24,7 @@
 #include "IAmSpeed/Base/SpeedConstant.h"
 #include "IAmSpeed/Components/ISpeedComponent.h"
 #include "IAmSpeed/World/Subsystem/SpeedWorldSubsystem.h"
+#include "IAmSpeed/World/Simulation/ExactRoundContactSettings.h"
 #include "Configs/SubBodyConfig.h"
 #include "PhysicsEngine/BodySetup.h"
 #include "HAL/IConsoleManager.h"
@@ -285,13 +286,23 @@ void USphereSubBody::ResetForFrame(const float& Delta)
 	WheelHit = SHitResult();
 }
 
+void Speed::FExactRoundContactSettings::CaptureSphereProjectionSettings() noexcept
+{
+    SphereBoxProjectionEnabled = CVarIAmSpeedSphereBoxProjection.GetValueOnAnyThread() != 0;
+    SphereWorldStaticProjectionEnabled = CVarIAmSpeedSphereWorldProjection.GetValueOnAnyThread() != 0;
+}
+
 bool USphereSubBody::IsSphereBoxProjectionEnabled()
 {
+    if (const auto* Settings = Speed::FScopedExactRoundContactSettings::Current())
+        return Settings->SphereBoxProjectionEnabled;
 	return CVarIAmSpeedSphereBoxProjection.GetValueOnAnyThread() != 0;
 }
 
 bool USphereSubBody::IsWorldStaticProjectionEnabled()
 {
+    if (const auto* Settings = Speed::FScopedExactRoundContactSettings::Current())
+        return Settings->SphereWorldStaticProjectionEnabled;
 	return CVarIAmSpeedSphereWorldProjection.GetValueOnAnyThread() != 0;
 }
 
@@ -1610,9 +1621,72 @@ void USphereSubBody::UpdateBodySetup()
     }
 }
 
+bool USphereSubBody::AppendExactRoundSphereConfiguration(Speed::FExactRoundConfigurationWriter& Out) const
+{
+    if (GetSubBodyType() != ESubBodyType::Sphere || !Speed::FScopedExactRoundContactSettings::Current() ||
+        !HasRetainedExactSolidSlotConfiguration() || !AppendExactRoundSolidConfiguration(Out)) return false;
+
+    // CCD and static support consume different radii. Hash the authored
+    // contributions separately, together with the actual response policy.
+    return Out.Unsigned(0x4941535350480001ull) &&
+        Out.Float(GetRadius()) && Out.Float(CollisionMargin()) &&
+        Out.Float(GetWorldStaticContactOffsetCm()) && Out.Float(GetWorldStaticImpactFriction()) &&
+        Out.Float(MinSlopCm) && Out.Boolean(UsesProductionNonpenetratingBoxContacts()) &&
+        Out.Float(SphereBoxTangentialContactArmScale) &&
+        Out.Float(SphereBoxTangentialContactArmStartSpeed) && Out.Float(SphereBoxTangentialContactArmFullSpeed) &&
+        Out.Float(SphereBoxTangentialArmMinSphereSpeed) && Out.Float(SphereBoxTangentialArmMaxSphereSpeed) &&
+        Out.Float(SphereBoxTangentialArmMinSphereAngularSpeed) && Out.Float(SphereBoxTangentialArmMaxSphereAngularSpeed) &&
+        Out.Float(SphereBoxTangentialArmMinBoxSpeed);
+}
+
 void USphereSubBody::SetRadius(const float& NewRadius)
 {
-    Radius = NewRadius;
+    ChangeExactSolidSlotConfiguration([this, NewRadius] { Radius = NewRadius; });
+}
+
+void USphereSubBody::SetRadiusForConfiguration(float NewRadius)
+{
+    ChangeExactSolidSlotConfiguration([this, NewRadius]
+    {
+        Radius = NewRadius;
+        InvInertiaLocal = InitInvInertiaTensor();
+    });
+}
+
+void USphereSubBody::SetProductionNonpenetratingBoxContacts(bool bEnabled)
+{
+    ChangeExactSolidSlotConfiguration([this, bEnabled] { bProductionNonpenetratingBoxContacts = bEnabled; });
+}
+
+void USphereSubBody::SetSphereBoxTangentialContactArmScale(float InScale)
+{
+    ChangeExactSolidSlotConfiguration([this, InScale]
+    {
+        SphereBoxTangentialContactArmScale = FMath::Max(0.0f, InScale);
+    });
+}
+
+void USphereSubBody::SetSphereBoxTangentialContactArmSpeedRange(float InStartSpeed, float InFullSpeed)
+{
+    ChangeExactSolidSlotConfiguration([this, InStartSpeed, InFullSpeed]
+    {
+        SphereBoxTangentialContactArmStartSpeed = FMath::Max(0.0f, InStartSpeed);
+        SphereBoxTangentialContactArmFullSpeed = FMath::Max(SphereBoxTangentialContactArmStartSpeed, InFullSpeed);
+    });
+}
+
+void USphereSubBody::SetSphereBoxTangentialContactArmKinematicWindow(
+    float InMinSphereSpeed, float InMaxSphereSpeed, float InMinSphereAngularSpeed,
+    float InMaxSphereAngularSpeed, float InMinBoxSpeed)
+{
+    ChangeExactSolidSlotConfiguration([=, this]
+    {
+        SphereBoxTangentialArmMinSphereSpeed = InMinSphereSpeed;
+        SphereBoxTangentialArmMaxSphereSpeed = InMaxSphereSpeed;
+        SphereBoxTangentialArmMinSphereAngularSpeed = InMinSphereAngularSpeed;
+        SphereBoxTangentialArmMaxSphereAngularSpeed = InMaxSphereAngularSpeed;
+        SphereBoxTangentialArmMinBoxSpeed = InMinBoxSpeed;
+    });
 }
 
 #if WITH_DEV_AUTOMATION_TESTS

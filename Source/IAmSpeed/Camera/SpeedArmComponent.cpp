@@ -241,12 +241,15 @@ USpeedArmComponent::FEndpointPtr USpeedArmComponent::CreateCameraEndpoint(const 
     if (bUseAnalyticWorldCollision)
     {
         const auto* Subsystem=GetWorld()?GetWorld()->GetSubsystem<USpeedWorldSubsystem>():nullptr;
-        const auto* Data=Subsystem?Subsystem->GetAnalyticWorldData():nullptr;
-        if (!Data || !Subsystem->GetStaticCollisionWorld() ||
-            Subsystem->GetStaticCollisionWorld()->GetBackend()!=Speed::EStaticCollisionBackend::SurfaceAnalytic) return nullptr;
-        // A finalized copy retains derived bounds and pins its exact geometry
-        // independently of UObject/world reset lifetime; no rebuild or lookup per frame.
-        Environment=MakeShared<const Speed::Analytic::FAnalyticWorldData, ESPMode::ThreadSafe>(*Data);
+        if (!Subsystem) return nullptr;
+        const bool Visited = Subsystem->VisitBorrowedSimulationWorld([&](const Speed::FSimulationWorld& World)
+        {
+            const auto* Data = Subsystem->GetAnalyticWorldData();
+            const auto* Provider = World.GetStaticCollisionWorld();
+            if (Data && Provider && Provider->GetBackend() == Speed::EStaticCollisionBackend::SurfaceAnalytic)
+                Environment = MakeShared<const Speed::Analytic::FAnalyticWorldData, ESPMode::ThreadSafe>(*Data);
+        });
+        if (!Visited || !Environment) return nullptr;
     }
     return MakeShared<FSpeedCarCameraPresentation, ESPMode::ThreadSafe>(
         Binding.OwnerStableId, Binding.FirstFrame, 1, InitialConfiguration, InitialState, MoveTemp(Environment));

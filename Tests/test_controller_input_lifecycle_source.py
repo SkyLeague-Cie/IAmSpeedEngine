@@ -6,7 +6,7 @@ import unittest
 ROOT = Path(__file__).parents[1] / 'Source/IAmSpeed'
 CONTROLLER = (ROOT / 'Controllers/SpeedController.cpp').read_text()
 STREAM = (ROOT / 'Input/InputStream.h').read_text()
-OWNER = (ROOT / 'World/Simulation/SpeedSimulation.cpp').read_text()
+OWNER = (ROOT / 'World/Simulation/SpeedPhysicsSimulation.cpp').read_text()
 TEST = (ROOT / 'World/Simulation/ControllerInputLifecycleTests.cpp').read_text()
 
 
@@ -27,7 +27,7 @@ def validate(controller, stream, owner, test):
         raise ValueError('GT lifecycle cannot acquire or write physical input')
     if 'if (!Active || LifecyclePaused) return std::nullopt;' not in stream or 'HistoryEpoch[Frame % HistoryCapacity] != ControlEpoch' not in stream:
         raise ValueError('Paused acquisition and obsolete publication must be gated')
-    boundary = owner.split('ESimulationQuiescence ASpeedSimulation::TryPauseOwnedSimulation', 1)[1].split('void ASpeedSimulation::PauseOwnedSimulation', 1)[0]
+    boundary = owner.split('ESimulationQuiescence ASpeedPhysicsSimulation::TryPauseOwnedSimulation', 1)[1].split('void ASpeedPhysicsSimulation::PauseOwnedSimulation', 1)[0]
     if 'SimulationWorker->TryPause(TimeoutMilliseconds)' not in boundary or 'ESimulationQuiescence::AlreadyStopped' not in boundary:
         raise ValueError('Explicit quiescence results required')
     for witness in ('Controller->SetPause(true)', 'Controller->SetPause(false)', 'Controller->UnPossess()', 'Controller->EndPlay(', 'BlockEntered->Wait(1000)', 'Source->RejectNextControl = true;'):

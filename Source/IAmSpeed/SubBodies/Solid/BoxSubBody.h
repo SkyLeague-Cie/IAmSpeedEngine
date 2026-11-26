@@ -25,11 +25,17 @@ class IAMSPEED_API UBoxSubBody : public USolidSubBody, public IBoxSweeper, publi
 {
     GENERATED_UCLASS_BODY()
     friend class Speed::PreparedExecution::FComponentSweepScope;
+    friend class Speed::FPreparedNativeRoundFields;
 #if WITH_DEV_AUTOMATION_TESTS
     friend class FIAmSpeedSweeperCandidatesTest;
+    friend class FIAmSpeedExactRoundWheeledHitCountTest;
 #endif
 	
 public:
+    // Appends solid and box configuration from this registered hitbox,
+    // including correction slop. The game retains its own response policy.
+    bool AppendExactRoundBoxConfiguration(Speed::FExactRoundConfigurationWriter& Out) const;
+
     const USolidSubBody* GetSolidSweepBody() const override { return this; }
 #if !UE_BUILD_SHIPPING
     void AppendEpisodeStateForTesting(TArray<uint8>& Out) const override
@@ -96,7 +102,7 @@ public:
     SKinematic GetKinematicsFromOwnerKS(const SKinematic& CarKinematicState) const;
     SSBox MakeBox() const;
     // Construction-time physical policy; not driven by a test ID or diagnostic.
-    void SetProductionNonpenetratingSphereContacts(bool bEnabled) { bProductionNonpenetratingSphereContacts = bEnabled; }
+    void SetProductionNonpenetratingSphereContacts(bool bEnabled);
     bool UsesProductionNonpenetratingSphereContacts() const { return bProductionNonpenetratingSphereContacts; }
 
     SSBox MakeBoxFromKS(const SKinematic& CarKinematicState) const;
@@ -420,6 +426,25 @@ private:
     TWeakObjectPtr<UPrimitiveComponent> RoofSurfaceComp;
     FVector CompositeGroundNormal; // average normal from all ground contacts this frame
     TMap<TWeakObjectPtr<UPrimitiveComponent>, uint32> HitCountThisFrame;
+    bool HasColdExactRoundHitCounts() const
+    {
+        if (!HitCountThisFrame.IsEmpty()) return false;
+        // Sparse TMap counts inline occupancy words in GetAllocatedSize().
+        // Those words are already inside the declared map range. Any
+        // capacity beyond a fresh map is outside that range and must refuse.
+        const decltype(HitCountThisFrame) Fresh{};
+        return HitCountThisFrame.GetAllocatedSize() == Fresh.GetAllocatedSize();
+    }
+    void RetireFrameHitCounts()
+    {
+        if (HasColdExactRoundHitCounts()) return;
+        // Destroy the old owning map rather than keeping capacity across the boundary.
+        decltype(HitCountThisFrame) Retired;
+        ::Swap(HitCountThisFrame, Retired);
+    }
+    friend class USpeedWorldSubsystem;
+    bool UsesPersistentFloorFrictionOnly() const;
+    bool bRetainedPersistentFloorFrictionOnly = false;
     uint32 MaxHitsPerComponentPerFrame = 4; // face = 4 corners
     TArray<float> PrevLambdaN;
 

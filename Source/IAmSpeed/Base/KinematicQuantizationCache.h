@@ -4,6 +4,7 @@
 
 namespace Speed
 {
+    struct FCommonCacheValueAccess;
 	/** Remembers only proven no-op quantizations; derived per-component state, never serialized. */
 	class FIdentityKinematicQuantizationCache
 	{
@@ -27,6 +28,7 @@ namespace Speed
 #endif
 
 	private:
+        friend struct FCommonCacheValueAccess;
 		struct FInput
 		{
 			FVector Location = FVector::ZeroVector;

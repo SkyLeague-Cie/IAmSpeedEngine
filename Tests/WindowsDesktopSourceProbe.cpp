@@ -144,15 +144,72 @@ static void Composed(bool HaveKeyboard)
     const auto Resumed=Producer->Produce(FrameNumber++);Check(bool(Resumed),"fresh typed desktop resume maps successfully");
     Check(Resumed->GetData().Reset&&Resumed->GetData().Values[3]==0,"held mouse cannot invent Jump during resume rearm");
     for(const auto& E:Resumed->GetData().Transitions)Check(E.Action!=3||E.State!=ETransition::Started,"resume contains no ghost mouse Started");
+    const auto HeldRound=Producer->CaptureRoundBaselineForOwner(FrameNumber++);
+    Check(HeldRound&&HeldRound->GetData().Reset&&HeldRound->GetData().Transitions.empty()&&HeldRound->GetData().Values[3]==1,
+        "a held raw level remains observable in a neutral round despite the ordinary play rearm filter");
     Api->Push(Api->Mouse(Mouse.Get(),23,GameInputMouseNone));Step(ERawDeviceKind::Desktop,0,0);
     Api->Push(Api->Mouse(Mouse.Get(),24,GameInputMouseLeftButton));const auto Rearmed=Step(ERawDeviceKind::Desktop,0,1);
     unsigned Starts=0;for(const auto& E:Rearmed.GetData().Transitions)if(E.Action==3&&E.State==ETransition::Started)++Starts;
     Check(Starts==1,"new post-resume SDK press has exactly one mapped Started");
+    const auto BeforeRound=Rearmed.GetData();
+    const auto RoundFrame=FrameNumber++;
+    const auto Round=Producer->CaptureRoundBaselineForOwner(RoundFrame);
+    Check(Round&&Round->GetData().Reset&&Round->GetData().Transitions.empty()&&Round->GetData().Values[3]==1
+        &&Round->GetData().DeviceGeneration.Value==BeforeRound.DeviceGeneration.Value,
+        "round F keeps the real held button and Desktop identity");
+    Check(Producer->SetLifecyclePaused(true)==ELifecycleResult::Applied,"round pauses only physical consumption");
+    Api->Push(Api->Mouse(Mouse.Get(),25,GameInputMouseLeftButton));
+    Api->Push(Api->Mouse(Mouse.Get(),26,GameInputMouseNone));
+    Check(Journal->RequestFreshRoundResume(),"playing resume is requested against a queued old press");
+    Check(Acquisition.Pump()==ERawPumpResult::Installed&&Journal->IsResumeReady(),
+        "round resume acknowledges a current SDK snapshot");
+    Api->Push(Api->Mouse(Mouse.Get(),27,GameInputMouseLeftButton));
+    Check(Acquisition.Pump()==ERawPumpResult::Installed,
+        "post-baseline press is acquired while F+1 is still waiting");
+    {
+        const auto ResumeCapture=Journal->ReserveAcquisition();
+        const auto Fresh=Journal->ReadFreshRoundResumeBaseline();
+        Check(Fresh&&Fresh->Baseline.DesktopPublication
+            &&Value(*Fresh->Baseline.DesktopPublication,ERawControlKind::MouseButton,0)==0,
+            "buffered press cannot replace the actual released reading used for F+1");
+        Check(Producer->SetLifecyclePaused(false)==ELifecycleResult::Applied,"fresh physical receipt opens local resume");
+        const auto Cutoff=Producer->FreezeForOwner(FrameNumber);
+        auto Playing=Producer->Produce(FrameNumber++);
+        Check(Cutoff&&Playing&&Producer->CloseFrozenCutoff(*Cutoff),"one playing cutoff closes");
+        const auto& Data=Playing->GetData();
+        Check(Data.Reset&&Data.Transitions.empty()&&Data.SourceSequence==Round->GetData().SourceSequence+1
+            &&Data.DeviceGeneration.Value>Round->GetData().DeviceGeneration.Value&&Data.Values[3]==0,
+            "first playing Desktop frame is a fresh Reset at F+1");
+    }
+    const auto Suffix=Step(ERawDeviceKind::Desktop,0,1);
+    Check(!Suffix.GetData().Reset&&Suffix.GetData().Transitions.size()==1
+        &&Suffix.GetData().Transitions[0].State==ETransition::Started,
+        "each post-baseline press appears once and the old prefix does not replay");
     Check(Acquisition.Close(),"composed native source/journal acquisition closes its real callback owners");
 }
 int main()
 {
     Composed(false);Composed(true);
+    {
+        Fixture F(true,true,"round-same-timestamp");
+        auto Initial=F.Prepare();F.Accept(Initial);
+        // Both callbacks arrive during preparation and share the snapshot's
+        // timestamp. The SDK current reading itself is the second one.
+        F.Api->DuringCurrent=[&]
+        {
+            F.Api->Push(F.Api->Mouse(F.Mouse.Get(),2,GameInputMouseLeftButton));
+            F.Api->Push(F.Api->Mouse(F.Mouse.Get(),2,GameInputMouseNone));
+        };
+        auto Round=F.Collector->Prepare(true,true);
+        Check(Round.Prepared&&Value(*Round.Prepared->Inspect(),ERawControlKind::MouseButton,0)==0,
+            "SDK current snapshot subsumes the older equal-timestamp press");
+        F.Api->Push(F.Api->Mouse(F.Mouse.Get(),2,GameInputMouseLeftButton));
+        F.Accept(Round);
+        F.Api->AliasHistoryReadings=true;
+        auto After=F.Prepare();const auto Publication=F.Accept(After);
+        Check(Publication->Changes.size()==1&&Publication->Changes.front().Value==1,
+            "SDK history preserves the equal-timestamp successor exposed through a different interface pointer");
+    }
     {
         Fixture F(true,true,"interleaved-transaction");
         Check(!FGameInputDesktopSource::Create(nullptr,F.Discovery.get(),1)&&!FGameInputDesktopSource::Create(F.Api.Get(),nullptr,1)
