@@ -428,7 +428,12 @@ private:
     TMap<TWeakObjectPtr<UPrimitiveComponent>, uint32> HitCountThisFrame;
     bool HasColdExactRoundHitCounts() const
     {
-        return HitCountThisFrame.IsEmpty() && HitCountThisFrame.GetAllocatedSize() == 0;
+        if (!HitCountThisFrame.IsEmpty()) return false;
+        // Sparse TMap counts inline occupancy words in GetAllocatedSize().
+        // Those words are already inside the declared map range. Any
+        // capacity beyond a fresh map is outside that range and must refuse.
+        const decltype(HitCountThisFrame) Fresh{};
+        return HitCountThisFrame.GetAllocatedSize() == Fresh.GetAllocatedSize();
     }
     void RetireFrameHitCounts()
     {

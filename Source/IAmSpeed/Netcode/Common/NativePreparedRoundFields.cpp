@@ -1072,6 +1072,8 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FIAmSpeedExactRoundWheeledHitCountTest,
 bool FIAmSpeedExactRoundWheeledHitCountTest::RunTest(const FString&)
 {
     TStrongObjectPtr<UBoxSubBody> Box(NewObject<UBoxSubBody>());
+    const SIZE_T FreshMapBytes = Box->HitCountThisFrame.GetAllocatedSize();
+    TestTrue(TEXT("The fresh native count map needs no external backing"), Box->HasColdExactRoundHitCounts());
     TStrongObjectPtr<UBoxComponent> First(NewObject<UBoxComponent>());
     TStrongObjectPtr<UBoxComponent> Second(NewObject<UBoxComponent>());
     First->SetMobility(EComponentMobility::Static);
@@ -1093,7 +1095,7 @@ bool FIAmSpeedExactRoundWheeledHitCountTest::RunTest(const FString&)
     TestTrue(TEXT("The cap still applies at the last accepted F-1 hit"), SubBody->ComponentHasBeenIgnored(*First.Get()));
     TestFalse(TEXT("The second surface keeps its own count"), SubBody->ComponentHasBeenIgnored(*Second.Get()));
     TestEqual(TEXT("A real AcceptHit populated both map entries"), Box->HitCountThisFrame.Num(), 2);
-    TestTrue(TEXT("The occupied count map owns backing"), Box->HitCountThisFrame.GetAllocatedSize() > 0);
+    TestTrue(TEXT("The occupied count map owns backing"), Box->HitCountThisFrame.GetAllocatedSize() > FreshMapBytes);
     TestFalse(TEXT("Round staging refuses the occupied map"), Box->HasColdExactRoundHitCounts());
 
     Box->RetireFrameHitCounts();
@@ -1101,12 +1103,17 @@ bool FIAmSpeedExactRoundWheeledHitCountTest::RunTest(const FString&)
     TestTrue(TEXT("The previous contact and ignore decisions survive retirement"),
         Box->GetHit().Component.Get() == First.Get() && SubBody->ComponentHasBeenIgnored(*First.Get()));
 
-    Box->HitCountThisFrame.Reserve(4);
-    TestTrue(TEXT("The empty fixture can still own backing"), Box->HitCountThisFrame.IsEmpty()
-        && Box->HitCountThisFrame.GetAllocatedSize() > 0);
-    TestFalse(TEXT("Staging refuses reserved backing even with zero entries"), Box->HasColdExactRoundHitCounts());
-    Box->RetireFrameHitCounts();
-    TestTrue(TEXT("Retirement also releases empty reserved backing"), Box->HasColdExactRoundHitCounts());
+    // Cover both small reservations and overflow of the sparse map's
+    // inline occupancy words. Neither is cold until the backing is retired.
+    for (const int32 ReservedEntries : {4, 256})
+    {
+        Box->HitCountThisFrame.Reserve(ReservedEntries);
+        TestTrue(TEXT("The empty fixture can still own backing"), Box->HitCountThisFrame.IsEmpty()
+            && Box->HitCountThisFrame.GetAllocatedSize() > FreshMapBytes);
+        TestFalse(TEXT("Staging refuses reserved backing even with zero entries"), Box->HasColdExactRoundHitCounts());
+        Box->RetireFrameHitCounts();
+        TestTrue(TEXT("Retirement also releases empty reserved backing"), Box->HasColdExactRoundHitCounts());
+    }
     return true;
 }
 
