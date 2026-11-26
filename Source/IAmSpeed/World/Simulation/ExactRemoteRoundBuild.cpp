@@ -1,4 +1,5 @@
 #include "ExactRemoteRoundReset.h"
+#include "IAmSpeed/Netcode/Common/NativePreparedRoundFields.h"
 
 namespace Speed
 {
