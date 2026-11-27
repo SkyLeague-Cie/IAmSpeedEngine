@@ -278,8 +278,8 @@ private:
                         SetHat(Pending, Event.code, Event.value);
                     else if (const auto Axis = std::find(Axes.begin(), Axes.end(), Event.code); Axis != Axes.end())
                     {
-                        const auto Index = std::size_t(Axis - Axes.begin());
-                        Pending.Values[ButtonCount + Index].Value = NormalizeAxis(Index, Ranges[Index], Event.value);
+                        const auto AxisIndex = std::size_t(Axis - Axes.begin());
+                        Pending.Values[ButtonCount + AxisIndex].Value = NormalizeAxis(AxisIndex, Ranges[AxisIndex], Event.value);
                     }
                 }
                 else if (Event.type == EV_KEY && (Event.value == 0 || Event.value == 1))
