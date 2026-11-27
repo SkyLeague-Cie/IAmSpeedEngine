@@ -3616,12 +3616,19 @@ FWorldHit FWorldQueryService::SweepTensorBezier(
 	View.bQueryCollisionEnabled = Patch.bQueryCollisionEnabled;
 	View.bApproximationCertified = Patch.bApproximationCertified;
 	View.bAuthorityEligible = Patch.bAuthorityEligible;
-	return SweepTensorBezierApproximation(
+	Best = SweepTensorBezierApproximation(
 		Query, QueryBounds, View, MaximumSearchTime, nullptr, Selection
 #if PLATFORM_WINDOWS && defined(_MSC_VER) && defined(_M_X64) && !defined(__clang__) && !defined(_M_ARM64EC)
         , CellObliqueIndex
 #endif
         );
+	if (Best.bHit && Query.Shape == EQueryShape::Sphere && Selection == EHitSelection::FirstSweepHit &&
+		Query.bAuthorityOnly && !Query.bIncludeTriangles && Query.Start != Query.End &&
+		!Best.bStartPenetrating && Best.Time > 0.0)
+	{
+		Best.AnalyticProviderId = Patch.PrimitiveId;
+	}
+	return Best;
 }
 
 FWorldHit FWorldQueryService::SweepTensorBezierApproximation(

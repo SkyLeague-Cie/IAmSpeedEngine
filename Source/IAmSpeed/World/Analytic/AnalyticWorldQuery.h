@@ -122,6 +122,8 @@ struct IAMSPEED_API FWorldHit
 	uint64 PrimitiveId = 0;
 	uint64 CanonicalGroupId = 0;
 	uint32 MaterialId = 0;
+	// Direct Tensor patch which produced this strict moving-sphere hit. Zero when unavailable.
+	uint64 AnalyticProviderId = 0;
 };
 
 // Geometry-only validation, never a World/snapshot/filter/admission ticket.

@@ -114,6 +114,10 @@ public:
 
 	static void BeginFrame(uint64 Frame, const FAnalyticWorldData* WorldData,
 		const USpeedWorldSubsystem* RuntimeBridge);
+    // Read the published authority of the owner frame without repeating a query.
+    static const Speed::IStaticCollisionWorld* ReadStrictProviderForPhysics(
+        UWorld* World, uint64 OwnerFrame);
+
 	static FStaticWorldQueryCounters GetCurrentFrameCounters();
 #if !UE_BUILD_SHIPPING
     static bool IsQualificationContactTraceFrame(uint64 Frame);

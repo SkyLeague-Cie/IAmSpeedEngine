@@ -1375,6 +1375,21 @@ const Speed::IStaticCollisionWorld* FStaticWorldQueryAudit::ReadStrictFrameProvi
 
 #endif
 
+const Speed::IStaticCollisionWorld* FStaticWorldQueryAudit::ReadStrictProviderForPhysics(
+    UWorld* World, uint64 OwnerFrame)
+{
+    const auto& Frame = GStaticWorldAuditFrame;
+    if (!World || !Frame.bActive || Frame.QueryWorld != World || !Frame.RuntimeBridge ||
+        !IsSurfaceAnalyticBackend() || Frame.Frame + 1 != OwnerFrame || !Frame.StaticWorld ||
+        Frame.StaticWorld != Frame.RuntimeBridge->GetStaticCollisionWorld())
+    {
+        return nullptr;
+    }
+    const auto Identity = Frame.StaticWorld->GetImmutableQueryIdentity1075();
+    return Identity.IsValid() && Identity.Data == Frame.RuntimeBridge->GetAnalyticWorldData()
+        ? Frame.StaticWorld : nullptr;
+}
+
 FStaticWorldQueryCounters FStaticWorldQueryAudit::GetCurrentFrameCounters()
 {
 	FStaticWorldQueryCounters Counters;

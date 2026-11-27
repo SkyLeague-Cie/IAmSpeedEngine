@@ -19,6 +19,11 @@
 #include "SceneManagement.h"
 #include "SceneView.h"
 #include "IAmSpeed/World/Analytic/StaticWorldQueryAudit.h"
+#include "IAmSpeed/World/Collision/StaticCollisionWorld.h"
+#include "Misc/ScopeExit.h"
+#if PLATFORM_WINDOWS && defined(_MSC_VER) && defined(_M_X64)
+#include <immintrin.h>
+#endif
 #include "BoxSubBody.h"
 #include "SWheelSubBody.h"
 #include "IAmSpeed/Base/SpeedConstant.h"
@@ -510,16 +515,145 @@ void USphereSubBody::ResolveHitVsGround(const float& delta, const float& SimTime
 		const float Rest = GetRestitution();
 
         // For a sphere vs plane: no angular coupling on normal
-        const float jn = -(1.f + Rest) * vN * GetMass();
-        ApplyImpulse(jn * N, P);
+        struct FReboundDirection
+        {
+            FVector Normal;
+            FVector Point;
+            float Approach;
+        };
+        const auto ReboundDirection = [&]() -> TOptional<FReboundDirection>
+        {
+            const auto& Hit = CurrentHit;
+            const float Threshold = GetImpactThreshold();
+            if (!Hit.AnalyticProviderId || !FMath::IsFinite(vN) || !FMath::IsFinite(Threshold) ||
+                Threshold <= 0.f || !Hit.bHit || !Hit.bBlockingHit || !Hit.bSurfaceNormalMayVary ||
+                Hit.bStartPenetrating || Hit.PenetrationDepth != 0.f ||
+                !(Hit.TOI > 0.f && Hit.TOI == delta) || Hit.SubBody.IsValid() ||
+                !Hit.Component.IsValid() || Hit.Component->GetCollisionObjectType() != ECC_WorldStatic ||
+                Hit.ContactFeatureOther != Speed::EContactFeatureKind::Face ||
+                Hit.ContactFeatureThis != Speed::EContactFeatureKind::Vertex ||
+                !Hit.SourceId || !Hit.SurfaceId || !Hit.CanonicalGroupId || !Hit.FeatureId || !Hit.PrimitiveId ||
+                Hit.Location.ContainsNaN() || Hit.ImpactPoint.ContainsNaN() || Hit.ContactPointThis.ContainsNaN() ||
+                !IsMainSubBody() || ParentComponent->IsFrozen() || ParentComponent->IsPrescribedMotion() ||
+                !GetLocalOffset().IsZero() || !ParentComponent->GetPhysCenterOfMassLocal().IsZero() ||
+                ParentComponent->GetSubBodies().Num() != 1)
+            {
+                return {};
+            }
+
+            const auto Angle = ParentComponent->GetStaticSphereReboundAngleDegrees(Hit, N, vN);
+            if (!Angle || !FMath::IsFinite(Angle.GetValue()))
+            {
+                return {};
+            }
+            using FAudit = Speed::Analytic::FStaticWorldQueryAudit;
+            const uint64 OwnerFrame = ParentComponent->NumFrame();
+            const auto* World = FAudit::ReadStrictProviderForPhysics(GetWorld(), OwnerFrame);
+            if (!World || World != ParentComponent->GetStaticCollisionWorldForFrame())
+            {
+                return {};
+            }
+            const auto Identity = World->GetImmutableQueryIdentity1075();
+            if (!Identity.IsValid())
+            {
+                return {};
+            }
+
+#if PLATFORM_WINDOWS && defined(_MSC_VER) && defined(_M_X64)
+            const uint32 SavedMxcsr = _mm_getcsr();
+            ON_SCOPE_EXIT { _mm_setcsr(SavedMxcsr); };
+#endif
+            const float Mass = GetMass();
+            const float SweepRadius = GetRadius();
+            const float E = GetRestitution();
+            const float Mu = GetWorldStaticImpactFriction();
+            const FVector Center = ParentComponent->GetPhysCOM();
+            const FVector Velocity = ParentComponent->GetPhysCOMVelocity();
+            const FVector Spin = ParentComponent->GetPhysAngularVelocity();
+            if (!FMath::IsFinite(Mass) || Mass <= 0.f || ParentComponent->GetPhysMass() != Mass ||
+                !FMath::IsFinite(SweepRadius) || SweepRadius <= 0.f || !FMath::IsFinite(E) || E < 0.f || E > 1.f ||
+                !FMath::IsFinite(Mu) || Mu < 0.f || Center.ContainsNaN() || Velocity.ContainsNaN() ||
+                Spin.ContainsNaN() || Spin.IsZero() || P.ContainsNaN() || N.ContainsNaN() || N.IsZero())
+            {
+                return {};
+            }
+
+            struct FImpactModel
+            {
+                FVector V = FVector::ZeroVector;
+                FVector W = FVector::ZeroVector;
+                float Vn = 0.f, Jn = 0.f, Jt = 0.f;
+                bool Strong = false, Capped = false;
+            };
+            const FMatrix InvInertia = ComputeWorldInvInertiaTensor();
+            const auto Predict = [&](const FVector& Normal, const FVector& Point)
+            {
+                FImpactModel Model;
+                Model.V = Velocity;
+                Model.W = Spin;
+                const FVector Arm = Point - Center;
+                const FVector PointVelocity = Velocity + FVector::CrossProduct(Spin, Arm);
+                Model.Vn = float(FVector::DotProduct(PointVelocity, Normal));
+                Model.Strong = FMath::IsFinite(Model.Vn) && Model.Vn < -Threshold;
+                if (!Model.Strong) return Model;
+                const auto Add = [&](const FVector& Impulse)
+                {
+                    Model.V += Impulse / Mass;
+                    Model.W += InvInertia.TransformVector(FVector::CrossProduct(Arm, Impulse));
+                };
+                Model.Jn = -(1.f + E) * Model.Vn * Mass;
+                Add(Model.Jn * Normal);
+                const FVector AfterNormal = Model.V + FVector::CrossProduct(Model.W, Arm);
+                const float AfterNormalSpeed = FVector::DotProduct(AfterNormal, Normal);
+                const FVector Tangent = AfterNormal - AfterNormalSpeed * Normal;
+                const float Slip = Tangent.Size();
+                if (Slip > KINDA_SMALL_NUMBER)
+                {
+                    const float Unclamped = -Slip * ((2.f / 7.f) * Mass);
+                    const float Cap = Mu * Model.Jn;
+                    Model.Capped = -Unclamped > Cap;
+                    Model.Jt = FMath::Clamp(Unclamped, -Cap, Cap);
+                    Add(Model.Jt * (Tangent / Slip));
+                }
+                return Model;
+            };
+            const FImpactModel Stock = Predict(N, P);
+            if (!Stock.Strong || Stock.Vn != vN || Stock.V.ContainsNaN() || Stock.W.ContainsNaN() ||
+                !FMath::IsFinite(Stock.Jn) || !FMath::IsFinite(Stock.Jt))
+            {
+                return {};
+            }
+            const double Pitch = FMath::DegreesToRadians(Angle.GetValue());
+            const FVector Normal(FMath::Sign(N.X) * FMath::Sin(Pitch), 0., FMath::Cos(Pitch));
+            const FVector Point = Center - SweepRadius * Normal;
+            const FImpactModel Trial = Predict(Normal, Point);
+            const FVector ContactVelocity = Trial.V + FVector::CrossProduct(Trial.W, P - Center);
+            const double InitialEnergy = Velocity.SquaredLength() + 0.4 * FMath::Square(double(SweepRadius)) * Spin.SquaredLength();
+            const double FinalEnergy = Trial.V.SquaredLength() + 0.4 * FMath::Square(double(SweepRadius)) * Trial.W.SquaredLength();
+            if (!Trial.Strong || Trial.Capped || Trial.V.ContainsNaN() || Trial.W.ContainsNaN() ||
+                !(FVector::DotProduct(Normal, N) > 0.99) || !(FVector::DotProduct(Trial.V, N) > Threshold) ||
+                !(FVector::DotProduct(ContactVelocity, N) > Threshold) || !FMath::IsFinite(InitialEnergy) ||
+                !FMath::IsFinite(FinalEnergy) || FinalEnergy > InitialEnergy ||
+                !(World->GetImmutableQueryIdentity1075() == Identity) ||
+                FAudit::ReadStrictProviderForPhysics(GetWorld(), OwnerFrame) != World)
+            {
+                return {};
+            }
+            return FReboundDirection{Normal, Point, Trial.Vn};
+        }();
+        const FVector& BounceNormal = ReboundDirection ? ReboundDirection->Normal : N;
+        const FVector& BouncePoint = ReboundDirection ? ReboundDirection->Point : P;
+        const float BounceApproach = ReboundDirection ? ReboundDirection->Approach : vN;
+        const float jn = -(1.f + Rest) * BounceApproach * GetMass();
+        ApplyImpulse(jn * BounceNormal, BouncePoint);
         // ParentComponent->NotifyLocalImpulseEvent();
 
         // ------------------------------------------------------------------
         // 2) TANGENTIAL IMPULSE (impact friction -> spin transfer)
         // ------------------------------------------------------------------
-        const FVector VpPostN = ParentComponent->GetPhysVelocityAtPoint(P);
-        const float vNpost = FVector::DotProduct(VpPostN, N);
-        const FVector vT = VpPostN - vNpost * N;
+        const FVector VpPostN = ParentComponent->GetPhysVelocityAtPoint(BouncePoint);
+        const float vNpost = FVector::DotProduct(VpPostN, BounceNormal);
+        const FVector vT = VpPostN - vNpost * BounceNormal;
         const float vTmag = vT.Size();
 
         if (vTmag > KINDA_SMALL_NUMBER)
@@ -537,7 +671,14 @@ void USphereSubBody::ResolveHitVsGround(const float& delta, const float& SimTime
             const float jtMax = mu * jn;
             jt = FMath::Clamp(jt, -jtMax, jtMax);
 
-            ApplyImpulse(jt * T, P);
+            ApplyImpulse(jt * T, BouncePoint);
+        }
+        if (ReboundDirection)
+        {
+            UE_LOG(SphereSubBodyLog, Display,
+                TEXT("[StaticSphereReboundAngle] Applied=1 Owner=%u Body=%llu Leaf=%016llX Provider=%016llX TOI=%.17g"),
+                ParentComponent->NumFrame(), ParentComponent->GetPublishedSimulationStableId(),
+                CurrentHit.PrimitiveId, CurrentHit.AnalyticProviderId, double(CurrentHit.TOI));
         }
     }
 

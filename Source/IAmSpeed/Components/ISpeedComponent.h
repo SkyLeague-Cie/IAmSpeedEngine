@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Misc/Optional.h"
 #include <memory>
 namespace Speed::Input::V2 { struct FOwnerInputSnapshot; class FInputSessionRegistry; }
 #include "IAmSpeed/Base/PhysicalContactConstraint.h"
@@ -332,6 +333,11 @@ public:
 	float GetMaximumCanonicalSupportInterval(float Remaining) const;
 	/** Nominal configured load used to certify support geometry, not a prepared frame force. */
 	virtual FVector GetNominalGravityAcceleration() const { return FVector::ZeroVector; }
+    /** A game may redirect the impulse of an authenticated static sphere impact.
+     * The default retains the canonical collision response. */
+    virtual TOptional<double> GetStaticSphereReboundAngleDegrees(
+        const SHitResult& Hit, const FVector& Normal, float NormalSpeed) const { return {}; }
+
 	/** Certifies the current stationary pose; never relies on a previous contact or sleeping state. */
 	bool HasExactStaticRestingSupport() const;
 	/** A stationary orientation may translate tangentially when its shape/material

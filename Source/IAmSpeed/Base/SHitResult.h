@@ -56,6 +56,8 @@ namespace Speed
         // Native data identity only; never permission to advance or respond.
         TSharedPtr<const PreparedExecution::FGroundSweepEvidence,ESPMode::ThreadSafe> PreparedGroundEvidence;
         TSharedPtr<const PreparedExecution::FFirstRsResponseData,ESPMode::ThreadSafe> FirstRsResponseData;
+        // Transient parent primitive from the ordinary analytic sweep.
+        uint64 AnalyticProviderId = 0;
         IAMSPEED_API static SHitResult FromAnalyticHitAtSeconds(const Analytic::FWorldHit& Hit,float Seconds,uint32 InFrameTag);
 
 		static SHitResult FromAnalyticHit(

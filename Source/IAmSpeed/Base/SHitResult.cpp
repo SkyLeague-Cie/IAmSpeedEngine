@@ -69,6 +69,7 @@ SHitResult SHitResult::FromAnalyticHit(
 	Result.PrimitiveId = Hit.PrimitiveId;
 	Result.CanonicalGroupId = Hit.CanonicalGroupId;
 	Result.MaterialId = Hit.MaterialId;
+	Result.AnalyticProviderId = Hit.AnalyticProviderId;
 	Result.FrameTag = InFrameTag;
 	return Result;
 }
