@@ -48,6 +48,55 @@ Lifecycle calls follow the synchronous presentation mutation guard. A future
 host lifecycle bridge must deliver control-boundary requests outside that
 observation dispatch; it must not use presentation callbacks to acquire input.
 
+## Linux exact gamepad acquisition
+
+A Linux presentation client can opt into direct evdev gamepad acquisition with
+`-SpeedExactRemotePresentationClient` and `-SpeedLinuxEvdevGamepad`. The host
+must pass an exact `SelectedDevice` of kind `Gamepad` to the existing
+`CreateDeviceRawAcquisition` factory. This opt-in enables capture independently
+of window focus for that exact endpoint. A product does not need to register an
+`FDeviceRawAcquisitionBridge` for this path. The bridge remains available for
+other transports.
+
+The reader supports a pad that exposes six standard evdev axes, a two-axis
+digital hat, and the standard face, shoulder, stick, Start and Select buttons.
+The acquisition worker opens only the selected character device among
+`/dev/input/event0` through `/dev/input/event255`. It verifies the identity on the
+open descriptor and uses read-only, nonblocking access. It never grabs the
+device or opens a keyboard as a fallback.
+
+The selector is local to the client device namespace. For a gamepad event node
+identified by the operator, it consists of the eight-byte domain `IASEVD1\0`
+followed by the device filesystem ID, character device number and inode as
+three unsigned little-endian 64-bit integers. Pass the resulting 32-byte hex
+value to the product's existing exact device selection. Read it in the same
+device namespace as the eventual client. For example, from a shell that shares
+that namespace:
+
+```sh
+python3 - /dev/input/eventN <<'PY'
+import os
+import stat
+import struct
+import sys
+
+node = os.stat(sys.argv[1], follow_symlinks=False)
+if not stat.S_ISCHR(node.st_mode):
+    raise SystemExit("expected a direct evdev character device")
+print((b"IASEVD1\0" + struct.pack("<QQQ", node.st_dev, node.st_rdev, node.st_ino)).hex())
+PY
+```
+
+A fresh baseline uses repeatable kernel level reads while the report queue is
+quiet. These reads do not claim a single atomic kernel report. Later changes
+are published in order on complete `SYN_REPORT` boundaries. A lost report or
+disconnected device invalidates the journal and retires the selected
+descriptor. After a live baseline, the reader publishes a fresh neutral
+no-device state. That state cannot acknowledge a round resume. Rebinding a
+controller requires a new capture session and a fresh selector. A selector
+identifies the local endpoint, so collect it again if the runtime device
+namespace or event node is recreated.
+
 ## Contract and ownership
 
 `Input/InputFrame.h` defines a values-only immutable API with source frame,

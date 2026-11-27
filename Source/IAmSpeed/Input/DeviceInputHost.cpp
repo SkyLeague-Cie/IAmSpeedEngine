@@ -5,6 +5,12 @@
 #include <exception>
 #include "HAL/PlatformTime.h"
 
+#if PLATFORM_LINUX && !UE_SERVER
+#include "Linux/EvdevGamepadAcquisition.h"
+#include "Misc/CommandLine.h"
+#include "Misc/Parse.h"
+#endif
+
 #if PLATFORM_WINDOWS && !UE_SERVER
 #include "Windows/AllowWindowsPlatformTypes.h"
 PRAGMA_PUSH_PLATFORM_DEFAULT_PACKING
@@ -253,6 +259,17 @@ static std::shared_ptr<IInputAcquisition> CreateNativeDeviceRawAcquisition(std::
     // Pump on its acquisition worker, exactly as in the existing device host.
     return std::make_shared<FNativeGameInputAcquisition>(ProducerId, Config.Activity,
         std::move(Journal), std::move(Warm), Config.SelectedDevice, Config.EnableDesktop, Config.EnableBackgroundInput);
+#elif PLATFORM_LINUX && !UE_SERVER
+    // evdev is window-independent. Admit it only for an explicitly selected
+    // device in a process that opted into the exact presentation client.
+    if (!FParse::Param(FCommandLine::Get(), TEXT("SpeedLinuxEvdevGamepad"))
+        || IsRunningDedicatedServer() || FParse::Param(FCommandLine::Get(), TEXT("SpeedExactRemoteDedicatedHost"))
+        || !Speed::Netcode::PresentationClient::IsSelected() || FPresentationInputScope::IsActive()
+        || !ProducerId || !Journal || Journal->BeginAcquisition().Session != ProducerId
+        || !FDeviceActivityPolicy::ValidConfig(Config.Activity) || Config.WarmContext || Config.EnableDesktop
+        || !Config.SelectedDevice || Config.SelectedDevice->second != EDeviceKind::Gamepad
+        || !Evdev::HasGamepadIdPrefix(Config.SelectedDevice->first)) return {};
+    return std::make_shared<Evdev::FGamepadAcquisition>(std::move(Journal), Config.SelectedDevice->first);
 #else
     (void)ProducerId; (void)Journal; (void)Config;
     return {};
